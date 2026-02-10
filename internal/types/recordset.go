@@ -5,7 +5,7 @@ import "time"
 
 // RecordSet represents a set of discovered records organized by table.
 type RecordSet struct {
-	RootPKs []interface{}              // Root table primary keys
+	RootPKs []interface{}            // Root table primary keys
 	Records map[string][]interface{} // table name -> PKs
 	Stats   DiscoveryStats
 }

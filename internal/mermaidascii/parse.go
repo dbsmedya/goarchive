@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/elliotchance/orderedmap/v2"
-	
 )
 
 type graphProperties struct {
@@ -67,7 +66,7 @@ func parseStyleClass(matchedLine []string) styleClass {
 }
 
 func setArrowWithLabel(lhs, rhs []textNode, label string, data *orderedmap.OrderedMap[string, []textEdge]) []textNode {
-	
+
 	for _, l := range lhs {
 		for _, r := range rhs {
 			setData(l, textEdge{l, r, label}, data)
@@ -105,7 +104,7 @@ func setData(parent textNode, edge textEdge, data *orderedmap.OrderedMap[string,
 }
 
 func (gp *graphProperties) parseString(line string) ([]textNode, error) {
-	
+
 	var lhs, rhs []textNode
 	var err error
 	// Patterns are matched in order
@@ -155,7 +154,7 @@ func (gp *graphProperties) parseString(line string) ([]textNode, error) {
 		{
 			regex: regexp.MustCompile(`^(.+) & (.+)$`),
 			handler: func(match []string) ([]textNode, error) {
-				
+
 				var node textNode
 				if lhs, err = gp.parseString(match[0]); err != nil {
 					node = parseNode(match[0])
@@ -287,7 +286,7 @@ func mermaidFileToMap(mermaid, styleType string) (*graphProperties, error) {
 
 			subgraphStack = append(subgraphStack, newSubgraph)
 			properties.subgraphs = append(properties.subgraphs, newSubgraph)
-			
+
 			continue
 		}
 
@@ -309,7 +308,7 @@ func mermaidFileToMap(mermaid, styleType string) (*graphProperties, error) {
 		// Parse nodes and edges normally
 		nodes, err := properties.parseString(line)
 		if err != nil {
-			
+
 			node := parseNode(line)
 			addNode(node, properties.data)
 		} else {
@@ -336,7 +335,7 @@ func mermaidFileToMap(mermaid, styleType string) (*graphProperties, error) {
 						}
 						if !found {
 							sg.nodes = append(sg.nodes, nodeName)
-							
+
 						}
 					}
 				}

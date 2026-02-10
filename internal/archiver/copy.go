@@ -17,12 +17,12 @@ import (
 // CopyStats contains statistics about the copy operation.
 // GA-P3-F3-T8: Copy stats logging
 type CopyStats struct {
-	TablesCopied   int           // Number of tables processed
-	RowsCopied     int64         // Total rows copied across all tables
-	Duration       time.Duration // Time taken for copy operation
-	TablesSkipped  int           // Tables with no rows to copy
-	RowsPerTable   map[string]int64
-	InsertErrors   int // Number of rows that failed to insert (should be 0 with INSERT IGNORE)
+	TablesCopied  int           // Number of tables processed
+	RowsCopied    int64         // Total rows copied across all tables
+	Duration      time.Duration // Time taken for copy operation
+	TablesSkipped int           // Tables with no rows to copy
+	RowsPerTable  map[string]int64
+	InsertErrors  int // Number of rows that failed to insert (should be 0 with INSERT IGNORE)
 }
 
 // CopyPhase manages the transactional copy of discovered records from source to destination.
@@ -36,11 +36,11 @@ type CopyStats struct {
 // GA-P3-F3-T7: Rollback on error
 // GA-P3-F3-T8: Copy stats logging
 type CopyPhase struct {
-	sourceDB      *sql.DB
-	destDB        *sql.DB
-	graph         *graph.Graph
-	safetyCfg     config.SafetyConfig
-	logger        *logger.Logger
+	sourceDB  *sql.DB
+	destDB    *sql.DB
+	graph     *graph.Graph
+	safetyCfg config.SafetyConfig
+	logger    *logger.Logger
 }
 
 // NewCopyPhase creates a new copy phase coordinator.

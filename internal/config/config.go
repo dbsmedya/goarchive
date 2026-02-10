@@ -3,14 +3,14 @@ package config
 
 // Config represents the complete application configuration.
 type Config struct {
-	Source       DatabaseConfig            `yaml:"source" mapstructure:"source"`
-	Destination  DatabaseConfig            `yaml:"destination" mapstructure:"destination"`
-	Replica      ReplicaConfig             `yaml:"replica" mapstructure:"replica"`
-	Jobs         map[string]JobConfig      `yaml:"jobs" mapstructure:"jobs"`
-	Processing   ProcessingConfig          `yaml:"processing" mapstructure:"processing"`
-	Safety       SafetyConfig              `yaml:"safety" mapstructure:"safety"`
-	Verification VerificationConfig        `yaml:"verification" mapstructure:"verification"`
-	Logging      LoggingConfig             `yaml:"logging" mapstructure:"logging"`
+	Source       DatabaseConfig       `yaml:"source" mapstructure:"source"`
+	Destination  DatabaseConfig       `yaml:"destination" mapstructure:"destination"`
+	Replica      ReplicaConfig        `yaml:"replica" mapstructure:"replica"`
+	Jobs         map[string]JobConfig `yaml:"jobs" mapstructure:"jobs"`
+	Processing   ProcessingConfig     `yaml:"processing" mapstructure:"processing"`
+	Safety       SafetyConfig         `yaml:"safety" mapstructure:"safety"`
+	Verification VerificationConfig   `yaml:"verification" mapstructure:"verification"`
+	Logging      LoggingConfig        `yaml:"logging" mapstructure:"logging"`
 }
 
 // DatabaseConfig represents a MySQL database connection configuration.
@@ -47,7 +47,7 @@ type JobConfig struct {
 // Relation represents a table relationship for dependency resolution.
 type Relation struct {
 	Table          string     `yaml:"table" mapstructure:"table"`
-	PrimaryKey     string     `yaml:"primary_key" mapstructure:"primary_key"`         // PK column name (defaults to "id")
+	PrimaryKey     string     `yaml:"primary_key" mapstructure:"primary_key"` // PK column name (defaults to "id")
 	ForeignKey     string     `yaml:"foreign_key" mapstructure:"foreign_key"`
 	DependencyType string     `yaml:"dependency_type" mapstructure:"dependency_type"` // "1-1" or "1-N"
 	Relations      []Relation `yaml:"relations" mapstructure:"relations"`             // Nested relations
@@ -144,7 +144,7 @@ func (jc *JobConfig) GetJobProcessing(global ProcessingConfig) ProcessingConfig 
 	if jc.Processing == nil {
 		return global
 	}
-	
+
 	// Merge job-specific with global defaults
 	result := global
 	if jc.Processing.BatchSize > 0 {
@@ -164,7 +164,7 @@ func (jc *JobConfig) GetJobVerification(global VerificationConfig) VerificationC
 	if jc.Verification == nil {
 		return global
 	}
-	
+
 	// Merge job-specific with global defaults
 	result := global
 	if jc.Verification.Method != "" {

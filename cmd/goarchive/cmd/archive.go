@@ -85,7 +85,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 
 	// Create database manager
 	dbManager := database.NewManager(cfg)
-	
+
 	// Setup context with signal handling
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

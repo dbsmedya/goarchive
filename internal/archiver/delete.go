@@ -33,10 +33,10 @@ type DeleteStats struct {
 // GA-P4-F2-T5: Delete progress logging
 // GA-P4-F2-T6: Idempotent deletes (no error on re-delete)
 type DeletePhase struct {
-	db          *sql.DB
-	graph       *graph.Graph
-	batchSize   int // GA-P4-F2-T2: Batch delete size
-	logger      *logger.Logger
+	db        *sql.DB
+	graph     *graph.Graph
+	batchSize int // GA-P4-F2-T2: Batch delete size
+	logger    *logger.Logger
 }
 
 // NewDeletePhase creates a new delete phase coordinator.

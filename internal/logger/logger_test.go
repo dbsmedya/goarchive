@@ -15,7 +15,7 @@ func TestParseLevel(t *testing.T) {
 	}{
 		{"debug", "debug"},
 		{"info", "info"},
-		{"", "info"},     // empty defaults to info
+		{"", "info"}, // empty defaults to info
 		{"warn", "warn"},
 		{"error", "error"},
 		{"unknown", "info"}, // unknown defaults to info
@@ -233,7 +233,7 @@ func TestBuildEncoder(t *testing.T) {
 		t.Error("buildEncoder('json') returned nil")
 	}
 
-	// Test text/console encoder  
+	// Test text/console encoder
 	textEncoder := buildEncoder("text")
 	if textEncoder == nil {
 		t.Error("buildEncoder('text') returned nil")

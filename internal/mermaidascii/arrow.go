@@ -4,8 +4,6 @@ import (
 	"container/heap"
 	"fmt"
 	"slices"
-
-	
 )
 
 type priorityQueueItem struct {
@@ -74,7 +72,7 @@ func (g *graph) getPath(from gridCoord, to gridCoord) ([]gridCoord, error) {
 			for c := &current; c != nil; c = cameFrom[*c] {
 				path = append([]gridCoord{*c}, path...)
 			}
-			
+
 			return path, nil
 		}
 
@@ -109,7 +107,7 @@ func (g *graph) drawArrow(from gridCoord, to gridCoord, e *edge) (*drawing, *dra
 	if len(e.path) == 0 {
 		return nil, nil, nil, nil, nil
 	}
-	
+
 	dLabel := g.drawArrowLabel(e)
 	dPath, linesDrawn, lineDirs := g.drawPath(e.path)
 	dBoxStart := g.drawBoxStart(e.path, linesDrawn[0])
@@ -141,7 +139,7 @@ func mergePath(path []gridCoord) []gridCoord {
 			newPath = append(newPath, step)
 		}
 	}
-	
+
 	return newPath
 }
 
@@ -155,7 +153,7 @@ func (g *graph) drawPath(path []gridCoord) (*drawing, [][]drawingCoord, []direct
 		previousDrawingCoord = g.gridToDrawingCoord(previousCoord, nil)
 		nextDrawingCoord := g.gridToDrawingCoord(nextCoord, nil)
 		if previousDrawingCoord.Equals(nextDrawingCoord) {
-			
+
 			continue
 		}
 		dir := determineDirection(genericCoord(previousCoord), genericCoord(nextCoord))
@@ -176,7 +174,6 @@ func (g *graph) drawBoxStart(path []gridCoord, firstLine []drawingCoord) *drawin
 	d := *(copyCanvas(g.drawing))
 	from := firstLine[0]
 	dir := determineDirection(genericCoord(path[0]), genericCoord(path[1]))
-	
 
 	if g.useAscii {
 		return &d
@@ -320,7 +317,6 @@ func (g *graph) drawArrowLabel(e *edge) *drawing {
 		return d
 	}
 
-	
 	d.drawTextOnLine(g.lineToDrawing(e.labelLine), e.text)
 	return d
 }
@@ -330,7 +326,7 @@ func (d *drawing) drawTextOnLine(line []drawingCoord, label string) {
 	//  123456789
 	// |---------|
 	//     123
-	
+
 	var minX, maxX, minY, maxY int
 	if line[0].x > line[1].x {
 		minX = line[1].x

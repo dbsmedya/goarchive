@@ -1,8 +1,6 @@
 package mermaidascii
 
-import (
-	
-)
+import ()
 
 type node struct {
 	name           string
@@ -66,7 +64,7 @@ func (g *graph) setColumnWidth(n *node) {
 		if g.hasIncomingEdgeFromOutsideSubgraph(n) {
 			const subgraphOverhead = 4
 			basePadding += subgraphOverhead
-			
+
 		}
 
 		// Use Max to preserve the largest padding requirement for this row
@@ -88,7 +86,7 @@ func (g *graph) increaseGridSizeForPath(path []gridCoord) {
 
 func (g *graph) reserveSpotInGrid(n *node, requestedCoord *gridCoord) *gridCoord {
 	if g.grid[*requestedCoord] != nil {
-		
+
 		// Next column is 4 coords further. This is because every node is 3 coords wide + 1 coord inbetween.
 		if graphDirection == "LR" {
 			return g.reserveSpotInGrid(n, &gridCoord{x: requestedCoord.x, y: requestedCoord.y + 4})
@@ -97,7 +95,7 @@ func (g *graph) reserveSpotInGrid(n *node, requestedCoord *gridCoord) *gridCoord
 		}
 	}
 	// Reserve border + middle + border for node
-	
+
 	for x := 0; x < 3; x++ {
 		for y := 0; y < 3; y++ {
 			reservedCoord := gridCoord{x: requestedCoord.x + x, y: requestedCoord.y + y}

@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dbsmedya/goarchive/internal/mermaidascii"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/internal/mermaidascii"
 	"github.com/spf13/cobra"
 )
 
@@ -253,7 +253,7 @@ func printMermaidTree(job *config.JobConfig, cfg *config.Config, g *graph.Graph)
 // padding is the minimum spaces between the two columns
 func printSideBySide(leftContent string, rightLines []string, padding int) {
 	leftLines := strings.Split(strings.TrimRight(leftContent, "\n"), "\n")
-	
+
 	// Calculate max visual width of left column (using rune count for Unicode)
 	leftWidth := 0
 	for _, line := range leftLines {
@@ -262,7 +262,7 @@ func printSideBySide(leftContent string, rightLines []string, padding int) {
 			leftWidth = w
 		}
 	}
-	
+
 	// Calculate height of each column
 	leftHeight := len(leftLines)
 	rightHeight := len(rightLines)
@@ -270,31 +270,31 @@ func printSideBySide(leftContent string, rightLines []string, padding int) {
 	if rightHeight > maxHeight {
 		maxHeight = rightHeight
 	}
-	
+
 	// Print rows side by side
 	for i := 0; i < maxHeight; i++ {
 		leftPart := ""
 		rightPart := ""
-		
+
 		// Get left column content
 		if i < leftHeight {
 			leftPart = leftLines[i]
 		}
-		
+
 		// Get right column content
 		if i < rightHeight {
 			rightPart = rightLines[i]
 		}
-		
+
 		// Print left content
 		fmt.Fprint(outputWriter, leftPart)
-		
+
 		// Calculate padding needed to align right column
 		spacesNeeded := leftWidth - visualWidth(leftPart) + padding
 		if spacesNeeded > 0 {
 			fmt.Fprint(outputWriter, strings.Repeat(" ", spacesNeeded))
 		}
-		
+
 		// Print right content
 		fmt.Fprintln(outputWriter, rightPart)
 	}

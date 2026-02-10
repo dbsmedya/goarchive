@@ -240,8 +240,8 @@ func TestPlanOutput_AllEdgesDisplayed(t *testing.T) {
 
 	// Verify all expected edges exist
 	expectedEdges := map[string]bool{
-		"users->orders":      false,
-		"users->profiles":    false,
+		"users->orders":       false,
+		"users->profiles":     false,
 		"orders->order_items": false,
 	}
 
@@ -841,4 +841,3 @@ func TestPlanOutput_RootPKAccessible(t *testing.T) {
 		t.Errorf("Expected RootPK='customer_id', got %q", g.RootPK)
 	}
 }
-

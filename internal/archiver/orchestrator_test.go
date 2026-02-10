@@ -754,12 +754,12 @@ func TestExecute_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	result, err := orch.Execute(ctx, nil)
-	
+
 	// If result is nil, the test can't proceed
 	if result == nil {
 		t.Skip("Result is nil - likely no data to process or context cancelled before processing")
 	}
-	
+
 	if err == nil {
 		t.Error("Expected error for cancelled context")
 	}

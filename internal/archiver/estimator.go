@@ -24,12 +24,12 @@ type EstimateResult struct {
 
 // Estimator estimates row counts and batch sizes for dry-run mode.
 type Estimator struct {
-	db          *sql.DB
-	cfg         *config.Config
-	jobCfg      *config.JobConfig
-	graph       *graph.Graph
-	logger      *logger.Logger
-	processing  config.ProcessingConfig   // Effective processing config (job-specific or global)
+	db           *sql.DB
+	cfg          *config.Config
+	jobCfg       *config.JobConfig
+	graph        *graph.Graph
+	logger       *logger.Logger
+	processing   config.ProcessingConfig   // Effective processing config (job-specific or global)
 	verification config.VerificationConfig // Effective verification config (job-specific or global)
 }
 

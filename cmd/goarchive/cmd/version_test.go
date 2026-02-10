@@ -26,10 +26,10 @@ func TestRunVersion(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name          string
-		version       string
-		commit        string
-		wantInOutput  []string
+		name         string
+		version      string
+		commit       string
+		wantInOutput []string
 	}{
 		{
 			name:    "dev version",
@@ -74,9 +74,9 @@ func TestRunVersion(t *testing.T) {
 			// Capture output
 			var buf bytes.Buffer
 			versionCmd.SetOut(&buf)
-			
+
 			runVersion(versionCmd, []string{})
-			
+
 			output := buf.String()
 			for _, want := range tt.wantInOutput {
 				assert.Contains(t, output, want)
@@ -99,23 +99,23 @@ func TestVersionOutputFormat(t *testing.T) {
 
 	var buf bytes.Buffer
 	versionCmd.SetOut(&buf)
-	
+
 	runVersion(versionCmd, []string{})
-	
+
 	// Verify each line format
 	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
 	assert.GreaterOrEqual(t, len(lines), 4, "Expected at least 4 lines in version output")
-	
+
 	// Check version line
 	assert.Contains(t, string(lines[0]), "goarchive version 1.2.3")
-	
+
 	// Check commit line
 	assert.Contains(t, string(lines[1]), "Commit: abc123")
-	
+
 	// Check Go version line
 	assert.Contains(t, string(lines[2]), "Go version:")
 	assert.Contains(t, string(lines[2]), runtime.Version())
-	
+
 	// Check OS/Arch line
 	assert.Contains(t, string(lines[3]), "OS/Arch:")
 	assert.Contains(t, string(lines[3]), runtime.GOOS)

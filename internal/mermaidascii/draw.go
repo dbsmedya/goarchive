@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/gookit/color"
-	
 )
 
 var junctionChars = []string{
@@ -34,7 +33,7 @@ type styleClass struct {
 }
 
 func (g *graph) drawNode(n *node) {
-	
+
 	m := g.mergeDrawings(g.drawing, *n.drawingCoord, n.drawing)
 	g.drawing = m
 }
@@ -42,14 +41,14 @@ func (g *graph) drawNode(n *node) {
 func (g *graph) drawEdge(e *edge) (*drawing, *drawing, *drawing, *drawing, *drawing) {
 	from := e.from.gridCoord.Direction(e.startDir)
 	to := e.to.gridCoord.Direction(e.endDir)
-	
+
 	return g.drawArrow(from, to, e)
 }
 
 func (d *drawing) drawText(start drawingCoord, text string) {
 	// Increase dimensions if necessary.
 	d.increaseSize(start.x+len(text), start.y)
-	
+
 	for x := 0; x < len(text); x++ {
 		(*d)[x+start.x][start.y] = string(text[x])
 	}
@@ -59,7 +58,7 @@ func (g *graph) drawLine(d *drawing, from drawingCoord, to drawingCoord, offsetF
 	// Offset determines how far from the actual coord the line should start/stop.
 	direction := determineDirection(genericCoord(from), genericCoord(to))
 	drawnCoords := make([]drawingCoord, 0)
-	
+
 	if !g.useAscii {
 		switch direction {
 		case Up:
@@ -181,7 +180,7 @@ func drawBox(n *node, g graph) *drawing {
 	from := drawingCoord{0, 0}
 	to := drawingCoord{w, h}
 	boxDrawing := *(mkDrawing(Max(from.x, to.x), Max(from.y, to.y)))
-	
+
 	if !g.useAscii {
 		// Draw top border
 		for x := from.x + 1; x < to.x; x++ {
@@ -249,8 +248,6 @@ func drawSubgraph(sg *subgraph, g graph) *drawing {
 	from := drawingCoord{0, 0}
 	to := drawingCoord{width, height}
 	subgraphDrawing := *(mkDrawing(width, height))
-
-	
 
 	if !g.useAscii {
 		// Draw top border
@@ -343,7 +340,7 @@ func wrapTextInColor(text, c, styleType string) string {
 		cliColor := color.HEX(c)
 		return cliColor.Sprint(text)
 	} else {
-		
+
 		return text
 	}
 }
@@ -393,7 +390,7 @@ func mergeJunctions(c1, c2 string) string {
 
 	// Check if there's a defined merge for the two characters
 	if merged, ok := junctionMap[c1][c2]; ok {
-		
+
 		return merged
 	}
 

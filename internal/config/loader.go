@@ -145,7 +145,7 @@ func (c *Config) ApplyOverrides(logLevel, logFormat string, batchSize, batchDele
 // This creates a modified ProcessingConfig that combines global, job-specific, and CLI values.
 func (c *Config) ApplyJobOverrides(jobName string, batchSize, batchDeleteSize int, sleepSeconds float64, skipVerify bool) ProcessingConfig {
 	processing := c.GetJobProcessing(jobName)
-	
+
 	if batchSize > 0 {
 		processing.BatchSize = batchSize
 	}
@@ -155,6 +155,6 @@ func (c *Config) ApplyJobOverrides(jobName string, batchSize, batchDeleteSize in
 	if sleepSeconds > 0 {
 		processing.SleepSeconds = sleepSeconds
 	}
-	
+
 	return processing
 }

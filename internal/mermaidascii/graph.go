@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/elliotchance/orderedmap/v2"
-	
 )
 
 type genericCoord struct {
@@ -91,14 +90,14 @@ func mkGraph(data *orderedmap.OrderedMap[string, []textEdge]) graph {
 }
 
 func (g *graph) setStyleClasses(properties *graphProperties) {
-	
+
 	g.styleClasses = *properties.styleClasses
 	g.styleType = properties.styleType
 	g.paddingX = properties.paddingX
 	g.paddingY = properties.paddingY
 	for _, n := range g.nodes {
 		if n.styleClassName != "" {
-			
+
 			(*n).styleClass = g.styleClasses[n.styleClassName]
 		}
 	}
@@ -151,7 +150,6 @@ func (g *graph) setSubgraphs(textSubgraphs []*textSubgraph) {
 		}
 	}
 
-	
 }
 
 func (g *graph) createMapping() {
@@ -219,7 +217,7 @@ func (g *graph) createMapping() {
 		} else {
 			mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[0], y: 0})
 		}
-		
+
 		g.nodes[n.index].gridCoord = mappingCoord
 		highestPositionPerLevel[0] = highestPositionPerLevel[0] + 4
 	}
@@ -235,14 +233,14 @@ func (g *graph) createMapping() {
 			} else {
 				mappingCoord = g.reserveSpotInGrid(g.nodes[n.index], &gridCoord{x: highestPositionPerLevel[subgraphLevel], y: subgraphLevel})
 			}
-			
+
 			g.nodes[n.index].gridCoord = mappingCoord
 			highestPositionPerLevel[subgraphLevel] = highestPositionPerLevel[subgraphLevel] + 4
 		}
 	}
 
 	for _, n := range g.nodes {
-		
+
 		var childLevel int
 		// Next column is 4 coords further. This is because every node is 3 coords wide + 1 coord inbetween.
 		if graphDirection == "LR" {
@@ -263,7 +261,7 @@ func (g *graph) createMapping() {
 			} else {
 				mappingCoord = g.reserveSpotInGrid(g.nodes[child.index], &gridCoord{x: highestPosition, y: childLevel})
 			}
-			
+
 			g.nodes[child.index].gridCoord = mappingCoord
 			highestPositionPerLevel[childLevel] = highestPosition + 4
 		}
@@ -280,7 +278,6 @@ func (g *graph) createMapping() {
 	}
 
 	// ! Last point before we manipulate the drawing !
-	
 
 	for _, n := range g.nodes {
 		dc := g.gridToDrawingCoord(*n.gridCoord, nil)
@@ -402,12 +399,12 @@ func (g *graph) ensureSubgraphSpacing() {
 				if sg1.maxY >= sg2.minY-minSpacing && sg1.minY < sg2.minY {
 					// sg1 is above sg2 and too close, extend sg2 upward to create space
 					newMinY := sg1.maxY + minSpacing + 1
-					
+
 					sg2.minY = newMinY
 				} else if sg2.maxY >= sg1.minY-minSpacing && sg2.minY < sg1.minY {
 					// sg2 is above sg1 and too close, extend sg1 upward to create space
 					newMinY := sg2.maxY + minSpacing + 1
-					
+
 					sg1.minY = newMinY
 				}
 			}
@@ -418,12 +415,12 @@ func (g *graph) ensureSubgraphSpacing() {
 				if sg1.maxX >= sg2.minX-minSpacing && sg1.minX < sg2.minX {
 					// sg1 is left of sg2 and too close, extend sg2 leftward to create space
 					newMinX := sg1.maxX + minSpacing + 1
-					
+
 					sg2.minX = newMinX
 				} else if sg2.maxX >= sg1.minX-minSpacing && sg2.minX < sg1.minX {
 					// sg2 is left of sg1 and too close, extend sg1 leftward to create space
 					newMinX := sg2.maxX + minSpacing + 1
-					
+
 					sg1.minX = newMinX
 				}
 			}
@@ -479,7 +476,6 @@ func (g *graph) calculateSubgraphBoundingBox(sg *subgraph) {
 	sg.maxX = maxX + subgraphPadding
 	sg.maxY = maxY + subgraphPadding
 
-	
 }
 
 func (g *graph) offsetDrawingForSubgraphs() {
@@ -502,8 +498,6 @@ func (g *graph) offsetDrawingForSubgraphs() {
 	if offsetX == 0 && offsetY == 0 {
 		return
 	}
-
-	
 
 	// Store the offset in the graph so it can be applied during drawing
 	g.offsetX = offsetX

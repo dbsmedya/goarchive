@@ -431,8 +431,6 @@ func TestPrintSideBySide(t *testing.T) {
 	}
 }
 
-
-
 // Helper function for test
 func stringsCount(s, substr string) int {
 	return strings.Count(s, substr)

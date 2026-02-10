@@ -2,8 +2,6 @@ package mermaidascii
 
 import (
 	"fmt"
-
-	
 )
 
 type edge struct {
@@ -25,7 +23,6 @@ func (g *graph) determinePath(e *edge) {
 
 	from = e.from.gridCoord.Direction(preferredDir)
 	to = e.to.gridCoord.Direction(preferredOppositeDir)
-	
 
 	// Get preferred path
 	preferredPath, err = g.getPath(from, to)
@@ -42,7 +39,6 @@ func (g *graph) determinePath(e *edge) {
 	// Alternative path
 	from = e.from.gridCoord.Direction(alternativeDir)
 	to = e.to.gridCoord.Direction(alternativeOppositeDir)
-	
 
 	alternativePath, err = g.getPath(from, to)
 	if err != nil {
@@ -56,12 +52,12 @@ func (g *graph) determinePath(e *edge) {
 	nrStepsPreferred := len(preferredPath)
 	nrStepsAlternative := len(alternativePath)
 	if nrStepsPreferred <= nrStepsAlternative {
-		
+
 		e.startDir = preferredDir
 		e.endDir = preferredOppositeDir
 		e.path = preferredPath
 	} else {
-		
+
 		e.startDir = alternativeDir
 		e.endDir = alternativeOppositeDir
 		e.path = alternativePath
@@ -101,9 +97,9 @@ func (g *graph) determineLabelLine(e *edge) {
 		minX = largestLine[0].x
 	}
 	middleX := minX + (maxX-minX)/2
-	
+
 	g.columnWidth[middleX] = Max(g.columnWidth[middleX], lenLabel+2) // Wrap with dashes + arrowhead
-	
+
 	e.labelLine = largestLine
 }
 

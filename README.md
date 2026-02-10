@@ -8,10 +8,11 @@ GoArchive is a Go-based CLI tool designed for archiving MySQL relational data ac
 
 ## The Philosophy
 
-Archiving is a nasty necessity for relational databases. Without a circumspect methodology, you risk leaving behind a trail of orphaned records, bloating your indices and breaking referential integrity.
+Archiving is a custom-coded headache that developers end up building from scratch for every new project. Because every schema is different, "off-the-shelf" tools often fall short—they either ignore your foreign keys entirely or require a massive configuration just to avoid leaving behind a mess of orphaned records.
+
+We got tired of reinventing the wheel and worrying about data integrity every time a table got too big. So we built GoArchive.
 
 While legendary tools like pt-archiver are excellent for offloading single tables, they often fall short in complex ecosystems because they lack an inherent awareness of deep foreign key hierarchies. If you’ve ever looked at the MySQL Sakila sample database, you know that real-world relationships are rarely linear.
-
 
 <img src="tests/sakila-EE.png" width="50%" alt="Sakila ERD Diagram">
 
@@ -49,7 +50,7 @@ GoArchive currently supports **1:1** and **1:N** (One-to-Many) relationships.
 
 ### 2. Foreign Key `CASCADE`
 
-The tool is designed to manage the deletion order manually via Kahn's Algorithm to prevent circular looping.. If your schema relies heavily on `ON DELETE CASCADE` at the database level, the tool may encounter conflicts or redundant operations. We recommend using GoArchive on schemas where you want the **application** to control the deletion flow.
+The tool is designed to manage the deletion order manually via Kahn's Algorithm to prevent circular looping. If your schema relies heavily on `ON DELETE CASCADE` at the database level, the tool may encounter conflicts or redundant operations. We recommend using GoArchive on schemas where you want the **application** to control the deletion flow.
 
 ### 3. Database Triggers
 
@@ -339,6 +340,7 @@ GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
 
 -- On archive database
 GRANT INSERT, CREATE, SELECT ON archive.* TO 'archiver'@'%';
+
 -- For advisory locks
 GRANT EXECUTE ON FUNCTION sys.exec_stmt TO 'archiver'@'%';
 Advisory Locks is to prevent two archiver instances from clashing on the same job.

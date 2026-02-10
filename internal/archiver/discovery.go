@@ -198,7 +198,8 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 // GA-P3-F2-T4: Returns only PKs (memory-efficient)
 //
 // Query format:
-//   SELECT DISTINCT child_pk FROM child_table WHERE fk_column IN (parent_pks)
+//
+//	SELECT DISTINCT child_pk FROM child_table WHERE fk_column IN (parent_pks)
 //
 // For large parent PK sets, the query is chunked to avoid exceeding database limits.
 func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childTable string, parentPKs []interface{}) ([]interface{}, error) {

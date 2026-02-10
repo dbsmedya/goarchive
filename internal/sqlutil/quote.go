@@ -9,7 +9,7 @@ import (
 // QuoteIdentifier quotes a MySQL identifier (table name, column name) with backticks.
 // It escapes any existing backticks by doubling them.
 // Example: "my_table" -> "`my_table`"
-// Example: "my`table" -> "`my``table`"
+// Example: "my`table" -> "`my“table`"
 func QuoteIdentifier(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
