@@ -6,30 +6,34 @@
 
 GoArchive is a Go-based CLI tool designed for archiving MySQL relational data across servers. It features automatic dependency resolution, crash recovery, and replication lag monitoring.
 
-**The Philosophy**
+## The Philosophy
+
 Archiving is a nasty necessity for relational databases. Without a circumspect methodology, you risk leaving behind a trail of orphaned records, bloating your indices and breaking referential integrity.
 
 While legendary tools like pt-archiver are excellent for offloading single tables, they often fall short in complex ecosystems because they lack an inherent awareness of deep foreign key hierarchies. If you’ve ever looked at the MySQL Sakila sample database, you know that real-world relationships are rarely linear.
 
-![ERD DIAGRAM] [tests/sakila-EE.png] 
+
+<img src="tests/sakila-EE.png" width="50%" alt="Sakila ERD Diagram">
 
 GoArchive was born from the need to visualize and automate these complexities. However, to maintain the integrity of your production environment, we adhere to two core principles:
 
-1. Cold Data Only
+1. **Cold Data Only**
 GoArchive is designed to move COLD data to an archive server—specifically for performance tuning or meeting GDPR compliance.
 
-[!IMPORTANT] If you intend to archive "hot" data that is currently receiving heavy transactions, stop here. Grab a coffee, enjoy the sunshine, and reconsider your architecture. Live-data shifting is outside the scope of this tool.
+ > [!IMPORTANT] 
+ > If you intend to archive "hot" data that is currently receiving heavy transactions, stop here. Grab a coffee, enjoy the sunshine, and reconsider your architecture. Live-data shifting is outside the scope of this tool.
 
-2. Zero-Impact Production Archiving
-In high-traffic production environments, database locks are the enemy. GoArchive is built to be "invisible":
+2. **Zero-Impact Production Archiving**
+  In high-traffic production environments, database locks are the enemy. GoArchive is built to be "invisible":
 
-Replication Friendly: Integrated monitoring ensures the tool pauses automatically if replica lag exceeds your thresholds.
+  Replication Friendly: Integrated monitoring ensures the tool pauses automatically if replica lag exceeds your thresholds.
 
-Intelligent Batching: We recognize that a single record in a master table (e.g., an Order) can represent millions of rows in child tables (e.g., Logs or Transitions).
+  Intelligent Batching: We recognize that a single record in a master table (e.g., an Order) can represent millions of rows in child tables (e.g., Logs or Transitions).
 
-Asymmetric Processing: By processing in configurable batches, GoArchive completes the move-and-purge cycle without ever holding a long-term lock on the master table.
+  Asymmetric Processing: By processing in configurable batches, GoArchive completes the move-and-purge cycle without ever holding a long-term lock on the master table.
 
-For the Faint-of-heart: it has a feature to match and compare the row counts or even SHA256 checksum of the records between archive and source before deletion.
+> [!NOTE]
+> For the Faint-of-heart: it has a feature to match and compare the row counts or even SHA256 checksum of the records between archive and source before deletion.
 
 ---
 
