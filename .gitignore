@@ -37,8 +37,7 @@ go.work
 !dot.env
 
 # Docker data volumes (contain MySQL data and certificates)
-docker_files/db_data
-tests/docker_files/
+tests/docker_files/dbdata
 
 # Test results and logs
 results/

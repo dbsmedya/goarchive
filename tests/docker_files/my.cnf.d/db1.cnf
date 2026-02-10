@@ -1,0 +1,21 @@
+[mysqld]
+server_id		    = 1
+report_host		    = db1.local
+
+skip-name-resolve           = ON
+
+log-bin                     = db1_binlog
+log-bin-index               = db1_binlog.index
+binlog-checksum             = NONE
+binlog-row-image            = FULL
+log_replica_updates         = 1
+
+enforce-gtid-consistency    = TRUE
+gtid-mode                   = ON
+relay-log                   = db1_relaylog
+
+innodb_dedicated_server	    = ON
+innodb_numa_interleave      = OFF
+
+plugin_load_add             = mysql_clone.so
+#clone_valid_donor_list	    = db1.local:3306,db2.local:3306
