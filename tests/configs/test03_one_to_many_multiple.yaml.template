@@ -1,0 +1,42 @@
+# Test 03: 1-N Multiple Children (Same Level)
+# Tests archiving multiple child relationships from the same parent
+# Film has: inventory (physical copies), film_actor (cast), film_category (genre)
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-film-with-all-children:
+    root_table: film
+    primary_key: film_id
+    # Archive first 20 films
+    where: "film_id <= 20"
+    relations:
+      # 1-N: Film has many inventory items (physical copies)
+      - table: inventory
+        primary_key: inventory_id
+        foreign_key: film_id
+        dependency_type: "1-N"
+      
+      # 1-N: Film has many actors (via film_actor junction)
+      - table: film_actor
+        primary_key: actor_id
+        foreign_key: film_id
+        dependency_type: "1-N"
+      
+      # 1-N: Film has many categories (via film_category junction)
+      - table: film_category
+        primary_key: category_id
+        foreign_key: film_id
+        dependency_type: "1-N"

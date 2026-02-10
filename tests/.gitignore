@@ -1,0 +1,26 @@
+# Environment files with sensitive data
+.env
+
+# Config files with credentials (use .template files instead)
+configs/*.yaml
+!configs/*.template
+
+# Sakila database (downloaded during setup)
+sakila-db/
+
+# Test results
+results/*.log
+results/*.txt
+
+# macOS
+.DS_Store
+
+# Go
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/

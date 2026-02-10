@@ -1,0 +1,52 @@
+services:
+  db1:
+    container_name: db1
+    hostname: db1.local
+    image: percona/percona-server:8.4.4-4.1-arm64
+    cap_add:
+      - SYS_NICE
+    ports:
+      - 3305:3306
+      - 33061:33060
+    volumes:
+      - ./docker_files/dbdata/data_01:/var/lib/mysql
+      - ./docker_files/my.cnf.d/db1.cnf:/etc/my.cnf.d/docker.cnf
+    env_file: .env
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=testdb
+    restart: unless-stopped
+
+  db2:
+    container_name: db2
+    hostname: db2.local
+    image: percona/percona-server:8.4.4-4.1-arm64
+    cap_add:
+      - SYS_NICE
+    ports:
+      - 3307:3306
+      - 33062:33060
+    volumes:
+      - ./docker_files/dbdata/data_02:/var/lib/mysql
+      - ./docker_files/my.cnf.d/db2.cnf:/etc/my.cnf.d/docker.cnf
+    env_file: .env
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    restart: unless-stopped
+
+  db3:
+    container_name: db3
+    hostname: db3.local
+    image: percona/percona-server:8.4.4-4.1-arm64
+    cap_add:
+      - SYS_NICE
+    ports:
+      - 3308:3306
+      - 33063:33060
+    volumes:
+      - ./docker_files/dbdata/data_03:/var/lib/mysql
+      - ./docker_files/my.cnf.d/db3.cnf:/etc/my.cnf.d/docker.cnf
+    env_file: .env
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    restart: unless-stopped

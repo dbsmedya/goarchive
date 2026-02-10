@@ -1,0 +1,57 @@
+# Test 05: 1-N Three Nested Levels with 1-1 Complexity
+# Tests the most complex scenario with deep nesting and mixed relationship types
+# Path 1 (3-level nested): Country → City → Address → Customer
+# Path 2 (1-1 extension): Film → Film_Text
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  # Job 1: Complex nested geographic hierarchy
+  archive-country-hierarchy:
+    root_table: country
+    primary_key: country_id
+    # Archive specific countries
+    where: "country_id IN (8, 20, 44, 50)"
+    relations:
+      # Level 1: Country → City
+      - table: city
+        primary_key: city_id
+        foreign_key: country_id
+        dependency_type: "1-N"
+        relations:
+          # Level 2: City → Address
+          - table: address
+            primary_key: address_id
+            foreign_key: city_id
+            dependency_type: "1-N"
+            relations:
+              # Level 3: Address → Customer
+              - table: customer
+                primary_key: customer_id
+                foreign_key: address_id
+                dependency_type: "1-N"
+  
+  # Job 2: Film with 1-1 extension
+  archive-film-with-text:
+    root_table: film
+    primary_key: film_id
+    # Archive first 30 films
+    where: "film_id <= 30"
+    relations:
+      # 1-1 relationship: film_text
+      - table: film_text
+        primary_key: film_id
+        foreign_key: film_id
+        dependency_type: "1-1"

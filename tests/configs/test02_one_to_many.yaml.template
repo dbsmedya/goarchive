@@ -1,0 +1,30 @@
+# Test 02: 1-N Relationship (Single Child)
+# Tests archiving a one-to-many relationship where one parent has multiple children
+# Language → Film: One language can have many films
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-language-with-films:
+    root_table: language
+    primary_key: language_id
+    # Archive English and Italian (language_id 1 and 2)
+    where: "language_id IN (1, 2)"
+    relations:
+      # 1-N relationship: language has many films
+      - table: film
+        primary_key: film_id
+        foreign_key: language_id
+        dependency_type: "1-N"

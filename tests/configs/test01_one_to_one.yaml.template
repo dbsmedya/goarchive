@@ -1,0 +1,30 @@
+# Test 01: 1-1 Relationship
+# Tests archiving a simple one-to-one relationship between film and film_text
+# Both tables share the same primary key (film_id)
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-film-with-text:
+    root_table: film
+    primary_key: film_id
+    # Archive only first 50 films to limit test scope
+    where: "film_id <= 50"
+    relations:
+      # 1-1 relationship: film_text extends film
+      - table: film_text
+        primary_key: film_id
+        foreign_key: film_id
+        dependency_type: "1-1"

@@ -1,0 +1,64 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+mysql-archiver
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.txt
+
+# Dependency directories
+vendor/
+docs/
+
+# agents
+.gemini
+.claude
+.ayder
+.product
+.agents
+
+
+# Go workspace file
+go.work
+
+# Environment files (contain passwords/secrets)
+.env
+*.env
+!.env.example
+!.env.template
+!dot.env
+
+# Docker data volumes (contain MySQL data and certificates)
+docker_files/db_data
+tests/docker_files/
+
+# Test results and logs
+results/
+tests/results/
+*.log
+
+# Downloaded test data (Sakila database)
+sakila-db/
+tests/sakila-db/
+
+# Temporary dump directories
+/tmp/db*_schema_dump/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db

@@ -1,0 +1,83 @@
+# GoArchive Configuration Example
+# Copy this file to archiver.yaml and customize for your environment
+
+# Source database (production - data to archive)
+source:
+  host: ${SOURCE_DB_HOST}
+  port: 3306
+  user: ${SOURCE_DB_USER}
+  password: ${SOURCE_DB_PASSWORD}
+  database: ${SOURCE_DB_NAME}
+  tls: preferred  # disable, preferred, required
+  max_connections: 10
+  max_idle_connections: 5
+
+# Destination database (archive storage)
+destination:
+  host: ${DEST_DB_HOST}
+  port: 3306
+  user: ${DEST_DB_USER}
+  password: ${DEST_DB_PASSWORD}
+  database: ${DEST_DB_NAME}
+  tls: preferred
+  max_connections: 10
+  max_idle_connections: 5
+
+# Replica database (optional - for replication lag monitoring)
+replica:
+  enabled: false
+  host: ${REPLICA_DB_HOST}
+  port: 3306
+  user: ${REPLICA_DB_USER}
+  password: ${REPLICA_DB_PASSWORD}
+
+# Archive jobs configuration
+jobs:
+  archive_old_orders:
+    root_table: orders
+    primary_key: id
+    # Archive orders older than 2 years
+    where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
+
+    # Related tables (children discovered via BFS)
+    relations:
+      - table: order_items
+        primary_key: id
+        foreign_key: order_id
+        dependency_type: "1-N"
+      - table: order_payments
+        primary_key: id
+        foreign_key: order_id
+        dependency_type: "1-N"
+      - table: shipments
+        primary_key: id
+        foreign_key: order_id
+        dependency_type: "1-1"
+        relations:
+          - table: shipment_items
+            primary_key: id
+            foreign_key: shipment_id
+            dependency_type: "1-N"
+
+# Processing settings
+processing:
+  batch_size: 1000           # Root IDs per batch
+  batch_delete_size: 500     # Rows per DELETE statement
+  sleep_seconds: 1           # Pause between batches
+
+# Safety settings
+safety:
+  lag_threshold: 10          # Max replication lag (seconds)
+  check_interval: 5          # Lag check frequency (seconds)
+  disable_foreign_key_checks: false
+
+# Verification settings
+verification:
+  method: count              # count or sha256
+  skip_verification: false
+
+# Logging settings
+logging:
+  level: info                # debug, info, warn, error
+  format: json               # json or text
+  output: stdout             # stdout, stderr, or file path

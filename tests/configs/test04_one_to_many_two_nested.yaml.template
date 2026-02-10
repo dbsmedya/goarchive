@@ -1,0 +1,36 @@
+# Test 04: 1-N Two Nested Levels
+# Tests archiving a two-level nested hierarchy
+# Country → City → Address
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-country-with-cities-and-addresses:
+    root_table: country
+    primary_key: country_id
+    # Archive Australia (country_id 8) and Canada (country_id 20)
+    where: "country_id IN (8, 20)"
+    relations:
+      # Level 1: Country has many Cities
+      - table: city
+        primary_key: city_id
+        foreign_key: country_id
+        dependency_type: "1-N"
+        relations:
+          # Level 2: City has many Addresses
+          - table: address
+            primary_key: address_id
+            foreign_key: city_id
+            dependency_type: "1-N"
