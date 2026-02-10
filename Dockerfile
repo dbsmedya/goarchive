@@ -1,14 +1,20 @@
 # Build stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
 # Install build dependencies
-RUN apk add --no-cache git
+RUN apk add --no-cache git ca-certificates
 
-# Copy go mod files
+# Set Go environment for reliable module downloads
+ENV GOPROXY=https://proxy.golang.org,direct
+ENV GOSUMDB=sum.golang.org
+
+# Copy go mod files first for better layer caching
 COPY go.mod go.sum ./
-RUN go mod download
+
+# Download dependencies with retry logic
+RUN go mod download && go mod verify
 
 # Copy source code
 COPY . .
@@ -25,7 +31,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
     -o mysql-archiver ./cmd/mysql-archiver
 
 # Final stage
-FROM alpine:latest
+FROM alpine:3.19
 
 RUN apk --no-cache add ca-certificates
 
