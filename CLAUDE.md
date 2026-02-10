@@ -95,22 +95,22 @@ Three MySQL 8.4 servers are available for testing. **Ask the user if connection 
 
 | Server | Host | Port | User | Password | Database |
 |--------|------|------|------|----------|----------|
-| Source | 127.0.0.1 | 3305 | root | qazokm | sakila |
-| Archive | 127.0.0.1 | 3307 | root | qazokm | (empty) |
-| Replica | 127.0.0.1 | 3308 | root | qazokm | (replication test) |
+| Source | 127.0.0.1 | 3305 | root | (see .env) | sakila |
+| Archive | 127.0.0.1 | 3307 | root | (see .env) | (empty) |
+| Replica | 127.0.0.1 | 3308 | root | (see .env) | (replication test) |
 
 ### Test Database Connection
 
 ```bash
 # Use mysqlsh for testing (not mysql client)
 # Source (has Sakila sample database)
-mysqlsh --host=127.0.0.1 --port=3305 --user=root --password=qazokm --sql -e "SHOW DATABASES;"
+mysqlsh --host=127.0.0.1 --port=3305 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW DATABASES;"
 
 # Archive (destination for archived data)
-mysqlsh --host=127.0.0.1 --port=3307 --user=root --password=qazokm --sql -e "SHOW DATABASES;"
+mysqlsh --host=127.0.0.1 --port=3307 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW DATABASES;"
 
 # Replica (for replication lag monitoring tests)
-mysqlsh --host=127.0.0.1 --port=3308 --user=root --password=qazokm --sql -e "SHOW REPLICA STATUS\G"
+mysqlsh --host=127.0.0.1 --port=3308 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW REPLICA STATUS\G"
 ```
 
 ### Sakila Schema (Source)

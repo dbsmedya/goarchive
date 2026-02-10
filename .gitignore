@@ -5,6 +5,7 @@ bin/
 *.so
 *.dylib
 mysql-archiver
+goarchive
 
 # Test binary, built with `go test -c`
 *.test
