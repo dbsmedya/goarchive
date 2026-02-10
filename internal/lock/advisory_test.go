@@ -94,7 +94,7 @@ func isLockFree(db *sql.DB, lockName string) (bool, error) {
 
 func TestNewAdvisoryLock(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := "test_constructor_lock"
 	lock := NewAdvisoryLock(db, lockName)
@@ -118,7 +118,7 @@ func TestNewAdvisoryLock(t *testing.T) {
 
 func TestNewAdvisoryLock_EmptyName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Empty lock name should still create the lock (MySQL behavior tested separately)
 	lock := NewAdvisoryLock(db, "")
@@ -137,7 +137,7 @@ func TestNewAdvisoryLock_EmptyName(t *testing.T) {
 
 func TestAdvisoryLock_AcquireLock_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -158,12 +158,12 @@ func TestAdvisoryLock_AcquireLock_Success(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
 }
 
 func TestAdvisoryLock_AcquireLock_ZeroTimeout(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -181,12 +181,12 @@ func TestAdvisoryLock_AcquireLock_ZeroTimeout(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
 }
 
 func TestAdvisoryLock_AcquireLock_AlreadyHeld(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -217,15 +217,15 @@ func TestAdvisoryLock_AcquireLock_AlreadyHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
 }
 
 func TestAdvisoryLock_AcquireLock_Timeout(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 
@@ -265,15 +265,15 @@ func TestAdvisoryLock_AcquireLock_Timeout(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db1, lockName)
+	_ = releaseLock(db1, lockName)
 }
 
 func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 
@@ -313,7 +313,7 @@ func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db1, lockName)
+	_ = releaseLock(db1, lockName)
 }
 
 // ============================================================================
@@ -322,7 +322,7 @@ func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
 
 func TestAdvisoryLock_IsHeld(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -347,12 +347,12 @@ func TestAdvisoryLock_IsHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
 }
 
 func TestAdvisoryLock_LockName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	tests := []string{
 		"simple_lock",
@@ -377,10 +377,10 @@ func TestAdvisoryLock_LockName(t *testing.T) {
 
 func TestAdvisoryLock_ConcurrentDifferentLocks(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName1 := generateUniqueLockName(t) + "_A"
 	lockName2 := generateUniqueLockName(t) + "_B"
@@ -412,13 +412,13 @@ func TestAdvisoryLock_ConcurrentDifferentLocks(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db1, lockName1)
-	releaseLock(db2, lockName2)
+	_ = releaseLock(db1, lockName1)
+	_ = releaseLock(db2, lockName2)
 }
 
 func TestAdvisoryLock_SameConnectionReentrant(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 
@@ -450,15 +450,15 @@ func TestAdvisoryLock_SameConnectionReentrant(t *testing.T) {
 	}
 
 	// Need to release twice since GET_LOCK increments the lock count on same connection
-	releaseLock(db, lockName)
-	releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
+	_ = releaseLock(db, lockName)
 
 	// Give MySQL a moment to process the release
 	time.Sleep(50 * time.Millisecond)
 
 	// Verify lock is free - use a fresh connection to check
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	free, err := isLockFree(db2, lockName)
 	if err != nil {
@@ -490,14 +490,14 @@ func TestAdvisoryLock_ReleaseOnConnectionClose(t *testing.T) {
 	}
 
 	// Close the first connection - this should release the lock
-	db1.Close()
+	_ = db1.Close()
 
 	// Give MySQL a moment to clean up
 	time.Sleep(100 * time.Millisecond)
 
 	// New connection should be able to acquire the lock
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lock2 := NewAdvisoryLock(db2, lockName)
 	acquired2, err := lock2.AcquireLock(ctx, 2)
@@ -508,7 +508,7 @@ func TestAdvisoryLock_ReleaseOnConnectionClose(t *testing.T) {
 		t.Error("Expected to acquire lock after first connection closed")
 	}
 
-	releaseLock(db2, lockName)
+	_ = releaseLock(db2, lockName)
 }
 
 // ============================================================================
@@ -517,7 +517,7 @@ func TestAdvisoryLock_ReleaseOnConnectionClose(t *testing.T) {
 
 func TestAdvisoryLock_Integration_MultipleLocksSequence(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockNames := []string{
 		generateUniqueLockName(t) + "_1",
@@ -552,13 +552,13 @@ func TestAdvisoryLock_Integration_MultipleLocksSequence(t *testing.T) {
 
 	// Release in reverse order
 	for i := len(lockNames) - 1; i >= 0; i-- {
-		releaseLock(db, lockNames[i])
+		_ = releaseLock(db, lockNames[i])
 	}
 }
 
 func TestAdvisoryLock_LockNameIsolation(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	baseName := generateUniqueLockName(t)
 
@@ -581,14 +581,14 @@ func TestAdvisoryLock_LockNameIsolation(t *testing.T) {
 	}
 
 	// Cleanup
-	releaseLock(db, baseName+"_job1")
-	releaseLock(db, baseName+"_job2")
-	releaseLock(db, baseName+"job1")
+	_ = releaseLock(db, baseName+"_job1")
+	_ = releaseLock(db, baseName+"_job2")
+	_ = releaseLock(db, baseName+"job1")
 }
 
 func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Test various lock names that MySQL accepts
 	specialNames := []string{
@@ -614,7 +614,7 @@ func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
 			t.Errorf("Expected to acquire lock with name %q", name)
 		}
 
-		releaseLock(db, lockName)
+		_ = releaseLock(db, lockName)
 	}
 }
 
@@ -624,10 +624,10 @@ func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
 
 func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	// Simulate two instances trying to run the same job
 	jobName := "archive_old_orders"
@@ -665,7 +665,7 @@ func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 	}
 
 	// Instance 1 finishes and releases the lock
-	releaseLock(db1, lockName)
+	_ = releaseLock(db1, lockName)
 
 	// Now instance 2 can acquire it
 	acquired3, err := instance2.AcquireLock(ctx, 2)
@@ -676,12 +676,12 @@ func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 		t.Error("Instance 2 should have acquired the lock after instance 1 released it")
 	}
 
-	releaseLock(db2, lockName)
+	_ = releaseLock(db2, lockName)
 }
 
 func TestAdvisoryLock_Scenario_RapidAcquireRelease(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	ctx := context.Background()
@@ -703,7 +703,7 @@ func TestAdvisoryLock_Scenario_RapidAcquireRelease(t *testing.T) {
 		}
 
 		// Release the lock
-		releaseLock(db, lockName)
+		_ = releaseLock(db, lockName)
 	}
 }
 
@@ -736,7 +736,7 @@ func TestAdvisoryLock_ClosedConnection(t *testing.T) {
 	lockName := generateUniqueLockName(t)
 
 	// Close the connection
-	db.Close()
+	_ = db.Close()
 
 	lock := NewAdvisoryLock(db, lockName)
 	ctx := context.Background()
@@ -750,7 +750,7 @@ func TestAdvisoryLock_ClosedConnection(t *testing.T) {
 
 func TestAdvisoryLock_LongLockName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// MySQL allows lock names up to 64 characters
 	longName := generateUniqueLockName(t) + "_" + string(make([]byte, 100))
@@ -765,6 +765,6 @@ func TestAdvisoryLock_LongLockName(t *testing.T) {
 	}
 
 	if acquired {
-		releaseLock(db, longName)
+		_ = releaseLock(db, longName)
 	}
 }

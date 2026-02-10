@@ -237,7 +237,11 @@ func (r *ResumeManager) LogBatchPending(ctx context.Context, jobName string, roo
 	if err != nil {
 		return fmt.Errorf("failed to prepare log insert: %w", err)
 	}
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			r.logger.Warnf("Failed to close statement: %v", err)
+		}
+	}()
 
 	// GA-P3-F4-T3: Insert pending entries for each root PK
 	for _, pk := range rootPKs {
@@ -304,7 +308,11 @@ func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]in
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pending PKs: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var pks []int64
 	for rows.Next() {
@@ -400,7 +408,11 @@ func (r *ResumeManager) GetStats(ctx context.Context, jobName string) (pending, 
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("failed to get stats: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			r.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	for rows.Next() {
 		var status LogStatus

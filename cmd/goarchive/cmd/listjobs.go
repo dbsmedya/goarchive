@@ -8,12 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// print helper functions for testability
-var (
-	printf  = fmt.Printf
-	println = fmt.Println
-)
-
 var listJobsCmd = &cobra.Command{
 	Use:   "list-jobs",
 	Short: "List all jobs defined in configuration",

@@ -14,13 +14,4 @@ var (
 	boxBorderPadding = 1
 	paddingBetweenX  = 5
 	paddingBetweenY  = 5
-	useAscii         bool
-)
-
-// Default padding and graph direction constants
-const (
-	defaultBoxBorderPadding = 1
-	defaultPaddingBetweenX  = 5
-	defaultPaddingBetweenY  = 5
-	defaultGraphDirection   = "LR"
 )

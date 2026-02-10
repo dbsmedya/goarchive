@@ -32,7 +32,7 @@ jobs:
         run: |
           VERSION=${{ steps.get_version.outputs.VERSION }}
           COMMIT=$(git rev-parse --short HEAD)
-          LDFLAGS="-X 'github.com/dbsmedya/goarchive/cmd/mysql-archiver/cmd.Version=${VERSION}' -X 'github.com/dbsmedya/goarchive/cmd/mysql-archiver/cmd.Commit=${COMMIT}' -s -w"
+          LDFLAGS="-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=${VERSION}' -X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Commit=${COMMIT}' -s -w"
           
           # Create dist directory
           mkdir -p dist
@@ -57,7 +57,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "${LDFLAGS}" \
             -o dist/${BINARY_NAME}-${VERSION}-windows-amd64.exe ./cmd/goarchive
         env:
-          BINARY_NAME: mysql-archiver
+          BINARY_NAME: goarchive
 
       - name: Create checksums
         run: |

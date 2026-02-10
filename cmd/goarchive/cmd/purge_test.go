@@ -104,3 +104,41 @@ func TestPurgeCommandSteps(t *testing.T) {
 	assert.Contains(t, doc, "Discover")
 	assert.Contains(t, doc, "Delete")
 }
+
+// ============================================================================
+// Phase 3: CLI Execution Tests
+// ============================================================================
+
+// TestPurgeCmd_Execute_InvalidJob tests execution with non-existent job name
+func TestPurgeCmd_Execute_InvalidJob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping CLI execution test in short mode")
+	}
+
+	origCfgFile := cfgFile
+	origPurgeJob := purgeJob
+	defer func() {
+		cfgFile = origCfgFile
+		purgeJob = origPurgeJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"purge", "--job", "nonexistent_job", "--config", "/tmp/nonexistent_purge_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}
+
+// TestPurgeCmd_Execute_MissingConfig tests execution when config file doesn't exist
+func TestPurgeCmd_Execute_MissingConfig(t *testing.T) {
+	origCfgFile := cfgFile
+	origPurgeJob := purgeJob
+	defer func() {
+		cfgFile = origCfgFile
+		purgeJob = origPurgeJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"purge", "--job", "test_purge", "--config", "/tmp/nonexistent_purge_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}

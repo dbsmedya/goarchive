@@ -41,7 +41,7 @@ Example:
 func init() {
 	archiveCmd.Flags().StringVarP(&archiveJob, "job", "j", "",
 		"Job name from configuration file (required)")
-	archiveCmd.MarkFlagRequired("job")
+	_ = archiveCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	archiveCmd.Flags().BoolVar(&archiveForce, "force", false,
 		"Force execution even if job lock cannot be acquired (use with caution)")
@@ -94,7 +94,11 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect to databases: %w", err)
 	}
-	defer dbManager.Close()
+	defer func() {
+		if err := dbManager.Close(); err != nil {
+			log.Errorf("Failed to close database connections: %v", err)
+		}
+	}()
 
 	// Test connections
 	if err := dbManager.Ping(ctx); err != nil {
@@ -110,7 +114,11 @@ func runArchive(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("failed to acquire job lock: %w", err)
 		}
-		defer jobLock.ReleaseLock(context.Background())
+		defer func() {
+			if _, err := jobLock.ReleaseLock(context.Background()); err != nil {
+				log.Errorf("Failed to release job lock: %v", err)
+			}
+		}()
 		log.Infow("Acquired advisory lock for job", "job", archiveJob)
 	} else {
 		log.Warnw("Skipping advisory lock acquisition (--force flag used)", "job", archiveJob)

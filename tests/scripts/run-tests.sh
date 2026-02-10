@@ -12,6 +12,8 @@
 #   -t, --test NUM      Run only specific Sakila test (1-5, requires --sakila)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
+#   --fmt               Check Go code formatting with gofmt
+#   --lint              Run golangci-lint checks
 #   -v, --verbose       Verbose output
 #   --skip-docker       Skip docker compose operations (use existing DBs)
 #
@@ -47,6 +49,8 @@ SAKILA=false
 SPECIFIC_TEST=""
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
+FMT_CHECK=false
+LINT_CHECK=false
 VERBOSE=""
 SKIP_DOCKER=false
 GO_TEST_ARGS=""
@@ -60,6 +64,47 @@ log_header() { echo -e "${BLUE}$1${NC}"; }
 log_verbose() {
     if [[ -n "$VERBOSE" ]]; then
         echo -e "${BLUE}[VERBOSE]${NC} $1"
+    fi
+}
+
+# Check Go code formatting
+run_fmt_check() {
+    log_step "Checking Go code formatting..."
+    
+    cd "$PROJECT_ROOT"
+    
+    local fmt_output
+    fmt_output=$(gofmt -l .)
+    
+    if [ -n "$fmt_output" ]; then
+        log_error "The following files are not formatted:"
+        echo "$fmt_output"
+        log_info "Run 'make fmt' or 'gofmt -w .' to fix formatting"
+        return 1
+    else
+        log_info "All Go files are properly formatted"
+        return 0
+    fi
+}
+
+# Run golangci-lint checks
+run_lint_check() {
+    log_step "Running golangci-lint..."
+    
+    cd "$PROJECT_ROOT"
+    
+    if ! command -v golangci-lint &> /dev/null; then
+        log_warn "golangci-lint is not installed"
+        log_info "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
+        return 1
+    fi
+    
+    if golangci-lint run --timeout=5m ./...; then
+        log_info "golangci-lint passed"
+        return 0
+    else
+        log_error "golangci-lint found issues"
+        return 1
     fi
 }
 
@@ -89,6 +134,8 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --sakila -t 1              # Run only Sakila test 1"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
+            echo "  $0 --fmt                      # Check Go code formatting"
+            echo "  $0 --lint                     # Run golangci-lint checks"
             exit 0
             ;;
         --setup)
@@ -109,6 +156,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --integration-only)
             INTEGRATION_ONLY=true
+            shift
+            ;;
+        --fmt)
+            FMT_CHECK=true
+            shift
+            ;;
+        --lint)
+            LINT_CHECK=true
             shift
             ;;
         -v|--verbose)
@@ -288,7 +343,31 @@ run_archive_job() {
     fi
     
     cd "$PROJECT_ROOT"
-    if ! ./bin/goarchive -config "$full_config_path" 2>&1; then
+    # Extract job name from config file (first job in the jobs section)
+    local job_name=$(grep -A 1 "^jobs:" "$full_config_path" | tail -1 | sed 's/://g' | tr -d ' ')
+    if [[ -z "$job_name" ]]; then
+        log_error "Could not extract job name from config file"
+        return 1
+    fi
+    
+    # STEP 1: Validate configuration first
+    log_info "[STEP 1/3] Validating configuration..."
+    # Use --force-triggers because Sakila database has DELETE triggers
+    if ! ./bin/goarchive validate --config "$full_config_path" --force-triggers 2>&1; then
+        log_error "Configuration validation failed - check for missing relations"
+        return 1
+    fi
+    
+    # STEP 2: Dry-run to detect issues before actual archive
+    log_info "[STEP 2/3] Running dry-run to detect potential issues..."
+    if ! ./bin/goarchive dry-run --job "$job_name" --config "$full_config_path" 2>&1; then
+        log_error "Dry-run failed - check configuration"
+        return 1
+    fi
+    
+    # STEP 3: Run actual archive
+    log_info "[STEP 3/3] Executing archive..."
+    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --skip-verify 2>&1; then
         log_error "Archive job failed"
         return 1
     fi
@@ -534,6 +613,18 @@ run_integration_tests() {
 
 # Main execution
 main() {
+    # Check formatting if requested
+    if [ "$FMT_CHECK" = true ]; then
+        run_fmt_check
+        exit $?
+    fi
+    
+    # Run linting if requested
+    if [ "$LINT_CHECK" = true ]; then
+        run_lint_check
+        exit $?
+    fi
+    
     # Setup environment if requested
     if [ "$SETUP" = true ]; then
         setup_environment
@@ -547,18 +638,24 @@ main() {
     
     # Run Go integration tests
     if [ "$INTEGRATION_ONLY" = true ]; then
+        run_fmt_check || exit 1
+        run_lint_check || exit 1
         run_integration_tests
         exit 0
     fi
     
     # Run Go unit tests
     if [ "$UNIT_ONLY" = true ]; then
+        run_fmt_check || exit 1
+        run_lint_check || exit 1
         run_unit_tests
         exit 0
     fi
     
     # Default: run all Go tests
     if [ "$SETUP" = false ]; then
+        run_fmt_check || exit 1
+        run_lint_check || exit 1
         log_step "Running all Go tests..."
         cd "$PROJECT_ROOT"
         local go_test_opts=""

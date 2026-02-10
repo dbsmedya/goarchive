@@ -86,13 +86,13 @@ func TestNew(t *testing.T) {
 				t.Error("New() returned nil logger without error")
 			}
 			if logger != nil {
-				logger.Sync()
+				_ = logger.Sync()
 			}
 		})
 	}
 
 	// Cleanup test log file
-	os.Remove("/tmp/test-log.json")
+	_ = os.Remove("/tmp/test-log.json")
 }
 
 func TestNewDefault(t *testing.T) {
@@ -103,7 +103,7 @@ func TestNewDefault(t *testing.T) {
 
 	// Should be able to log without panic
 	logger.Info("test message")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestWithJob(t *testing.T) {
@@ -120,7 +120,7 @@ func TestWithJob(t *testing.T) {
 
 	jobLogger := logger.WithJob("test-job")
 	if jobLogger == nil {
-		t.Error("WithJob() returned nil")
+		t.Fatalf("WithJob() returned nil")
 	}
 
 	if jobLogger == logger {
@@ -129,7 +129,7 @@ func TestWithJob(t *testing.T) {
 
 	// Should be able to log without panic
 	jobLogger.Info("test with job")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestWithBatch(t *testing.T) {
@@ -146,12 +146,12 @@ func TestWithBatch(t *testing.T) {
 
 	batchLogger := logger.WithBatch(42)
 	if batchLogger == nil {
-		t.Error("WithBatch() returned nil")
+		t.Fatalf("WithBatch() returned nil")
 	}
 
 	// Should be able to log without panic
 	batchLogger.Info("test with batch")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestWithTable(t *testing.T) {
@@ -168,12 +168,12 @@ func TestWithTable(t *testing.T) {
 
 	tableLogger := logger.WithTable("orders")
 	if tableLogger == nil {
-		t.Error("WithTable() returned nil")
+		t.Fatalf("WithTable() returned nil")
 	}
 
 	// Should be able to log without panic
 	tableLogger.Info("test with table")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestWithFields(t *testing.T) {
@@ -195,12 +195,12 @@ func TestWithFields(t *testing.T) {
 
 	fieldLogger := logger.WithFields(fields)
 	if fieldLogger == nil {
-		t.Error("WithFields() returned nil")
+		t.Fatalf("WithFields() returned nil")
 	}
 
 	// Should be able to log without panic
 	fieldLogger.Info("test with fields")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestChaining(t *testing.T) {
@@ -218,12 +218,12 @@ func TestChaining(t *testing.T) {
 	// Chain multiple context methods
 	chainedLogger := logger.WithJob("archive-orders").WithBatch(5).WithTable("orders")
 	if chainedLogger == nil {
-		t.Error("Chained logger is nil")
+		t.Fatalf("Chained logger is nil")
 	}
 
 	// Should be able to log without panic
 	chainedLogger.Info("test chained context")
-	logger.Sync()
+	_ = logger.Sync()
 }
 
 func TestBuildEncoder(t *testing.T) {
@@ -273,7 +273,7 @@ func TestBuildWriters(t *testing.T) {
 	}
 
 	// Cleanup
-	os.Remove(tmpFile)
+	_ = os.Remove(tmpFile)
 }
 
 func TestSync(t *testing.T) {
@@ -300,8 +300,8 @@ func TestLoggingOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	cfg := &config.LoggingConfig{
 		Level:  "info",
@@ -319,7 +319,7 @@ func TestLoggingOutput(t *testing.T) {
 	logger.Warn("test warn message")
 	logger.WithJob("test-job").Info("message with job context")
 
-	logger.Sync()
+	_ = logger.Sync()
 
 	// Read the log file
 	content, err := os.ReadFile(tmpFile.Name())

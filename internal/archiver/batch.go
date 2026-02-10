@@ -88,7 +88,7 @@ func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch root IDs from %s: %w", f.rootTable, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var ids []interface{}
 	for rows.Next() {

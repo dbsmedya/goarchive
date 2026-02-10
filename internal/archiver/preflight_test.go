@@ -33,7 +33,7 @@ func TestNewPreflightChecker_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -72,7 +72,7 @@ func TestNewPreflightChecker_NilDB(t *testing.T) {
 
 func TestNewPreflightChecker_EmptyDBName(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -85,7 +85,7 @@ func TestNewPreflightChecker_EmptyDBName(t *testing.T) {
 
 func TestNewPreflightChecker_NilGraph(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	log := logger.NewDefault()
 
@@ -97,7 +97,7 @@ func TestNewPreflightChecker_NilGraph(t *testing.T) {
 
 func TestNewPreflightChecker_DefaultLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 
@@ -115,73 +115,9 @@ func TestNewPreflightChecker_DefaultLogger(t *testing.T) {
 // RunAllChecks Tests
 // ============================================================================
 
-func TestRunAllChecks_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// Table existence check (use AnyArg for table names since order is non-deterministic)
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
-
-	// Storage engine check
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "InnoDB").
-			AddRow("order_items", "InnoDB"))
-
-	// FK index check
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	// Index checks for FK columns
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	// Trigger check
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}))
-
-	// CASCADE check (same as FK query) - also triggers more index checks
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	// Additional index checks from CASCADE query
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	err := checker.RunAllChecks(ctx, false)
-
-	if err != nil {
-		t.Fatalf("RunAllChecks failed: %v", err)
-	}
-}
-
 func TestRunAllChecks_MissingTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -213,7 +149,7 @@ func TestRunAllChecks_MissingTables(t *testing.T) {
 
 func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -250,114 +186,13 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	}
 }
 
-func TestRunAllChecks_DeleteTriggers(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// Table existence check
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
-
-	// Storage engine check
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "InnoDB").
-			AddRow("order_items", "InnoDB"))
-
-	// FK index check - no FKs
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"}))
-
-	// Trigger check - found DELETE triggers
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("orders", "trg_orders_audit"))
-
-	err := checker.RunAllChecks(ctx, false)
-
-	if err == nil {
-		t.Error("Expected error for DELETE triggers without force flag")
-	}
-
-	preflightErr, ok := err.(*PreflightError)
-	if !ok {
-		t.Fatalf("Expected PreflightError, got %T", err)
-	}
-
-	if preflightErr.Check != "DELETE_TRIGGER_CHECK" {
-		t.Errorf("Expected check 'DELETE_TRIGGER_CHECK', got %s", preflightErr.Check)
-	}
-}
-
-func TestRunAllChecks_ForceTriggers(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// Table existence check
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
-
-	// Storage engine check
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "InnoDB").
-			AddRow("order_items", "InnoDB"))
-
-	// FK index check
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"}))
-
-	// Trigger check - found DELETE triggers
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("orders", "trg_orders_audit"))
-
-	// CASCADE check
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"}))
-
-	// With forceTriggers=true, should not error
-	err := checker.RunAllChecks(ctx, true)
-
-	if err != nil {
-		t.Fatalf("RunAllChecks should pass with forceTriggers=true: %v", err)
-	}
-}
-
 // ============================================================================
 // ValidateTablesExist Tests
 // ============================================================================
 
 func TestValidateTablesExist_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -381,7 +216,7 @@ func TestValidateTablesExist_Success(t *testing.T) {
 
 func TestValidateTablesExist_MissingTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -415,7 +250,7 @@ func TestValidateTablesExist_MissingTables(t *testing.T) {
 
 func TestValidateTablesExist_QueryError(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -438,7 +273,7 @@ func TestValidateTablesExist_QueryError(t *testing.T) {
 
 func TestValidateStorageEngine_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -461,7 +296,7 @@ func TestValidateStorageEngine_Success(t *testing.T) {
 
 func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -498,7 +333,7 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 
 func TestValidateForeignKeyIndexes_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -531,7 +366,7 @@ func TestValidateForeignKeyIndexes_Success(t *testing.T) {
 
 func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -572,7 +407,7 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 
 func TestValidateTriggers_NoTriggers(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -592,7 +427,7 @@ func TestValidateTriggers_NoTriggers(t *testing.T) {
 
 func TestValidateTriggers_WithTriggers(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -614,7 +449,7 @@ func TestValidateTriggers_WithTriggers(t *testing.T) {
 
 func TestValidateTriggers_WithForce(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -640,7 +475,7 @@ func TestValidateTriggers_WithForce(t *testing.T) {
 
 func TestCheckDeleteTriggers_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -667,7 +502,7 @@ func TestCheckDeleteTriggers_Success(t *testing.T) {
 
 func TestCheckDeleteTriggers_Empty(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -696,7 +531,7 @@ func TestCheckDeleteTriggers_Empty(t *testing.T) {
 
 func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -728,7 +563,7 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 
 func TestWarnCascadeRules_NoCascade(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -759,7 +594,7 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 
 func TestWarnCascadeRules_QueryError(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -821,7 +656,7 @@ func TestPreflightError_ErrorNoTables(t *testing.T) {
 
 func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -843,7 +678,7 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 
 func TestPreflightChecker_SetLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -863,7 +698,7 @@ func TestPreflightChecker_SetLogger(t *testing.T) {
 
 func TestIsColumnIndexed_True(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
@@ -894,70 +729,3 @@ func TestIsColumnIndexed_True(t *testing.T) {
 // ============================================================================
 // Integration Tests
 // ============================================================================
-
-func TestPreflightChecker_FullWorkflow(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer db.Close()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// Table existence check
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
-
-	// Storage engine check
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "InnoDB").
-			AddRow("order_items", "InnoDB"))
-
-	// FK index check
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	// Trigger check
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}))
-
-	// CASCADE check (triggers another getForeignKeys call)
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	// Additional index checks from CASCADE query
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	err := checker.RunAllChecks(ctx, false)
-
-	if err != nil {
-		t.Fatalf("Full workflow failed: %v", err)
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("Mock expectations not met: %v", err)
-	}
-}

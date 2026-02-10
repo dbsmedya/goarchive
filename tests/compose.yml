@@ -14,7 +14,6 @@ services:
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-      - MYSQL_DATABASE=testdb
     restart: unless-stopped
 
   db2:

@@ -177,7 +177,11 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows from source: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			cp.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	// Step 2: Prepare INSERT IGNORE statement for destination
 	// GA-P3-F3-T5: INSERT IGNORE makes the operation idempotent
@@ -188,7 +192,11 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare insert statement: %w", err)
 	}
-	defer stmt.Close()
+	defer func() {
+		if err := stmt.Close(); err != nil {
+			cp.logger.Warnf("Failed to close statement: %v", err)
+		}
+	}()
 
 	// Step 3: Insert rows one by one
 	var rowsCopied int64
@@ -258,7 +266,7 @@ func (cp *CopyPhase) fetchRows(ctx context.Context, table string, pks []interfac
 	// Get column names from result set
 	columns, err := rows.Columns()
 	if err != nil {
-		rows.Close()
+		_ = rows.Close() // Ignore error during cleanup of failed operation
 		return nil, nil, fmt.Errorf("failed to get column names: %w", err)
 	}
 

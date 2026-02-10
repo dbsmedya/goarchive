@@ -47,7 +47,7 @@ Example:
 func init() {
 	planCmd.Flags().StringVarP(&planJob, "job", "j", "",
 		"Job name from configuration file (required)")
-	planCmd.MarkFlagRequired("job")
+	_ = planCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	rootCmd.AddCommand(planCmd)
 }
@@ -171,15 +171,15 @@ func runPlan(cmd *cobra.Command, args []string) error {
 func printHeader(format string, args ...interface{}) {
 	title := fmt.Sprintf(format, args...)
 	width := len(title) + 4
-	fmt.Fprintln(outputWriter, strings.Repeat("=", width))
-	fmt.Fprintf(outputWriter, "  %s\n", title)
-	fmt.Fprintln(outputWriter, strings.Repeat("=", width))
+	_, _ = fmt.Fprintln(outputWriter, strings.Repeat("=", width))
+	_, _ = fmt.Fprintf(outputWriter, "  %s\n", title)
+	_, _ = fmt.Fprintln(outputWriter, strings.Repeat("=", width))
 }
 
 // printSection prints a section header
 func printSection(title string) {
-	fmt.Fprintf(outputWriter, "[%s]\n", title)
-	fmt.Fprintln(outputWriter, strings.Repeat("-", len(title)+2))
+	_, _ = fmt.Fprintf(outputWriter, "[%s]\n", title)
+	_, _ = fmt.Fprintln(outputWriter, strings.Repeat("-", len(title)+2))
 }
 
 // printOrderItem prints a table in the copy/delete order list
@@ -187,13 +187,13 @@ func printOrderItem(num int, table string, node *graph.Node, isDelete bool) {
 	numStr := fmt.Sprintf("[%d]", num)
 
 	if node.IsRoot {
-		fmt.Fprintf(outputWriter, "  %s %s (root)\n", numStr, table)
+		_, _ = fmt.Fprintf(outputWriter, "  %s %s (root)\n", numStr, table)
 	} else {
 		arrow := "->"
 		if isDelete {
 			arrow = "<-"
 		}
-		fmt.Fprintf(outputWriter, "  %s %s | FK: %s %s %s\n",
+		_, _ = fmt.Fprintf(outputWriter, "  %s %s | FK: %s %s %s\n",
 			numStr,
 			table,
 			node.ForeignKey,
@@ -287,16 +287,16 @@ func printSideBySide(leftContent string, rightLines []string, padding int) {
 		}
 
 		// Print left content
-		fmt.Fprint(outputWriter, leftPart)
+		_, _ = fmt.Fprint(outputWriter, leftPart)
 
 		// Calculate padding needed to align right column
 		spacesNeeded := leftWidth - visualWidth(leftPart) + padding
 		if spacesNeeded > 0 {
-			fmt.Fprint(outputWriter, strings.Repeat(" ", spacesNeeded))
+			_, _ = fmt.Fprint(outputWriter, strings.Repeat(" ", spacesNeeded))
 		}
 
 		// Print right content
-		fmt.Fprintln(outputWriter, rightPart)
+		_, _ = fmt.Fprintln(outputWriter, rightPart)
 	}
 }
 
@@ -339,7 +339,7 @@ func addRelationsToMermaid(sb *strings.Builder, parentTable string, relations []
 		parentID := sanitizeNodeID(parentTable)
 
 		// Add edge from parent to child with dependency type label
-		sb.WriteString(fmt.Sprintf("    %s -->|%s| %s\n", parentID, rel.DependencyType, nodeID))
+		fmt.Fprintf(sb, "    %s -->|%s| %s\n", parentID, rel.DependencyType, nodeID)
 
 		// Recursively add children
 		if len(rel.Relations) > 0 {

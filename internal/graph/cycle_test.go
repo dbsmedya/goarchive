@@ -19,11 +19,8 @@ func TestCycleError_ImplementsErrorInterface(t *testing.T) {
 	}
 	cycleErr := &CycleError{Info: info}
 
-	// Should implement error interface
-	var err error = cycleErr
-	if err == nil {
-		t.Error("CycleError should implement error interface")
-	}
+	// Verify CycleError implements error interface (compile-time check)
+	var _ error = cycleErr
 }
 
 func TestCycleError_ErrorMessage_ContainsBasicInfo(t *testing.T) {

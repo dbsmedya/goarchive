@@ -150,22 +150,6 @@ func getEnvInt(key string, defaultVal int) int {
 	return defaultVal
 }
 
-// restoreSakilaData restores sakila rental and payment data from archive
-func restoreSakilaData(t *testing.T) {
-	// Use mysqlsh command to restore data from archive to source
-	cmd := `mysqlsh --host=127.0.0.1 --port=3305 --user=root --password=qazokm --sql << 'EOF'
-SET FOREIGN_KEY_CHECKS = 0;
-TRUNCATE TABLE sakila.rental;
-TRUNCATE TABLE sakila.payment;
-INSERT INTO sakila.rental SELECT * FROM sakila_archive.rental;
-INSERT INTO sakila.payment SELECT * FROM sakila_archive.payment;
-SET FOREIGN_KEY_CHECKS = 1;
-EOF
-`
-	_ = cmd // For now, skip the restore in test - we assume data is present
-	// In real integration tests, data should be set up before running tests
-}
-
 // ============================================================================
 // NewOrchestrator Tests
 // ============================================================================
@@ -579,7 +563,8 @@ func TestExecute_NilContext(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	_, err := orch.Execute(nil, nil)
+	// Test error handling when nil context is passed
+	_, err := orch.Execute(context.TODO(), nil)
 	if err == nil {
 		t.Error("Expected error for nil context")
 	}
@@ -587,7 +572,7 @@ func TestExecute_NilContext(t *testing.T) {
 
 func TestExecute_EmptyResult(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test
+	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
 		PrimaryKey: "rental_id",
@@ -630,7 +615,7 @@ func TestExecute_EmptyResult(t *testing.T) {
 
 func TestExecute_CheckpointCallback(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test with batch size 1 to ensure callbacks
+	// Use sample database schema for integration test with batch size 1 to ensure callbacks
 	cfg.Processing.BatchSize = 1
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -680,7 +665,7 @@ func TestExecute_CheckpointCallback(t *testing.T) {
 
 func TestExecute_CheckpointCallbackError(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test with batch size 1
+	// Use sample database schema for integration test with batch size 1
 	cfg.Processing.BatchSize = 1
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -727,7 +712,7 @@ func TestExecute_CheckpointCallbackError(t *testing.T) {
 
 func TestExecute_ContextCancellation(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test
+	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
 		PrimaryKey: "rental_id",
@@ -782,7 +767,7 @@ func TestExecute_ContextCancellation(t *testing.T) {
 
 func TestExecute_ArchiveResultStats(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test
+	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
 		PrimaryKey: "rental_id",
@@ -852,7 +837,7 @@ func TestExecute_ArchiveResultStats(t *testing.T) {
 
 func TestExecute_DurationCalculation(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test
+	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
 		PrimaryKey: "rental_id",
@@ -981,7 +966,7 @@ func TestGetJobName(t *testing.T) {
 
 func TestOrchestrator_FullWorkflow(t *testing.T) {
 	cfg := createTestConfig()
-	// Use Sakila schema for integration test
+	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
 		PrimaryKey: "rental_id",

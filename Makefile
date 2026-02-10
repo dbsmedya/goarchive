@@ -90,7 +90,7 @@ dev:
 # Format code
 .PHONY: fmt
 fmt:
-	go fmt ./...
+	gofmt -w .
 
 # Run linter (requires golangci-lint)
 .PHONY: lint
@@ -102,21 +102,94 @@ lint:
 vulncheck:
 	govulncheck ./...
 
+# Integration test configuration
+INTEGRATION_CONFIG_DIR := internal/archiver
+INTEGRATION_CONFIG_TEMPLATE := $(INTEGRATION_CONFIG_DIR)/integration_test.yaml
+
+# Create integration test configuration interactively
+.PHONY: integration-config
+integration-config:
+	@echo "Setting up integration test configuration..."
+	@echo ""
+	@if [ -f "$(INTEGRATION_CONFIG_DIR)/integration_test.yaml" ]; then \
+		echo "Configuration file already exists: $(INTEGRATION_CONFIG_DIR)/integration_test.yaml"; \
+		echo "Edit this file to update your credentials."; \
+		echo ""; \
+	else \
+		cp $(INTEGRATION_CONFIG_TEMPLATE) $(INTEGRATION_CONFIG_DIR)/integration_test.yaml; \
+		echo "Created: $(INTEGRATION_CONFIG_DIR)/integration_test.yaml"; \
+		echo ""; \
+	fi
+	@echo "Please edit the configuration file and set your database credentials."
+	@echo ""
+	@echo "Example configuration:"
+	@echo "  Source:      127.0.0.1:3305 (requires Docker: make test-up)"
+	@echo "  Destination: 127.0.0.1:3307 (requires Docker: make test-up)"
+	@echo ""
+	@echo "You can also set credentials via environment variable:"
+	@echo "  export MYSQL_ROOT_PASSWORD=your_password"
+	@echo ""
+	@echo "Then run integration tests:"
+	@echo "  INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/..."
+
+# Run integration tests
+.PHONY: test-integration
+test-integration: integration-config
+	@echo "Running integration tests..."
+	@if [ -z "$(MYSQL_ROOT_PASSWORD)" ]; then \
+		echo "WARNING: MYSQL_ROOT_PASSWORD not set. Using value from integration_test.yaml"; \
+		echo "Set it with: export MYSQL_ROOT_PASSWORD=your_password"; \
+		echo ""; \
+	fi
+	INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+
+# Start test databases (Docker)
+.PHONY: test-up
+test-up:
+	@echo "Starting test databases with Docker..."
+	cd tests && docker compose up -d
+	@echo ""
+	@echo "Test databases starting up. Wait a few seconds for them to be ready."
+	@echo "Run 'make test-integration' to run the integration tests."
+
+# Stop test databases
+.PHONY: test-down
+test-down:
+	@echo "Stopping test databases..."
+	cd tests && docker compose down
+
+# Show test database status
+.PHONY: test-status
+test-status:
+	@echo "Test database status:"
+	@cd tests && docker compose ps
+
 # Help target
 .PHONY: help
 help:
 	@echo "MySQL Archiver - Build Targets"
 	@echo ""
-	@echo "  make build       - Build binary with version info (bin/goarchive)"
-	@echo "  make install     - Install to \$$GOPATH/bin"
-	@echo "  make dev         - Quick dev build (no version injection)"
-	@echo "  make test        - Run all tests"
-	@echo "  make test-unit   - Run unit tests only (fast)"
-	@echo "  make release     - Build binaries for all platforms"
-	@echo "  make clean       - Remove build artifacts"
-	@echo "  make version     - Show current version settings"
-	@echo "  make fmt         - Format Go code"
-	@echo "  make lint        - Run linter"
-	@echo "  make help        - Show this help"
+	@echo "  make build              - Build binary with version info (bin/goarchive)"
+	@echo "  make install            - Install to \$$GOPATH/bin"
+	@echo "  make dev                - Quick dev build (no version injection)"
+	@echo "  make test               - Run all tests"
+	@echo "  make test-unit          - Run unit tests only (fast)"
+	@echo "  make test-integration   - Run integration tests (requires config + databases)"
+	@echo "  make integration-config - Create/edit integration test configuration"
+	@echo "  make test-up            - Start test databases (Docker)"
+	@echo "  make test-down          - Stop test databases"
+	@echo "  make test-status        - Show test database status"
+	@echo "  make release            - Build binaries for all platforms"
+	@echo "  make clean              - Remove build artifacts"
+	@echo "  make version            - Show current version settings"
+	@echo "  make fmt                - Format Go code"
+	@echo "  make lint               - Run linter"
+	@echo "  make help               - Show this help"
+	@echo ""
+	@echo "Integration Test Quick Start:"
+	@echo "  1. make integration-config  (set your credentials)"
+	@echo "  2. make test-up             (start Docker databases)"
+	@echo "  3. make test-integration    (run tests)"
+	@echo "  4. make test-down           (stop databases when done)"
 	@echo ""
 	@echo "Current version: $(VERSION) ($(COMMIT))"

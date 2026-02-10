@@ -109,7 +109,7 @@ func buildWriters(output string) zapcore.WriteSyncer {
 // WithJob returns a Logger with job context.
 func (l *Logger) WithJob(jobName string) *Logger {
 	return &Logger{
-		SugaredLogger: l.SugaredLogger.With("job", jobName),
+		SugaredLogger: l.With("job", jobName),
 		base:          l.base,
 	}
 }
@@ -117,7 +117,7 @@ func (l *Logger) WithJob(jobName string) *Logger {
 // WithBatch returns a Logger with batch context.
 func (l *Logger) WithBatch(batchNum int) *Logger {
 	return &Logger{
-		SugaredLogger: l.SugaredLogger.With("batch", batchNum),
+		SugaredLogger: l.With("batch", batchNum),
 		base:          l.base,
 	}
 }
@@ -125,7 +125,7 @@ func (l *Logger) WithBatch(batchNum int) *Logger {
 // WithTable returns a Logger with table context.
 func (l *Logger) WithTable(tableName string) *Logger {
 	return &Logger{
-		SugaredLogger: l.SugaredLogger.With("table", tableName),
+		SugaredLogger: l.With("table", tableName),
 		base:          l.base,
 	}
 }
@@ -137,7 +137,7 @@ func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
 		args = append(args, k, v)
 	}
 	return &Logger{
-		SugaredLogger: l.SugaredLogger.With(args...),
+		SugaredLogger: l.With(args...),
 		base:          l.base,
 	}
 }

@@ -257,7 +257,7 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 		for rows.Next() {
 			var pk interface{}
 			if err := rows.Scan(&pk); err != nil {
-				rows.Close()
+				_ = rows.Close() // Ignore error during cleanup of failed operation
 				return nil, fmt.Errorf("failed to scan %s PK: %w", childTable, err)
 			}
 
@@ -271,10 +271,10 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 		}
 
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close() // Ignore error during cleanup of failed operation
 			return nil, fmt.Errorf("error iterating %s results: %w", childTable, err)
 		}
-		rows.Close()
+		_ = rows.Close() // Ignore error during cleanup of failed operation
 	}
 
 	return allChildPKs, nil

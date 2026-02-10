@@ -58,7 +58,7 @@ func TestNewDeletePhase_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -97,7 +97,7 @@ func TestNewDeletePhase_NilDB(t *testing.T) {
 
 func TestNewDeletePhase_NilGraph(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	log := logger.NewDefault()
 
@@ -109,7 +109,7 @@ func TestNewDeletePhase_NilGraph(t *testing.T) {
 
 func TestNewDeletePhase_DefaultBatchSize(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -126,7 +126,7 @@ func TestNewDeletePhase_DefaultBatchSize(t *testing.T) {
 
 func TestNewDeletePhase_DefaultLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 
@@ -146,7 +146,7 @@ func TestNewDeletePhase_DefaultLogger(t *testing.T) {
 
 func TestDelete_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -212,7 +212,7 @@ func TestDelete_Success(t *testing.T) {
 
 func TestDelete_EmptyRecordSet(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -241,7 +241,7 @@ func TestDelete_EmptyRecordSet(t *testing.T) {
 
 func TestDelete_SkipsEmptyTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -283,7 +283,7 @@ func TestDelete_SkipsEmptyTables(t *testing.T) {
 
 func TestDelete_BatchProcessing(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -338,7 +338,7 @@ func TestDelete_BatchProcessing(t *testing.T) {
 
 func TestDelete_QueryError(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -361,7 +361,7 @@ func TestDelete_QueryError(t *testing.T) {
 
 func TestDelete_PartialDelete(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -393,7 +393,7 @@ func TestDelete_PartialDelete(t *testing.T) {
 
 func TestDelete_ZeroRowsDeleted(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -429,7 +429,7 @@ func TestDelete_ZeroRowsDeleted(t *testing.T) {
 
 func TestDelete_ContextCancellation(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -450,7 +450,7 @@ func TestDelete_ContextCancellation(t *testing.T) {
 
 func TestDelete_ContextTimeout(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -488,7 +488,7 @@ func TestDelete_ContextTimeout(t *testing.T) {
 
 func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeepDeleteGraph() // A -> B -> C -> D
 	log := logger.NewDefault()
@@ -547,7 +547,7 @@ func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 
 func TestDeletePhase_SetBatchSize(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -572,7 +572,7 @@ func TestDeletePhase_SetBatchSize(t *testing.T) {
 
 func TestDeletePhase_GetGraph(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -585,7 +585,7 @@ func TestDeletePhase_GetGraph(t *testing.T) {
 
 func TestDeletePhase_SetLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -605,7 +605,7 @@ func TestDeletePhase_SetLogger(t *testing.T) {
 
 func TestDeleteStats_Populated(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -642,7 +642,7 @@ func TestDeleteStats_Populated(t *testing.T) {
 
 func TestDelete_RowsAffectedError(t *testing.T) {
 	db, mock, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createDeleteTestGraph()
 	log := logger.NewDefault()
@@ -674,7 +674,7 @@ func TestDelete_DeleteOrderError(t *testing.T) {
 	// but we'll test the error path
 
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Create a graph that will fail during delete order
 	g := graph.NewGraph("A", "id")

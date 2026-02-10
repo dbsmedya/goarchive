@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var validateForceTriggers bool
+
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate configuration and run preflight checks",
@@ -23,6 +25,7 @@ Checks performed:
   - Database connectivity (source, destination, replica)
   - Table existence and InnoDB engine
   - Foreign key index verification
+  - Foreign key coverage (all FK constraints must be covered by relations)
   - DELETE trigger detection
   - CASCADE rule warnings
 
@@ -33,6 +36,7 @@ Example:
 
 func init() {
 	rootCmd.AddCommand(validateCmd)
+	validateCmd.Flags().BoolVar(&validateForceTriggers, "force-triggers", false, "Allow DELETE triggers (triggers will fire during delete)")
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
@@ -68,7 +72,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect to databases: %w", err)
 	}
-	defer dbManager.Close()
+	defer func() {
+		if err := dbManager.Close(); err != nil {
+			log.Errorf("Failed to close database connections: %v", err)
+		}
+	}()
 
 	// Test connections
 	if err := dbManager.Ping(ctx); err != nil {
@@ -118,8 +126,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 
 		// Run all checks
-		forceTriggers := false // Can be extended with CLI flag if needed
-		if err := checker.RunAllChecks(ctx, forceTriggers); err != nil {
+		if err := checker.RunAllChecks(ctx, validateForceTriggers); err != nil {
 			fmt.Printf("❌ Preflight checks failed: %v\n\n", err)
 			hasErrors = true
 			continue

@@ -166,7 +166,7 @@ func TestGetChildren(t *testing.T) {
 
 	// Check non-existent parent returns nil/empty
 	noChildren := g.GetChildren("nonexistent")
-	if noChildren != nil && len(noChildren) > 0 {
+	if len(noChildren) > 0 {
 		t.Error("non-existent parent should return empty children")
 	}
 }
@@ -402,12 +402,12 @@ func TestEmptyGraphOperations(t *testing.T) {
 
 	// Operations on empty graph should not panic
 	children := g.GetChildren("nonexistent")
-	if children != nil && len(children) > 0 {
+	if len(children) > 0 {
 		t.Error("GetChildren on non-existent node should return empty")
 	}
 
 	parents := g.GetParents("nonexistent")
-	if parents != nil && len(parents) > 0 {
+	if len(parents) > 0 {
 		t.Error("GetParents on non-existent node should return empty")
 	}
 

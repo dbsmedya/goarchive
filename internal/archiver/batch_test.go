@@ -9,6 +9,7 @@ import (
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
@@ -16,7 +17,7 @@ func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an error '%s' was not expected when opening a stub database connection", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	tests := []struct {
 		name        string
@@ -154,7 +155,7 @@ func TestRootIDFetcher_GetCheckpoint(t *testing.T) {
 func TestRootIDFetcher_NilCheckpointDefaultsToZero(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2)
 	mock.ExpectQuery("SELECT `id` FROM `users` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -172,7 +173,7 @@ func TestRootIDFetcher_NilCheckpointDefaultsToZero(t *testing.T) {
 func TestBatchProcessor_ProcessBatch_Success(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).
 		AddRow(1).
@@ -206,7 +207,7 @@ func TestBatchProcessor_ProcessBatch_Success(t *testing.T) {
 func TestBatchProcessor_ProcessBatch_EmptyBatch(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"})
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -234,7 +235,7 @@ func TestBatchProcessor_ProcessBatch_EmptyBatch(t *testing.T) {
 func TestBatchProcessor_ProcessBatch_HandlerError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -259,7 +260,7 @@ func TestBatchProcessor_ProcessBatch_HandlerError(t *testing.T) {
 func TestBatchProcessor_ProcessBatch_FetchError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
 		WithArgs(0, 10).
@@ -302,7 +303,7 @@ func TestBatchProcessor_ProcessBatch_ContextCancelled(t *testing.T) {
 func TestBatchProcessor_Run_CompletesAllBatches(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows1 := sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2)
 	rows2 := sqlmock.NewRows([]string{"id"}).AddRow(3)
@@ -339,7 +340,7 @@ func TestBatchProcessor_Run_CompletesAllBatches(t *testing.T) {
 func TestBatchProcessor_Run_GracefulShutdown(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2)
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -370,7 +371,7 @@ func TestBatchProcessor_Run_GracefulShutdown(t *testing.T) {
 func TestBatchProcessor_Run_HandlerErrorStopsProcessing(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).AddRow(1)
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -395,7 +396,7 @@ func TestBatchProcessor_Run_HandlerErrorStopsProcessing(t *testing.T) {
 func TestBatchProcessor_GetStats(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows := sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2)
 	mock.ExpectQuery("SELECT `id` FROM `orders` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
@@ -414,7 +415,8 @@ func TestBatchProcessor_GetStats(t *testing.T) {
 		return nil
 	}
 
-	processor.ProcessBatch(context.Background(), handler)
+	_, err = processor.ProcessBatch(context.Background(), handler)
+	require.NoError(t, err)
 
 	batchCount, totalProcessed = processor.GetStats()
 	assert.Equal(t, 1, batchCount)

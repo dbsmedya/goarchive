@@ -347,26 +347,132 @@ Advisory Locks is to prevent two archiver instances from clashing on the same jo
 
 ## Testing
 
-GoArchive includes comprehensive tests including unit tests and integration tests using the Sakila sample database.
+GoArchive includes comprehensive tests including unit tests and integration tests.
 
 ### Quick Start
 
 ```bash
-# Run all tests (unit + integration)
+# Run only unit tests (fast, no database required)
+go test -short ./...
+
+# Run all tests (requires database setup)
+make test-integration
+```
+
+### Integration Tests
+
+Integration tests require two MySQL databases (source and destination). You can use Docker for local testing or point to existing test databases.
+
+#### Prerequisites
+
+**Option 1: Using Docker (Recommended for local development)**
+
+```bash
+# Start test databases
+make test-up
+
+# Verify databases are running
+make test-status
+```
+
+**Option 2: Using existing databases**
+
+Configure the integration test to use your existing MySQL instances (see Configuration below).
+
+#### Configuration
+
+Integration tests require database credentials. You have three options:
+
+**Option A: Environment Variable (Quickest)**
+```bash
+export MYSQL_ROOT_PASSWORD=your_password
+INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+```
+
+**Option B: Using Makefile**
+```bash
+export MYSQL_ROOT_PASSWORD=your_password
+make test-integration
+```
+
+**Option C: Custom Config File**
+```bash
+# Create your own config file
+cp internal/archiver/integration_test.yaml /path/to/my-config.yaml
+# Edit with your credentials
+export INTEGRATION_CONFIG=/path/to/my-config.yaml
+INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+```
+
+#### Configuration File Format
+
+Create `internal/archiver/integration_test.yaml`:
+
+```yaml
+databases:
+  - name: source
+    host: 127.0.0.1
+    port: 3305
+    user: root
+    password: your_password_here  # Required!
+    database: goarchive_test
+
+  - name: destination
+    host: 127.0.0.1
+    port: 3307
+    user: root
+    password: your_password_here  # Required!
+    database: goarchive_test
+
+force: false  # Set to true to drop/recreate databases
+fixture_path: testdata/customer_orders.sql
+```
+
+#### Running Tests
+
+```bash
+# Run all integration tests
+make test-integration
+
+# Run specific integration test
+MYSQL_ROOT_PASSWORD=your_password go test -v \
+  -run TestOrchestrator_FullArchiveCycle_Integration \
+  ./internal/archiver/...
+
+# Force database recreation (clean slate)
+INTEGRATION_FORCE=true MYSQL_ROOT_PASSWORD=your_password \
+  go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+
+# Stop test databases when done
+make test-down
+```
+
+#### Available Integration Tests
+
+| Test | Description |
+|------|-------------|
+| `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
+| `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
+| `TestOrchestrator_ReplicationLagPause_Integration` | Lag monitoring behavior |
+| `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
+| `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown handling |
+| `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
+| `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
+
+### E2E Tests with Sakila
+
+For comprehensive end-to-end testing with the Sakila sample database:
+
+```bash
 cd tests
 ./scripts/run-tests.sh --setup --sakila
-
-# Run only unit tests
-go test -short ./...
 ```
 
 ### Test Documentation
 
 See [tests/README.md](tests/README.md) for detailed testing documentation including:
-- Test environment setup with Docker
-- Running unit and integration tests  
-- Manual testing workflow
 - Sakila E2E test cases
+- Manual testing workflow
 - Troubleshooting guide
 
 ## Configuration Reference

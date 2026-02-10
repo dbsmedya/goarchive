@@ -129,7 +129,7 @@ func TestGenerateJobLockName_Consistency(t *testing.T) {
 
 func TestNewJobLock(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	jobName := "test_archive_job"
 	lock := NewJobLock(db, jobName)
@@ -154,7 +154,7 @@ func TestNewJobLock(t *testing.T) {
 
 func TestNewJobLock_EmptyJobName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lock := NewJobLock(db, "")
 	if lock == nil {
@@ -169,7 +169,7 @@ func TestNewJobLock_EmptyJobName(t *testing.T) {
 
 func TestNewJobLock_SanitizedName(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Job name with special characters that get sanitized
 	jobName := "my.job@name"
@@ -187,7 +187,7 @@ func TestNewJobLock_SanitizedName(t *testing.T) {
 
 func TestIsJobRunning_NotRunning(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_not_running"
@@ -204,10 +204,10 @@ func TestIsJobRunning_NotRunning(t *testing.T) {
 
 func TestIsJobRunning_ActuallyRunning(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_running"
@@ -233,12 +233,12 @@ func TestIsJobRunning_ActuallyRunning(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestIsJobRunning_DoesNotLeaveLock(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_check_cleanup"
@@ -265,7 +265,7 @@ func TestIsJobRunning_DoesNotLeaveLock(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -274,7 +274,7 @@ func TestIsJobRunning_DoesNotLeaveLock(t *testing.T) {
 
 func TestWithLock_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -308,12 +308,12 @@ func TestWithLock_Success(t *testing.T) {
 	if !acquired {
 		t.Error("Lock should be available after WithLock")
 	}
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 func TestWithLock_ErrorReturn(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -343,12 +343,12 @@ func TestWithLock_ErrorReturn(t *testing.T) {
 	if !acquired {
 		t.Error("Lock should be available after error return")
 	}
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 func TestWithLock_PanicRecovery(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -362,7 +362,7 @@ func TestWithLock_PanicRecovery(t *testing.T) {
 				panicOccurred = true
 			}
 		}()
-		lock.WithLock(ctx, 5, func() error {
+		_ = lock.WithLock(ctx, 5, func() error {
 			panic("intentional panic")
 		})
 	}()
@@ -385,15 +385,15 @@ func TestWithLock_PanicRecovery(t *testing.T) {
 	if !acquired {
 		t.Error("Lock should be available after panic recovery")
 	}
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 func TestWithLock_Timeout(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 
@@ -436,12 +436,12 @@ func TestWithLock_Timeout(t *testing.T) {
 	}
 
 	// Cleanup
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestWithLock_AcquireError(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -471,7 +471,7 @@ func TestWithLock_AcquireError(t *testing.T) {
 
 func TestWithJobLock_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_job"
@@ -493,10 +493,10 @@ func TestWithJobLock_Success(t *testing.T) {
 
 func TestWithJobLock_DuplicateJob(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_duplicate"
@@ -531,12 +531,12 @@ func TestWithJobLock_DuplicateJob(t *testing.T) {
 	}
 
 	// Cleanup
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestWithJobLock_ErrorPropagation(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_error"
@@ -561,7 +561,7 @@ func TestWithJobLock_ErrorPropagation(t *testing.T) {
 
 func TestJobLock_FullWorkflow(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName := generateUniqueLockName(t) + "_workflow"
@@ -582,7 +582,7 @@ func TestJobLock_FullWorkflow(t *testing.T) {
 
 		// While job is running, check again (should be true from another connection)
 		db2 := connectToTestDB(t)
-		defer db2.Close()
+		defer func() { _ = db2.Close() }()
 
 		running2, _ := IsJobRunning(ctx, db2, jobName)
 		if !running2 {
@@ -612,7 +612,7 @@ func TestJobLock_FullWorkflow(t *testing.T) {
 
 func TestJobLock_ConcurrentJobs(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
 	jobName1 := generateUniqueLockName(t) + "_job1"

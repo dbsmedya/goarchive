@@ -1,0 +1,40 @@
+# Integration Test Configuration Template
+# 
+# IMPORTANT: This is a template file. You must configure the credentials below
+# before running integration tests. Copy this file and fill in your values, or
+# use the Makefile target: make integration-config
+#
+# The integration tests require two MySQL databases (source and destination).
+# These can be:
+#   - Local Docker containers (see tests/compose.yml)
+#   - Remote test databases
+#   - Any MySQL-compatible databases
+
+# List of databases used in integration tests
+databases:
+  - name: source
+    host: 127.0.0.1
+    port: 3305
+    user: root
+    # REQUIRED: Set your database password
+    # Can also use MYSQL_ROOT_PASSWORD environment variable
+    password: ${MYSQL_ROOT_PASSWORD}
+    # Database will be created automatically if it doesn't exist
+    database: goarchive_test
+
+  - name: destination
+    host: 127.0.0.1
+    port: 3307
+    user: root
+    # REQUIRED: Set your database password
+    # Can also use MYSQL_ROOT_PASSWORD environment variable
+    password: ${MYSQL_ROOT_PASSWORD}
+    # Database will be created automatically if it doesn't exist
+    database: goarchive_test
+
+# Set to true to drop and recreate databases on each test run
+# Can also be set via INTEGRATION_FORCE=true environment variable
+force: false
+
+# Path to SQL fixture file (relative to this file)
+fixture_path: testdata/customer_orders.sql

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -431,7 +430,40 @@ func TestPrintSideBySide(t *testing.T) {
 	}
 }
 
-// Helper function for test
-func stringsCount(s, substr string) int {
-	return strings.Count(s, substr)
+// ============================================================================
+// Phase 3: CLI Execution Tests
+// ============================================================================
+
+// TestPlanCmd_Execute_MissingConfig tests plan generation when config doesn't exist
+func TestPlanCmd_Execute_MissingConfig(t *testing.T) {
+	origCfgFile := cfgFile
+	origPlanJob := planJob
+	defer func() {
+		cfgFile = origCfgFile
+		planJob = origPlanJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"plan", "--job", "test_job", "--config", "/tmp/nonexistent_plan_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}
+
+// TestPlanCmd_Execute_InvalidJob tests plan generation with non-existent job
+func TestPlanCmd_Execute_InvalidJob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping CLI execution test in short mode")
+	}
+
+	origCfgFile := cfgFile
+	origPlanJob := planJob
+	defer func() {
+		cfgFile = origCfgFile
+		planJob = origPlanJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"plan", "--job", "nonexistent_job", "--config", "/tmp/nonexistent_plan_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
 }

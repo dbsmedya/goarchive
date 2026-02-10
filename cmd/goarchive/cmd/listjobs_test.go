@@ -170,3 +170,20 @@ func TestListJobsIsAddedToRoot(t *testing.T) {
 	}
 	assert.True(t, found, "list-jobs command should be added to root command")
 }
+
+// ============================================================================
+// Phase 3: CLI Execution Tests
+// ============================================================================
+
+// TestListjobsCmd_Execute_MissingConfig tests listing jobs when config doesn't exist
+func TestListjobsCmd_Execute_MissingConfig(t *testing.T) {
+	origCfgFile := cfgFile
+	defer func() {
+		cfgFile = origCfgFile
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"list-jobs", "--config", "/tmp/nonexistent_listjobs_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}

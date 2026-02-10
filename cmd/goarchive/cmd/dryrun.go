@@ -33,7 +33,7 @@ Example:
 func init() {
 	dryrunCmd.Flags().StringVarP(&dryrunJob, "job", "j", "",
 		"Job name from configuration file (required)")
-	dryrunCmd.MarkFlagRequired("job")
+	_ = dryrunCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	rootCmd.AddCommand(dryrunCmd)
 }
@@ -76,7 +76,11 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Connect(ctx); err != nil {
 		return fmt.Errorf("failed to connect to databases: %w", err)
 	}
-	defer dbManager.Close()
+	defer func() {
+		if err := dbManager.Close(); err != nil {
+			log.Errorf("Failed to close database connections: %v", err)
+		}
+	}()
 
 	// Test source connection
 	if err := dbManager.Ping(ctx); err != nil {

@@ -335,7 +335,7 @@ func TestPlanOutput_LeafNodes(t *testing.T) {
 
 // TestPlanOutput_CompleteOrderingValidatesFKConstraints verifies ordering respects FK constraints
 func TestPlanOutput_CompleteOrderingValidatesFKConstraints(t *testing.T) {
-	// Complex schema: Sakila-like structure
+	// Complex schema: sample database structure
 	// customer -> rental -> payment
 	//        \-> inventory (indirect via store)
 	g := NewGraph("customer", "customer_id")

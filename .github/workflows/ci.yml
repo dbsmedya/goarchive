@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.23']
+        go-version: ['1.24']
 
     steps:
       - name: Checkout code
@@ -38,13 +38,13 @@ jobs:
         run: go test -v -short -race ./...
 
       - name: Build binary
-        run: go build -v ./cmd/mysql-archiver
+        run: go build -v ./cmd/goarchive
 
       - name: Test version output
         run: |
-          go build -ldflags "-X 'github.com/dbsmedya/goarchive/cmd/mysql-archiver/cmd.Version=ci-test'" -o mysql-archiver ./cmd/mysql-archiver
-          ./mysql-archiver --version
-          ./mysql-archiver version
+          go build -ldflags "-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=ci-test'" -o goarchive ./cmd/goarchive
+          ./goarchive --version
+          ./goarchive version
 
   lint:
     name: Lint

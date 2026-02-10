@@ -69,3 +69,20 @@ func TestValidateCommandNoJobFlag(t *testing.T) {
 	jobFlag := flags.Lookup("job")
 	assert.Nil(t, jobFlag, "validate command should not have a job flag")
 }
+
+// ============================================================================
+// Phase 3: CLI Execution Tests
+// ============================================================================
+
+// TestValidateCmd_Execute_MissingConfig tests validation with missing config file
+func TestValidateCmd_Execute_MissingConfig(t *testing.T) {
+	origCfgFile := cfgFile
+	defer func() {
+		cfgFile = origCfgFile
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"validate", "--config", "/tmp/nonexistent_validate_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}

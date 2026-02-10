@@ -127,23 +127,30 @@ This shows the execution plan including:
 - Delete order (reverse dependency order)
 - Estimated row counts
 
-### 3. Validate a Job
+### 3. Validate a Job ⭐ IMPORTANT
 
 ```bash
-./bin/goarchive validate --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml
 ```
 
-This performs pre-flight checks:
+This performs pre-flight checks and **fails fast** if configuration is invalid:
 - Database connectivity
 - Table existence
 - Primary key validation
 - Foreign key constraint checks
+- **FK_COVERAGE_CHECK**: Detects missing relations that would cause delete failures
 - Graph cycle detection
+- DELETE trigger detection
 
-### 4. Dry-Run a Job
+**Note:** Use `--force-triggers` if the database has DELETE triggers (like Sakila):
+```bash
+./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force-triggers
+```
+
+### 4. Dry-Run a Job ⭐ IMPORTANT
 
 ```bash
-./bin/goarchive dry-run --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive dry-run --job archive-film-with-text --config tests/configs/test01_one_to_one.yaml
 ```
 
 This simulates the archive operation without making changes:
@@ -154,8 +161,10 @@ This simulates the archive operation without making changes:
 
 ### 5. Execute Archive
 
+Only proceed to archive after validation passes:
+
 ```bash
-./bin/goarchive archive --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive archive --job archive-film-with-text --config tests/configs/test01_one_to_one.yaml
 ```
 
 This performs the actual archive operation:
@@ -177,19 +186,41 @@ cd tests
 ../bin/goarchive list-jobs --config configs/test01_one_to_one.yaml
 
 # 2. Plan the job
-../bin/goarchive plan --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive plan --config configs/test01_one_to_one.yaml
 
-# 3. Validate the job
-../bin/goarchive validate --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+# 3. Validate the job (catches missing relations early)
+../bin/goarchive validate --config configs/test01_one_to_one.yaml --force-triggers
 
 # 4. Dry-run the job
-../bin/goarchive dry-run --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive dry-run --job archive-film-with-text --config configs/test01_one_to_one.yaml
 
 # 5. Execute the archive
-../bin/goarchive archive --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive archive --job archive-film-with-text --config configs/test01_one_to_one.yaml
 
 # Verify results
 mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT * FROM film LIMIT 5;"
+```
+
+### Example: Detecting Missing Relations
+
+If you have an incomplete configuration:
+
+```bash
+$ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml
+❌ Preflight checks failed: FK_COVERAGE_CHECK: 
+Foreign key constraints not covered by relations:
+  - inventory is referenced by: [rental]
+```
+
+**Fix:** Add the missing table to your configuration:
+```yaml
+relations:
+  - table: inventory
+    ...
+  - table: rental      # Add this
+    primary_key: rental_id
+    foreign_key: inventory_id
+    dependency_type: "1-N"
 ```
 
 ## Test Details
@@ -282,32 +313,136 @@ Root: film (film_id)
 - Customer records (3 levels deep) are archived
 - Film text records (1-1) are archived
 
-## Sakila E2E Test Execution Flow
+## Test Strategy: Fail-Fast with Validation
 
-Each Sakila test follows this workflow:
+GoArchive tests follow a **fail-fast strategy** that detects configuration errors early, before any data is modified.
+
+### The Problem: Incomplete Relation Configurations
+
+Sakila database has complex foreign key relationships. An invalid configuration that doesn't include all necessary relations will fail during the delete phase with errors like:
+
+```
+Error 1451 (23000): Cannot delete or update a parent row: 
+a foreign key constraint fails (`sakila`.`rental`, 
+CONSTRAINT `fk_rental_inventory` FOREIGN KEY ...)
+```
+
+### The Solution: Early Validation
+
+The test runner performs **three steps** before executing any archive:
 
 ```
 1. Reset Source Database
    └── Re-create sakila schema and load data
 
-2. Count Before Archiving
-   ├── Count rows in source tables
-   └── Count rows in archive tables (should be 0)
+2. Validate Configuration ⭐ NEW
+   ├── Run 'goarchive validate' to check configuration
+   ├── Detect missing FK relations (FK_COVERAGE_CHECK)
+   ├── Warn about DELETE triggers
+   └── Fail fast if configuration is invalid
 
-3. Execute Archive Job
+3. Dry-Run ⭐ NEW
+   ├── Run 'goarchive dry-run' to simulate execution
+   ├── Show estimated row counts
+   └── Detect potential issues without modifying data
+
+4. Execute Archive Job (only if validation passes)
    ├── Load configuration
    ├── Create orchestrator
    ├── Run archive operation
    └── Verify data integrity
 
-4. Count After Archiving
+5. Count After Archiving
    ├── Count rows in source tables (should decrease)
    ├── Count rows in archive tables (should increase)
    └── Calculate archived row counts
 
-5. Generate Summary
+6. Generate Summary
    └── Write results to results/test_summary.txt
 ```
+
+### FK_COVERAGE_CHECK
+
+The preflight checker includes a new validation that detects uncovered foreign key constraints:
+
+```bash
+$ goarchive validate --config test01_one_to_one.yaml
+❌ Preflight checks failed: FK_COVERAGE_CHECK: 
+Foreign key constraints not covered by relations:
+  - inventory is referenced by: [rental]
+```
+
+This tells the user exactly which tables need to be added to the configuration.
+
+### Fixing Configuration Issues
+
+When validation fails with FK_COVERAGE_CHECK:
+
+1. **Identify missing tables** from the error message
+2. **Add them to relations** in the config file
+3. **Re-run validation** until it passes
+4. **Then execute the archive**
+
+Example fix for Test 01:
+```yaml
+# Before: Missing rental and payment tables
+relations:
+  - table: inventory
+    ...
+
+# After: Complete hierarchy
+relations:
+  - table: inventory
+    ...
+  - table: rental      # Added
+    primary_key: rental_id
+    foreign_key: inventory_id
+    dependency_type: "1-N"
+  - table: payment     # Added
+    primary_key: payment_id
+    foreign_key: rental_id
+    dependency_type: "1-N"
+```
+
+## Preflight Checks
+
+GoArchive performs comprehensive preflight checks before executing any archive operation:
+
+| Check | Description | Severity |
+|-------|-------------|----------|
+| **Table Existence** | Verifies all tables in graph exist in source database | Error |
+| **Storage Engine** | Ensures tables use InnoDB (required for transactions) | Error |
+| **FK Index Check** | Validates foreign key columns are indexed | Error |
+| **FK_COVERAGE_CHECK** | Detects FK constraints not covered by relations | Error |
+| **DELETE Trigger** | Warns about DELETE triggers that will fire | Warning |
+| **CASCADE Rules** | Warns about ON DELETE CASCADE rules | Warning |
+
+### FK_COVERAGE_CHECK Details
+
+This is the most important check for preventing runtime failures. It queries the database metadata to find all tables that reference tables in your graph but are **not** included in your relations.
+
+**How it works:**
+1. Gets all tables in the dependency graph
+2. Queries `information_schema.referential_constraints` for FKs referencing those tables
+3. Checks if the referencing tables are also in the graph
+4. Reports any uncovered FK constraints
+
+**Example error:**
+```
+FK_COVERAGE_CHECK: Foreign key constraints not covered by relations:
+  - film is referenced by: [film_actor, film_category, inventory]
+  - inventory is referenced by: [rental]
+```
+
+**Why this matters:**
+Without this check, the archive would fail during the delete phase with:
+```
+Error 1451: Cannot delete or update a parent row: a foreign key constraint fails
+```
+
+The FK_COVERAGE_CHECK catches this at validation time, **before any data is modified**.
+
+## Sakila E2E Test Execution Flow
 
 ## Test Output
 

@@ -334,13 +334,13 @@ func wrapTextInColor(text, c, styleType string) string {
 	if c == "" {
 		return text
 	}
-	if styleType == "html" {
+	switch styleType {
+	case "html":
 		return fmt.Sprintf("<span style='color: %s'>%s</span>", c, text)
-	} else if styleType == "cli" {
+	case "cli":
 		cliColor := color.HEX(c)
 		return cliColor.Sprint(text)
-	} else {
-
+	default:
 		return text
 	}
 }

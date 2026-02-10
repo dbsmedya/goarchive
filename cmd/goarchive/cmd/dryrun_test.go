@@ -98,3 +98,41 @@ func TestDryrunCommandNoChanges(t *testing.T) {
 	assert.Contains(t, doc, "without making")
 	assert.Contains(t, doc, "simulate")
 }
+
+// ============================================================================
+// Phase 3: CLI Execution Tests
+// ============================================================================
+
+// TestDryrunCmd_Execute_InvalidJob tests execution with non-existent job name
+func TestDryrunCmd_Execute_InvalidJob(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping CLI execution test in short mode")
+	}
+
+	origCfgFile := cfgFile
+	origDryrunJob := dryrunJob
+	defer func() {
+		cfgFile = origCfgFile
+		dryrunJob = origDryrunJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"dry-run", "--job", "nonexistent_job", "--config", "/tmp/nonexistent_dryrun_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}
+
+// TestDryrunCmd_Execute_MissingConfig tests execution when config file doesn't exist
+func TestDryrunCmd_Execute_MissingConfig(t *testing.T) {
+	origCfgFile := cfgFile
+	origDryrunJob := dryrunJob
+	defer func() {
+		cfgFile = origCfgFile
+		dryrunJob = origDryrunJob
+		rootCmd.SetArgs(nil)
+	}()
+
+	rootCmd.SetArgs([]string{"dry-run", "--job", "test_dryrun", "--config", "/tmp/nonexistent_dryrun_config.yaml"})
+	err := rootCmd.Execute()
+	assert.Error(t, err)
+}

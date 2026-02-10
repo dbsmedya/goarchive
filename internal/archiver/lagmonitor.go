@@ -103,7 +103,11 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 			return nil, fmt.Errorf("failed to query replication status: %w", err)
 		}
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			lm.logger.Warnf("Failed to close rows in lag monitor: %v", err)
+		}
+	}()
 
 	if !rows.Next() {
 		// GA-P3-F5-T6: No replication configured on this server

@@ -334,7 +334,9 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			// Discovery phase (BFS)
 			discovered, err := discovery.Discover(ctx, []interface{}{rootID})
 			if err != nil {
-				resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error())
+				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error()); markErr != nil {
+					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+				}
 				return nil, fmt.Errorf("discovery failed: %w", err)
 			}
 
@@ -344,7 +346,9 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			// Copy phase (with transaction)
 			copyStats, err := copyPhase.Copy(ctx, recordSet)
 			if err != nil {
-				resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error())
+				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error()); markErr != nil {
+					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+				}
 				return nil, fmt.Errorf("copy failed: %w", err)
 			}
 
@@ -352,7 +356,9 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			if !o.verificationCfg.SkipVerification {
 				_, err := dataVerifier.Verify(ctx, discovered)
 				if err != nil {
-					resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error())
+					if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error()); markErr != nil {
+						o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+					}
 					return nil, fmt.Errorf("verification failed: %w", err)
 				}
 			}
@@ -360,7 +366,9 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			// Delete phase
 			deleteStats, err := deletePhase.Delete(ctx, recordSet)
 			if err != nil {
-				resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error())
+				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error()); markErr != nil {
+					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+				}
 				return nil, fmt.Errorf("delete failed: %w", err)
 			}
 

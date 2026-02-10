@@ -32,7 +32,7 @@ func TestSignalCancelsContext(t *testing.T) {
 
 	// Send SIGTERM to ourselves
 	time.Sleep(10 * time.Millisecond) // Let the goroutine start
-	syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 
 	// Wait for context to be cancelled
 	select {
@@ -60,7 +60,7 @@ func TestSetupSignalHandlerWithCallback(t *testing.T) {
 
 	// Send SIGINT to ourselves
 	time.Sleep(10 * time.Millisecond)
-	syscall.Kill(syscall.Getpid(), syscall.SIGINT)
+	_ = syscall.Kill(syscall.Getpid(), syscall.SIGINT)
 
 	// Wait for callback and context cancellation
 	select {

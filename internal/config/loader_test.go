@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestLoad(t *testing.T) {
@@ -105,13 +107,13 @@ logging:
 
 func TestLoadWithEnvVars(t *testing.T) {
 	// Set environment variables for test
-	os.Setenv("TEST_DB_HOST", "env-host")
-	os.Setenv("TEST_DB_USER", "env-user")
-	os.Setenv("TEST_DB_PASS", "env-pass")
+	require.NoError(t, os.Setenv("TEST_DB_HOST", "env-host"))
+	require.NoError(t, os.Setenv("TEST_DB_USER", "env-user"))
+	require.NoError(t, os.Setenv("TEST_DB_PASS", "env-pass"))
 	defer func() {
-		os.Unsetenv("TEST_DB_HOST")
-		os.Unsetenv("TEST_DB_USER")
-		os.Unsetenv("TEST_DB_PASS")
+		require.NoError(t, os.Unsetenv("TEST_DB_HOST"))
+		require.NoError(t, os.Unsetenv("TEST_DB_USER"))
+		require.NoError(t, os.Unsetenv("TEST_DB_PASS"))
 	}()
 
 	tmpDir := t.TempDir()
@@ -146,8 +148,8 @@ source:
 }
 
 func TestExpandEnvVar(t *testing.T) {
-	os.Setenv("TEST_VAR", "test-value")
-	defer os.Unsetenv("TEST_VAR")
+	require.NoError(t, os.Setenv("TEST_VAR", "test-value"))
+	defer func() { require.NoError(t, os.Unsetenv("TEST_VAR")) }()
 
 	tests := []struct {
 		input    string

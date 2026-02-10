@@ -40,7 +40,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	// Connect to destination database
 	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination)
 	if err != nil {
-		m.Source.Close()
+		_ = m.Source.Close() // Ignore error during cleanup of failed connection
 		return fmt.Errorf("failed to connect to destination database: %w", err)
 	}
 
@@ -54,8 +54,8 @@ func (m *Manager) Connect(ctx context.Context) error {
 		}
 		m.Replica, err = m.connectWithRetry(ctx, "replica", replicaCfg)
 		if err != nil {
-			m.Source.Close()
-			m.Destination.Close()
+			_ = m.Source.Close()      // Ignore error during cleanup of failed connection
+			_ = m.Destination.Close() // Ignore error during cleanup of failed connection
 			return fmt.Errorf("failed to connect to replica database: %w", err)
 		}
 	}
@@ -92,7 +92,7 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 			if pingErr := db.PingContext(ctx); pingErr == nil {
 				return db, nil
 			} else {
-				db.Close()
+				_ = db.Close()
 				err = pingErr
 			}
 		}
@@ -157,6 +157,11 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	}
 
 	return dsn + params
+}
+
+// GetConfig returns the configuration used by this manager.
+func (m *Manager) GetConfig() *config.Config {
+	return m.config
 }
 
 // Close closes all database connections gracefully.

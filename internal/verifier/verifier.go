@@ -321,7 +321,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		// Get column names
 		columns, err := rows.Columns()
 		if err != nil {
-			rows.Close()
+			_ = rows.Close() // Ignore error during cleanup of failed operation
 			return "", 0, fmt.Errorf("failed to get columns: %w", err)
 		}
 
@@ -329,7 +329,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		for rows.Next() {
 			// Check context cancellation
 			if err := ctx.Err(); err != nil {
-				rows.Close()
+				_ = rows.Close() // Ignore error during cleanup of failed operation
 				return "", 0, fmt.Errorf("hash computation interrupted: %w", err)
 			}
 
@@ -340,7 +340,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 			}
 
 			if err := rows.Scan(valuePtrs...); err != nil {
-				rows.Close()
+				_ = rows.Close() // Ignore error during cleanup of failed operation
 				return "", 0, fmt.Errorf("failed to scan row: %w", err)
 			}
 
@@ -352,10 +352,10 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		}
 
 		if err := rows.Err(); err != nil {
-			rows.Close()
+			_ = rows.Close() // Ignore error during cleanup of failed operation
 			return "", 0, fmt.Errorf("error iterating rows: %w", err)
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	hashBytes := hasher.Sum(nil)

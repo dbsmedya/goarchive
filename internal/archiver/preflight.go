@@ -116,6 +116,12 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 		return err
 	}
 
+	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
+	// This MUST be checked before triggers - missing relations are a bigger problem
+	if err := p.ValidateForeignKeyCoverage(ctx); err != nil {
+		return err
+	}
+
 	// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
 	if err := p.ValidateTriggers(ctx, tables, forceTriggers); err != nil {
 		return err
@@ -157,7 +163,11 @@ func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, tables []str
 	if err != nil {
 		return fmt.Errorf("failed to query tables: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	existingTables := make(map[string]bool)
 	for rows.Next() {
@@ -219,7 +229,11 @@ func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, tables []s
 	if err != nil {
 		return fmt.Errorf("failed to query storage engines: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var nonInnoDBTables []string
 	for rows.Next() {
@@ -316,7 +330,11 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var results []ForeignKeyResult
 	for rows.Next() {
@@ -423,7 +441,11 @@ func (p *PreflightChecker) CheckDeleteTriggers(ctx context.Context, tables []str
 	if err != nil {
 		return nil, fmt.Errorf("failed to query triggers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var results []TriggerCheckResult
 	for rows.Next() {
@@ -465,6 +487,113 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// ValidateForeignKeyCoverage checks that all foreign key constraints referencing
+// tables in the graph are covered by relations in the configuration.
+//
+// This prevents delete failures when a table outside the graph has an FK
+// constraint to a table inside the graph with ON DELETE RESTRICT.
+func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error {
+	p.logger.Debug("Checking foreign key coverage...")
+
+	// Get all tables in the graph
+	graphTables := p.graph.AllNodes()
+	graphTableSet := make(map[string]bool)
+	for _, t := range graphTables {
+		graphTableSet[t] = true
+	}
+
+	// Query all FK constraints that reference tables in our graph
+	query := `
+		SELECT 
+			kcu.table_name,
+			kcu.constraint_name,
+			kcu.column_name,
+			kcu.referenced_table_name,
+			kcu.referenced_column_name,
+			rc.delete_rule
+		FROM information_schema.referential_constraints rc
+		JOIN information_schema.key_column_usage kcu 
+			ON rc.constraint_name = kcu.constraint_name
+			AND rc.constraint_schema = kcu.constraint_schema
+		WHERE rc.constraint_schema = ?
+			AND kcu.referenced_table_name IN (` + p.placeholders(len(graphTables)) + `)
+		ORDER BY kcu.referenced_table_name, kcu.table_name
+	`
+
+	args := make([]interface{}, 0, len(graphTables)+1)
+	args = append(args, p.sourceDBName)
+	for _, t := range graphTables {
+		args = append(args, t)
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query FK coverage: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type uncoveredFK struct {
+		Table           string
+		Constraint      string
+		Column          string
+		ReferencedTable string
+		OnDelete        string
+	}
+	var uncovered []uncoveredFK
+
+	for rows.Next() {
+		var fk uncoveredFK
+		if err := rows.Scan(&fk.Table, &fk.Constraint, &fk.Column, &fk.ReferencedTable, new(string), &fk.OnDelete); err != nil {
+			return fmt.Errorf("failed to scan FK row: %w", err)
+		}
+		// If the referencing table is NOT in our graph, it's uncovered
+		if !graphTableSet[fk.Table] {
+			uncovered = append(uncovered, fk)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating FK rows: %w", err)
+	}
+
+	if len(uncovered) > 0 {
+		// Group by referenced table for better readability
+		byRefTable := make(map[string][]uncoveredFK)
+		for _, fk := range uncovered {
+			byRefTable[fk.ReferencedTable] = append(byRefTable[fk.ReferencedTable], fk)
+		}
+
+		var messages []string
+		for refTable, fks := range byRefTable {
+			var childTables []string
+			for _, fk := range fks {
+				childTables = append(childTables, fk.Table)
+			}
+			messages = append(messages, fmt.Sprintf("  - %s is referenced by: %v", refTable, childTables))
+		}
+
+		return &PreflightError{
+			Check:   "FK_COVERAGE_CHECK",
+			Message: fmt.Sprintf("Foreign key constraints not covered by relations:\n%s", strings.Join(messages, "\n")),
+			Details: map[string]string{
+				"uncovered_count": fmt.Sprintf("%d", len(uncovered)),
+				"suggestion":      "Add these tables to your relations or use 'purge' mode to skip archiving",
+			},
+		}
+	}
+
+	p.logger.Debug("Foreign key coverage check complete (all FKs covered)")
+	return nil
+}
+
+// placeholders generates SQL placeholders for IN clause.
+func (p *PreflightChecker) placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
 }
 
 // SetLogger sets a custom logger for the preflight checker.

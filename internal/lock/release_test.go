@@ -17,7 +17,7 @@ import (
 
 func TestAdvisoryLock_ReleaseLock_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -53,7 +53,7 @@ func TestAdvisoryLock_ReleaseLock_Success(t *testing.T) {
 
 func TestAdvisoryLock_ReleaseLock_NotHeld(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -76,7 +76,7 @@ func TestAdvisoryLock_ReleaseLock_NotHeld(t *testing.T) {
 
 func TestAdvisoryLock_ReleaseLock_DoubleRelease(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -110,10 +110,10 @@ func TestAdvisoryLock_ReleaseLock_DoubleRelease(t *testing.T) {
 
 func TestAdvisoryLock_ReleaseLock_AllowsReacquisition(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock1 := NewAdvisoryLock(db1, lockName)
@@ -152,19 +152,19 @@ func TestAdvisoryLock_ReleaseLock_AllowsReacquisition(t *testing.T) {
 	}
 
 	// Cleanup
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_ReleaseLock_NilContext(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
 	ctx := context.Background()
 
 	// Acquire the lock
-	lock.AcquireLock(ctx, 1)
+	_, _ = lock.AcquireLock(ctx, 1)
 
 	// Release with nil context should use background context internally
 	// (This tests that the method doesn't panic with nil context)
@@ -184,7 +184,7 @@ func TestAdvisoryLock_ReleaseLock_NilContext(t *testing.T) {
 
 func TestAdvisoryLock_TryAcquire_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -205,12 +205,12 @@ func TestAdvisoryLock_TryAcquire_Success(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_TryAcquire_AlreadyHeld(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -237,15 +237,15 @@ func TestAdvisoryLock_TryAcquire_AlreadyHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_TryAcquire_Contention(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock1 := NewAdvisoryLock(db1, lockName)
@@ -281,12 +281,12 @@ func TestAdvisoryLock_TryAcquire_Contention(t *testing.T) {
 	}
 
 	// Cleanup
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_TryAcquire_NonBlocking(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -309,7 +309,7 @@ func TestAdvisoryLock_TryAcquire_NonBlocking(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -318,7 +318,7 @@ func TestAdvisoryLock_TryAcquire_NonBlocking(t *testing.T) {
 
 func TestAdvisoryLock_AcquireOrFail_Success(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -335,12 +335,12 @@ func TestAdvisoryLock_AcquireOrFail_Success(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireOrFail_AlreadyHeld(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -363,15 +363,15 @@ func TestAdvisoryLock_AcquireOrFail_AlreadyHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireOrFail_TimeoutError(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock1 := NewAdvisoryLock(db1, lockName)
@@ -413,15 +413,15 @@ func TestAdvisoryLock_AcquireOrFail_TimeoutError(t *testing.T) {
 	}
 
 	// Cleanup
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireOrFail_ErrorContainsLockName(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock1 := NewAdvisoryLock(db1, lockName)
@@ -429,7 +429,7 @@ func TestAdvisoryLock_AcquireOrFail_ErrorContainsLockName(t *testing.T) {
 	ctx := context.Background()
 
 	// First connection acquires the lock
-	lock1.AcquireOrFail(ctx)
+	_ = lock1.AcquireOrFail(ctx)
 
 	// Second connection tries to acquire
 	err := lock2.AcquireOrFail(ctx)
@@ -450,12 +450,12 @@ func TestAdvisoryLock_AcquireOrFail_ErrorContainsLockName(t *testing.T) {
 	}
 
 	// Cleanup
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -468,7 +468,7 @@ func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
 	}
 
 	// Release
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 
 	// Can acquire again after release
 	err = lock.AcquireOrFail(ctx)
@@ -481,7 +481,7 @@ func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
 	}
 
 	// Cleanup
-	lock.ReleaseLock(ctx)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -490,7 +490,7 @@ func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
 
 func TestAdvisoryLock_FullLifecycle(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -533,10 +533,10 @@ func TestAdvisoryLock_FullLifecycle(t *testing.T) {
 
 func TestAdvisoryLock_ConcurrentAcquireAndRelease(t *testing.T) {
 	db1 := connectToTestDB(t)
-	defer db1.Close()
+	defer func() { _ = db1.Close() }()
 
 	db2 := connectToTestDB(t)
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock1 := NewAdvisoryLock(db1, lockName)
@@ -556,7 +556,7 @@ func TestAdvisoryLock_ConcurrentAcquireAndRelease(t *testing.T) {
 	}
 
 	// Connection 1 releases
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 	time.Sleep(50 * time.Millisecond)
 
 	// Connection 2 can now acquire
@@ -566,7 +566,7 @@ func TestAdvisoryLock_ConcurrentAcquireAndRelease(t *testing.T) {
 	}
 
 	// Connection 2 releases
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -581,10 +581,10 @@ func TestAdvisoryLock_ReleaseLock_ClosedConnection(t *testing.T) {
 	ctx := context.Background()
 
 	// Acquire the lock
-	lock.AcquireLock(ctx, 1)
+	_, _ = lock.AcquireLock(ctx, 1)
 
 	// Close the connection
-	db.Close()
+	_ = db.Close()
 
 	// Release should fail (connection closed)
 	_, err := lock.ReleaseLock(ctx)
@@ -595,7 +595,7 @@ func TestAdvisoryLock_ReleaseLock_ClosedConnection(t *testing.T) {
 
 func TestAdvisoryLock_TryAcquire_ContextCancellation(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 	lock := NewAdvisoryLock(db, lockName)
@@ -613,7 +613,7 @@ func TestAdvisoryLock_TryAcquire_ContextCancellation(t *testing.T) {
 
 func TestAdvisoryLock_MultipleLocksIndependentLifecycle(t *testing.T) {
 	db := connectToTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	lockName1 := generateUniqueLockName(t) + "_A"
 	lockName2 := generateUniqueLockName(t) + "_B"
@@ -623,15 +623,15 @@ func TestAdvisoryLock_MultipleLocksIndependentLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	// Acquire both locks
-	lock1.AcquireLock(ctx, 1)
-	lock2.AcquireLock(ctx, 1)
+	_, _ = lock1.AcquireLock(ctx, 1)
+	_, _ = lock2.AcquireLock(ctx, 1)
 
 	if !lock1.IsHeld() || !lock2.IsHeld() {
 		t.Error("Both locks should be held")
 	}
 
 	// Release only first
-	lock1.ReleaseLock(ctx)
+	_, _ = lock1.ReleaseLock(ctx)
 
 	if lock1.IsHeld() {
 		t.Error("Lock1 should be released")
@@ -641,7 +641,7 @@ func TestAdvisoryLock_MultipleLocksIndependentLifecycle(t *testing.T) {
 	}
 
 	// Release second
-	lock2.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 
 	if lock2.IsHeld() {
 		t.Error("Lock2 should be released")

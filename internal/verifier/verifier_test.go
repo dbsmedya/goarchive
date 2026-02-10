@@ -45,7 +45,7 @@ func TestNewVerifier_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create mock: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -70,7 +70,7 @@ func TestNewVerifier_Success(t *testing.T) {
 
 func TestNewVerifier_NilSource(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -83,7 +83,7 @@ func TestNewVerifier_NilSource(t *testing.T) {
 
 func TestNewVerifier_NilDestination(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -96,7 +96,7 @@ func TestNewVerifier_NilDestination(t *testing.T) {
 
 func TestNewVerifier_NilGraph(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	log := logger.NewDefault()
 
@@ -108,7 +108,7 @@ func TestNewVerifier_NilGraph(t *testing.T) {
 
 func TestNewVerifier_DefaultMethod(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -125,7 +125,7 @@ func TestNewVerifier_DefaultMethod(t *testing.T) {
 
 func TestNewVerifier_DefaultLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 
@@ -145,9 +145,9 @@ func TestNewVerifier_DefaultLogger(t *testing.T) {
 
 func TestVerify_Count_Success(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -212,9 +212,9 @@ func TestVerify_Count_Success(t *testing.T) {
 
 func TestVerify_Count_Mismatch(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -244,9 +244,9 @@ func TestVerify_Count_Mismatch(t *testing.T) {
 
 func TestVerify_Count_EmptyRecordSet(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -271,9 +271,9 @@ func TestVerify_Count_EmptyRecordSet(t *testing.T) {
 
 func TestVerify_Count_QueryError(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -300,9 +300,9 @@ func TestVerify_Count_QueryError(t *testing.T) {
 
 func TestVerify_Skip(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -332,9 +332,9 @@ func TestVerify_Skip(t *testing.T) {
 
 func TestVerify_SHA256_Success(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -380,9 +380,9 @@ func TestVerify_SHA256_Success(t *testing.T) {
 
 func TestVerify_SHA256_Mismatch(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -424,9 +424,9 @@ func TestVerify_SHA256_Mismatch(t *testing.T) {
 
 func TestVerify_SHA256_CountMismatch(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -473,9 +473,9 @@ func TestVerify_SHA256_CountMismatch(t *testing.T) {
 
 func TestVerifyByCount_EmptyPKs(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -499,9 +499,9 @@ func TestVerifyByCount_EmptyPKs(t *testing.T) {
 
 func TestVerifyByCount_ErrorMessage(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -539,9 +539,9 @@ func TestVerifyByCount_ErrorMessage(t *testing.T) {
 
 func TestVerifyBySHA256_EmptyPKs(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -565,9 +565,9 @@ func TestVerifyBySHA256_EmptyPKs(t *testing.T) {
 
 func TestVerify_ContextCancellation(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -592,7 +592,7 @@ func TestVerify_ContextCancellation(t *testing.T) {
 
 func TestSetChunkSize(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -617,7 +617,7 @@ func TestSetChunkSize(t *testing.T) {
 
 func TestGetMethod(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -635,7 +635,7 @@ func TestGetMethod(t *testing.T) {
 
 func TestSetLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -655,7 +655,7 @@ func TestSetLogger(t *testing.T) {
 
 func TestSerializeRow(t *testing.T) {
 	db, _, _ := sqlmock.New()
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
@@ -730,9 +730,9 @@ func containsSubstringHelper(s, substr string) bool {
 
 func TestVerify_UnsupportedMethod(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
-	defer sourceDB.Close()
+	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
-	defer destDB.Close()
+	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
