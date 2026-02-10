@@ -14,8 +14,8 @@ Generated: 2026-02-05
 | `internal/archiver` | 51.4% | ⚠️ Needs Improvement |
 | `internal/database` | 35.9% | ⚠️ Needs Improvement |
 | `internal/types` | N/A | ⚠️ No Tests |
-| `cmd/mysql-archiver` | 0.0% | ❌ Not Covered |
-| `cmd/mysql-archiver/cmd` | 0.0% | ❌ Not Covered |
+| `cmd/goarchive` | 0.0% | ❌ Not Covered |
+| `cmd/goarchive/cmd` | 0.0% | ❌ Not Covered |
 
 **Overall Coverage:** ~68% (excluding cmd packages)
 
@@ -165,7 +165,7 @@ Generated: 2026-02-05
 #### `internal/types` - N/A
 Contains type definitions only. Tests would be redundant as types are tested through usage in other packages.
 
-#### `cmd/mysql-archiver` - 0.0%
+#### `cmd/goarchive` - 0.0%
 Main entry point for the CLI application.
 
 **Untested:**
@@ -174,7 +174,7 @@ Main entry point for the CLI application.
 - Signal handling integration
 - Exit code handling
 
-#### `cmd/mysql-archiver/cmd` - 0.0%
+#### `cmd/goarchive/cmd` - 0.0%
 Cobra CLI command definitions.
 
 **Untested:**

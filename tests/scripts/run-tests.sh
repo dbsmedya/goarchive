@@ -284,7 +284,7 @@ run_archive_job() {
     if [[ ! -f "$PROJECT_ROOT/bin/goarchive" ]]; then
         log_info "Building goarchive binary..."
         cd "$PROJECT_ROOT"
-        go build -o bin/goarchive ./cmd/mysql-archiver
+        go build -o bin/goarchive ./cmd/goarchive
     fi
     
     cd "$PROJECT_ROOT"

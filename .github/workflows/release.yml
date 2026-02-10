@@ -39,23 +39,23 @@ jobs:
           
           # Linux AMD64
           GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "${LDFLAGS}" \
-            -o dist/${BINARY_NAME}-${VERSION}-linux-amd64 ./cmd/mysql-archiver
+            -o dist/${BINARY_NAME}-${VERSION}-linux-amd64 ./cmd/goarchive
           
           # Linux ARM64
           GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "${LDFLAGS}" \
-            -o dist/${BINARY_NAME}-${VERSION}-linux-arm64 ./cmd/mysql-archiver
+            -o dist/${BINARY_NAME}-${VERSION}-linux-arm64 ./cmd/goarchive
           
           # Darwin AMD64
           GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "${LDFLAGS}" \
-            -o dist/${BINARY_NAME}-${VERSION}-darwin-amd64 ./cmd/mysql-archiver
+            -o dist/${BINARY_NAME}-${VERSION}-darwin-amd64 ./cmd/goarchive
           
           # Darwin ARM64
           GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "${LDFLAGS}" \
-            -o dist/${BINARY_NAME}-${VERSION}-darwin-arm64 ./cmd/mysql-archiver
+            -o dist/${BINARY_NAME}-${VERSION}-darwin-arm64 ./cmd/goarchive
           
           # Windows AMD64
           GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "${LDFLAGS}" \
-            -o dist/${BINARY_NAME}-${VERSION}-windows-amd64.exe ./cmd/mysql-archiver
+            -o dist/${BINARY_NAME}-${VERSION}-windows-amd64.exe ./cmd/goarchive
         env:
           BINARY_NAME: mysql-archiver
 

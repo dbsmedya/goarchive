@@ -93,10 +93,10 @@ git clone https://github.com/dbsmedya/goarchive.git
 cd goarchive
 
 # Build the binary
-go build -o mysql-archiver ./cmd/mysql-archiver
+go build -o goarchive ./cmd/goarchive
 
 # Move to your PATH (optional)
-sudo mv mysql-archiver /usr/local/bin/
+sudo mv goarchive /usr/local/bin/
 ```
 
 ### Configuration
@@ -157,7 +157,7 @@ See [configs/archiver.yaml.example](configs/archiver.yaml.example) for a complet
 
 ```bash
 # Check the plan from yaml:
-mysql-archiver plan -c archiver.yaml --job archive_old_orders
+goarchive plan -c archiver.yaml --job archive_old_orders
 
 
 =================
@@ -192,16 +192,16 @@ mysql-archiver plan -c archiver.yaml --job archive_old_orders
 
 
 # Validate configuration and run preflight checks
-mysql-archiver validate -c archiver.yaml
+goarchive validate -c archiver.yaml
 
 # Preview what would be archived (dry-run)
-mysql-archiver dry-run -c archiver.yaml --job archive_old_orders
+goarchive dry-run -c archiver.yaml --job archive_old_orders
 
 # Execute archive (copy to destination, then delete from source)
-mysql-archiver archive -c archiver.yaml --job archive_old_orders
+goarchive archive -c archiver.yaml --job archive_old_orders
 
 # Purge only (delete without copying - USE WITH CAUTION!)
-mysql-archiver purge -c archiver.yaml --job archive_old_orders
+goarchive purge -c archiver.yaml --job archive_old_orders
 ```
 
 ## Commands
@@ -315,7 +315,7 @@ If interrupted, GoArchive can resume from the last checkpoint:
 SELECT * FROM archiver_job WHERE name = 'archive_old_orders';
 
 -- Resume with same command
-mysql-archiver archive -c archiver.yaml --job archive_old_orders
+goarchive archive -c archiver.yaml --job archive_old_orders
 ```
 
 ## Requirements

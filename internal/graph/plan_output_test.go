@@ -10,7 +10,7 @@ import (
 // Plan Command Output Tests (GA-P2-F4-T4)
 // ============================================================================
 // These tests verify that CopyOrder and DeleteOrder produce correct output
-// for display in the `mysql-archiver plan` command.
+// for display in the `goarchive plan` command.
 
 // TestPlanOutput_SimpleParentChild verifies basic parent-child ordering
 func TestPlanOutput_SimpleParentChild(t *testing.T) {

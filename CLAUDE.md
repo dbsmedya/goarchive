@@ -15,7 +15,7 @@ GoArchive is a production-grade Go CLI tool for safely archiving MySQL relationa
 go mod init github.com/dbsmedya/goarchive
 
 # Build
-go build -o mysql-archiver ./cmd/mysql-archiver
+go build -o goarchive ./cmd/goarchive
 
 # Run tests
 go test ./...

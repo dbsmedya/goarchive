@@ -43,7 +43,7 @@ Default configuration:
 ### 2. Build the Binary
 
 ```bash
-go build -o bin/goarchive ./cmd/mysql-archiver
+go build -o bin/goarchive ./cmd/goarchive
 ```
 
 ## Running Tests
@@ -105,12 +105,12 @@ Add `-v` to any command for verbose output:
 
 ## Manual Testing Workflow
 
-For interactive testing and debugging, use the `mysql-archiver` CLI commands in sequence:
+For interactive testing and debugging, use the `goarchive` CLI commands in sequence:
 
 ### 1. List Available Jobs
 
 ```bash
-./bin/mysql-archiver list-jobs --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive list-jobs --config tests/configs/test01_one_to_one.yaml
 ```
 
 This displays all jobs defined in the configuration file.
@@ -118,7 +118,7 @@ This displays all jobs defined in the configuration file.
 ### 2. Plan a Job
 
 ```bash
-./bin/mysql-archiver plan --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive plan --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
 ```
 
 This shows the execution plan including:
@@ -130,7 +130,7 @@ This shows the execution plan including:
 ### 3. Validate a Job
 
 ```bash
-./bin/mysql-archiver validate --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive validate --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
 ```
 
 This performs pre-flight checks:
@@ -143,7 +143,7 @@ This performs pre-flight checks:
 ### 4. Dry-Run a Job
 
 ```bash
-./bin/mysql-archiver dry-run --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive dry-run --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
 ```
 
 This simulates the archive operation without making changes:
@@ -155,7 +155,7 @@ This simulates the archive operation without making changes:
 ### 5. Execute Archive
 
 ```bash
-./bin/mysql-archiver archive --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
+./bin/goarchive archive --job Test01_FilmToText --config tests/configs/test01_one_to_one.yaml
 ```
 
 This performs the actual archive operation:
@@ -174,19 +174,19 @@ This performs the actual archive operation:
 cd tests
 
 # 1. List jobs
-../bin/mysql-archiver list-jobs --config configs/test01_one_to_one.yaml
+../bin/goarchive list-jobs --config configs/test01_one_to_one.yaml
 
 # 2. Plan the job
-../bin/mysql-archiver plan --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive plan --job Test01_FilmToText --config configs/test01_one_to_one.yaml
 
 # 3. Validate the job
-../bin/mysql-archiver validate --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive validate --job Test01_FilmToText --config configs/test01_one_to_one.yaml
 
 # 4. Dry-run the job
-../bin/mysql-archiver dry-run --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive dry-run --job Test01_FilmToText --config configs/test01_one_to_one.yaml
 
 # 5. Execute the archive
-../bin/mysql-archiver archive --job Test01_FilmToText --config configs/test01_one_to_one.yaml
+../bin/goarchive archive --job Test01_FilmToText --config configs/test01_one_to_one.yaml
 
 # Verify results
 mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT * FROM film LIMIT 5;"

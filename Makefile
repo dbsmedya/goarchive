@@ -15,7 +15,7 @@ BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BINARY_NAME := goarchive
 
 # Package path for ldflags
-PACKAGE_PATH := github.com/dbsmedya/goarchive/cmd/mysql-archiver/cmd
+PACKAGE_PATH := github.com/dbsmedya/goarchive/cmd/goarchive/cmd
 
 # Linker flags for version injection
 LDFLAGS := -X '$(PACKAGE_PATH).Version=$(VERSION)' \
@@ -32,14 +32,14 @@ all: build
 .PHONY: build
 build:
 	@echo "Building $(BINARY_NAME) version $(VERSION) (commit: $(COMMIT))..."
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/mysql-archiver
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o bin/$(BINARY_NAME) ./cmd/goarchive
 	@echo "Build complete: bin/$(BINARY_NAME)"
 
 # Install to $GOPATH/bin
 .PHONY: install
 install:
 	@echo "Installing $(BINARY_NAME) version $(VERSION)..."
-	go install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/mysql-archiver
+	go install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/goarchive
 
 # Run all tests
 .PHONY: test
@@ -70,22 +70,22 @@ release: clean
 	@echo "Building release binaries for version $(VERSION)..."
 	# Linux AMD64
 	GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -s -w" \
-		-o bin/$(BINARY_NAME)-$(VERSION)-linux-amd64 ./cmd/mysql-archiver
+		-o bin/$(BINARY_NAME)-$(VERSION)-linux-amd64 ./cmd/goarchive
 	# Linux ARM64
 	GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -s -w" \
-		-o bin/$(BINARY_NAME)-$(VERSION)-linux-arm64 ./cmd/mysql-archiver
+		-o bin/$(BINARY_NAME)-$(VERSION)-linux-arm64 ./cmd/goarchive
 	# Darwin AMD64
 	GOOS=darwin GOARCH=amd64 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -s -w" \
-		-o bin/$(BINARY_NAME)-$(VERSION)-darwin-amd64 ./cmd/mysql-archiver
+		-o bin/$(BINARY_NAME)-$(VERSION)-darwin-amd64 ./cmd/goarchive
 	# Darwin ARM64
 	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags "$(LDFLAGS) -s -w" \
-		-o bin/$(BINARY_NAME)-$(VERSION)-darwin-arm64 ./cmd/mysql-archiver
+		-o bin/$(BINARY_NAME)-$(VERSION)-darwin-arm64 ./cmd/goarchive
 	@echo "Release binaries built in bin/"
 
 # Development build (no version injection, faster)
 .PHONY: dev
 dev:
-	go build -o bin/$(BINARY_NAME) ./cmd/mysql-archiver
+	go build -o bin/$(BINARY_NAME) ./cmd/goarchive
 
 # Format code
 .PHONY: fmt
@@ -107,7 +107,7 @@ vulncheck:
 help:
 	@echo "MySQL Archiver - Build Targets"
 	@echo ""
-	@echo "  make build       - Build binary with version info (bin/mysql-archiver)"
+	@echo "  make build       - Build binary with version info (bin/goarchive)"
 	@echo "  make install     - Install to \$$GOPATH/bin"
 	@echo "  make dev         - Quick dev build (no version injection)"
 	@echo "  make test        - Run all tests"
