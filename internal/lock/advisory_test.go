@@ -65,16 +65,6 @@ func generateUniqueLockName(t *testing.T) string {
 	return fmt.Sprintf("t_%s_%d", testName, time.Now().UnixNano()%1000000)
 }
 
-// releaseLock is a helper to manually release a lock for cleanup
-func releaseLock(db *sql.DB, lockName string) error {
-	var result sql.NullInt64
-	err := db.QueryRow("SELECT RELEASE_LOCK(?)", lockName).Scan(&result)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 // isLockFree checks if a lock is currently free
 func isLockFree(db *sql.DB, lockName string) (bool, error) {
 	var result sql.NullInt64

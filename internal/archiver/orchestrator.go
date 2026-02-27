@@ -515,9 +515,3 @@ func convertRecordSet(ts *types.RecordSet) *RecordSet {
 		Records: ts.Records,
 	}
 }
-
-// toInt64 converts an interface{} to int64
-// Deprecated: Use types.ToInt64 from internal/types instead.
-func toInt64(v interface{}) (int64, error) {
-	return types.ToInt64(v)
-}

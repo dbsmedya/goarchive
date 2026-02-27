@@ -916,14 +916,6 @@ func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []str
 	return results, rows.Err()
 }
 
-// placeholders generates SQL placeholders for IN clause.
-func (p *PreflightChecker) placeholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.Repeat("?,", n-1) + "?"
-}
-
 // SetLogger sets a custom logger for the preflight checker.
 func (p *PreflightChecker) SetLogger(log *logger.Logger) {
 	p.logger = log

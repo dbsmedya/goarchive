@@ -1,3 +1,5 @@
+//go:build integration
+
 package archiver
 
 import (
@@ -302,7 +304,9 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 	// Manually insert a running job record to simulate concurrent job
 	destDB, _ := setup.GetDB("destination")
 	resumeMgr, _ := NewResumeManager(destDB, nil)
-	resumeMgr.InitializeTables(ctx)
+	if err := resumeMgr.InitializeTables(ctx); err != nil {
+		t.Fatalf("Failed to initialize resume tables: %v", err)
+	}
 
 	// Insert a fake running job on the same root table
 	_, err := destDB.Exec(`

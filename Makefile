@@ -41,15 +41,20 @@ install:
 	@echo "Installing $(BINARY_NAME) version $(VERSION)..."
 	go install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/goarchive
 
-# Run all tests
+# Run all tests (excludes integration tests)
 .PHONY: test
 test:
 	go test -v ./...
 
-# Run unit tests only (fast)
+# Run unit tests only (fast, excludes integration tests)
 .PHONY: test-unit
 test-unit:
 	go test -v -short ./...
+
+# Run tests with race detection (matches CI)
+.PHONY: test-ci
+test-ci:
+	go test -v -short -race ./...
 
 # Clean build artifacts
 .PHONY: clean
@@ -95,15 +100,49 @@ release: clean
 dev:
 	go build -o bin/$(BINARY_NAME) ./cmd/goarchive
 
-# Format code
+# Format code (write changes)
 .PHONY: fmt
 fmt:
 	gofmt -w .
+
+# Check formatting (CI style - fails if unformatted)
+.PHONY: fmt-check
+fmt-check:
+	@if [ -n "$$(gofmt -l .)" ]; then \
+		echo "The following files are not formatted:"; \
+		gofmt -l .; \
+		exit 1; \
+	fi; \
+	echo "All files are properly formatted"
+
+# Run go vet (CI version - basic checks)
+.PHONY: vet
+vet:
+	go vet ./...
+
+# Run go vet with all checks (stricter)
+.PHONY: vet-all
+vet-all:
+	go vet -all ./...
 
 # Run linter (requires golangci-lint)
 .PHONY: lint
 lint:
 	golangci-lint run ./...
+
+# Run all checks (CI-style)
+.PHONY: check
+check: fmt-check vet test-ci build
+	@echo "All checks passed!"
+
+# Full CI pipeline simulation
+.PHONY: github-release
+github-release: clean check lint
+	@echo "Building release binaries..."
+	$(MAKE) release
+	@echo ""
+	@echo "✅ All CI checks passed and release binaries built!"
+	@echo "Binaries available in: bin/"
 
 # Check for vulnerabilities (requires govulncheck)
 .PHONY: vulncheck
@@ -182,16 +221,22 @@ help:
 	@echo "  make dev                - Quick dev build (no version injection)"
 	@echo "  make test               - Run all tests"
 	@echo "  make test-unit          - Run unit tests only (fast)"
+	@echo "  make test-ci            - Run tests with race detection (CI style)"
 	@echo "  make test-integration   - Run integration tests (requires config + databases)"
+	@echo "  make check              - Run all CI checks (fmt-check, vet, test-ci, build)"
+	@echo "  make github-release     - Full CI pipeline + release build"
+	@echo "  make vet                - Run go vet (CI style)"
+	@echo "  make vet-all            - Run go vet with all checks (stricter)"
+	@echo "  make lint               - Run linter"
+	@echo "  make fmt                - Format Go code"
+	@echo "  make fmt-check          - Check formatting (CI style)"
+	@echo "  make release            - Build binaries for all platforms"
+	@echo "  make clean              - Remove build artifacts"
+	@echo "  make version            - Show current version settings"
 	@echo "  make integration-config - Create/edit integration test configuration"
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
-	@echo "  make release            - Build binaries for all platforms"
-	@echo "  make clean              - Remove build artifacts"
-	@echo "  make version            - Show current version settings"
-	@echo "  make fmt                - Format Go code"
-	@echo "  make lint               - Run linter"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"

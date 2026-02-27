@@ -15,13 +15,13 @@ import (
 
 // PurgeResult contains statistics and status of purge operation.
 type PurgeResult struct {
-	JobName         string
-	StartedAt       time.Time
-	CompletedAt     time.Time
-	Duration        time.Duration
+	JobName          string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	Duration         time.Duration
 	BatchesProcessed int
-	RecordsDeleted  int64
-	Success         bool
+	RecordsDeleted   int64
+	Success          bool
 }
 
 // PurgeOrchestrator coordinates purge operation using dependency graph.

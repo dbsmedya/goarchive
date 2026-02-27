@@ -78,8 +78,8 @@ func TestCopyOnlyOrchestrator_ExecutePreconditions(t *testing.T) {
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
 	}
-	if _, err := orch.Execute(nil, false); err == nil {
-		t.Fatal("expected error for nil context")
+	if _, err := orch.Execute(context.TODO(), false); err == nil {
+		t.Fatal("expected error for invalid context")
 	}
 }
 
