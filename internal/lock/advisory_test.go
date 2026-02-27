@@ -483,6 +483,11 @@ func TestAdvisoryLock_ReleaseOnConnectionClose(t *testing.T) {
 
 	// Close the first connection - this should release the lock
 	_ = db1.Close()
+	if lock.conn != nil {
+		_ = lock.conn.Close()
+		lock.conn = nil
+		lock.held = false
+	}
 
 	// Give MySQL a moment to clean up
 	time.Sleep(100 * time.Millisecond)

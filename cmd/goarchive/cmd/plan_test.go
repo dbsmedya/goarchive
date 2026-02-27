@@ -217,6 +217,14 @@ func TestPrintOrderItem(t *testing.T) {
 			isDelete: true,
 			want:     "[3] orders | FK: user_id <- id",
 		},
+		{
+			name:     "nil node",
+			num:      4,
+			table:    "orphan_table",
+			node:     nil,
+			isDelete: false,
+			want:     "[4] orphan_table",
+		},
 	}
 
 	for _, tt := range tests {
@@ -225,7 +233,11 @@ func TestPrintOrderItem(t *testing.T) {
 			setOutputWriter(&buf)
 			defer resetOutputWriter()
 
-			printOrderItem(tt.num, tt.table, createNode(tt.node), tt.isDelete)
+			if tt.node == nil {
+				printOrderItem(tt.num, tt.table, nil, tt.isDelete)
+			} else {
+				printOrderItem(tt.num, tt.table, createNode(tt.node), tt.isDelete)
+			}
 
 			output := buf.String()
 			assert.Contains(t, output, tt.want)

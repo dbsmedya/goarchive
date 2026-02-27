@@ -805,27 +805,17 @@ func containsSubstringHelper(s, substr string) bool {
 // Unsupported Method Test
 // ============================================================================
 
-func TestVerify_UnsupportedMethod(t *testing.T) {
-	sourceDB, sourceMock, _ := sqlmock.New()
+func TestNewVerifier_UnsupportedMethod(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
 	destDB, _, _ := sqlmock.New()
 	defer func() { _ = destDB.Close() }()
 
 	g := createTestGraph()
 	log := logger.NewDefault()
-	v, _ := NewVerifier(sourceDB, destDB, g, "unsupported", log)
-
-	recordSet := createTestRecordSet()
-	ctx := context.Background()
-
-	// Setup one successful query first
-	sourceMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
-		WithArgs(1, 2, 3).
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(3))
-
-	_, err := v.Verify(ctx, recordSet)
+	_, err := NewVerifier(sourceDB, destDB, g, "unsupported", log)
 
 	if err == nil {
-		t.Error("Expected error for unsupported method")
+		t.Error("Expected error for unsupported method in constructor")
 	}
 }

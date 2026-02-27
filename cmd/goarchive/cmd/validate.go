@@ -53,6 +53,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
 		overrides.BatchSize, overrides.BatchDeleteSize,
 		overrides.SleepSeconds, overrides.SkipVerify)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Initialize logger
 	log, err := logger.New(&cfg.Logging)

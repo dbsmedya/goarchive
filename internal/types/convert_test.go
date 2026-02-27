@@ -1,6 +1,7 @@
 package types
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,7 +67,8 @@ func TestToInt64_IntTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToInt64(tt.input)
+			result, err := ToInt64(tt.input)
+			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -107,7 +109,8 @@ func TestToInt64_FloatTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToInt64(tt.input)
+			result, err := ToInt64(tt.input)
+			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -143,7 +146,8 @@ func TestToInt64_NegativeValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToInt64(tt.input)
+			result, err := ToInt64(tt.input)
+			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -179,7 +183,28 @@ func TestToInt64_ZeroValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToInt64(tt.input)
+			result, err := ToInt64(tt.input)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestToInt64_StringAndBytes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected int64
+	}{
+		{name: "string int", input: "42", expected: 42},
+		{name: "string with spaces", input: "  77  ", expected: 77},
+		{name: "bytes int", input: []byte("123"), expected: 123},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := ToInt64(tt.input)
+			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -193,10 +218,6 @@ func TestToInt64_UnsupportedTypes(t *testing.T) {
 		{
 			name:  "nil",
 			input: nil,
-		},
-		{
-			name:  "string",
-			input: "42",
 		},
 		{
 			name:  "bool",
@@ -218,8 +239,13 @@ func TestToInt64_UnsupportedTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ToInt64(tt.input)
-			assert.Equal(t, int64(0), result, "Unsupported types should return 0")
+			_, err := ToInt64(tt.input)
+			assert.Error(t, err)
 		})
 	}
+}
+
+func TestToInt64_Uint64Overflow(t *testing.T) {
+	_, err := ToInt64(uint64(math.MaxInt64) + 1)
+	assert.Error(t, err)
 }

@@ -43,6 +43,8 @@ type CopyPhase struct {
 	logger    *logger.Logger
 }
 
+const copyInsertBatchSize = 200
+
 // NewCopyPhase creates a new copy phase coordinator.
 func NewCopyPhase(
 	sourceDB *sql.DB,
@@ -59,6 +61,9 @@ func NewCopyPhase(
 	}
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
+	}
+	if log == nil {
+		log = logger.NewDefault()
 	}
 
 	return &CopyPhase{
@@ -183,23 +188,29 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 		}
 	}()
 
-	// Step 2: Prepare INSERT IGNORE statement for destination
-	// GA-P3-F3-T5: INSERT IGNORE makes the operation idempotent
-	// If a row already exists (duplicate PK), it's silently skipped
-	insertQuery := cp.buildInsertIgnoreQuery(table, columns)
-
-	stmt, err := tx.PrepareContext(ctx, insertQuery)
-	if err != nil {
-		return 0, fmt.Errorf("failed to prepare insert statement: %w", err)
-	}
-	defer func() {
-		if err := stmt.Close(); err != nil {
-			cp.logger.Warnf("Failed to close statement: %v", err)
-		}
-	}()
-
-	// Step 3: Insert rows one by one
+	// Step 2: Insert rows in batches
 	var rowsCopied int64
+	batchValues := make([]interface{}, 0, len(columns)*copyInsertBatchSize)
+	rowsInBatch := 0
+
+	flushBatch := func() error {
+		if rowsInBatch == 0 {
+			return nil
+		}
+
+		insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowsInBatch)
+		result, err := tx.ExecContext(ctx, insertQuery, batchValues...)
+		if err != nil {
+			return fmt.Errorf("failed to insert batch: %w", err)
+		}
+
+		affected, _ := result.RowsAffected()
+		rowsCopied += affected
+		batchValues = batchValues[:0]
+		rowsInBatch = 0
+		return nil
+	}
+
 	for rows.Next() {
 		// Check context cancellation
 		if err := ctx.Err(); err != nil {
@@ -217,20 +228,20 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 			return rowsCopied, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Insert into destination
-		// GA-P3-F3-T5: INSERT IGNORE will skip duplicates without error
-		result, err := stmt.ExecContext(ctx, values...)
-		if err != nil {
-			return rowsCopied, fmt.Errorf("failed to insert row: %w", err)
+		batchValues = append(batchValues, values...)
+		rowsInBatch++
+		if rowsInBatch >= copyInsertBatchSize {
+			if err := flushBatch(); err != nil {
+				return rowsCopied, err
+			}
 		}
-
-		// Check if row was actually inserted (0 if duplicate)
-		affected, _ := result.RowsAffected()
-		rowsCopied += affected
 	}
 
 	if err := rows.Err(); err != nil {
 		return rowsCopied, fmt.Errorf("error iterating rows: %w", err)
+	}
+	if err := flushBatch(); err != nil {
+		return rowsCopied, err
 	}
 
 	return rowsCopied, nil
@@ -278,6 +289,10 @@ func (cp *CopyPhase) fetchRows(ctx context.Context, table string, pks []interfac
 // GA-P3-F3-T5: INSERT IGNORE syntax for idempotent inserts
 // Example: INSERT IGNORE INTO users (id, name, email) VALUES (?, ?, ?)
 func (cp *CopyPhase) buildInsertIgnoreQuery(table string, columns []string) string {
+	return cp.buildInsertIgnoreBatchQuery(table, columns, 1)
+}
+
+func (cp *CopyPhase) buildInsertIgnoreBatchQuery(table string, columns []string, rowCount int) string {
 	// Column list: (`col1`, `col2`, `col3`)
 	quotedColumns := make([]string, len(columns))
 	for i, col := range columns {
@@ -290,14 +305,18 @@ func (cp *CopyPhase) buildInsertIgnoreQuery(table string, columns []string) stri
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
-	placeholderList := strings.Join(placeholders, ", ")
+	placeholderList := fmt.Sprintf("(%s)", strings.Join(placeholders, ", "))
+	valueTuples := make([]string, rowCount)
+	for i := 0; i < rowCount; i++ {
+		valueTuples[i] = placeholderList
+	}
 
 	// GA-P3-F3-T5: INSERT IGNORE ensures idempotency
 	return fmt.Sprintf(
-		"INSERT IGNORE INTO %s (%s) VALUES (%s)",
+		"INSERT IGNORE INTO %s (%s) VALUES %s",
 		sqlutil.QuoteIdentifier(table),
 		columnList,
-		placeholderList,
+		strings.Join(valueTuples, ", "),
 	)
 }
 

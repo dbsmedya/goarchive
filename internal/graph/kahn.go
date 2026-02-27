@@ -172,86 +172,13 @@ func (g *Graph) DetectIncompleteProcessing() *CycleInfo {
 		}
 	}
 
-	// Check if all nodes were processed
-	if len(processed) == len(g.Nodes) {
-		return nil // No cycle detected
-	}
-
-	// Collect unprocessed nodes
-	var unprocessed []string
-	for name := range g.Nodes {
-		if !processed[name] {
-			unprocessed = append(unprocessed, name)
-		}
-	}
-
-	// Build unprocessed set for cycle participant detection
-	unprocessedSet := make(map[string]bool)
-	for _, node := range unprocessed {
-		unprocessedSet[node] = true
-	}
-
-	// Find actual cycle participants
-	var cycleParticipants []string
-	for _, node := range unprocessed {
-		if g.canReachSelfInSet(node, unprocessedSet) {
-			cycleParticipants = append(cycleParticipants, node)
-		}
-	}
-
-	// Find the actual cycle path for better error messages
-	var cyclePath []string
-	if len(cycleParticipants) > 0 {
-		cyclePath = g.FindCyclePath(cycleParticipants[0], unprocessedSet)
-	}
-
-	return &CycleInfo{
-		TotalNodes:        len(g.Nodes),
-		ProcessedNodes:    len(processed),
-		UnprocessedNodes:  unprocessed,
-		CycleParticipants: cycleParticipants,
-		CyclePath:         cyclePath,
-	}
+	return g.buildCycleInfoFromProcessed(processed)
 }
 
 // HasCycle returns true if the dependency graph contains a cycle.
 // This is a convenience method that wraps DetectIncompleteProcessing.
 func (g *Graph) HasCycle() bool {
 	return g.DetectIncompleteProcessing() != nil
-}
-
-// FindCycleParticipants identifies nodes that are actually part of a cycle.
-// Unlike UnprocessedNodes which includes nodes blocked by cycles, this returns
-// only nodes that form the cycle itself. Uses DFS to detect back-edges.
-func (g *Graph) FindCycleParticipants() []string {
-	// Build set of unprocessed nodes first
-	cycleInfo := g.DetectIncompleteProcessing()
-	if cycleInfo == nil {
-		return nil // No cycles
-	}
-
-	unprocessedSet := make(map[string]bool)
-	for _, node := range cycleInfo.UnprocessedNodes {
-		unprocessedSet[node] = true
-	}
-
-	// For each unprocessed node, check if it can reach itself
-	// A node is a cycle participant if there's a path back to itself
-	participants := make(map[string]bool)
-
-	for _, startNode := range cycleInfo.UnprocessedNodes {
-		if g.canReachSelf(startNode, unprocessedSet) {
-			participants[startNode] = true
-		}
-	}
-
-	// Convert to slice
-	var result []string
-	for node := range participants {
-		result = append(result, node)
-	}
-
-	return result
 }
 
 // FindCyclePath finds the actual path that forms a cycle starting from the given node.
@@ -308,11 +235,6 @@ func (g *Graph) dfsFindPath(current, target string, visited, allowedNodes map[st
 func (g *Graph) canReachSelf(start string, allowedNodes map[string]bool) bool {
 	visited := make(map[string]bool)
 	return g.dfsCanReach(start, start, visited, allowedNodes, true)
-}
-
-// canReachSelfInSet is an alias for canReachSelf for clarity in different contexts.
-func (g *Graph) canReachSelfInSet(start string, nodeSet map[string]bool) bool {
-	return g.canReachSelf(start, nodeSet)
 }
 
 // dfsCanReach performs DFS to check if we can reach the target node.
@@ -378,7 +300,11 @@ func (g *Graph) TopologicalSort() ([]string, error) {
 	// Step 4: Check for cycles
 	// If we didn't process all nodes, there must be a cycle
 	if processed != len(g.Nodes) {
-		cycleInfo := g.DetectIncompleteProcessing()
+		processedSet := make(map[string]bool, len(result))
+		for _, node := range result {
+			processedSet[node] = true
+		}
+		cycleInfo := g.buildCycleInfoFromProcessed(processedSet)
 		return nil, &CycleError{Info: cycleInfo}
 	}
 
@@ -422,4 +348,44 @@ func (g *Graph) Validate() error {
 	}
 
 	return nil
+}
+
+// buildCycleInfoFromProcessed builds detailed cycle diagnostics from the set of processed nodes.
+// If all nodes are processed, returns nil.
+func (g *Graph) buildCycleInfoFromProcessed(processed map[string]bool) *CycleInfo {
+	if len(processed) == len(g.Nodes) {
+		return nil
+	}
+
+	var unprocessed []string
+	for name := range g.Nodes {
+		if !processed[name] {
+			unprocessed = append(unprocessed, name)
+		}
+	}
+
+	unprocessedSet := make(map[string]bool, len(unprocessed))
+	for _, node := range unprocessed {
+		unprocessedSet[node] = true
+	}
+
+	var cycleParticipants []string
+	for _, node := range unprocessed {
+		if g.canReachSelf(node, unprocessedSet) {
+			cycleParticipants = append(cycleParticipants, node)
+		}
+	}
+
+	var cyclePath []string
+	if len(cycleParticipants) > 0 {
+		cyclePath = g.FindCyclePath(cycleParticipants[0], unprocessedSet)
+	}
+
+	return &CycleInfo{
+		TotalNodes:        len(g.Nodes),
+		ProcessedNodes:    len(processed),
+		UnprocessedNodes:  unprocessed,
+		CycleParticipants: cycleParticipants,
+		CyclePath:         cyclePath,
+	}
 }

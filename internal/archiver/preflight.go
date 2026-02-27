@@ -235,6 +235,10 @@ func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, tables []str
 // GA-P4-F3-T1: Storage engine check
 func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, tables []string) error {
 	p.logger.Debug("Checking storage engines...")
+	if len(tables) == 0 {
+		p.logger.Debug("Storage engine check skipped (no tables)")
+		return nil
+	}
 
 	const query = `
 		SELECT TABLE_NAME, ENGINE
@@ -469,6 +473,10 @@ func (p *PreflightChecker) ValidateTriggers(ctx context.Context, tables []string
 //
 // GA-P4-F3-T4: DELETE trigger detection
 func (p *PreflightChecker) CheckDeleteTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
+	if len(tables) == 0 {
+		return []TriggerCheckResult{}, nil
+	}
+
 	const query = `
 		SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME
 		FROM information_schema.TRIGGERS
@@ -866,6 +874,10 @@ func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context
 
 // CheckInsertTriggers scans for INSERT triggers on destination tables.
 func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
+	if len(tables) == 0 {
+		return []TriggerCheckResult{}, nil
+	}
+
 	const query = `
 		SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME
 		FROM information_schema.TRIGGERS

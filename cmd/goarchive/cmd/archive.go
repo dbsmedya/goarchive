@@ -9,7 +9,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/lock"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
@@ -114,24 +113,8 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
-
-	// Acquire advisory lock to prevent concurrent job execution
-	if !archiveForce {
-		jobLock := lock.NewJobLock(dbManager.Source, archiveJob)
-		if err := jobLock.AcquireOrFail(ctx); err != nil {
-			if errors.Is(err, lock.ErrLockTimeout) {
-				return fmt.Errorf("job '%s' is already running on another instance (use --force to override)", archiveJob)
-			}
-			return fmt.Errorf("failed to acquire job lock: %w", err)
-		}
-		defer func() {
-			if _, err := jobLock.ReleaseLock(context.Background()); err != nil {
-				log.Errorf("Failed to release job lock: %v", err)
-			}
-		}()
-		log.Infow("Acquired advisory lock for job", "job", archiveJob)
-	} else {
-		log.Warnw("Skipping advisory lock acquisition (--force flag used)", "job", archiveJob)
+	if err := checkConcurrentJobsByRootTable(ctx, dbManager.Destination, jobCfg.RootTable, archiveJob, "archive"); err != nil {
+		return fmt.Errorf("concurrent job check failed: %w", err)
 	}
 
 	// Create orchestrator
@@ -144,11 +127,15 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("orchestrator initialization failed: %w", err)
 	}
+	orch.SetSkipLock(archiveForce)
+	if archiveForce {
+		log.Warnw("Skipping advisory lock acquisition in orchestrator (--force flag used)", "job", archiveJob)
+	}
 
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)
 	if err != nil {
-		if err == context.Canceled {
+		if errors.Is(err, context.Canceled) {
 			log.Warn("Archive operation cancelled by user")
 			return fmt.Errorf("archive operation cancelled: %w", err)
 		}

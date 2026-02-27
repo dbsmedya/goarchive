@@ -73,6 +73,15 @@ func TestNew(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "invalid file output path",
+			cfg: &config.LoggingConfig{
+				Level:  "info",
+				Format: "json",
+				Output: "/this/path/does/not/exist/goarchive.log",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -248,28 +257,54 @@ func TestBuildEncoder(t *testing.T) {
 
 func TestBuildWriters(t *testing.T) {
 	// Test stdout
-	stdoutWriter := buildWriters("stdout")
+	stdoutWriter, stdoutFile, err := buildWriters("stdout")
 	if stdoutWriter == nil {
 		t.Error("buildWriters('stdout') returned nil")
 	}
+	if err != nil {
+		t.Errorf("buildWriters('stdout') returned error: %v", err)
+	}
+	if stdoutFile != nil {
+		t.Error("buildWriters('stdout') should not return file handle")
+	}
 
 	// Test stderr
-	stderrWriter := buildWriters("stderr")
+	stderrWriter, stderrFile, err := buildWriters("stderr")
 	if stderrWriter == nil {
 		t.Error("buildWriters('stderr') returned nil")
 	}
+	if err != nil {
+		t.Errorf("buildWriters('stderr') returned error: %v", err)
+	}
+	if stderrFile != nil {
+		t.Error("buildWriters('stderr') should not return file handle")
+	}
 
 	// Test empty string (defaults to stdout)
-	emptyWriter := buildWriters("")
+	emptyWriter, emptyFile, err := buildWriters("")
 	if emptyWriter == nil {
 		t.Error("buildWriters('') returned nil")
+	}
+	if err != nil {
+		t.Errorf("buildWriters('') returned error: %v", err)
+	}
+	if emptyFile != nil {
+		t.Error("buildWriters('') should not return file handle")
 	}
 
 	// Test file output
 	tmpFile := "/tmp/test-logger-output.log"
-	fileWriter := buildWriters(tmpFile)
+	fileWriter, fileHandle, err := buildWriters(tmpFile)
 	if fileWriter == nil {
 		t.Error("buildWriters(file) returned nil")
+	}
+	if err != nil {
+		t.Errorf("buildWriters(file) returned error: %v", err)
+	}
+	if fileHandle == nil {
+		t.Error("buildWriters(file) should return file handle")
+	} else {
+		_ = fileHandle.Close()
 	}
 
 	// Cleanup

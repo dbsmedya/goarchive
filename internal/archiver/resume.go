@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -29,12 +30,19 @@ const (
 	LogStatusFailed    LogStatus = "failed"
 )
 
+const (
+	JobTypeArchive  = "archive"
+	JobTypePurge    = "purge"
+	JobTypeCopyOnly = "copy-only"
+)
+
 // GA-P3-F4-T1: Create archiver_job table
 const createJobTableSQL = `
 CREATE TABLE IF NOT EXISTS archiver_job (
 	job_name VARCHAR(255) PRIMARY KEY,
 	root_table VARCHAR(255) NOT NULL,
-	last_processed_root_pk_id BIGINT DEFAULT 0,
+	job_type VARCHAR(32) NOT NULL DEFAULT 'archive',
+	last_processed_root_pk_id VARCHAR(255) DEFAULT NULL,
 	job_status TINYINT NOT NULL DEFAULT 0,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -43,12 +51,24 @@ CREATE TABLE IF NOT EXISTS archiver_job (
 ) ENGINE=InnoDB;
 `
 
+const checkJobTypeColumnSQL = `
+SELECT COUNT(*) FROM information_schema.columns 
+WHERE table_schema = DATABASE() 
+AND table_name = 'archiver_job' 
+AND column_name = 'job_type'
+`
+
+const addJobTypeColumnSQL = `
+ALTER TABLE archiver_job
+ADD COLUMN job_type VARCHAR(32) NOT NULL DEFAULT 'archive'
+`
+
 // GA-P3-F4-T2: Create archiver_job_log table
 const createJobLogTableSQL = `
 CREATE TABLE IF NOT EXISTS archiver_job_log (
 	id BIGINT AUTO_INCREMENT PRIMARY KEY,
 	job_name VARCHAR(255) NOT NULL,
-	root_pk_id BIGINT NOT NULL,
+	root_pk_id VARCHAR(255) NOT NULL,
 	log_status VARCHAR(20) NOT NULL DEFAULT 'pending',
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -60,6 +80,30 @@ CREATE TABLE IF NOT EXISTS archiver_job_log (
 ) ENGINE=InnoDB;
 `
 
+const checkCheckpointColumnTypeSQL = `
+SELECT DATA_TYPE FROM information_schema.columns
+WHERE table_schema = DATABASE()
+AND table_name = 'archiver_job'
+AND column_name = 'last_processed_root_pk_id'
+`
+
+const alterCheckpointColumnTypeSQL = `
+ALTER TABLE archiver_job
+MODIFY COLUMN last_processed_root_pk_id VARCHAR(255) DEFAULT NULL
+`
+
+const checkLogPKColumnTypeSQL = `
+SELECT DATA_TYPE FROM information_schema.columns
+WHERE table_schema = DATABASE()
+AND table_name = 'archiver_job_log'
+AND column_name = 'root_pk_id'
+`
+
+const alterLogPKColumnTypeSQL = `
+ALTER TABLE archiver_job_log
+MODIFY COLUMN root_pk_id VARCHAR(255) NOT NULL
+`
+
 // JobState represents a job's current state.
 //
 // GA-P3-F4-T6: Checkpoint query support
@@ -67,7 +111,8 @@ CREATE TABLE IF NOT EXISTS archiver_job_log (
 type JobState struct {
 	JobName               string
 	RootTable             string
-	LastProcessedRootPKID int64
+	JobType               string
+	LastProcessedRootPKID string
 	Status                JobStatus
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
@@ -81,7 +126,7 @@ type JobState struct {
 type LogEntry struct {
 	ID           int64
 	JobName      string
-	RootPKID     int64
+	RootPKID     string
 	LogStatus    LogStatus
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -131,9 +176,42 @@ func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 		return fmt.Errorf("failed to create archiver_job table: %w", err)
 	}
 
+	// Check if job_type column exists, add if not
+	var columnExists int
+	err := r.db.QueryRowContext(ctx, checkJobTypeColumnSQL).Scan(&columnExists)
+	if err != nil {
+		return fmt.Errorf("failed to check job_type column: %w", err)
+	}
+	if columnExists == 0 {
+		if _, err := r.db.ExecContext(ctx, addJobTypeColumnSQL); err != nil {
+			return fmt.Errorf("failed to migrate archiver_job.job_type: %w", err)
+		}
+		r.logger.Debug("Added job_type column to archiver_job table")
+	}
+
+	var checkpointType string
+	if err := r.db.QueryRowContext(ctx, checkCheckpointColumnTypeSQL).Scan(&checkpointType); err != nil {
+		return fmt.Errorf("failed to check checkpoint column type: %w", err)
+	}
+	if checkpointType != "varchar" {
+		if _, err := r.db.ExecContext(ctx, alterCheckpointColumnTypeSQL); err != nil {
+			return fmt.Errorf("failed to migrate checkpoint column type: %w", err)
+		}
+	}
+
 	// GA-P3-F4-T2: Create archiver_job_log table (idempotent)
 	if _, err := r.db.ExecContext(ctx, createJobLogTableSQL); err != nil {
 		return fmt.Errorf("failed to create archiver_job_log table: %w", err)
+	}
+
+	var logPKType string
+	if err := r.db.QueryRowContext(ctx, checkLogPKColumnTypeSQL).Scan(&logPKType); err != nil {
+		return fmt.Errorf("failed to check log root_pk_id column type: %w", err)
+	}
+	if logPKType != "varchar" {
+		if _, err := r.db.ExecContext(ctx, alterLogPKColumnTypeSQL); err != nil {
+			return fmt.Errorf("failed to migrate log root_pk_id column type: %w", err)
+		}
 	}
 
 	r.logger.Info("Resume log tables initialized")
@@ -148,19 +226,28 @@ func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 // GA-P3-F4-T6: Checkpoint query
 // GA-P3-F4-T7: Resume detection
 func (r *ResumeManager) GetOrCreateJob(ctx context.Context, jobName, rootTable string) (*JobState, error) {
+	return r.GetOrCreateJobWithType(ctx, jobName, rootTable, JobTypeArchive)
+}
+
+// GetOrCreateJobWithType retrieves an existing job or creates a new one with expected job type.
+func (r *ResumeManager) GetOrCreateJobWithType(ctx context.Context, jobName, rootTable, jobType string) (*JobState, error) {
+	if jobType == "" {
+		jobType = JobTypeArchive
+	}
+
 	// Try to get existing job
 	var state JobState
 	err := r.db.QueryRowContext(ctx,
-		"SELECT job_name, root_table, last_processed_root_pk_id, job_status, created_at, updated_at FROM archiver_job WHERE job_name = ?",
+		"SELECT job_name, root_table, job_type, last_processed_root_pk_id, job_status, created_at, updated_at FROM archiver_job WHERE job_name = ?",
 		jobName,
-	).Scan(&state.JobName, &state.RootTable, &state.LastProcessedRootPKID, &state.Status, &state.CreatedAt, &state.UpdatedAt)
+	).Scan(&state.JobName, &state.RootTable, &state.JobType, &state.LastProcessedRootPKID, &state.Status, &state.CreatedAt, &state.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		// GA-P3-F4-T7: No existing job - create new one
 		r.logger.Infof("Creating new job %q for root table %q", jobName, rootTable)
 		_, err = r.db.ExecContext(ctx,
-			"INSERT INTO archiver_job (job_name, root_table, job_status) VALUES (?, ?, ?)",
-			jobName, rootTable, JobStatusIdle,
+			"INSERT INTO archiver_job (job_name, root_table, job_type, job_status) VALUES (?, ?, ?, ?)",
+			jobName, rootTable, jobType, JobStatusIdle,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create job: %w", err)
@@ -169,7 +256,8 @@ func (r *ResumeManager) GetOrCreateJob(ctx context.Context, jobName, rootTable s
 		return &JobState{
 			JobName:               jobName,
 			RootTable:             rootTable,
-			LastProcessedRootPKID: 0,
+			JobType:               jobType,
+			LastProcessedRootPKID: "",
 			Status:                JobStatusIdle,
 		}, nil
 	}
@@ -177,10 +265,16 @@ func (r *ResumeManager) GetOrCreateJob(ctx context.Context, jobName, rootTable s
 	if err != nil {
 		return nil, fmt.Errorf("failed to get job: %w", err)
 	}
+	if state.JobType == "" {
+		state.JobType = JobTypeArchive
+	}
+	if state.JobType != jobType {
+		return nil, fmt.Errorf("job %q exists with type %q, expected %q", jobName, state.JobType, jobType)
+	}
 
 	// GA-P3-F4-T7: Existing job found - resume detection
-	if state.LastProcessedRootPKID > 0 {
-		r.logger.Infof("Resuming job %q from checkpoint PK=%d", jobName, state.LastProcessedRootPKID)
+	if state.LastProcessedRootPKID != "" {
+		r.logger.Infof("Resuming job %q from checkpoint PK=%q", jobName, state.LastProcessedRootPKID)
 	} else {
 		r.logger.Infof("Job %q exists with no checkpoint (starting from beginning)", jobName)
 	}
@@ -206,16 +300,21 @@ func (r *ResumeManager) UpdateJobStatus(ctx context.Context, jobName string, sta
 //
 // GA-P3-F4-T6: Checkpoint query
 // GA-P3-F4-T8: Resume from checkpoint
-func (r *ResumeManager) UpdateCheckpoint(ctx context.Context, jobName string, lastPKID int64) error {
-	_, err := r.db.ExecContext(ctx,
+func (r *ResumeManager) UpdateCheckpoint(ctx context.Context, jobName string, lastPKID interface{}) error {
+	pk, err := formatPK(lastPKID)
+	if err != nil {
+		return fmt.Errorf("invalid checkpoint PK: %w", err)
+	}
+
+	_, err = r.db.ExecContext(ctx,
 		"UPDATE archiver_job SET last_processed_root_pk_id = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
-		lastPKID, jobName,
+		pk, jobName,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update checkpoint: %w", err)
 	}
 
-	r.logger.Debugf("Job %q checkpoint updated to PK=%d", jobName, lastPKID)
+	r.logger.Debugf("Job %q checkpoint updated to PK=%q", jobName, pk)
 	return nil
 }
 
@@ -245,19 +344,13 @@ func (r *ResumeManager) LogBatchPending(ctx context.Context, jobName string, roo
 
 	// GA-P3-F4-T3: Insert pending entries for each root PK
 	for _, pk := range rootPKs {
-		// Convert interface{} to int64 (assuming numeric PKs)
-		var pkID int64
-		switch v := pk.(type) {
-		case int64:
-			pkID = v
-		case int:
-			pkID = int64(v)
-		default:
-			return fmt.Errorf("unsupported PK type: %T", pk)
+		pkID, err := formatPK(pk)
+		if err != nil {
+			return fmt.Errorf("unsupported PK type %T: %w", pk, err)
 		}
 
 		if _, err := stmt.ExecContext(ctx, jobName, pkID, LogStatusPending); err != nil {
-			return fmt.Errorf("failed to log pending PK=%d: %w", pkID, err)
+			return fmt.Errorf("failed to log pending PK=%q: %w", pkID, err)
 		}
 	}
 
@@ -268,39 +361,49 @@ func (r *ResumeManager) LogBatchPending(ctx context.Context, jobName string, roo
 // MarkCompleted updates a log entry to 'completed' status.
 //
 // GA-P3-F4-T4: Update to completed
-func (r *ResumeManager) MarkCompleted(ctx context.Context, jobName string, rootPKID int64) error {
-	_, err := r.db.ExecContext(ctx,
-		"UPDATE archiver_job_log SET log_status = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ? AND root_pk_id = ?",
-		LogStatusCompleted, jobName, rootPKID,
-	)
+func (r *ResumeManager) MarkCompleted(ctx context.Context, jobName string, rootPKID interface{}) error {
+	pk, err := formatPK(rootPKID)
 	if err != nil {
-		return fmt.Errorf("failed to mark PK=%d completed: %w", rootPKID, err)
+		return fmt.Errorf("invalid completion PK: %w", err)
 	}
 
-	r.logger.Debugf("Marked PK=%d completed for job %q", rootPKID, jobName)
+	_, err = r.db.ExecContext(ctx,
+		"UPDATE archiver_job_log SET log_status = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ? AND root_pk_id = ?",
+		LogStatusCompleted, jobName, pk,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark PK=%q completed: %w", pk, err)
+	}
+
+	r.logger.Debugf("Marked PK=%q completed for job %q", pk, jobName)
 	return nil
 }
 
 // MarkFailed updates a log entry to 'failed' status with error message.
 //
 // GA-P3-F4-T5: Update to failed
-func (r *ResumeManager) MarkFailed(ctx context.Context, jobName string, rootPKID int64, errorMsg string) error {
-	_, err := r.db.ExecContext(ctx,
-		"UPDATE archiver_job_log SET log_status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ? AND root_pk_id = ?",
-		LogStatusFailed, errorMsg, jobName, rootPKID,
-	)
+func (r *ResumeManager) MarkFailed(ctx context.Context, jobName string, rootPKID interface{}, errorMsg string) error {
+	pk, err := formatPK(rootPKID)
 	if err != nil {
-		return fmt.Errorf("failed to mark PK=%d failed: %w", rootPKID, err)
+		return fmt.Errorf("invalid failed PK: %w", err)
 	}
 
-	r.logger.Warnf("Marked PK=%d failed for job %q: %s", rootPKID, jobName, errorMsg)
+	_, err = r.db.ExecContext(ctx,
+		"UPDATE archiver_job_log SET log_status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ? AND root_pk_id = ?",
+		LogStatusFailed, errorMsg, jobName, pk,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to mark PK=%q failed: %w", pk, err)
+	}
+
+	r.logger.Warnf("Marked PK=%q failed for job %q: %s", pk, jobName, errorMsg)
 	return nil
 }
 
 // GetPendingPKs retrieves all pending root PKs for a job (for reprocessing).
 //
 // GA-P3-F4-T9: Reprocess pending
-func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]int64, error) {
+func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx,
 		"SELECT root_pk_id FROM archiver_job_log WHERE job_name = ? AND log_status = ? ORDER BY root_pk_id ASC",
 		jobName, LogStatusPending,
@@ -314,9 +417,9 @@ func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]in
 		}
 	}()
 
-	var pks []int64
+	var pks []string
 	for rows.Next() {
-		var pk int64
+		var pk string
 		if err := rows.Scan(&pk); err != nil {
 			return nil, fmt.Errorf("failed to scan pending PK: %w", err)
 		}
@@ -339,8 +442,8 @@ func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]in
 //
 // GA-P3-F4-T6: Checkpoint query
 // GA-P3-F4-T8: Resume from checkpoint
-func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (int64, error) {
-	var checkpoint int64
+func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (string, error) {
+	var checkpoint sql.NullString
 	err := r.db.QueryRowContext(ctx,
 		"SELECT last_processed_root_pk_id FROM archiver_job WHERE job_name = ?",
 		jobName,
@@ -348,14 +451,14 @@ func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (int6
 
 	if err == sql.ErrNoRows {
 		// No job exists - start from 0
-		return 0, nil
+		return "", nil
 	}
 
 	if err != nil {
-		return 0, fmt.Errorf("failed to get checkpoint: %w", err)
+		return "", fmt.Errorf("failed to get checkpoint: %w", err)
 	}
 
-	return checkpoint, nil
+	return checkpoint.String, nil
 }
 
 // ShouldResume checks if a job needs resumption (has pending work).
@@ -368,14 +471,22 @@ func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (int6
 // GA-P3-F4-T8: Resume from checkpoint
 // GA-P3-F4-T9: Reprocess pending
 func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool, error) {
-	state, err := r.GetOrCreateJob(ctx, jobName, "")
+	var checkpoint sql.NullString
+	err := r.db.QueryRowContext(ctx,
+		"SELECT last_processed_root_pk_id FROM archiver_job WHERE job_name = ?",
+		jobName,
+	).Scan(&checkpoint)
+	if err == sql.ErrNoRows {
+		r.logger.Infof("Job %q has no existing resume metadata, starting fresh", jobName)
+		return false, nil
+	}
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to get job state for resume check: %w", err)
 	}
 
 	// Check for checkpoint
-	if state.LastProcessedRootPKID > 0 {
-		r.logger.Infof("Job %q has checkpoint PK=%d, resumption required", jobName, state.LastProcessedRootPKID)
+	if checkpoint.Valid && checkpoint.String != "" {
+		r.logger.Infof("Job %q has checkpoint PK=%q, resumption required", jobName, checkpoint.String)
 		return true, nil
 	}
 
@@ -437,4 +548,39 @@ func (r *ResumeManager) GetStats(ctx context.Context, jobName string) (pending, 
 // SetLogger sets a custom logger for the resume manager.
 func (r *ResumeManager) SetLogger(log *logger.Logger) {
 	r.logger = log
+}
+
+func formatPK(pk interface{}) (string, error) {
+	switch v := pk.(type) {
+	case nil:
+		return "", fmt.Errorf("pk is nil")
+	case string:
+		return v, nil
+	case []byte:
+		return string(v), nil
+	case int:
+		return strconv.Itoa(v), nil
+	case int8:
+		return strconv.FormatInt(int64(v), 10), nil
+	case int16:
+		return strconv.FormatInt(int64(v), 10), nil
+	case int32:
+		return strconv.FormatInt(int64(v), 10), nil
+	case int64:
+		return strconv.FormatInt(v, 10), nil
+	case uint:
+		return strconv.FormatUint(uint64(v), 10), nil
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10), nil
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10), nil
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), nil
+	case uint64:
+		return strconv.FormatUint(v, 10), nil
+	case fmt.Stringer:
+		return v.String(), nil
+	default:
+		return "", fmt.Errorf("unsupported pk type: %T", pk)
+	}
 }

@@ -90,7 +90,7 @@ func syncLogger(log *logger.Logger) {
 	if log == nil {
 		return
 	}
-	if err := log.Sync(); err != nil {
+	if err := log.Close(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: failed to sync logger: %v\n", err)
 	}
 }

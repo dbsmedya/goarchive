@@ -81,6 +81,19 @@ func TestNewCopyPhase_Validation(t *testing.T) {
 	}
 }
 
+func TestNewCopyPhase_NilLoggerDefaults(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, _, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph()
+	cp, err := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, cp)
+	require.NotNil(t, cp.logger)
+}
+
 func TestCopyPhase_TransactionBeginError(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -169,8 +182,7 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "email"}).
 			AddRow(1, "Alice", "alice@example.com"))
 
-	// Mock destination prepare and insert
-	destMock.ExpectPrepare("INSERT IGNORE INTO `customers`")
+	// Mock destination insert
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -219,7 +231,6 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
-	destMock.ExpectPrepare("INSERT IGNORE INTO `customers`")
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -229,7 +240,6 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 		WithArgs(int64(101)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "customer_id", "total"}).
 			AddRow(101, 1, 100.50))
-	destMock.ExpectPrepare("INSERT IGNORE INTO `orders`")
 	destMock.ExpectExec("INSERT IGNORE INTO `orders`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -347,8 +357,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
 
-	// Mock prepare success but exec failure on destination insert
-	destMock.ExpectPrepare("INSERT IGNORE INTO `customers`")
+	// Mock exec failure on destination insert
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnError(sql.ErrTxDone)
@@ -417,7 +426,6 @@ func TestCopyPhase_CommitError(t *testing.T) {
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
-	destMock.ExpectPrepare("INSERT IGNORE INTO `customers`")
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))

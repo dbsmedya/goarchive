@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql" // MySQL driver
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 )
@@ -39,6 +39,13 @@ func NewManager(cfg *config.Config) *Manager {
 
 // Connect establishes connections to all configured databases.
 func (m *Manager) Connect(ctx context.Context) error {
+	if m == nil {
+		return fmt.Errorf("database manager is nil")
+	}
+	if m.config == nil {
+		return fmt.Errorf("database manager config is nil")
+	}
+
 	var err error
 
 	if err := m.closeExistingConnections(); err != nil {
@@ -83,6 +90,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 // ConnectSource establishes connection to source database only.
 // Use this when only source access is needed (e.g., purge operations).
 func (m *Manager) ConnectSource(ctx context.Context) error {
+	if m == nil {
+		return fmt.Errorf("database manager is nil")
+	}
+	if m.config == nil {
+		return fmt.Errorf("database manager config is nil")
+	}
+
 	var err error
 
 	if err := m.closeExistingConnections(); err != nil {
@@ -164,30 +178,26 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
-	// Format: user:password@tcp(host:port)/database?params
-	address := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	dsn := fmt.Sprintf("%s:%s@tcp(%s)/",
-		cfg.User,
-		cfg.Password,
-		address,
-	)
-
-	if cfg.Database != "" {
-		dsn += cfg.Database
+	dsnCfg := mysql.Config{
+		User:            cfg.User,
+		Passwd:          cfg.Password,
+		Net:             "tcp",
+		Addr:            net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
+		DBName:          cfg.Database,
+		ParseTime:       true,
+		MultiStatements: true,
 	}
 
-	// Add TLS configuration
-	params := "?parseTime=true&multiStatements=true"
 	switch cfg.TLS {
 	case "disable":
-		params += "&tls=false"
+		dsnCfg.TLSConfig = "false"
 	case "required":
-		params += "&tls=true"
+		dsnCfg.TLSConfig = "true"
 	case "preferred", "":
-		params += "&tls=preferred"
+		dsnCfg.TLSConfig = "preferred"
 	}
 
-	return dsn + params
+	return dsnCfg.FormatDSN()
 }
 
 // GetConfig returns the configuration used by this manager.

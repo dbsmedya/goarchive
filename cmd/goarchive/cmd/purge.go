@@ -5,15 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/lock"
 	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -75,9 +71,6 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Get effective processing config for this job
-	processingCfg := jobCfg.GetJobProcessing(cfg.Processing)
-
 	// Initialize logger
 	log, err := logger.New(&cfg.Logging)
 	if err != nil {
@@ -90,17 +83,24 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		"config", configFile,
 	)
 
-	// Create database manager (source only, no destination needed)
+	// Create database manager
 	dbManager := database.NewManager(cfg)
 
 	// Setup context with signal handling
-	ctx := database.SetupSignalHandlerWithCallback(func(_ os.Signal) {
-		log.Warn("Received shutdown signal - completing current batch...")
-	})
+	ctx := database.SetupSignalHandlerWithSecondSignal(
+		func(_ os.Signal) {
+			log.Warn("Received shutdown signal - completing current batch...")
+		},
+		func(_ os.Signal) {
+			log.Error("Received second shutdown signal - forcing immediate exit")
+			syncLogger(log)
+			os.Exit(130)
+		},
+	)
 
-	// Connect to source database only (purge doesn't need destination)
-	if err := dbManager.ConnectSource(ctx); err != nil {
-		return fmt.Errorf("failed to connect to source database: %w", err)
+	// Connect to databases (destination needed for cross-command concurrency checks)
+	if err := dbManager.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect to databases: %w", err)
 	}
 	defer func() {
 		if err := dbManager.Close(); err != nil {
@@ -108,167 +108,40 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// Test source connection
+	// Test connections
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
-
-	// Acquire advisory lock to prevent concurrent job execution
-	if !purgeForce {
-		jobLock := lock.NewJobLock(dbManager.Source, purgeJob)
-		if err := jobLock.AcquireOrFail(ctx); err != nil {
-			if errors.Is(err, lock.ErrLockTimeout) {
-				return fmt.Errorf("job '%s' is already running on another instance (use --force to override)", purgeJob)
-			}
-			return fmt.Errorf("failed to acquire job lock: %w", err)
-		}
-		defer func() {
-			if _, err := jobLock.ReleaseLock(context.Background()); err != nil {
-				log.Errorf("Failed to release job lock: %v", err)
-			}
-		}()
-		log.Infow("Acquired advisory lock for job", "job", purgeJob)
-	} else {
-		log.Warnw("Skipping advisory lock acquisition (--force flag used)", "job", purgeJob)
+	if err := checkConcurrentJobsByRootTable(ctx, dbManager.Destination, jobCfg.RootTable, purgeJob, "purge"); err != nil {
+		return fmt.Errorf("concurrent job check failed: %w", err)
 	}
 
-	// Build graph
-	builder := graph.NewBuilder(jobCfg)
-	g, err := builder.Build()
+	orch, err := archiver.NewPurgeOrchestrator(cfg, purgeJob, jobCfg, dbManager)
 	if err != nil {
-		return fmt.Errorf("failed to build dependency graph: %w", err)
+		return fmt.Errorf("failed to create purge orchestrator: %w", err)
 	}
-
-	if g.HasCycle() {
-		return fmt.Errorf("dependency cycle detected in graph")
+	if err := orch.Initialize(); err != nil {
+		return fmt.Errorf("purge orchestrator initialization failed: %w", err)
 	}
-
-	// Initialize resume manager
-	resumeMgr, err := archiver.NewResumeManager(dbManager.Source, log)
+	orch.SetSkipLock(purgeForce)
+	if purgeForce {
+		log.Warnw("Skipping advisory lock acquisition in orchestrator (--force flag used)", "job", purgeJob)
+	}
+	result, err := orch.Execute(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to create resume manager: %w", err)
-	}
-	if err := resumeMgr.InitializeTables(ctx); err != nil {
-		return fmt.Errorf("failed to initialize resume tables: %w", err)
-	}
-
-	// Get or create job
-	jobState, err := resumeMgr.GetOrCreateJob(ctx, purgeJob, jobCfg.RootTable)
-	if err != nil {
-		return fmt.Errorf("failed to get/create job: %w", err)
-	}
-
-	// Create components (discovery and delete only)
-	rootPKColumn := g.GetPK(jobCfg.RootTable)
-	fetcher := archiver.NewRootIDFetcher(
-		dbManager.Source,
-		jobCfg.RootTable,
-		rootPKColumn,
-		jobCfg.Where,
-		processingCfg.BatchSize,
-		jobState.LastProcessedRootPKID,
-	)
-
-	discovery, err := archiver.NewRecordDiscovery(g, dbManager.Source, processingCfg.BatchSize)
-	if err != nil {
-		return fmt.Errorf("failed to create record discovery: %w", err)
-	}
-
-	deletePhase, err := archiver.NewDeletePhase(
-		dbManager.Source,
-		g,
-		processingCfg.BatchDeleteSize,
-		log,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create delete phase: %w", err)
-	}
-
-	// Purge loop (discovery + delete, no copy/verify)
-	batchNum := 0
-	totalDeleted := int64(0)
-	startTime := time.Now()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("Purge operation cancelled")
-			return fmt.Errorf("purge operation cancelled: %w", ctx.Err())
-		default:
+		if errors.Is(err, context.Canceled) {
+			log.Warn("Purge operation cancelled by user")
+			return fmt.Errorf("purge operation cancelled: %w", err)
 		}
-
-		// Fetch next batch
-		rootIDs, err := fetcher.FetchNextBatch(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to fetch root IDs: %w", err)
-		}
-
-		if len(rootIDs) == 0 {
-			log.Info("No more root IDs to process - purge complete")
-			break
-		}
-
-		batchNum++
-		log.Infow("Processing purge batch",
-			"batch", batchNum,
-			"root_ids", len(rootIDs),
-		)
-
-		// Process each root ID
-		for _, rootID := range rootIDs {
-			rootPKID := types.ToInt64(rootID)
-
-			// Discovery phase (BFS)
-			discovered, err := discovery.Discover(ctx, []interface{}{rootID})
-			if err != nil {
-				if markErr := resumeMgr.MarkFailed(ctx, purgeJob, rootPKID, err.Error()); markErr != nil {
-					log.Errorf("Failed to mark root PK as failed: %v", markErr)
-				}
-				return fmt.Errorf("discovery failed: %w", err)
-			}
-
-			// Convert to archiver.RecordSet
-			recordSet := &archiver.RecordSet{
-				RootPKs: discovered.RootPKs,
-				Records: discovered.Records,
-			}
-
-			// Delete phase (NO COPY, NO VERIFY)
-			deleteStats, err := deletePhase.Delete(ctx, recordSet)
-			if err != nil {
-				if markErr := resumeMgr.MarkFailed(ctx, purgeJob, rootPKID, err.Error()); markErr != nil {
-					log.Errorf("Failed to mark root PK as failed: %v", markErr)
-				}
-				return fmt.Errorf("delete failed: %w", err)
-			}
-
-			// Update checkpoint
-			if err := resumeMgr.UpdateCheckpoint(ctx, purgeJob, rootPKID); err != nil {
-				return fmt.Errorf("checkpoint update failed: %w", err)
-			}
-
-			// Mark as completed
-			if err := resumeMgr.MarkCompleted(ctx, purgeJob, rootPKID); err != nil {
-				return fmt.Errorf("failed to mark completed: %w", err)
-			}
-
-			totalDeleted += deleteStats.RowsDeleted
-		}
-
-		// Sleep between batches
-		if processingCfg.SleepSeconds > 0 {
-			time.Sleep(time.Duration(processingCfg.SleepSeconds * float64(time.Second)))
-		}
+		return fmt.Errorf("purge operation failed: %w", err)
 	}
-
-	duration := time.Since(startTime)
 
 	// Display results
 	fmt.Printf("\n=== Purge Complete ===\n")
-	fmt.Printf("Job: %s\n", purgeJob)
-	fmt.Printf("Duration: %s\n", duration)
-	fmt.Printf("Batches processed: %d\n", batchNum)
-	fmt.Printf("Records deleted: %d\n", totalDeleted)
+	fmt.Printf("Job: %s\n", result.JobName)
+	fmt.Printf("Duration: %s\n", result.Duration)
+	fmt.Printf("Batches processed: %d\n", result.BatchesProcessed)
+	fmt.Printf("Records deleted: %d\n", result.RecordsDeleted)
 	fmt.Println("\nℹ️  No data was copied (purge mode)")
 
 	return nil

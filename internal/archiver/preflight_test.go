@@ -409,6 +409,23 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 	}
 }
 
+func TestValidateStorageEngine_EmptyTables(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	err := checker.ValidateStorageEngine(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("expected no error for empty tables, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected query execution: %v", err)
+	}
+}
+
 // ============================================================================
 // ValidateForeignKeyIndexes Tests
 // ============================================================================
@@ -604,6 +621,26 @@ func TestCheckDeleteTriggers_Empty(t *testing.T) {
 
 	if len(triggers) != 0 {
 		t.Errorf("Expected 0 triggers, got %d", len(triggers))
+	}
+}
+
+func TestCheckDeleteTriggers_EmptyTablesInput(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	triggers, err := checker.CheckDeleteTriggers(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("expected no error for empty tables, got: %v", err)
+	}
+	if len(triggers) != 0 {
+		t.Fatalf("expected no triggers, got %d", len(triggers))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected query execution: %v", err)
 	}
 }
 
@@ -824,6 +861,29 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	}
 	if preflightErr.Check != "DEST_INSERT_TRIGGER_CHECK" {
 		t.Fatalf("Expected DEST_INSERT_TRIGGER_CHECK, got %s", preflightErr.Check)
+	}
+}
+
+func TestCheckInsertTriggers_EmptyTablesInput(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	triggers, err := checker.CheckInsertTriggers(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("expected no error for empty tables, got: %v", err)
+	}
+	if len(triggers) != 0 {
+		t.Fatalf("expected no triggers, got %d", len(triggers))
+	}
+	if err := destMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected query execution: %v", err)
 	}
 }
 

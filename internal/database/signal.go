@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // SetupSignalHandler creates a context that is canceled on SIGTERM or SIGINT.
@@ -13,7 +14,8 @@ import (
 // The database manager should listen to this context and close connections
 // when the context is cancelled.
 func SetupSignalHandler() context.Context {
-	ctx, _ := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	context.AfterFunc(ctx, stop)
 	return ctx
 }
 
@@ -41,8 +43,14 @@ func SetupSignalHandlerWithSecondSignal(onFirst, onSecond func(os.Signal)) conte
 			}
 			cancel()
 			if onSecond != nil {
-				if sig2 := <-sigChan; sig2 != nil {
-					onSecond(sig2)
+				timer := time.NewTimer(30 * time.Second)
+				defer timer.Stop()
+				select {
+				case sig2 := <-sigChan:
+					if sig2 != nil {
+						onSecond(sig2)
+					}
+				case <-timer.C:
 				}
 			}
 		case <-ctx.Done():

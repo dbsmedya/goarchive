@@ -1,10 +1,10 @@
-# GoArchive - MySQL Batch Archiver & Purger
+# GoArchive - MySQL Batch Archiver, Copier & Purger
 
 [![Go Version](https://img.shields.io/badge/Go-1.21+-blue)](https://golang.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-GoArchive is a Go-based CLI tool designed for archiving MySQL relational data across servers. It features automatic dependency resolution, crash recovery, and replication lag monitoring.
+GoArchive is a Go-based CLI tool designed for archiving MySQL relational data across servers. It features automatic dependency resolution, crash recovery, replication lag monitoring, and a `copy-only` mode that never deletes source data.
 
 ## The Philosophy
 
@@ -81,7 +81,7 @@ GoArchive intentionally treats configuration files as **operator-controlled and 
 
 ## ⚠️ Important Disclaimer
 
-This tool performs data deletion operations on your source database. 
+This tool can perform data deletion operations on your source database (`archive`, `purge`). 
 - **Testing**: Always test your archive jobs on a staging system with a representative data set first.
 - **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
 - **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
@@ -213,6 +213,12 @@ goarchive dry-run -c archiver.yaml --job archive_old_orders
 # Execute archive (copy to destination, then delete from source)
 goarchive archive -c archiver.yaml --job archive_old_orders
 
+# Copy-only (copy to destination, never delete from source)
+goarchive copy-only -c archiver.yaml --job archive_old_orders
+
+# Copy-only force mode (shows confirmation prompt before bypassing duplicate preflight)
+goarchive copy-only -c archiver.yaml --job archive_old_orders --force
+
 # Purge only (delete without copying - USE WITH CAUTION!)
 goarchive purge -c archiver.yaml --job archive_old_orders
 ```
@@ -222,6 +228,7 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 | Command | Description |
 |---------|-------------|
 | `archive` | Full archive workflow: discover → copy → verify → delete |
+| `copy-only` | Copy + verify workflow without source deletion (prompts only with `--force`) |
 | `purge` | Delete-only mode for data cleanup without archiving |
 | `dry-run` | Preview execution plan with row count estimates |
 | `validate` | Run configuration validation and preflight checks |
@@ -240,6 +247,9 @@ goarchive purge -c archiver.yaml --job archive_old_orders
       --sleep float         Override seconds between batches
       --skip-verify         Skip data verification after copy
 ```
+
+> [!NOTE]
+> `--batch-delete-size` is not supported by `copy-only` and will return an error if provided.
 
 ## Architecture
 
@@ -279,7 +289,7 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 1. **Preflight Checks** - Validate configuration, check triggers, verify InnoDB
 2. **Graph Build** - Parse table relations → Kahn's algorithm → copy order (parent-first), delete order (child-first)
 3. **Batch Loop** - Fetch root IDs → BFS discovery → copy transaction → verify → delete
-4. **Safety** - Advisory locks prevent concurrent jobs; replication lag monitoring pauses processing
+4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; replication lag monitoring pauses processing
 
 ### Key Components
 

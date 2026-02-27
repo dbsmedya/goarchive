@@ -64,6 +64,9 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	// Apply CLI overrides
 	overrides := GetCLIOverrides()
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.BatchSize, overrides.BatchDeleteSize, overrides.SleepSeconds, overrides.SkipVerify)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Find the job in configuration
 	jobValue, exists := cfg.Jobs[planJob]
@@ -128,11 +131,17 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	printSection("Detected Relationships")
 	for _, edge := range g.AllEdges() {
 		meta := g.GetEdgeMeta(edge.From, edge.To)
+		dependencyType := "unknown"
+		foreignKey := "unknown"
+		if meta != nil {
+			dependencyType = meta.DependencyType
+			foreignKey = meta.ForeignKey
+		}
 		fmt.Printf("  • %s → %s (%s) FK: %s\n",
 			edge.From,
 			edge.To,
-			meta.DependencyType,
-			meta.ForeignKey,
+			dependencyType,
+			foreignKey,
 		)
 	}
 
@@ -185,6 +194,10 @@ func printSection(title string) {
 // printOrderItem prints a table in the copy/delete order list
 func printOrderItem(num int, table string, node *graph.Node, isDelete bool) {
 	numStr := fmt.Sprintf("[%d]", num)
+	if node == nil {
+		_, _ = fmt.Fprintf(outputWriter, "  %s %s\n", numStr, table)
+		return
+	}
 
 	if node.IsRoot {
 		_, _ = fmt.Fprintf(outputWriter, "  %s %s (root)\n", numStr, table)

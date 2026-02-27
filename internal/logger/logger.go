@@ -2,7 +2,9 @@
 package logger
 
 import (
+	"errors"
 	"os"
+	"sync"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -13,14 +15,19 @@ import (
 // Logger wraps zap.SugaredLogger with context methods.
 type Logger struct {
 	*zap.SugaredLogger
-	base *zap.Logger
+	base      *zap.Logger
+	logFile   *os.File
+	closeOnce *sync.Once
 }
 
 // New creates a new Logger from configuration.
 func New(cfg *config.LoggingConfig) (*Logger, error) {
 	level := parseLevel(cfg.Level)
 	encoder := buildEncoder(cfg.Format)
-	writers := buildWriters(cfg.Output)
+	writers, logFile, err := buildWriters(cfg.Output)
+	if err != nil {
+		return nil, err
+	}
 
 	core := zapcore.NewCore(encoder, writers, level)
 	baseLogger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
@@ -28,6 +35,8 @@ func New(cfg *config.LoggingConfig) (*Logger, error) {
 	return &Logger{
 		SugaredLogger: baseLogger.Sugar(),
 		base:          baseLogger,
+		logFile:       logFile,
+		closeOnce:     &sync.Once{},
 	}, nil
 }
 
@@ -85,24 +94,23 @@ func buildEncoder(format string) zapcore.Encoder {
 }
 
 // buildWriters creates the output writers based on configuration.
-func buildWriters(output string) zapcore.WriteSyncer {
+func buildWriters(output string) (zapcore.WriteSyncer, *os.File, error) {
 	switch output {
 	case "stdout", "":
-		return zapcore.AddSync(os.Stdout)
+		return zapcore.AddSync(os.Stdout), nil, nil
 	case "stderr":
-		return zapcore.AddSync(os.Stderr)
+		return zapcore.AddSync(os.Stderr), nil, nil
 	default:
 		// File output
 		file, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			// Fall back to stdout
-			return zapcore.AddSync(os.Stdout)
+			return nil, nil, err
 		}
 		// Write to both file and stdout
 		return zapcore.NewMultiWriteSyncer(
 			zapcore.AddSync(file),
 			zapcore.AddSync(os.Stdout),
-		)
+		), file, nil
 	}
 }
 
@@ -111,6 +119,8 @@ func (l *Logger) WithJob(jobName string) *Logger {
 	return &Logger{
 		SugaredLogger: l.With("job", jobName),
 		base:          l.base,
+		logFile:       l.logFile,
+		closeOnce:     l.closeOnce,
 	}
 }
 
@@ -119,6 +129,8 @@ func (l *Logger) WithBatch(batchNum int) *Logger {
 	return &Logger{
 		SugaredLogger: l.With("batch", batchNum),
 		base:          l.base,
+		logFile:       l.logFile,
+		closeOnce:     l.closeOnce,
 	}
 }
 
@@ -127,6 +139,8 @@ func (l *Logger) WithTable(tableName string) *Logger {
 	return &Logger{
 		SugaredLogger: l.With("table", tableName),
 		base:          l.base,
+		logFile:       l.logFile,
+		closeOnce:     l.closeOnce,
 	}
 }
 
@@ -139,10 +153,30 @@ func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
 	return &Logger{
 		SugaredLogger: l.With(args...),
 		base:          l.base,
+		logFile:       l.logFile,
+		closeOnce:     l.closeOnce,
 	}
 }
 
 // Sync flushes any buffered log entries.
 func (l *Logger) Sync() error {
 	return l.base.Sync()
+}
+
+// Close flushes buffered logs and closes owned file output, if any.
+func (l *Logger) Close() error {
+	if l.closeOnce == nil {
+		return l.base.Sync()
+	}
+
+	var closeErr error
+	l.closeOnce.Do(func() {
+		syncErr := l.base.Sync()
+		var fileErr error
+		if l.logFile != nil {
+			fileErr = l.logFile.Close()
+		}
+		closeErr = errors.Join(syncErr, fileErr)
+	})
+	return closeErr
 }

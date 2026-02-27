@@ -76,7 +76,15 @@ func TestResumeManager_InitializeTables_Success(t *testing.T) {
 
 	// Mock successful table creation
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Mock column existence check (column doesn't exist)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("ALTER TABLE archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
 
 	ctx := context.Background()
 	err := rm.InitializeTables(ctx)
@@ -110,6 +118,12 @@ func TestResumeManager_InitializeTables_LogTableError(t *testing.T) {
 
 	// Mock successful job table but log table failure
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Mock column existence check (column doesn't exist)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("ALTER TABLE archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnError(assert.AnError)
 
 	ctx := context.Background()
@@ -138,8 +152,8 @@ func TestResumeManager_GetOrCreateJob_ExistingWithCheckpoint(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	// Mock: Existing job with checkpoint (use time.Time values for Scan compatibility)
-	rows := sqlmock.NewRows([]string{"job_name", "root_table", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow("test_job", "customers", 100, JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))
+	rows := sqlmock.NewRows([]string{"job_name", "root_table", "job_type", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
+		AddRow("test_job", "customers", JobTypeArchive, "100", JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))
 
 	mock.ExpectQuery("SELECT job_name, root_table").
 		WithArgs("test_job").
@@ -152,7 +166,7 @@ func TestResumeManager_GetOrCreateJob_ExistingWithCheckpoint(t *testing.T) {
 	require.NotNil(t, state)
 	assert.Equal(t, "test_job", state.JobName)
 	assert.Equal(t, "customers", state.RootTable)
-	assert.Equal(t, int64(100), state.LastProcessedRootPKID)
+	assert.Equal(t, "100", state.LastProcessedRootPKID)
 	assert.Equal(t, JobStatusIdle, state.Status)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -164,8 +178,8 @@ func TestResumeManager_GetOrCreateJob_ExistingNoCheckpoint(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	// Mock: Existing job without checkpoint (checkpoint = 0, use time.Time values)
-	rows := sqlmock.NewRows([]string{"job_name", "root_table", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow("test_job", "orders", 0, JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	rows := sqlmock.NewRows([]string{"job_name", "root_table", "job_type", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
+		AddRow("test_job", "orders", JobTypeArchive, "", JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	mock.ExpectQuery("SELECT job_name, root_table").
 		WithArgs("test_job").
@@ -176,7 +190,7 @@ func TestResumeManager_GetOrCreateJob_ExistingNoCheckpoint(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	assert.Equal(t, int64(0), state.LastProcessedRootPKID)
+	assert.Equal(t, "", state.LastProcessedRootPKID)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -222,7 +236,7 @@ func TestResumeManager_UpdateCheckpoint_Success(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	mock.ExpectExec("UPDATE archiver_job SET last_processed_root_pk_id").
-		WithArgs(int64(500), "test_job").
+		WithArgs("500", "test_job").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ctx := context.Background()
@@ -239,7 +253,7 @@ func TestResumeManager_UpdateCheckpoint_Error(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	mock.ExpectExec("UPDATE archiver_job SET last_processed_root_pk_id").
-		WithArgs(int64(250), "test_job").
+		WithArgs("250", "test_job").
 		WillReturnError(assert.AnError)
 
 	ctx := context.Background()
@@ -259,11 +273,15 @@ func TestResumeManager_LogBatchPending_Success(t *testing.T) {
 	rootPKs := []interface{}{int64(1), int64(2), int64(3)}
 
 	mock.ExpectPrepare("INSERT IGNORE INTO archiver_job_log")
-	for _, pk := range rootPKs {
-		mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
-			WithArgs("test_job", pk, LogStatusPending).
-			WillReturnResult(sqlmock.NewResult(1, 1))
-	}
+	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
+		WithArgs("test_job", "1", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
+		WithArgs("test_job", "2", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
+		WithArgs("test_job", "3", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	ctx := context.Background()
 	err := rm.LogBatchPending(ctx, "test_job", rootPKs)
@@ -291,7 +309,7 @@ func TestResumeManager_MarkCompleted_Success(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusCompleted, "test_job", int64(1)).
+		WithArgs(LogStatusCompleted, "test_job", "1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ctx := context.Background()
@@ -308,7 +326,7 @@ func TestResumeManager_MarkFailed_Success(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusFailed, "test error", "test_job", int64(2)).
+		WithArgs(LogStatusFailed, "test error", "test_job", "2").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	ctx := context.Background()
@@ -325,9 +343,9 @@ func TestResumeManager_GetPendingPKs_Success(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
 	rows := sqlmock.NewRows([]string{"root_pk_id"}).
-		AddRow(10).
-		AddRow(20).
-		AddRow(30)
+		AddRow("10").
+		AddRow("20").
+		AddRow("30")
 
 	mock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name").
 		WithArgs("test_job", LogStatusPending).
@@ -338,9 +356,9 @@ func TestResumeManager_GetPendingPKs_Success(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Len(t, pks, 3)
-	assert.Equal(t, int64(10), pks[0])
-	assert.Equal(t, int64(20), pks[1])
-	assert.Equal(t, int64(30), pks[2])
+	assert.Equal(t, "10", pks[0])
+	assert.Equal(t, "20", pks[1])
+	assert.Equal(t, "30", pks[2])
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -370,10 +388,10 @@ func TestResumeManager_ShouldResume_True(t *testing.T) {
 
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
-	// ShouldResume calls GetOrCreateJob first - mock it returning checkpoint=0
-	jobRows := sqlmock.NewRows([]string{"job_name", "root_table", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow("test_job", "", int64(0), JobStatusIdle, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT job_name, root_table").
+	// ShouldResume checks existing checkpoint directly
+	jobRows := sqlmock.NewRows([]string{"last_processed_root_pk_id"}).
+		AddRow("")
+	mock.ExpectQuery("SELECT last_processed_root_pk_id FROM archiver_job WHERE job_name = \\?").
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 
@@ -397,10 +415,10 @@ func TestResumeManager_ShouldResume_False(t *testing.T) {
 
 	rm, _ := NewResumeManager(db, logger.NewDefault())
 
-	// ShouldResume calls GetOrCreateJob first - mock it returning checkpoint=0
-	jobRows := sqlmock.NewRows([]string{"job_name", "root_table", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow("test_job", "", int64(0), JobStatusIdle, time.Now(), time.Now())
-	mock.ExpectQuery("SELECT job_name, root_table").
+	// ShouldResume checks existing checkpoint directly
+	jobRows := sqlmock.NewRows([]string{"last_processed_root_pk_id"}).
+		AddRow("")
+	mock.ExpectQuery("SELECT last_processed_root_pk_id FROM archiver_job WHERE job_name = \\?").
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 

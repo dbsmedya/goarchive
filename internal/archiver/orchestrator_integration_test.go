@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -187,6 +188,141 @@ func seedTestData(t *testing.T, db *sql.DB) {
 			t.Fatalf("Failed to execute seed query %d: %v", i+1, err)
 		}
 	}
+}
+
+// seedLargeTestData generates a large dataset for context cancellation testing
+// Generates 5000 customers with related orders, items, and payments
+func seedLargeTestData(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	// Clear tables first
+	tables := []string{"order_payments", "order_items", "orders", "customers"}
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 0"); err != nil {
+		t.Logf("Warning: failed to disable FK checks: %v", err)
+	}
+	for _, table := range tables {
+		if _, err := db.Exec(fmt.Sprintf("TRUNCATE TABLE %s", table)); err != nil {
+			t.Logf("Warning: failed to truncate %s: %v", table, err)
+		}
+	}
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS = 1"); err != nil {
+		t.Logf("Warning: failed to re-enable FK checks: %v", err)
+	}
+
+	const numCustomers = 5000
+	const batchSize = 500
+
+	t.Logf("Generating large test data: %d customers with related orders/items/payments...", numCustomers)
+
+	// Generate customers in batches
+	customerID := 1
+	orderID := 1
+	itemID := 1
+	paymentID := 1
+
+	for batch := 0; batch < numCustomers/batchSize; batch++ {
+		// Build customer batch
+		var customerValues []string
+		for i := 0; i < batchSize; i++ {
+			// 90% old customers (archive candidates), 10% new customers
+			var createdAt string
+			if i%10 < 9 {
+				// Old customer: created 6+ months ago
+				createdAt = fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d DAY)", 180+customerID%365)
+			} else {
+				// New customer: created recently
+				createdAt = fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d DAY)", customerID%30)
+			}
+			name := fmt.Sprintf("Customer_%d", customerID)
+			email := fmt.Sprintf("customer_%d@test.com", customerID)
+			customerValues = append(customerValues,
+				fmt.Sprintf("(%d, '%s', '%s', %s)", customerID, name, email, createdAt))
+			customerID++
+		}
+
+		customerQuery := "INSERT INTO customers (id, name, email, created_at) VALUES " +
+			strings.Join(customerValues, ", ")
+		if _, err := db.Exec(customerQuery); err != nil {
+			t.Fatalf("Failed to insert customers batch %d: %v", batch, err)
+		}
+
+		// Build orders batch (2-3 orders per customer)
+		var orderValues []string
+		startCustomerID := batch*batchSize + 1
+		for c := startCustomerID; c < startCustomerID+batchSize; c++ {
+			numOrders := 2 + c%2 // 2-3 orders per customer
+			for o := 0; o < numOrders; o++ {
+				status := "completed"
+				if o%3 == 0 {
+					status = "pending"
+				} else if o%5 == 0 {
+					status = "cancelled"
+				}
+				total := 50.0 + float64(orderID%1000)
+				createdAt := fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d DAY)", 150+orderID%300)
+				orderValues = append(orderValues,
+					fmt.Sprintf("(%d, %d, %.2f, '%s', %s)", orderID, c, total, status, createdAt))
+				orderID++
+			}
+		}
+
+		orderQuery := "INSERT INTO orders (id, customer_id, total, status, created_at) VALUES " +
+			strings.Join(orderValues, ", ")
+		if _, err := db.Exec(orderQuery); err != nil {
+			t.Fatalf("Failed to insert orders batch %d: %v", batch, err)
+		}
+
+		// Build order_items batch (2-4 items per order)
+		var itemValues []string
+		startOrderID := batch*batchSize*2 + batch*batchSize + 1
+		endOrderID := orderID
+		for o := startOrderID; o < endOrderID && o < orderID; o++ {
+			numItems := 2 + o%3 // 2-4 items per order
+			for i := 0; i < numItems; i++ {
+				products := []string{"Widget A", "Widget B", "Widget C", "Gadget X", "Gadget Y", "Premium Pack", "Deluxe Set"}
+				product := products[itemID%len(products)]
+				quantity := 1 + itemID%5
+				price := 10.0 + float64(itemID%200)
+				itemValues = append(itemValues,
+					fmt.Sprintf("(%d, %d, '%s', %d, %.2f)", itemID, o, product, quantity, price))
+				itemID++
+			}
+		}
+
+		if len(itemValues) > 0 {
+			itemQuery := "INSERT INTO order_items (id, order_id, product, quantity, price) VALUES " +
+				strings.Join(itemValues, ", ")
+			if _, err := db.Exec(itemQuery); err != nil {
+				t.Fatalf("Failed to insert order_items batch %d: %v", batch, err)
+			}
+		}
+
+		// Build order_payments batch (1 payment per completed order)
+		var paymentValues []string
+		for o := startOrderID; o < endOrderID && o < orderID; o++ {
+			// Only add payment for completed orders (skip pending/cancelled)
+			if o%3 != 0 && o%5 != 0 {
+				methods := []string{"credit_card", "paypal", "bank_transfer"}
+				method := methods[paymentID%len(methods)]
+				amount := 50.0 + float64(paymentID%1000)
+				paidAt := fmt.Sprintf("DATE_SUB(NOW(), INTERVAL %d DAY)", 149+paymentID%300)
+				paymentValues = append(paymentValues,
+					fmt.Sprintf("(%d, %d, %.2f, '%s', %s)", paymentID, o, amount, method, paidAt))
+				paymentID++
+			}
+		}
+
+		if len(paymentValues) > 0 {
+			paymentQuery := "INSERT INTO order_payments (id, order_id, amount, method, paid_at) VALUES " +
+				strings.Join(paymentValues, ", ")
+			if _, err := db.Exec(paymentQuery); err != nil {
+				t.Fatalf("Failed to insert order_payments batch %d: %v", batch, err)
+			}
+		}
+	}
+
+	t.Logf("Test data generation complete: %d customers, %d orders, %d items, %d payments",
+		customerID-1, orderID-1, itemID-1, paymentID-1)
 }
 
 // verifyRowCount checks the row count in a table
@@ -437,7 +573,7 @@ func TestOrchestrator_ContextCancellation_Integration(t *testing.T) {
 
 	clearDestination(t, setup)
 	sourceDB, _ := setup.GetDB("source")
-	seedTestData(t, sourceDB)
+	seedLargeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupRealDBManager(t, setup)

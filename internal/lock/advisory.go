@@ -300,9 +300,7 @@ func IsJobRunning(ctx context.Context, db *sql.DB, jobName string) (bool, error)
 	// Release it immediately since we were just checking
 	if acquired {
 		if _, releaseErr := lock.ReleaseLock(ctx); releaseErr != nil {
-			// Log warning but don't fail - the lock will auto-release on connection close
-			// In production, this should be logged via the zap logger
-			_ = releaseErr // Suppress unused variable warning
+			return false, fmt.Errorf("failed to release lock after job status check for %q: %w", jobName, releaseErr)
 		}
 		return false, nil
 	}
@@ -332,7 +330,7 @@ func IsJobRunning(ctx context.Context, db *sql.DB, jobName string) (bool, error)
 //	    // Lock will be released even if this panics
 //	    return processJob()
 //	})
-func (a *AdvisoryLock) WithLock(ctx context.Context, timeoutSeconds int, fn func() error) error {
+func (a *AdvisoryLock) WithLock(ctx context.Context, timeoutSeconds int, fn func() error) (err error) {
 	// Acquire the lock
 	acquired, err := a.AcquireLock(ctx, timeoutSeconds)
 	if err != nil {
@@ -344,20 +342,48 @@ func (a *AdvisoryLock) WithLock(ctx context.Context, timeoutSeconds int, fn func
 
 	// Ensure lock is released even on panic
 	defer func() {
+		origPanic := recover()
+
 		// Release lock in a separate context to avoid cancellation issues
 		// Use background context with short timeout for cleanup
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if _, releaseErr := a.ReleaseLock(releaseCtx); releaseErr != nil {
-			// Lock will auto-release when connection closes
-			// In production, this should be logged via zap logger
-			_ = releaseErr // Suppress unused variable warning
+		var releaseErr error
+		var releasePanic interface{}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					releasePanic = r
+				}
+			}()
+			_, releaseErr = a.ReleaseLock(releaseCtx)
+		}()
+
+		if releasePanic != nil {
+			if origPanic != nil {
+				panic(origPanic)
+			}
+			panic(releasePanic)
+		}
+
+		if releaseErr != nil {
+			releaseWrappedErr := fmt.Errorf("failed to release lock %q: %w", a.lockName, releaseErr)
+			if err != nil {
+				err = errors.Join(err, releaseWrappedErr)
+			} else {
+				err = releaseWrappedErr
+			}
+		}
+
+		if origPanic != nil {
+			panic(origPanic)
 		}
 	}()
 
 	// Execute the protected function
-	return fn()
+	err = fn()
+	return err
 }
 
 // WithJobLock executes a function while holding a job-specific advisory lock.

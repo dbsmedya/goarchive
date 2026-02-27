@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -8,9 +9,9 @@ import (
 
 func TestBuildDSN(t *testing.T) {
 	tests := []struct {
-		name     string
-		cfg      *config.DatabaseConfig
-		expected string
+		name             string
+		cfg              *config.DatabaseConfig
+		expectedContains []string
 	}{
 		{
 			name: "basic DSN",
@@ -22,7 +23,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expected: "root:secret@tcp(localhost:3306)/testdb?parseTime=true&multiStatements=true&tls=preferred",
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
 		},
 		{
 			name: "DSN without database",
@@ -33,7 +34,7 @@ func TestBuildDSN(t *testing.T) {
 				Password: "secret",
 				TLS:      "preferred",
 			},
-			expected: "root:secret@tcp(localhost:3306)/?parseTime=true&multiStatements=true&tls=preferred",
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/?", "parseTime=true", "multiStatements=true", "tls=preferred"},
 		},
 		{
 			name: "DSN with TLS disabled",
@@ -45,7 +46,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "disable",
 			},
-			expected: "root:secret@tcp(localhost:3306)/testdb?parseTime=true&multiStatements=true&tls=false",
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=false"},
 		},
 		{
 			name: "DSN with TLS required",
@@ -57,7 +58,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "required",
 			},
-			expected: "root:secret@tcp(localhost:3306)/testdb?parseTime=true&multiStatements=true&tls=true",
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=true"},
 		},
 		{
 			name: "DSN with custom port",
@@ -69,15 +70,17 @@ func TestBuildDSN(t *testing.T) {
 				Database: "mydb",
 				TLS:      "preferred",
 			},
-			expected: "admin:p@ssw0rd!@tcp(remote-host:3307)/mydb?parseTime=true&multiStatements=true&tls=preferred",
+			expectedContains: []string{"admin:p@ssw0rd!@tcp(remote-host:3307)/mydb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := BuildDSN(tt.cfg)
-			if result != tt.expected {
-				t.Errorf("BuildDSN() = %q, expected %q", result, tt.expected)
+			for _, expected := range tt.expectedContains {
+				if !contains(result, expected) {
+					t.Errorf("BuildDSN() = %q, expected to contain %q", result, expected)
+				}
 			}
 		})
 	}
@@ -146,9 +149,9 @@ func TestManagerCloseWithoutConnect(t *testing.T) {
 
 func TestBuildDSN_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name     string
-		cfg      *config.DatabaseConfig
-		expected string
+		name             string
+		cfg              *config.DatabaseConfig
+		expectedContains []string
 	}{
 		{
 			name: "Empty password",
@@ -160,7 +163,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expected: "root:@tcp(localhost:3306)/testdb?parseTime=true&multiStatements=true&tls=preferred",
+			expectedContains: []string{"root@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
 		},
 		{
 			name: "Special characters in password",
@@ -172,7 +175,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "disable",
 			},
-			expected: "root:p@ss!w0rd#123@tcp(localhost:3306)/testdb?parseTime=true&multiStatements=true&tls=false",
+			expectedContains: []string{"root:p@ss!w0rd#123@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=false"},
 		},
 		{
 			name: "IPv6 host",
@@ -184,7 +187,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expected: "root:secret@tcp([::1]:3306)/testdb?parseTime=true&multiStatements=true&tls=preferred",
+			expectedContains: []string{"root:secret@tcp([::1]:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
 		},
 		{
 			name: "Non-standard port",
@@ -196,15 +199,17 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "required",
 			},
-			expected: "admin:admin123@tcp(localhost:33060)/testdb?parseTime=true&multiStatements=true&tls=true",
+			expectedContains: []string{"admin:admin123@tcp(localhost:33060)/testdb?", "parseTime=true", "multiStatements=true", "tls=true"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := BuildDSN(tt.cfg)
-			if result != tt.expected {
-				t.Errorf("BuildDSN() = %q, expected %q", result, tt.expected)
+			for _, expected := range tt.expectedContains {
+				if !contains(result, expected) {
+					t.Errorf("BuildDSN() = %q, expected to contain %q", result, expected)
+				}
 			}
 		})
 	}
@@ -217,6 +222,9 @@ func TestNewManager_NilConfig(t *testing.T) {
 	}
 	if manager.config != nil {
 		t.Error("manager.config should be nil when provided nil config")
+	}
+	if err := manager.Connect(context.Background()); err == nil {
+		t.Fatal("Connect() should fail with nil manager config")
 	}
 }
 

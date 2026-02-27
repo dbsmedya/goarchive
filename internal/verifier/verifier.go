@@ -89,6 +89,11 @@ func NewVerifier(source, destination *sql.DB, g *graph.Graph, method Verificatio
 	if method == "" {
 		method = MethodCount
 	}
+	switch method {
+	case MethodCount, MethodSHA256, MethodSkip:
+	default:
+		return nil, fmt.Errorf("unsupported verification method: %s", method)
+	}
 
 	return &Verifier{
 		source:      source,
