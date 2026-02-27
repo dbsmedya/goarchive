@@ -1,0 +1,69 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+CLAUDE.md
+INSTALL.md
+CHANGELOG.md
+docs/
+
+# Test files
+*_test.go
+internal/archiver/*_test.go
+internal/archiver/*_integration_test.go
+tests/
+testdata/
+
+# Configuration files (not needed for build)
+.env
+*.env
+configs/*.yaml
+configs/*.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+goarchive
+archiver.test
+*.test
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github/
+.agents/
+.claude/
+.ayder/
+.product/
+.gemini/
+
+# Temp files
+tmp/
+temp/
+*.tmp
+*.log
+
+# Vendor (if exists)
+vendor/
+
+# Node modules (if any)
+node_modules/
