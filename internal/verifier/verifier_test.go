@@ -231,6 +231,21 @@ func TestVerify_Count_Mismatch(t *testing.T) {
 		WithArgs(1, 2, 3).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(2)) // Mismatch!
 
+	// Verifier should continue and verify remaining tables
+	sourceMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `orders`").
+		WithArgs(10, 11, 12, 13, 14, 15).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(6))
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `orders`").
+		WithArgs(10, 11, 12, 13, 14, 15).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(6))
+
+	sourceMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `order_items`").
+		WithArgs(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(12))
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `order_items`").
+		WithArgs(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(12))
+
 	stats, err := v.Verify(ctx, recordSet)
 
 	if err == nil {
@@ -239,6 +254,9 @@ func TestVerify_Count_Mismatch(t *testing.T) {
 
 	if stats.TablesFailed != 1 {
 		t.Errorf("Expected 1 table failed, got %d", stats.TablesFailed)
+	}
+	if stats.TablesVerified != 3 {
+		t.Errorf("Expected verifier to continue across all tables, got %d", stats.TablesVerified)
 	}
 }
 
@@ -533,6 +551,43 @@ func TestVerifyByCount_ErrorMessage(t *testing.T) {
 	}
 }
 
+func TestVerifyByCount_UsesChunking(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createTestGraph()
+	log := logger.NewDefault()
+	v, _ := NewVerifier(sourceDB, destDB, g, MethodCount, log)
+	v.SetChunkSize(2)
+	ctx := context.Background()
+
+	// Source counts by chunks: [1,2] => 2, [3] => 1
+	sourceMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
+		WithArgs(1, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(2))
+	sourceMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
+		WithArgs(3).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	// Destination counts by chunks: [1,2] => 2, [3] => 1
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
+		WithArgs(1, 2).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(2))
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
+		WithArgs(3).
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	result, err := v.verifyByCount(ctx, "users", []interface{}{1, 2, 3})
+	if err != nil {
+		t.Fatalf("verifyByCount failed: %v", err)
+	}
+	if !result.Match {
+		t.Fatalf("expected chunked count verification to match")
+	}
+}
+
 // ============================================================================
 // verifyBySHA256 Tests
 // ============================================================================
@@ -633,6 +688,28 @@ func TestGetMethod(t *testing.T) {
 	}
 }
 
+func TestSerializeRow_StableAcrossColumnOrder(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createTestGraph()
+	log := logger.NewDefault()
+	v, _ := NewVerifier(db, db, g, MethodSHA256, log)
+
+	rowA := v.serializeRow(
+		[]string{"id", "name", "email"},
+		[]interface{}{int64(1), "John", "john@example.com"},
+	)
+	rowB := v.serializeRow(
+		[]string{"email", "id", "name"},
+		[]interface{}{"john@example.com", int64(1), "John"},
+	)
+
+	if rowA != rowB {
+		t.Fatalf("row serialization should be independent of column order: %q != %q", rowA, rowB)
+	}
+}
+
 func TestSetLogger(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -683,7 +760,7 @@ func TestSerializeRow(t *testing.T) {
 			name:     "with bytes",
 			columns:  []string{"id", "data"},
 			values:   []interface{}{int64(1), []byte("hello")},
-			contains: []string{"id=1", "data=hello"},
+			contains: []string{"id=1", "data=0x68656c6c6f"},
 		},
 		{
 			name:     "with float",

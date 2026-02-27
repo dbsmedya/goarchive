@@ -278,8 +278,12 @@ func (cp *CopyPhase) fetchRows(ctx context.Context, table string, pks []interfac
 // GA-P3-F3-T5: INSERT IGNORE syntax for idempotent inserts
 // Example: INSERT IGNORE INTO users (id, name, email) VALUES (?, ?, ?)
 func (cp *CopyPhase) buildInsertIgnoreQuery(table string, columns []string) string {
-	// Column list: (col1, col2, col3)
-	columnList := strings.Join(columns, ", ")
+	// Column list: (`col1`, `col2`, `col3`)
+	quotedColumns := make([]string, len(columns))
+	for i, col := range columns {
+		quotedColumns[i] = sqlutil.QuoteIdentifier(col)
+	}
+	columnList := strings.Join(quotedColumns, ", ")
 
 	// Placeholders: (?, ?, ?)
 	placeholders := make([]string, len(columns))

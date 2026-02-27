@@ -25,7 +25,6 @@ func NewDataVerifier(source, destination *sql.DB, g *graph.Graph, method string,
 }
 
 // Verify verifies data integrity for discovered records.
-func (dv *DataVerifier) Verify(ctx context.Context, recordSet *types.RecordSet) error {
-	_, err := dv.v.Verify(ctx, recordSet)
-	return err
+func (dv *DataVerifier) Verify(ctx context.Context, recordSet *types.RecordSet) (*verifier.VerifyStats, error) {
+	return dv.v.Verify(ctx, recordSet)
 }

@@ -25,6 +25,7 @@ docs/
 .ayder
 .product
 .agents
+.github
 
 
 # Go workspace file

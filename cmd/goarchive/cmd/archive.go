@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -71,12 +69,16 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
 		overrides.BatchSize, overrides.BatchDeleteSize,
 		overrides.SleepSeconds, overrides.SkipVerify)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Initialize logger
 	log, err := logger.New(&cfg.Logging)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
+	defer syncLogger(log)
 
 	log.Infow("Starting archive operation",
 		"job", archiveJob,
@@ -87,8 +89,16 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	dbManager := database.NewManager(cfg)
 
 	// Setup context with signal handling
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := database.SetupSignalHandlerWithSecondSignal(
+		func(_ os.Signal) {
+			log.Warn("Received shutdown signal - completing current batch...")
+		},
+		func(_ os.Signal) {
+			log.Error("Received second shutdown signal - forcing immediate exit")
+			syncLogger(log)
+			os.Exit(130)
+		},
+	)
 
 	// Connect to databases
 	if err := dbManager.Connect(ctx); err != nil {
@@ -135,21 +145,12 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("orchestrator initialization failed: %w", err)
 	}
 
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Warn("Received shutdown signal - completing current batch...")
-		cancel()
-	}()
-
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)
 	if err != nil {
 		if err == context.Canceled {
 			log.Warn("Archive operation cancelled by user")
-			return nil
+			return fmt.Errorf("archive operation cancelled: %w", err)
 		}
 		return fmt.Errorf("archive operation failed: %w", err)
 	}

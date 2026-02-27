@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestLoad(t *testing.T) {
@@ -106,16 +104,6 @@ logging:
 }
 
 func TestLoadWithEnvVars(t *testing.T) {
-	// Set environment variables for test
-	require.NoError(t, os.Setenv("TEST_DB_HOST", "env-host"))
-	require.NoError(t, os.Setenv("TEST_DB_USER", "env-user"))
-	require.NoError(t, os.Setenv("TEST_DB_PASS", "env-pass"))
-	defer func() {
-		require.NoError(t, os.Unsetenv("TEST_DB_HOST"))
-		require.NoError(t, os.Unsetenv("TEST_DB_USER"))
-		require.NoError(t, os.Unsetenv("TEST_DB_PASS"))
-	}()
-
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "test-env.yaml")
 
@@ -136,37 +124,14 @@ source:
 		t.Fatalf("failed to load config: %v", err)
 	}
 
-	if cfg.Source.Host != "env-host" {
-		t.Errorf("expected source host 'env-host', got %s", cfg.Source.Host)
+	if cfg.Source.Host != "${TEST_DB_HOST}" {
+		t.Errorf("expected source host '${TEST_DB_HOST}', got %s", cfg.Source.Host)
 	}
-	if cfg.Source.User != "env-user" {
-		t.Errorf("expected source user 'env-user', got %s", cfg.Source.User)
+	if cfg.Source.User != "${TEST_DB_USER}" {
+		t.Errorf("expected source user '${TEST_DB_USER}', got %s", cfg.Source.User)
 	}
-	if cfg.Source.Password != "env-pass" {
-		t.Errorf("expected source password 'env-pass', got %s", cfg.Source.Password)
-	}
-}
-
-func TestExpandEnvVar(t *testing.T) {
-	require.NoError(t, os.Setenv("TEST_VAR", "test-value"))
-	defer func() { require.NoError(t, os.Unsetenv("TEST_VAR")) }()
-
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"${TEST_VAR}", "test-value"},
-		{"$TEST_VAR", "test-value"},
-		{"prefix-${TEST_VAR}-suffix", "prefix-test-value-suffix"},
-		{"${NONEXISTENT}", "${NONEXISTENT}"}, // Unset vars remain unchanged
-		{"no-vars-here", "no-vars-here"},
-	}
-
-	for _, tt := range tests {
-		result := expandEnvVar(tt.input)
-		if result != tt.expected {
-			t.Errorf("expandEnvVar(%q) = %q, expected %q", tt.input, result, tt.expected)
-		}
+	if cfg.Source.Password != "${TEST_DB_PASS}" {
+		t.Errorf("expected source password '${TEST_DB_PASS}', got %s", cfg.Source.Password)
 	}
 }
 

@@ -158,7 +158,7 @@ func TestAdvisoryLock_AcquireLock_Success(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db, lockName)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireLock_ZeroTimeout(t *testing.T) {
@@ -181,7 +181,7 @@ func TestAdvisoryLock_AcquireLock_ZeroTimeout(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db, lockName)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireLock_AlreadyHeld(t *testing.T) {
@@ -217,7 +217,7 @@ func TestAdvisoryLock_AcquireLock_AlreadyHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db, lockName)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireLock_Timeout(t *testing.T) {
@@ -265,7 +265,7 @@ func TestAdvisoryLock_AcquireLock_Timeout(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db1, lockName)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
@@ -313,7 +313,7 @@ func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db1, lockName)
+	_, _ = lock1.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -347,7 +347,7 @@ func TestAdvisoryLock_IsHeld(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db, lockName)
+	_, _ = lock.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_LockName(t *testing.T) {
@@ -412,17 +412,18 @@ func TestAdvisoryLock_ConcurrentDifferentLocks(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db1, lockName1)
-	_ = releaseLock(db2, lockName2)
+	_, _ = lock1.ReleaseLock(ctx)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
-func TestAdvisoryLock_SameConnectionReentrant(t *testing.T) {
+func TestAdvisoryLock_SameConnectionIsolatedConn(t *testing.T) {
 	db := connectToTestDB(t)
 	defer func() { _ = db.Close() }()
 
 	lockName := generateUniqueLockName(t)
 
-	// Same connection can acquire the same lock multiple times (MySQL behavior)
+	// Separate lock objects should not re-enter the same lock concurrently,
+	// even when created from the same *sql.DB pool.
 	lock1 := NewAdvisoryLock(db, lockName)
 	lock2 := NewAdvisoryLock(db, lockName)
 
@@ -436,25 +437,16 @@ func TestAdvisoryLock_SameConnectionReentrant(t *testing.T) {
 		t.Fatal("Expected first acquisition to succeed")
 	}
 
-	// Same connection acquiring same lock - this is connection-scoped in MySQL
-	// The second lock object using the same connection will also "acquire" it
-	acquired2, err := lock2.AcquireLock(ctx, 5)
+	// With dedicated *sql.Conn pinning, second acquisition should time out.
+	acquired2, err := lock2.AcquireLock(ctx, 1)
 	if err != nil {
 		t.Fatalf("Second acquisition failed: %v", err)
 	}
-
-	// Note: MySQL GET_LOCK on the same connection returns 1 (success)
-	// but doesn't actually grant a new lock - it's the same connection
-	if !acquired2 {
-		t.Error("Expected second acquisition from same connection to succeed")
+	if acquired2 {
+		t.Error("Expected second acquisition to fail while first lock is held")
 	}
 
-	// Need to release twice since GET_LOCK increments the lock count on same connection
-	_ = releaseLock(db, lockName)
-	_ = releaseLock(db, lockName)
-
-	// Give MySQL a moment to process the release
-	time.Sleep(50 * time.Millisecond)
+	_, _ = lock1.ReleaseLock(ctx)
 
 	// Verify lock is free - use a fresh connection to check
 	db2 := connectToTestDB(t)
@@ -508,7 +500,7 @@ func TestAdvisoryLock_ReleaseOnConnectionClose(t *testing.T) {
 		t.Error("Expected to acquire lock after first connection closed")
 	}
 
-	_ = releaseLock(db2, lockName)
+	_, _ = lock2.ReleaseLock(ctx)
 }
 
 // ============================================================================
@@ -552,7 +544,7 @@ func TestAdvisoryLock_Integration_MultipleLocksSequence(t *testing.T) {
 
 	// Release in reverse order
 	for i := len(lockNames) - 1; i >= 0; i-- {
-		_ = releaseLock(db, lockNames[i])
+		_, _ = locks[i].ReleaseLock(ctx)
 	}
 }
 
@@ -581,9 +573,9 @@ func TestAdvisoryLock_LockNameIsolation(t *testing.T) {
 	}
 
 	// Cleanup
-	_ = releaseLock(db, baseName+"_job1")
-	_ = releaseLock(db, baseName+"_job2")
-	_ = releaseLock(db, baseName+"job1")
+	_, _ = lockA.ReleaseLock(ctx)
+	_, _ = lockB.ReleaseLock(ctx)
+	_, _ = lockC.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
@@ -614,7 +606,7 @@ func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
 			t.Errorf("Expected to acquire lock with name %q", name)
 		}
 
-		_ = releaseLock(db, lockName)
+		_, _ = lock.ReleaseLock(ctx)
 	}
 }
 
@@ -665,7 +657,7 @@ func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 	}
 
 	// Instance 1 finishes and releases the lock
-	_ = releaseLock(db1, lockName)
+	_, _ = instance1.ReleaseLock(ctx)
 
 	// Now instance 2 can acquire it
 	acquired3, err := instance2.AcquireLock(ctx, 2)
@@ -676,7 +668,7 @@ func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 		t.Error("Instance 2 should have acquired the lock after instance 1 released it")
 	}
 
-	_ = releaseLock(db2, lockName)
+	_, _ = instance2.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_Scenario_RapidAcquireRelease(t *testing.T) {
@@ -703,7 +695,7 @@ func TestAdvisoryLock_Scenario_RapidAcquireRelease(t *testing.T) {
 		}
 
 		// Release the lock
-		_ = releaseLock(db, lockName)
+		_, _ = lock.ReleaseLock(ctx)
 	}
 }
 
@@ -765,6 +757,6 @@ func TestAdvisoryLock_LongLockName(t *testing.T) {
 	}
 
 	if acquired {
-		_ = releaseLock(db, longName)
+		_, _ = lock.ReleaseLock(ctx)
 	}
 }

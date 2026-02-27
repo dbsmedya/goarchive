@@ -52,6 +52,9 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
 		overrides.BatchSize, overrides.BatchDeleteSize,
 		overrides.SleepSeconds, overrides.SkipVerify)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Get job config
 	jobCfgValue, exists := cfg.Jobs[dryrunJob]
@@ -65,6 +68,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
+	defer syncLogger(log)
 
 	// Create database manager (source only for dry-run)
 	dbManager := database.NewManager(cfg)

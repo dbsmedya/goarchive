@@ -3,6 +3,7 @@ package cmd
 import (
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -205,5 +206,45 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	for _, expected := range expectedCommands {
 		assert.Contains(t, commandNames, expected, "Expected command %s not found", expected)
+	}
+}
+
+func TestValidateCLIOverrides(t *testing.T) {
+	originalBatchSize := batchSize
+	originalBatchDeleteSize := batchDeleteSize
+	originalSleepSeconds := sleepSeconds
+	defer func() {
+		batchSize = originalBatchSize
+		batchDeleteSize = originalBatchDeleteSize
+		sleepSeconds = originalSleepSeconds
+	}()
+
+	tests := []struct {
+		name            string
+		batch           int
+		batchDelete     int
+		sleep           float64
+		expectErrorText string
+	}{
+		{name: "valid overrides", batch: 0, batchDelete: 0, sleep: 0},
+		{name: "negative batch size", batch: -5, batchDelete: 0, sleep: 0, expectErrorText: "--batch-size must be >= 0"},
+		{name: "negative batch delete", batch: 10, batchDelete: -1, sleep: 0, expectErrorText: "--batch-delete-size must be >= 0"},
+		{name: "negative sleep", batch: 10, batchDelete: 10, sleep: -0.1, expectErrorText: "--sleep must be >= 0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batchSize = tt.batch
+			batchDeleteSize = tt.batchDelete
+			sleepSeconds = tt.sleep
+
+			err := validateCLIOverrides(&cobra.Command{}, nil)
+			if tt.expectErrorText == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectErrorText)
+		})
 	}
 }

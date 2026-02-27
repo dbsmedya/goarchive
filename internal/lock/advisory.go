@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,8 +42,10 @@ const (
 // released when the connection closes or RELEASE_LOCK() is called.
 type AdvisoryLock struct {
 	db       *sql.DB
+	conn     *sql.Conn
 	lockName string
 	held     bool
+	mu       sync.Mutex
 }
 
 // NewAdvisoryLock creates a new advisory lock with the given name.
@@ -66,32 +69,48 @@ func NewAdvisoryLock(db *sql.DB, lockName string) *AdvisoryLock {
 //
 // Timeout is specified in seconds. Use 0 for no timeout (infinite wait).
 func (a *AdvisoryLock) AcquireLock(ctx context.Context, timeoutSeconds int) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if a.held {
 		return true, nil // Already holding the lock
+	}
+	if a.db == nil {
+		return false, fmt.Errorf("database is nil")
+	}
+
+	conn, err := a.db.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get dedicated connection: %w", err)
 	}
 
 	query := "SELECT GET_LOCK(?, ?)"
 	var result sql.NullInt64
 
-	err := a.db.QueryRowContext(ctx, query, a.lockName, timeoutSeconds).Scan(&result)
+	err = conn.QueryRowContext(ctx, query, a.lockName, timeoutSeconds).Scan(&result)
 	if err != nil {
+		_ = conn.Close()
 		return false, fmt.Errorf("failed to execute GET_LOCK: %w", err)
 	}
 
 	// Check if result is NULL (error case)
 	if !result.Valid {
+		_ = conn.Close()
 		return false, fmt.Errorf("GET_LOCK returned NULL for lock %q (possible database error)", a.lockName)
 	}
 
 	// Check result value
 	switch result.Int64 {
 	case 1:
+		a.conn = conn
 		a.held = true
 		return true, nil
 	case 0:
 		// Timeout reached - another instance is holding the lock
+		_ = conn.Close()
 		return false, nil
 	default:
+		_ = conn.Close()
 		return false, fmt.Errorf("unexpected GET_LOCK return value: %d", result.Int64)
 	}
 }
@@ -108,40 +127,65 @@ func (a *AdvisoryLock) AcquireLock(ctx context.Context, timeoutSeconds int) (boo
 // Note: Locks are automatically released when the database connection closes,
 // but explicit release is recommended for proper cleanup.
 func (a *AdvisoryLock) ReleaseLock(ctx context.Context) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if !a.held {
 		return false, nil // Not holding the lock
+	}
+	if a.conn == nil {
+		a.held = false
+		return false, fmt.Errorf("lock %q marked as held but dedicated connection is nil", a.lockName)
 	}
 
 	query := "SELECT RELEASE_LOCK(?)"
 	var result sql.NullInt64
 
-	err := a.db.QueryRowContext(ctx, query, a.lockName).Scan(&result)
+	err := a.conn.QueryRowContext(ctx, query, a.lockName).Scan(&result)
+	closeErr := a.conn.Close()
+	a.conn = nil
+	a.held = false
+
 	if err != nil {
+		if closeErr != nil {
+			return false, fmt.Errorf("failed to execute RELEASE_LOCK: %w (failed to close connection: %v)", err, closeErr)
+		}
 		return false, fmt.Errorf("failed to execute RELEASE_LOCK: %w", err)
 	}
 
 	// Check if result is NULL (lock didn't exist)
 	if !result.Valid {
-		a.held = false // Update state even if NULL
+		if closeErr != nil {
+			return false, fmt.Errorf("RELEASE_LOCK returned NULL for lock %q (lock did not exist); failed to close connection: %v", a.lockName, closeErr)
+		}
 		return false, fmt.Errorf("RELEASE_LOCK returned NULL for lock %q (lock did not exist)", a.lockName)
 	}
 
 	// Check result value
 	switch result.Int64 {
 	case 1:
-		a.held = false
+		if closeErr != nil {
+			return true, fmt.Errorf("failed to close connection after RELEASE_LOCK: %w", closeErr)
+		}
 		return true, nil
 	case 0:
 		// Lock was not established by this thread
-		a.held = false // Update state to reflect reality
+		if closeErr != nil {
+			return false, fmt.Errorf("failed to close connection after RELEASE_LOCK: %w", closeErr)
+		}
 		return false, nil
 	default:
+		if closeErr != nil {
+			return false, fmt.Errorf("unexpected RELEASE_LOCK return value: %d (failed to close connection: %v)", result.Int64, closeErr)
+		}
 		return false, fmt.Errorf("unexpected RELEASE_LOCK return value: %d", result.Int64)
 	}
 }
 
 // IsHeld returns true if this lock is currently held by this instance.
 func (a *AdvisoryLock) IsHeld() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.held
 }
 

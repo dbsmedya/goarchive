@@ -183,6 +183,30 @@ func TestLagMonitor_GetReplicationStatus_QueryError(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestLagMonitor_GetReplicationStatus_NilStringFields(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	log := logger.NewDefault()
+	cfg := config.SafetyConfig{LagThreshold: 10}
+	lm, _ := NewLagMonitor(db, cfg, log)
+
+	rows := sqlmock.NewRows([]string{
+		"Seconds_Behind_Master", "Slave_IO_Running", "Slave_SQL_Running", "Last_Error",
+	}).AddRow(5, nil, nil, nil)
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(rows)
+
+	ctx := context.Background()
+	status, err := lm.GetReplicationStatus(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.Equal(t, "", status.SlaveIORunning)
+	assert.Equal(t, "", status.SlaveSQLRunning)
+	assert.Equal(t, "", status.LastError)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestLagMonitor_CheckLag_Disabled(t *testing.T) {
 	log := logger.NewDefault()
 	lm, _ := NewLagMonitor(nil, config.SafetyConfig{}, log)

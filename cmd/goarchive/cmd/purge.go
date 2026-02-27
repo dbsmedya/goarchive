@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/archiver"
@@ -73,6 +71,9 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
 		overrides.BatchSize, overrides.BatchDeleteSize,
 		overrides.SleepSeconds, overrides.SkipVerify)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
 
 	// Get effective processing config for this job
 	processingCfg := jobCfg.GetJobProcessing(cfg.Processing)
@@ -82,6 +83,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
+	defer syncLogger(log)
 
 	log.Infow("Starting purge operation (delete only, no copy)",
 		"job", purgeJob,
@@ -92,8 +94,9 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	dbManager := database.NewManager(cfg)
 
 	// Setup context with signal handling
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := database.SetupSignalHandlerWithCallback(func(_ os.Signal) {
+		log.Warn("Received shutdown signal - completing current batch...")
+	})
 
 	// Connect to source database only (purge doesn't need destination)
 	if err := dbManager.ConnectSource(ctx); err != nil {
@@ -139,15 +142,6 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	if g.HasCycle() {
 		return fmt.Errorf("dependency cycle detected in graph")
 	}
-
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Warn("Received shutdown signal - completing current batch...")
-		cancel()
-	}()
 
 	// Initialize resume manager
 	resumeMgr, err := archiver.NewResumeManager(dbManager.Source, log)
@@ -199,7 +193,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		select {
 		case <-ctx.Done():
 			log.Info("Purge operation cancelled")
-			return nil
+			return fmt.Errorf("purge operation cancelled: %w", ctx.Err())
 		default:
 		}
 

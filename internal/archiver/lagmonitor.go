@@ -154,21 +154,21 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 
 	// Slave_IO_Running (or Replica_IO_Running)
 	if sio, ok := result["Slave_IO_Running"]; ok {
-		status.SlaveIORunning = sio.(string)
+		status.SlaveIORunning = statusFieldToString(sio)
 	} else if sio, ok := result["Replica_IO_Running"]; ok {
-		status.SlaveIORunning = sio.(string)
+		status.SlaveIORunning = statusFieldToString(sio)
 	}
 
 	// Slave_SQL_Running (or Replica_SQL_Running)
 	if ssql, ok := result["Slave_SQL_Running"]; ok {
-		status.SlaveSQLRunning = ssql.(string)
+		status.SlaveSQLRunning = statusFieldToString(ssql)
 	} else if ssql, ok := result["Replica_SQL_Running"]; ok {
-		status.SlaveSQLRunning = ssql.(string)
+		status.SlaveSQLRunning = statusFieldToString(ssql)
 	}
 
 	// Last_Error
 	if lastErr, ok := result["Last_Error"]; ok && lastErr != nil {
-		status.LastError = lastErr.(string)
+		status.LastError = statusFieldToString(lastErr)
 	}
 
 	return status, nil
@@ -289,4 +289,15 @@ func (lm *LagMonitor) GetInterval() time.Duration {
 // SetLogger sets a custom logger for the lag monitor.
 func (lm *LagMonitor) SetLogger(log *logger.Logger) {
 	lm.logger = log
+}
+
+func statusFieldToString(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case []byte:
+		return string(x)
+	default:
+		return ""
+	}
 }

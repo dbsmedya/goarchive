@@ -435,6 +435,14 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	assert.NoError(t, destMock.ExpectationsWereMet())
 }
 
+func TestBuildInsertIgnoreQuery_QuotesColumnNames(t *testing.T) {
+	cp := &CopyPhase{}
+	query := cp.buildInsertIgnoreQuery("orders", []string{"id", "order", "group"})
+
+	expected := "INSERT IGNORE INTO `orders` (`id`, `order`, `group`) VALUES (?, ?, ?)"
+	assert.Equal(t, expected, query)
+}
+
 // Helper functions
 
 func createSimpleGraph() *graph.Graph {

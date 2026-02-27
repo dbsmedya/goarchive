@@ -128,3 +128,42 @@ func TestConfigJobsMap(t *testing.T) {
 		t.Errorf("expected root_table 'orders', got %s", job.RootTable)
 	}
 }
+
+func TestGetJobVerification_JobOverridesGlobalSkipVerification(t *testing.T) {
+	global := VerificationConfig{
+		Method:           "count",
+		SkipVerification: true,
+	}
+	job := JobConfig{
+		Verification: &VerificationConfig{
+			Method:           "sha256",
+			SkipVerification: false,
+		},
+	}
+
+	result := job.GetJobVerification(global)
+
+	if result.Method != "sha256" {
+		t.Errorf("expected method sha256, got %s", result.Method)
+	}
+	if result.SkipVerification {
+		t.Error("expected job-level skip_verification=false to override global true")
+	}
+}
+
+func TestGetJobVerification_NilJobVerificationUsesGlobal(t *testing.T) {
+	global := VerificationConfig{
+		Method:           "count",
+		SkipVerification: true,
+	}
+	job := JobConfig{}
+
+	result := job.GetJobVerification(global)
+
+	if result.Method != "count" {
+		t.Errorf("expected method count, got %s", result.Method)
+	}
+	if !result.SkipVerification {
+		t.Error("expected global skip_verification=true when job verification is nil")
+	}
+}

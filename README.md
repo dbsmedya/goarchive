@@ -65,6 +65,14 @@ Currently, GoArchive is optimized for **MySQL 8.0+** using the **InnoDB** storag
 
 * Legacy engines like MyISAM are strictly not supported due to the lack of transactional integrity required for the Copy-Verify-Delete cycle.
 
+### 5. Trust Model for SQL Configuration
+
+GoArchive intentionally treats configuration files as **operator-controlled and trusted** input.
+
+* Job `where` values are raw SQL fragments injected into archive selection queries.
+* Connections intentionally use `multiStatements=true` for operational compatibility.
+* Do not expose config editing to untrusted users or untrusted automation pipelines.
+
 ---
 
 > [!WARNING]
@@ -111,20 +119,20 @@ Create a configuration file `archiver.yaml`:
 ```yaml
 # Source database (production - data to archive)
 source:
-  host: ${SOURCE_DB_HOST:-localhost}
+  host: localhost
   port: 3306
-  user: ${SOURCE_DB_USER:-archiver}
-  password: ${SOURCE_DB_PASSWORD}
-  database: ${SOURCE_DB_NAME:-production}
+  user: archiver
+  password: change_me
+  database: production
   max_connections: 10
 
 # Destination database (archive storage)
 destination:
-  host: ${DEST_DB_HOST:-archive.db.internal}
+  host: archive.db.internal
   port: 3306
-  user: ${DEST_DB_USER:-archiver}
-  password: ${DEST_DB_PASSWORD}
-  database: ${DEST_DB_NAME:-archive}
+  user: archiver
+  password: change_me
+  database: archive
   max_connections: 10
 
 # Archive jobs configuration
@@ -174,7 +182,7 @@ goarchive plan -c archiver.yaml --job archive_old_orders
 │     orders     ├─────1-N──────┐                                  Root Table:     orders
 │                │     │        │                                  Relations:      4 tables
 └────────┬───────┘     └────────┼─────1-1───────────────┐          Max Depth:      2 levels
-         │                      │                       │          Destination DB: ${DEST_DB_NAME}
+         │                      │                       │          Destination DB: archive
          │                      │                       │
         1-N                     │                       │          [ Processing ]
          │                      │                       │          --------------
@@ -496,7 +504,7 @@ See [tests/README.md](tests/README.md) for detailed testing documentation includ
 |--------|-------------|----------|
 | `root_table` | Primary table to archive | yes |
 | `primary_key` | Primary key column | yes (default: `id`) |
-| `where` | WHERE clause for filtering rows | yes |
+| `where` | Raw SQL WHERE clause for filtering rows (trusted operator input) | yes |
 | `relations` | Related tables to include | no |
 
 ### Processing Settings

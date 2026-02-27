@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
+	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +48,8 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.PersistentPreRunE = validateCLIOverrides
+
 	// Config file flag
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "archiver.yaml",
 		"Path to configuration file")
@@ -67,6 +71,28 @@ func init() {
 	// Safety overrides
 	rootCmd.PersistentFlags().BoolVar(&skipVerify, "skip-verify", false,
 		"Skip data verification after copy")
+}
+
+func validateCLIOverrides(_ *cobra.Command, _ []string) error {
+	if batchSize < 0 {
+		return fmt.Errorf("--batch-size must be >= 0")
+	}
+	if batchDeleteSize < 0 {
+		return fmt.Errorf("--batch-delete-size must be >= 0")
+	}
+	if sleepSeconds < 0 {
+		return fmt.Errorf("--sleep must be >= 0")
+	}
+	return nil
+}
+
+func syncLogger(log *logger.Logger) {
+	if log == nil {
+		return
+	}
+	if err := log.Sync(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: failed to sync logger: %v\n", err)
+	}
 }
 
 // GetConfigFile returns the config file path

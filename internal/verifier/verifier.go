@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -165,7 +166,6 @@ func (v *Verifier) Verify(ctx context.Context, recordSet *types.RecordSet) (*Ver
 			// GA-P4-F1-T5: Mismatch handling
 			stats.TablesFailed++
 			v.logger.Errorf("Verification FAILED for table %q: %s", table, result.ErrorMessage)
-			return stats, fmt.Errorf("verification mismatch in table %s: %s", table, result.ErrorMessage)
 		}
 	}
 
@@ -193,30 +193,15 @@ func (v *Verifier) verifyByCount(ctx context.Context, table string, pks []interf
 		}, nil
 	}
 
-	// Build IN clause
-	placeholders := make([]string, len(pks))
-	args := make([]interface{}, len(pks))
-	for i, pk := range pks {
-		placeholders[i] = "?"
-		args[i] = pk
-	}
-
 	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs for all tables)
 	pkColumn := v.graph.GetPK(table)
 
-	// Count source
-	sourceQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IN (%s)",
-		sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","))
-	var sourceCount int64
-	if err := v.source.QueryRowContext(ctx, sourceQuery, args...).Scan(&sourceCount); err != nil {
+	sourceCount, err := v.countByPKChunks(ctx, v.source, table, pkColumn, pks)
+	if err != nil {
 		return nil, fmt.Errorf("failed to count source: %w", err)
 	}
-
-	// Count destination
-	destQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IN (%s)",
-		sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","))
-	var destCount int64
-	if err := v.destination.QueryRowContext(ctx, destQuery, args...).Scan(&destCount); err != nil {
+	destCount, err := v.countByPKChunks(ctx, v.destination, table, pkColumn, pks)
+	if err != nil {
 		return nil, fmt.Errorf("failed to count destination: %w", err)
 	}
 
@@ -234,6 +219,36 @@ func (v *Verifier) verifyByCount(ctx context.Context, table string, pks []interf
 	}
 
 	return result, nil
+}
+
+func (v *Verifier) countByPKChunks(ctx context.Context, db *sql.DB, table, pkColumn string, pks []interface{}) (int64, error) {
+	var total int64
+
+	for i := 0; i < len(pks); i += v.chunkSize {
+		end := i + v.chunkSize
+		if end > len(pks) {
+			end = len(pks)
+		}
+		chunk := pks[i:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, len(chunk))
+		for j, pk := range chunk {
+			placeholders[j] = "?"
+			args[j] = pk
+		}
+
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IN (%s)",
+			sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","))
+
+		var count int64
+		if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+			return 0, err
+		}
+		total += count
+	}
+
+	return total, nil
 }
 
 // verifyBySHA256 compares SHA256 hashes of all rows between source and destination.
@@ -313,49 +328,50 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		query := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s) ORDER BY %s",
 			sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","), sqlutil.QuoteIdentifier(pkColumn))
 
-		rows, err := db.QueryContext(ctx, query, args...)
-		if err != nil {
-			return "", 0, fmt.Errorf("query failed: %w", err)
-		}
+		if err := func() error {
+			rows, err := db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return fmt.Errorf("query failed: %w", err)
+			}
+			defer func() { _ = rows.Close() }()
 
-		// Get column names
-		columns, err := rows.Columns()
-		if err != nil {
-			_ = rows.Close() // Ignore error during cleanup of failed operation
-			return "", 0, fmt.Errorf("failed to get columns: %w", err)
-		}
-
-		// Hash each row
-		for rows.Next() {
-			// Check context cancellation
-			if err := ctx.Err(); err != nil {
-				_ = rows.Close() // Ignore error during cleanup of failed operation
-				return "", 0, fmt.Errorf("hash computation interrupted: %w", err)
+			// Get column names
+			columns, err := rows.Columns()
+			if err != nil {
+				return fmt.Errorf("failed to get columns: %w", err)
 			}
 
-			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
-			for j := range values {
-				valuePtrs[j] = &values[j]
+			// Hash each row
+			for rows.Next() {
+				// Check context cancellation
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("hash computation interrupted: %w", err)
+				}
+
+				values := make([]interface{}, len(columns))
+				valuePtrs := make([]interface{}, len(columns))
+				for j := range values {
+					valuePtrs[j] = &values[j]
+				}
+
+				if err := rows.Scan(valuePtrs...); err != nil {
+					return fmt.Errorf("failed to scan row: %w", err)
+				}
+
+				// Hash row: column1=value1,column2=value2,...
+				rowStr := v.serializeRow(columns, values)
+				hasher.Write([]byte(rowStr))
+				hasher.Write([]byte("\n"))
+				totalRows++
 			}
 
-			if err := rows.Scan(valuePtrs...); err != nil {
-				_ = rows.Close() // Ignore error during cleanup of failed operation
-				return "", 0, fmt.Errorf("failed to scan row: %w", err)
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("error iterating rows: %w", err)
 			}
-
-			// Hash row: column1=value1,column2=value2,...
-			rowStr := v.serializeRow(columns, values)
-			hasher.Write([]byte(rowStr))
-			hasher.Write([]byte("\n"))
-			totalRows++
+			return nil
+		}(); err != nil {
+			return "", 0, err
 		}
-
-		if err := rows.Err(); err != nil {
-			_ = rows.Close() // Ignore error during cleanup of failed operation
-			return "", 0, fmt.Errorf("error iterating rows: %w", err)
-		}
-		_ = rows.Close()
 	}
 
 	hashBytes := hasher.Sum(nil)
@@ -367,7 +383,11 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 // serializeRow converts a row to a deterministic string representation for hashing.
 // Format: col1=val1,col2=val2,...
 func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
-	var parts []string
+	type columnValue struct {
+		column string
+		value  string
+	}
+	pairs := make([]columnValue, 0, len(columns))
 
 	for i, col := range columns {
 		val := values[i]
@@ -377,7 +397,7 @@ func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
 		case nil:
 			valStr = "NULL"
 		case []byte:
-			valStr = string(v)
+			valStr = "0x" + hex.EncodeToString(v)
 		case int64:
 			valStr = fmt.Sprintf("%d", v)
 		case float64:
@@ -390,7 +410,17 @@ func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
 			valStr = fmt.Sprintf("%v", v)
 		}
 
-		parts = append(parts, fmt.Sprintf("%s=%s", col, valStr))
+		pairs = append(pairs, columnValue{column: col, value: valStr})
+	}
+
+	// Canonicalize by column name so hash is stable even if DB column order differs.
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].column < pairs[j].column
+	})
+
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = fmt.Sprintf("%s=%s", p.column, p.value)
 	}
 
 	// Use null byte separator to avoid ambiguity with column values containing commas

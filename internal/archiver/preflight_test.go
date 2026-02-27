@@ -4,6 +4,7 @@ package archiver
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -19,6 +20,8 @@ func createPreflightTestGraph() *graph.Graph {
 	g := graph.NewGraph("users", "id")
 	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.SetPK("orders", "id")
+	g.SetPK("order_items", "id")
 	g.AddEdge("users", "orders")
 	g.AddEdge("orders", "order_items")
 	return g
@@ -163,6 +166,13 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			AddRow("orders").
 			AddRow("order_items"))
 
+	// Primary key column existence checks
+	for i := 0; i < 3; i++ {
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+			WithArgs("testdb", sqlmock.AnyArg(), sqlmock.AnyArg()).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	}
+
 	// Storage engine check - one table is MyISAM
 	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
@@ -183,6 +193,59 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 
 	if preflightErr.Check != "STORAGE_ENGINE_CHECK" {
 		t.Errorf("Expected check 'STORAGE_ENGINE_CHECK', got %s", preflightErr.Check)
+	}
+}
+
+func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	ctx := context.Background()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+		WithArgs("testdb", "users", "id").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+		WithArgs("testdb", "orders", "id").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+
+	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"users", "orders"})
+	if err == nil {
+		t.Fatal("expected PK column validation error")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("Expected PreflightError, got %T", err)
+	}
+	if preflightErr.Check != "PK_COLUMN_CHECK" {
+		t.Fatalf("Expected PK_COLUMN_CHECK, got %s", preflightErr.Check)
+	}
+}
+
+func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	g.AddNode("legacy", &graph.Node{Name: "legacy"})
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	err := checker.ValidatePrimaryKeyColumns(context.Background(), []string{"legacy"})
+	if err == nil {
+		t.Fatal("expected explicit PK mapping error")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("Expected PreflightError, got %T", err)
+	}
+	if preflightErr.Check != "PK_COLUMN_CHECK" {
+		t.Fatalf("Expected PK_COLUMN_CHECK, got %s", preflightErr.Check)
 	}
 }
 
@@ -245,6 +308,25 @@ func TestValidateTablesExist_MissingTables(t *testing.T) {
 
 	if len(preflightErr.Tables) != 1 || preflightErr.Tables[0] != "nonexistent" {
 		t.Errorf("Expected missing table 'nonexistent', got %v", preflightErr.Tables)
+	}
+}
+
+func TestValidateTablesExist_ExactCaseRequired(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	ctx := context.Background()
+
+	tables := []string{"Users"}
+	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("users"))
+
+	err := checker.ValidateTablesExist(ctx, tables)
+	if err == nil {
+		t.Fatal("expected case-sensitive table mismatch error")
 	}
 }
 
@@ -608,6 +690,176 @@ func TestWarnCascadeRules_QueryError(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error for query failure")
+	}
+}
+
+func TestConfigureDestination_Success(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, _, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+
+	checker, err := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	if err != nil {
+		t.Fatalf("NewPreflightChecker failed: %v", err)
+	}
+
+	if err := checker.ConfigureDestination(destDB, "destdb"); err != nil {
+		t.Fatalf("ConfigureDestination failed: %v", err)
+	}
+
+	if checker.destinationDB != destDB {
+		t.Fatal("destination DB was not set")
+	}
+	if checker.destinationDBName != "destdb" {
+		t.Fatalf("expected destinationDBName=destdb, got %s", checker.destinationDBName)
+	}
+}
+
+func TestValidateDestinationTablesExist_MissingTables(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	tables := []string{"users", "orders"}
+	destRows := sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("users")
+	destMock.ExpectQuery("SELECT TABLE_NAME").
+		WithArgs("destdb").
+		WillReturnRows(destRows)
+
+	err := checker.ValidateDestinationTablesExist(context.Background(), tables)
+	if err == nil {
+		t.Fatal("expected destination table existence error")
+	}
+}
+
+func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	sourceRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA"}).
+		AddRow(1, "id", "bigint(20)", "NO", "PRI", "").
+		AddRow(2, "name", "varchar(255)", "YES", "", "")
+	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
+		WithArgs("sourcedb", "users").
+		WillReturnRows(sourceRows)
+
+	destRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA"}).
+		AddRow(1, "id", "bigint(20)", "NO", "PRI", "").
+		AddRow(2, "name", "varchar(100)", "YES", "", "") // mismatch
+	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
+		WithArgs("destdb", "users").
+		WillReturnRows(destRows)
+
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
+	if err == nil {
+		t.Fatal("expected destination schema compatibility error")
+	}
+}
+
+func TestValidateDestinationWritePermissions_NoInsertPrivilege(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\)\\s+FROM information_schema.SCHEMA_PRIVILEGES").
+		WithArgs("destdb").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	destMock.ExpectQuery("SELECT COUNT\\(\\*\\)\\s+FROM information_schema.TABLE_PRIVILEGES").
+		WithArgs("destdb", "users").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+
+	err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"})
+	if err == nil {
+		t.Fatal("expected destination write permission error")
+	}
+}
+
+func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	destMock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
+		WithArgs("destdb", "users").
+		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
+			AddRow("users", "trg_users_insert"))
+
+	err := checker.ValidateDestinationInsertTriggers(context.Background(), []string{"users"})
+	if err == nil {
+		t.Fatal("expected destination INSERT trigger error")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("Expected PreflightError, got %T", err)
+	}
+	if preflightErr.Check != "DEST_INSERT_TRIGGER_CHECK" {
+		t.Fatalf("Expected DEST_INSERT_TRIGGER_CHECK, got %s", preflightErr.Check)
+	}
+}
+
+func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("external_cascade", "fk_ext_orders_1", "order_id", "orders", "id", "CASCADE", "RESTRICT").
+			AddRow("external_restrict", "fk_ext_orders_2", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+
+	err := checker.ValidateForeignKeyCoverage(context.Background())
+	if err == nil {
+		t.Fatal("expected FK coverage error for uncovered references")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("Expected PreflightError, got %T", err)
+	}
+	if preflightErr.Check != "FK_COVERAGE_CHECK" {
+		t.Fatalf("Expected FK_COVERAGE_CHECK, got %s", preflightErr.Check)
+	}
+	if !strings.Contains(preflightErr.Error(), "ON DELETE CASCADE") {
+		t.Fatalf("expected CASCADE rule in error message, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "ON DELETE RESTRICT") {
+		t.Fatalf("expected RESTRICT rule in error message, got: %v", preflightErr)
 	}
 }
 

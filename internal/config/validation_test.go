@@ -321,6 +321,46 @@ func TestRelationValidation(t *testing.T) {
 	}
 }
 
+func TestRelationValidation_MissingPrimaryKey(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {
+				RootTable:  "orders",
+				PrimaryKey: "id",
+				Relations: []Relation{
+					{
+						Table:          "order_items",
+						ForeignKey:     "order_id",
+						DependencyType: "1-N",
+						// Missing PrimaryKey
+					},
+				},
+			},
+		},
+		Processing: ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected validation error for missing primary_key")
+	}
+	if !strings.Contains(err.Error(), "primary_key") {
+		t.Errorf("expected error about primary_key, got: %v", err)
+	}
+}
+
 func TestMultipleErrors(t *testing.T) {
 	cfg := &Config{
 		Source: DatabaseConfig{
@@ -348,5 +388,85 @@ func TestMultipleErrors(t *testing.T) {
 	}
 	if !strings.Contains(errStr, "at least one job") {
 		t.Error("expected error about jobs")
+	}
+}
+
+func TestJobLevelProcessingAndVerificationValidation(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {
+				RootTable:  "orders",
+				PrimaryKey: "id",
+				Processing: &ProcessingConfig{
+					BatchSize:       -5,
+					BatchDeleteSize: 100,
+				},
+				Verification: &VerificationConfig{
+					Method: "bad_method",
+				},
+			},
+		},
+		Processing: ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation errors for invalid job overrides")
+	}
+	if !strings.Contains(err.Error(), "jobs.test_job.processing.batch_size") {
+		t.Errorf("expected error about job processing batch_size, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "jobs.test_job.verification.method") {
+		t.Errorf("expected error about job verification method, got: %v", err)
+	}
+}
+
+func TestCheckIntervalZeroWithReplicaEnabled(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Replica: ReplicaConfig{
+			Enabled: true,
+			Host:    "localhost",
+			Port:    3308,
+			User:    "root",
+		},
+		Safety: SafetyConfig{
+			CheckInterval: 0,
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {RootTable: "orders", PrimaryKey: "id"},
+		},
+		Processing: ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for check_interval=0 with replica enabled")
+	}
+	if !strings.Contains(err.Error(), "safety.check_interval") {
+		t.Errorf("expected error about safety.check_interval, got: %v", err)
 	}
 }

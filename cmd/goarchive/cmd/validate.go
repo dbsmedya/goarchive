@@ -59,6 +59,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
+	defer syncLogger(log)
 
 	log.Info("Starting validation checks...")
 
@@ -121,6 +122,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		)
 		if err != nil {
 			fmt.Printf("❌ Failed to create preflight checker: %v\n\n", err)
+			hasErrors = true
+			continue
+		}
+		if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database); err != nil {
+			fmt.Printf("❌ Failed to configure destination preflight checks: %v\n\n", err)
 			hasErrors = true
 			continue
 		}

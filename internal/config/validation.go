@@ -198,6 +198,18 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 		}
 	}
 
+	if job.Processing != nil {
+		if err := c.validateProcessingConfig(prefix+".processing", job.Processing); err != nil {
+			errors = append(errors, err...)
+		}
+	}
+
+	if job.Verification != nil {
+		if err := c.validateVerificationConfig(prefix+".verification", job.Verification); err != nil {
+			errors = append(errors, err...)
+		}
+	}
+
 	return errors
 }
 
@@ -215,6 +227,13 @@ func (c *Config) validateRelation(prefix string, rel *Relation) ValidationErrors
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".foreign_key",
 			Message: "foreign_key is required",
+		})
+	}
+
+	if rel.PrimaryKey == "" {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".primary_key",
+			Message: "primary_key is required",
 		})
 	}
 
@@ -238,25 +257,29 @@ func (c *Config) validateRelation(prefix string, rel *Relation) ValidationErrors
 }
 
 func (c *Config) validateProcessing() ValidationErrors {
+	return c.validateProcessingConfig("processing", &c.Processing)
+}
+
+func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingConfig) ValidationErrors {
 	var errors ValidationErrors
 
-	if c.Processing.BatchSize <= 0 {
+	if processing.BatchSize <= 0 {
 		errors = append(errors, ValidationError{
-			Field:   "processing.batch_size",
+			Field:   prefix + ".batch_size",
 			Message: "batch_size must be positive",
 		})
 	}
 
-	if c.Processing.BatchDeleteSize <= 0 {
+	if processing.BatchDeleteSize <= 0 {
 		errors = append(errors, ValidationError{
-			Field:   "processing.batch_delete_size",
+			Field:   prefix + ".batch_delete_size",
 			Message: "batch_delete_size must be positive",
 		})
 	}
 
-	if c.Processing.SleepSeconds < 0 {
+	if processing.SleepSeconds < 0 {
 		errors = append(errors, ValidationError{
-			Field:   "processing.sleep_seconds",
+			Field:   prefix + ".sleep_seconds",
 			Message: "sleep_seconds cannot be negative",
 		})
 	}
@@ -274,10 +297,10 @@ func (c *Config) validateSafety() ValidationErrors {
 		})
 	}
 
-	if c.Safety.CheckInterval < 0 {
+	if c.Replica.Enabled && c.Safety.CheckInterval <= 0 {
 		errors = append(errors, ValidationError{
 			Field:   "safety.check_interval",
-			Message: "check_interval cannot be negative",
+			Message: "check_interval must be positive when replica is enabled",
 		})
 	}
 
@@ -285,12 +308,16 @@ func (c *Config) validateSafety() ValidationErrors {
 }
 
 func (c *Config) validateVerification() ValidationErrors {
+	return c.validateVerificationConfig("verification", &c.Verification)
+}
+
+func (c *Config) validateVerificationConfig(prefix string, verification *VerificationConfig) ValidationErrors {
 	var errors ValidationErrors
 
 	validMethods := map[string]bool{"count": true, "sha256": true, "": true}
-	if !validMethods[c.Verification.Method] {
+	if !validMethods[verification.Method] {
 		errors = append(errors, ValidationError{
-			Field:   "verification.method",
+			Field:   prefix + ".method",
 			Message: "method must be 'count' or 'sha256'",
 		})
 	}

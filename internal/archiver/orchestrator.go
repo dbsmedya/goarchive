@@ -16,16 +16,19 @@ import (
 
 // ArchiveResult contains statistics and status of archive operation.
 type ArchiveResult struct {
-	JobName        string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	Duration       time.Duration
-	TablesCopied   int
-	TablesDeleted  int
-	RecordsCopied  int64
-	RecordsDeleted int64
-	Errors         []error
-	Success        bool
+	JobName            string
+	StartedAt          time.Time
+	CompletedAt        time.Time
+	Duration           time.Duration
+	TablesCopied       int
+	TablesDeleted      int
+	RecordsCopied      int64
+	RecordsDeleted     int64
+	TablesVerified     int
+	RecordsVerified    int64
+	VerificationMethod string
+	Errors             []error
+	Success            bool
 }
 
 // CheckpointCallback is called after each root PK is processed for crash recovery.
@@ -186,10 +189,11 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	}
 
 	result := &ArchiveResult{
-		JobName:   o.jobName,
-		StartedAt: time.Now(),
-		Errors:    make([]error, 0),
-		Success:   false,
+		JobName:            o.jobName,
+		StartedAt:          time.Now(),
+		VerificationMethod: o.verificationCfg.Method,
+		Errors:             make([]error, 0),
+		Success:            false,
 	}
 
 	o.logger.Infow("Starting archive execution",
@@ -327,6 +331,11 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			"root_ids", len(rootIDs),
 		)
 
+		// Log all batch PKs as pending before per-PK processing for crash recovery.
+		if err := resumeMgr.LogBatchPending(ctx, o.jobName, rootIDs); err != nil {
+			return nil, fmt.Errorf("failed to log pending batch entries: %w", err)
+		}
+
 		// Process each root ID in batch
 		for _, rootID := range rootIDs {
 			rootPKID := toInt64(rootID)
@@ -354,12 +363,16 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 
 			// Verify phase
 			if !o.verificationCfg.SkipVerification {
-				_, err := dataVerifier.Verify(ctx, discovered)
+				verifyStats, err := dataVerifier.Verify(ctx, discovered)
 				if err != nil {
 					if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootPKID, err.Error()); markErr != nil {
 						o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
 					}
 					return nil, fmt.Errorf("verification failed: %w", err)
+				}
+				if verifyStats != nil {
+					result.TablesVerified += verifyStats.TablesVerified
+					result.RecordsVerified += verifyStats.TotalRows
 				}
 			}
 
@@ -376,6 +389,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootPKID); err != nil {
 				return nil, fmt.Errorf("checkpoint update failed: %w", err)
 			}
+			fetcher.UpdateCheckpoint(rootID)
 
 			// Mark as completed
 			if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootPKID); err != nil {
@@ -397,7 +411,13 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 
 		// Sleep between batches
 		if o.processingCfg.SleepSeconds > 0 {
-			time.Sleep(time.Duration(o.processingCfg.SleepSeconds * float64(time.Second)))
+			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
+			select {
+			case <-ctx.Done():
+				o.logger.Warn("Context cancelled during batch sleep")
+				return result, ctx.Err()
+			case <-time.After(sleepDuration):
+			}
 		}
 	}
 
@@ -418,6 +438,8 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		"success", result.Success,
 		"records_copied", result.RecordsCopied,
 		"records_deleted", result.RecordsDeleted,
+		"tables_verified", result.TablesVerified,
+		"records_verified", result.RecordsVerified,
 	)
 
 	return result, nil

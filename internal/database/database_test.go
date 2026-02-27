@@ -184,7 +184,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expected: "root:secret@tcp(::1:3306)/testdb?parseTime=true&multiStatements=true&tls=preferred",
+			expected: "root:secret@tcp([::1]:3306)/testdb?parseTime=true&multiStatements=true&tls=preferred",
 		},
 		{
 			name: "Non-standard port",

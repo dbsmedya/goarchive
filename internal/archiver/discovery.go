@@ -81,27 +81,17 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	rootTable := d.graph.Root
 	result.Records[rootTable] = rootPKs
 
-	// GA-P3-F2-T1: BFS queue structure
-	// Each queue item contains: table name, PKs to process, and depth level
-	type queueItem struct {
-		table string
-		pks   []interface{}
-		level int
+	order, err := d.graph.CopyOrder()
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute discovery order: %w", err)
 	}
 
-	queue := []queueItem{
-		{table: rootTable, pks: rootPKs, level: 0},
-	}
-
-	// Track visited tables to avoid reprocessing
-	visited := make(map[string]bool)
-	visited[rootTable] = true
+	levels := map[string]int{rootTable: 0}
 	maxLevel := 0
+	d.logger.Infof("Starting graph discovery from root table %q with %d PKs", rootTable, len(rootPKs))
 
-	d.logger.Infof("Starting BFS discovery from root table %q with %d PKs", rootTable, len(rootPKs))
-
-	// GA-P3-F2-T1: BFS traversal loop
-	for len(queue) > 0 {
+	// Process tables in topological order and accumulate child PKs across all parent paths.
+	for _, table := range order {
 		// Check for context cancellation (graceful shutdown)
 		select {
 		case <-ctx.Done():
@@ -109,67 +99,53 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 			d.logger.Warnf("Discovery interrupted: %v", ctx.Err())
 			return result, ctx.Err()
 		default:
-			// Continue processing
 		}
 
-		// Dequeue front item
-		item := queue[0]
-		queue = queue[1:]
-
-		if item.level > maxLevel {
-			maxLevel = item.level
+		parentPKs := result.Records[table]
+		if len(parentPKs) == 0 {
+			continue
 		}
 
-		// Get children of current table from dependency graph
-		children := d.graph.GetChildren(item.table)
+		level := levels[table]
+		if level > maxLevel {
+			maxLevel = level
+		}
+
+		children := d.graph.GetChildren(table)
 		if len(children) == 0 {
-			// GA-P3-F2-T6: No children for this table (leaf node)
-			d.logger.Debugf("Table %q has no children (leaf node)", item.table)
+			d.logger.Debugf("Table %q has no children (leaf node)", table)
 			continue
 		}
 
 		d.logger.Debugf("Processing table %q at level %d with %d PKs, %d children",
-			item.table, item.level, len(item.pks), len(children))
+			table, level, len(parentPKs), len(children))
 
-		// GA-P3-F2-T3: Multi-level discovery - process each child table
 		for _, childTable := range children {
-			if visited[childTable] {
-				// Already processed this table (prevents revisiting in DAG)
-				continue
-			}
-			visited[childTable] = true
-
 			// GA-P3-F2-T2: Fetch child IDs via database query or simulation
 			var childPKs []interface{}
-			var err error
 			if d.db == nil {
-				// Simulation mode for testing
-				childPKs = d.simulateDiscovery(childTable, item.pks)
+				childPKs = d.simulateDiscovery(childTable, parentPKs)
 			} else {
-				childPKs, err = d.fetchChildIDs(ctx, item.table, childTable, item.pks)
+				childPKs, err = d.fetchChildIDs(ctx, table, childTable, parentPKs)
 				if err != nil {
 					return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
 				}
 			}
 
-			// GA-P3-F2-T6: Handle empty children (no related records)
 			if len(childPKs) == 0 {
-				d.logger.Debugf("No %s records found for %d parent PKs", childTable, len(item.pks))
+				d.logger.Debugf("No %s records found for %d parent PKs", childTable, len(parentPKs))
 				continue
 			}
 
 			d.logger.Debugf("Discovered %d %s records from %d parent PKs",
-				len(childPKs), childTable, len(item.pks))
+				len(childPKs), childTable, len(parentPKs))
 
-			// Store discovered PKs
-			result.Records[childTable] = childPKs
+			result.Records[childTable] = appendUniqueInterfaces(result.Records[childTable], childPKs)
 
-			// Enqueue child table for further traversal
-			queue = append(queue, queueItem{
-				table: childTable,
-				pks:   childPKs,
-				level: item.level + 1,
-			})
+			nextLevel := level + 1
+			if current, ok := levels[childTable]; !ok || nextLevel > current {
+				levels[childTable] = nextLevel
+			}
 		}
 	}
 
@@ -190,6 +166,33 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	)
 
 	return result, nil
+}
+
+func appendUniqueInterfaces(existing, incoming []interface{}) []interface{} {
+	if len(incoming) == 0 {
+		return existing
+	}
+
+	seen := make(map[string]struct{}, len(existing)+len(incoming))
+	for _, v := range existing {
+		seen[interfaceKey(v)] = struct{}{}
+	}
+
+	result := existing
+	for _, v := range incoming {
+		key := interfaceKey(v)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, v)
+	}
+
+	return result
+}
+
+func interfaceKey(v interface{}) string {
+	return fmt.Sprintf("%T:%v", v, v)
 }
 
 // fetchChildIDs queries the child table for all PKs that reference the parent PKs.

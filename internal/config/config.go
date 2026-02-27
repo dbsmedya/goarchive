@@ -170,6 +170,6 @@ func (jc *JobConfig) GetJobVerification(global VerificationConfig) VerificationC
 	if jc.Verification.Method != "" {
 		result.Method = jc.Verification.Method
 	}
-	result.SkipVerification = jc.Verification.SkipVerification || global.SkipVerification
+	result.SkipVerification = jc.Verification.SkipVerification
 	return result
 }

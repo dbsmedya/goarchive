@@ -3,22 +3,22 @@
 
 # Source database (production - data to archive)
 source:
-  host: ${SOURCE_DB_HOST}
+  host: source-db.internal
   port: 3306
-  user: ${SOURCE_DB_USER}
-  password: ${SOURCE_DB_PASSWORD}
-  database: ${SOURCE_DB_NAME}
+  user: archiver
+  password: change_me
+  database: production
   tls: preferred  # disable, preferred, required
   max_connections: 10
   max_idle_connections: 5
 
 # Destination database (archive storage)
 destination:
-  host: ${DEST_DB_HOST}
+  host: archive-db.internal
   port: 3306
-  user: ${DEST_DB_USER}
-  password: ${DEST_DB_PASSWORD}
-  database: ${DEST_DB_NAME}
+  user: archiver
+  password: change_me
+  database: archive
   tls: preferred
   max_connections: 10
   max_idle_connections: 5
@@ -26,10 +26,10 @@ destination:
 # Replica database (optional - for replication lag monitoring)
 replica:
   enabled: false
-  host: ${REPLICA_DB_HOST}
+  host: replica-db.internal
   port: 3306
-  user: ${REPLICA_DB_USER}
-  password: ${REPLICA_DB_PASSWORD}
+  user: repl_user
+  password: change_me
 
 # Archive jobs configuration
 jobs:

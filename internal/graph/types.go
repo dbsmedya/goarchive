@@ -188,3 +188,9 @@ func (g *Graph) GetPK(table string) string {
 	// Default to "id" for backward compatibility
 	return "id"
 }
+
+// HasPK returns true if a table has an explicitly configured PK column.
+func (g *Graph) HasPK(table string) bool {
+	_, exists := g.pkColumns[table]
+	return exists
+}

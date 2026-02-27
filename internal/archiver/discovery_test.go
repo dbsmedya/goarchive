@@ -39,6 +39,21 @@ func createDeepGraph() *graph.Graph {
 	return g
 }
 
+func createDiamondGraph() *graph.Graph {
+	// Diamond graph:
+	// A -> B -> D
+	// A -> C -> D
+	g := graph.NewGraph("A", "id")
+	g.AddNode("B", &graph.Node{Name: "B"})
+	g.AddNode("C", &graph.Node{Name: "C"})
+	g.AddNode("D", &graph.Node{Name: "D"})
+	g.AddEdge("A", "B")
+	g.AddEdge("A", "C")
+	g.AddEdge("B", "D")
+	g.AddEdge("C", "D")
+	return g
+}
+
 // ============================================================================
 // NewRecordDiscovery Tests
 // ============================================================================
@@ -226,6 +241,31 @@ func TestDiscover_DeepGraph(t *testing.T) {
 		if _, ok := result.Records[table]; !ok {
 			t.Errorf("Expected records for table %s", table)
 		}
+	}
+}
+
+func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
+	g := createDiamondGraph()
+	discovery, _ := NewRecordDiscovery(g, nil, 100)
+
+	ctx := context.Background()
+	rootPKs := []interface{}{"a1", "a2"}
+	result, err := discovery.Discover(ctx, rootPKs)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	if _, ok := result.Records["D"]; !ok {
+		t.Fatal("Expected records for table D")
+	}
+
+	// In simulation mode:
+	// B generates 3 records from 2 parents, C generates 3 records from 2 parents.
+	// D should be discovered from both paths, so expect 4-6 records (deterministic here: 4).
+	// More importantly, D count must be strictly greater than only one parent path contribution.
+	if len(result.Records["D"]) <= len(result.Records["B"]) {
+		t.Fatalf("Expected D to include records from both B and C paths; got D=%d, B=%d",
+			len(result.Records["D"]), len(result.Records["B"]))
 	}
 }
 

@@ -4,12 +4,22 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
 
 	"github.com/dbsmedya/goarchive/internal/config"
+)
+
+const (
+	defaultMaxOpenConns = 10
+	defaultMaxIdleConns = 5
+	defaultConnMaxLife  = 10 * time.Minute
+	defaultConnMaxIdle  = 5 * time.Minute
 )
 
 // Manager handles database connections for source, destination, and replica.
@@ -31,6 +41,10 @@ func NewManager(cfg *config.Config) *Manager {
 func (m *Manager) Connect(ctx context.Context) error {
 	var err error
 
+	if err := m.closeExistingConnections(); err != nil {
+		return fmt.Errorf("failed to close existing connections: %w", err)
+	}
+
 	// Connect to source database
 	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
 	if err != nil {
@@ -41,6 +55,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination)
 	if err != nil {
 		_ = m.Source.Close() // Ignore error during cleanup of failed connection
+		m.Source = nil
 		return fmt.Errorf("failed to connect to destination database: %w", err)
 	}
 
@@ -56,6 +71,8 @@ func (m *Manager) Connect(ctx context.Context) error {
 		if err != nil {
 			_ = m.Source.Close()      // Ignore error during cleanup of failed connection
 			_ = m.Destination.Close() // Ignore error during cleanup of failed connection
+			m.Source = nil
+			m.Destination = nil
 			return fmt.Errorf("failed to connect to replica database: %w", err)
 		}
 	}
@@ -67,6 +84,10 @@ func (m *Manager) Connect(ctx context.Context) error {
 // Use this when only source access is needed (e.g., purge operations).
 func (m *Manager) ConnectSource(ctx context.Context) error {
 	var err error
+
+	if err := m.closeExistingConnections(); err != nil {
+		return fmt.Errorf("failed to close existing connections: %w", err)
+	}
 
 	// Connect to source database only
 	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
@@ -120,13 +141,23 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 	}
 
 	// Configure connection pool
-	if cfg.MaxConnections > 0 {
-		db.SetMaxOpenConns(cfg.MaxConnections)
+	maxOpen := cfg.MaxConnections
+	if maxOpen <= 0 {
+		maxOpen = defaultMaxOpenConns
 	}
-	if cfg.MaxIdleConnections > 0 {
-		db.SetMaxIdleConns(cfg.MaxIdleConnections)
+	db.SetMaxOpenConns(maxOpen)
+
+	maxIdle := cfg.MaxIdleConnections
+	if maxIdle <= 0 {
+		maxIdle = defaultMaxIdleConns
 	}
-	db.SetConnMaxLifetime(10 * time.Minute)
+	if maxIdle > maxOpen {
+		maxIdle = maxOpen
+	}
+	db.SetMaxIdleConns(maxIdle)
+
+	db.SetConnMaxLifetime(defaultConnMaxLife)
+	db.SetConnMaxIdleTime(defaultConnMaxIdle)
 
 	return db, nil
 }
@@ -134,11 +165,11 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
 	// Format: user:password@tcp(host:port)/database?params
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
+	address := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/",
 		cfg.User,
 		cfg.Password,
-		cfg.Host,
-		cfg.Port,
+		address,
 	)
 
 	if cfg.Database != "" {
@@ -172,24 +203,31 @@ func (m *Manager) Close() error {
 		if err := m.Replica.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("replica close: %w", err))
 		}
+		m.Replica = nil
 	}
 
 	if m.Destination != nil {
 		if err := m.Destination.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("destination close: %w", err))
 		}
+		m.Destination = nil
 	}
 
 	if m.Source != nil {
 		if err := m.Source.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("source close: %w", err))
 		}
+		m.Source = nil
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("errors closing connections: %v", errs)
+		return errors.Join(errs...)
 	}
 	return nil
+}
+
+func (m *Manager) closeExistingConnections() error {
+	return m.Close()
 }
 
 // Ping verifies all connections are alive.

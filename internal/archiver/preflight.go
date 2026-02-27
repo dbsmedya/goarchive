@@ -63,10 +63,14 @@ type ForeignKeyResult struct {
 //
 // GA-P4-F3: Preflight Checks
 type PreflightChecker struct {
-	db           *sql.DB
-	sourceDBName string
-	graph        *graph.Graph
-	logger       *logger.Logger
+	db                *sql.DB
+	sourceDBName      string
+	destinationDB     *sql.DB
+	destinationDBName string
+	graph             *graph.Graph
+	logger            *logger.Logger
+	fkCache           []ForeignKeyResult
+	fkCacheLoaded     bool
 }
 
 // NewPreflightChecker creates a new preflight checker.
@@ -85,11 +89,26 @@ func NewPreflightChecker(db *sql.DB, sourceDBName string, g *graph.Graph, log *l
 	}
 
 	return &PreflightChecker{
-		db:           db,
-		sourceDBName: sourceDBName,
-		graph:        g,
-		logger:       log,
+		db:                db,
+		sourceDBName:      sourceDBName,
+		destinationDB:     nil,
+		destinationDBName: "",
+		graph:             g,
+		logger:            log,
 	}, nil
+}
+
+// ConfigureDestination sets destination database context for destination-side preflight checks.
+func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName string) error {
+	if db == nil {
+		return fmt.Errorf("destination database is nil")
+	}
+	if destinationDBName == "" {
+		return fmt.Errorf("destination database name is required")
+	}
+	p.destinationDB = db
+	p.destinationDBName = destinationDBName
+	return nil
 }
 
 // RunAllChecks runs all preflight checks.
@@ -106,9 +125,30 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 		return err
 	}
 
+	// Validate configured PK columns exist and are explicitly defined.
+	if err := p.ValidatePrimaryKeyColumns(ctx, tables); err != nil {
+		return err
+	}
+
 	// GA-P4-F3-T1: Storage engine check
 	if err := p.ValidateStorageEngine(ctx, tables); err != nil {
 		return err
+	}
+
+	// Destination checks ensure copy target is safe before archive execution.
+	if p.destinationDB != nil && p.destinationDBName != "" {
+		if err := p.ValidateDestinationTablesExist(ctx, tables); err != nil {
+			return err
+		}
+		if err := p.ValidateDestinationSchemaCompatibility(ctx, tables); err != nil {
+			return err
+		}
+		if err := p.ValidateDestinationWritePermissions(ctx, tables); err != nil {
+			return err
+		}
+		if err := p.ValidateDestinationInsertTriggers(ctx, tables); err != nil {
+			return err
+		}
 	}
 
 	// GA-P4-F3-T3: FK index check
@@ -145,21 +185,9 @@ func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, tables []str
 	const query = `
 		SELECT TABLE_NAME
 		FROM information_schema.TABLES
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME IN (?)`
+		WHERE TABLE_SCHEMA = ?`
 
-	// Build placeholders for table list
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.sourceDBName
-	for i, table := range tables {
-		placeholders[i] = "?"
-		args[i+1] = table
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-
-	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
+	rows, err := p.db.QueryContext(ctx, query, p.sourceDBName)
 	if err != nil {
 		return fmt.Errorf("failed to query tables: %w", err)
 	}
@@ -296,7 +324,15 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 
 // getForeignKeys retrieves all foreign key constraints for tables in the graph.
 func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResult, error) {
+	if p.fkCacheLoaded {
+		return p.fkCache, nil
+	}
+
 	tables := p.graph.AllNodes()
+	graphTableSet := make(map[string]bool, len(tables))
+	for _, table := range tables {
+		graphTableSet[table] = true
+	}
 
 	const query = `
 		SELECT
@@ -313,18 +349,24 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 			AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
 		WHERE kcu.TABLE_SCHEMA = ?
 		AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-		AND kcu.TABLE_NAME IN (?)`
+		AND (kcu.TABLE_NAME IN (?) OR kcu.REFERENCED_TABLE_NAME IN (?))`
 
 	// Build placeholders
 	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.sourceDBName
-	for i, table := range tables {
+	args := make([]interface{}, 0, (len(tables)*2)+1)
+	args = append(args, p.sourceDBName)
+	for i := range tables {
 		placeholders[i] = "?"
-		args[i+1] = table
+	}
+	for _, table := range tables {
+		args = append(args, table)
+	}
+	for _, table := range tables {
+		args = append(args, table)
 	}
 
 	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
+	fullQuery = strings.Replace(fullQuery, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
 
 	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
 	if err != nil {
@@ -343,16 +385,24 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 			return nil, err
 		}
 
-		// Check if column has an index
-		fk.Indexed, err = p.isColumnIndexed(ctx, fk.Table, fk.Column)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check index for %s.%s: %w", fk.Table, fk.Column, err)
+		// FK index checks apply only to tables in the graph.
+		if graphTableSet[fk.Table] {
+			fk.Indexed, err = p.isColumnIndexed(ctx, fk.Table, fk.Column)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check index for %s.%s: %w", fk.Table, fk.Column, err)
+			}
 		}
 
 		results = append(results, fk)
 	}
 
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	p.fkCache = results
+	p.fkCacheLoaded = true
+	return results, nil
 }
 
 // isColumnIndexed checks if a column has an index.
@@ -436,7 +486,6 @@ func (p *PreflightChecker) CheckDeleteTriggers(ctx context.Context, tables []str
 	}
 
 	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-
 	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query triggers: %w", err)
@@ -492,8 +541,9 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 // ValidateForeignKeyCoverage checks that all foreign key constraints referencing
 // tables in the graph are covered by relations in the configuration.
 //
-// This prevents delete failures when a table outside the graph has an FK
-// constraint to a table inside the graph with ON DELETE RESTRICT.
+// This prevents unsafe delete behavior when a table outside the graph has an FK
+// constraint to a table inside the graph. Any uncovered FK is treated as fatal,
+// regardless of ON DELETE rule (CASCADE/RESTRICT/NO ACTION/SET NULL).
 func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error {
 	p.logger.Debug("Checking foreign key coverage...")
 
@@ -504,35 +554,10 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 		graphTableSet[t] = true
 	}
 
-	// Query all FK constraints that reference tables in our graph
-	query := `
-		SELECT 
-			kcu.table_name,
-			kcu.constraint_name,
-			kcu.column_name,
-			kcu.referenced_table_name,
-			kcu.referenced_column_name,
-			rc.delete_rule
-		FROM information_schema.referential_constraints rc
-		JOIN information_schema.key_column_usage kcu 
-			ON rc.constraint_name = kcu.constraint_name
-			AND rc.constraint_schema = kcu.constraint_schema
-		WHERE rc.constraint_schema = ?
-			AND kcu.referenced_table_name IN (` + p.placeholders(len(graphTables)) + `)
-		ORDER BY kcu.referenced_table_name, kcu.table_name
-	`
-
-	args := make([]interface{}, 0, len(graphTables)+1)
-	args = append(args, p.sourceDBName)
-	for _, t := range graphTables {
-		args = append(args, t)
-	}
-
-	rows, err := p.db.QueryContext(ctx, query, args...)
+	fks, err := p.getForeignKeys(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to query FK coverage: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 
 	type uncoveredFK struct {
 		Table           string
@@ -542,20 +567,16 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 		OnDelete        string
 	}
 	var uncovered []uncoveredFK
-
-	for rows.Next() {
-		var fk uncoveredFK
-		if err := rows.Scan(&fk.Table, &fk.Constraint, &fk.Column, &fk.ReferencedTable, new(string), &fk.OnDelete); err != nil {
-			return fmt.Errorf("failed to scan FK row: %w", err)
+	for _, fk := range fks {
+		if graphTableSet[fk.ReferencedTable] && !graphTableSet[fk.Table] {
+			uncovered = append(uncovered, uncoveredFK{
+				Table:           fk.Table,
+				Constraint:      fk.ConstraintName,
+				Column:          fk.Column,
+				ReferencedTable: fk.ReferencedTable,
+				OnDelete:        fk.OnDelete,
+			})
 		}
-		// If the referencing table is NOT in our graph, it's uncovered
-		if !graphTableSet[fk.Table] {
-			uncovered = append(uncovered, fk)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating FK rows: %w", err)
 	}
 
 	if len(uncovered) > 0 {
@@ -569,14 +590,14 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 		for refTable, fks := range byRefTable {
 			var childTables []string
 			for _, fk := range fks {
-				childTables = append(childTables, fk.Table)
+				childTables = append(childTables, fmt.Sprintf("%s (ON DELETE %s)", fk.Table, fk.OnDelete))
 			}
 			messages = append(messages, fmt.Sprintf("  - %s is referenced by: %v", refTable, childTables))
 		}
 
 		return &PreflightError{
 			Check:   "FK_COVERAGE_CHECK",
-			Message: fmt.Sprintf("Foreign key constraints not covered by relations:\n%s", strings.Join(messages, "\n")),
+			Message: fmt.Sprintf("Foreign key constraints not covered by relations (fatal for any ON DELETE rule):\n%s", strings.Join(messages, "\n")),
 			Details: map[string]string{
 				"uncovered_count": fmt.Sprintf("%d", len(uncovered)),
 				"suggestion":      "Add these tables to your relations or use 'purge' mode to skip archiving",
@@ -586,6 +607,301 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 
 	p.logger.Debug("Foreign key coverage check complete (all FKs covered)")
 	return nil
+}
+
+// ColumnDefinition represents column metadata used for schema compatibility checks.
+type ColumnDefinition struct {
+	OrdinalPosition int
+	ColumnName      string
+	ColumnType      string
+	IsNullable      string
+	ColumnKey       string
+	Extra           string
+}
+
+// ValidateDestinationTablesExist checks that all graph tables exist in destination DB.
+func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking destination table existence...")
+
+	const query = `
+		SELECT TABLE_NAME
+		FROM information_schema.TABLES
+		WHERE TABLE_SCHEMA = ?`
+
+	rows, err := p.destinationDB.QueryContext(ctx, query, p.destinationDBName)
+	if err != nil {
+		return fmt.Errorf("failed to query destination tables: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	existingTables := make(map[string]bool)
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return err
+		}
+		existingTables[tableName] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var missingTables []string
+	for _, table := range tables {
+		if !existingTables[table] {
+			missingTables = append(missingTables, table)
+		}
+	}
+
+	if len(missingTables) > 0 {
+		return &PreflightError{
+			Check:   "DEST_TABLE_EXISTENCE_CHECK",
+			Message: "Tables not found in destination database",
+			Tables:  missingTables,
+		}
+	}
+
+	p.logger.Debugf("Destination table existence check PASSED (%d tables)", len(tables))
+	return nil
+}
+
+// ValidateDestinationSchemaCompatibility ensures source/destination table columns match exactly.
+func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking destination schema compatibility...")
+
+	var incompatible []string
+	for _, table := range tables {
+		sourceColumns, err := p.getTableColumns(ctx, p.db, p.sourceDBName, table)
+		if err != nil {
+			return fmt.Errorf("failed to read source schema for %s: %w", table, err)
+		}
+		destColumns, err := p.getTableColumns(ctx, p.destinationDB, p.destinationDBName, table)
+		if err != nil {
+			return fmt.Errorf("failed to read destination schema for %s: %w", table, err)
+		}
+
+		if len(sourceColumns) != len(destColumns) {
+			incompatible = append(incompatible, fmt.Sprintf("%s(column count mismatch: source=%d destination=%d)", table, len(sourceColumns), len(destColumns)))
+			continue
+		}
+
+		for i := range sourceColumns {
+			s := sourceColumns[i]
+			d := destColumns[i]
+			if s.ColumnName != d.ColumnName || s.ColumnType != d.ColumnType || s.IsNullable != d.IsNullable || s.ColumnKey != d.ColumnKey || s.Extra != d.Extra {
+				incompatible = append(incompatible, fmt.Sprintf("%s(position %d: source=%s %s nullable=%s key=%s extra=%s, destination=%s %s nullable=%s key=%s extra=%s)",
+					table, s.OrdinalPosition,
+					s.ColumnName, s.ColumnType, s.IsNullable, s.ColumnKey, s.Extra,
+					d.ColumnName, d.ColumnType, d.IsNullable, d.ColumnKey, d.Extra))
+				break
+			}
+		}
+	}
+
+	if len(incompatible) > 0 {
+		return &PreflightError{
+			Check:   "DEST_SCHEMA_COMPATIBILITY_CHECK",
+			Message: "Source and destination schemas are incompatible",
+			Tables:  incompatible,
+		}
+	}
+
+	p.logger.Debug("Destination schema compatibility check PASSED")
+	return nil
+}
+
+// ValidateDestinationWritePermissions checks that destination grants INSERT privileges for all graph tables.
+func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking destination write permissions...")
+
+	const schemaPrivilegeQuery = `
+		SELECT COUNT(*)
+		FROM information_schema.SCHEMA_PRIVILEGES
+		WHERE TABLE_SCHEMA = ?
+		AND PRIVILEGE_TYPE IN ('INSERT', 'ALL PRIVILEGES')`
+
+	var schemaPrivilegeCount int
+	if err := p.destinationDB.QueryRowContext(ctx, schemaPrivilegeQuery, p.destinationDBName).Scan(&schemaPrivilegeCount); err != nil {
+		return fmt.Errorf("failed to check destination schema privileges: %w", err)
+	}
+	if schemaPrivilegeCount > 0 {
+		p.logger.Debug("Destination write permission check PASSED (schema-level privilege)")
+		return nil
+	}
+
+	const tablePrivilegeQuery = `
+		SELECT COUNT(*)
+		FROM information_schema.TABLE_PRIVILEGES
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME = ?
+		AND PRIVILEGE_TYPE IN ('INSERT', 'ALL PRIVILEGES')`
+
+	var missing []string
+	for _, table := range tables {
+		var count int
+		if err := p.destinationDB.QueryRowContext(ctx, tablePrivilegeQuery, p.destinationDBName, table).Scan(&count); err != nil {
+			return fmt.Errorf("failed to check destination table privileges for %s: %w", table, err)
+		}
+		if count == 0 {
+			missing = append(missing, table)
+		}
+	}
+
+	if len(missing) > 0 {
+		return &PreflightError{
+			Check:   "DEST_WRITE_PERMISSION_CHECK",
+			Message: "Destination user lacks INSERT privilege on required tables",
+			Tables:  missing,
+		}
+	}
+
+	p.logger.Debug("Destination write permission check PASSED (table-level privileges)")
+	return nil
+}
+
+func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbName, table string) ([]ColumnDefinition, error) {
+	const query = `
+		SELECT
+			ORDINAL_POSITION,
+			COLUMN_NAME,
+			COLUMN_TYPE,
+			IS_NULLABLE,
+			COLUMN_KEY,
+			EXTRA
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME = ?
+		ORDER BY ORDINAL_POSITION`
+
+	rows, err := db.QueryContext(ctx, query, dbName, table)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var columns []ColumnDefinition
+	for rows.Next() {
+		var col ColumnDefinition
+		if err := rows.Scan(&col.OrdinalPosition, &col.ColumnName, &col.ColumnType, &col.IsNullable, &col.ColumnKey, &col.Extra); err != nil {
+			return nil, err
+		}
+		columns = append(columns, col)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return columns, nil
+}
+
+// ValidatePrimaryKeyColumns checks that each table has an explicitly configured PK and the PK column exists.
+func (p *PreflightChecker) ValidatePrimaryKeyColumns(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking primary key column definitions...")
+
+	const query = `
+		SELECT COUNT(*)
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME = ?
+		AND COLUMN_NAME = ?`
+
+	var issues []string
+	for _, table := range tables {
+		if !p.graph.HasPK(table) {
+			issues = append(issues, fmt.Sprintf("%s(primary key must be explicitly configured; implicit default to 'id' is not allowed)", table))
+			continue
+		}
+
+		pkColumn := p.graph.GetPK(table)
+		var count int
+		if err := p.db.QueryRowContext(ctx, query, p.sourceDBName, table, pkColumn).Scan(&count); err != nil {
+			return fmt.Errorf("failed to validate primary key column for %s.%s: %w", table, pkColumn, err)
+		}
+		if count == 0 {
+			issues = append(issues, fmt.Sprintf("%s(%s)", table, pkColumn))
+		}
+	}
+
+	if len(issues) > 0 {
+		return &PreflightError{
+			Check:   "PK_COLUMN_CHECK",
+			Message: "Configured primary key columns not found",
+			Tables:  issues,
+		}
+	}
+
+	p.logger.Debugf("Primary key column check PASSED (%d tables)", len(tables))
+	return nil
+}
+
+// ValidateDestinationInsertTriggers checks for INSERT triggers on destination tables.
+func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking destination INSERT triggers...")
+
+	triggers, err := p.CheckInsertTriggers(ctx, tables)
+	if err != nil {
+		return err
+	}
+
+	if len(triggers) == 0 {
+		p.logger.Debug("Destination INSERT trigger check PASSED (no triggers found)")
+		return nil
+	}
+
+	tableMap := make(map[string]bool)
+	var tableList []string
+	for _, t := range triggers {
+		if !tableMap[t.Table] {
+			tableMap[t.Table] = true
+			tableList = append(tableList, fmt.Sprintf("%s(%s)", t.Table, t.Trigger))
+		}
+	}
+
+	return &PreflightError{
+		Check:   "DEST_INSERT_TRIGGER_CHECK",
+		Message: "Destination INSERT triggers detected. Disable triggers before running archive copy operations",
+		Tables:  tableList,
+	}
+}
+
+// CheckInsertTriggers scans for INSERT triggers on destination tables.
+func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
+	const query = `
+		SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME
+		FROM information_schema.TRIGGERS
+		WHERE EVENT_OBJECT_SCHEMA = ?
+		AND EVENT_OBJECT_TABLE IN (?)
+		AND EVENT_MANIPULATION = 'INSERT'`
+
+	placeholders := make([]string, len(tables))
+	args := make([]interface{}, len(tables)+1)
+	args[0] = p.destinationDBName
+	for i, table := range tables {
+		placeholders[i] = "?"
+		args[i+1] = table
+	}
+
+	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
+	rows, err := p.destinationDB.QueryContext(ctx, fullQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query destination triggers: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
+
+	var results []TriggerCheckResult
+	for rows.Next() {
+		var r TriggerCheckResult
+		if err := rows.Scan(&r.Table, &r.Trigger); err != nil {
+			return nil, err
+		}
+		results = append(results, r)
+	}
+
+	return results, rows.Err()
 }
 
 // placeholders generates SQL placeholders for IN clause.
