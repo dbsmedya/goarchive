@@ -4,8 +4,6 @@ bin/
 *.dll
 *.so
 *.dylib
-mysql-archiver
-goarchive
 
 # Test binary, built with `go test -c`
 *.test
@@ -27,6 +25,14 @@ docs/
 .agents
 .github
 
+# Include
+!cmd/goarchive/**
+
+# binaries
+/goarchive
+bin/
+mysql-archiver
+archiver.test
 
 # Go workspace file
 go.work
