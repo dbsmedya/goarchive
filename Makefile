@@ -64,6 +64,14 @@ version:
 	@echo "Commit:  $(COMMIT)"
 	@echo "Package: $(PACKAGE_PATH)"
 
+# New Tagging target
+.PHONY: tag
+tag:
+	@if [ -z "$(V)" ]; then echo "Error: V is not set. Use 'make tag V=1.0.0'"; exit 1; fi
+	@if [ -n "$$(git status --short)" ]; then echo "Error: Working directory is dirty. Commit first."; exit 1; fi
+	git tag -a v$(V) -m "Release version $(V)"
+	@echo "Tagged v$(V). Now run 'make release' to build binaries."
+
 # Build for multiple platforms (release builds)
 .PHONY: release
 release: clean
