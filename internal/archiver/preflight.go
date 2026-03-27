@@ -18,7 +18,6 @@ type PreflightError struct {
 	Check   string
 	Message string
 	Tables  []string
-	Details map[string]string
 }
 
 func (e *PreflightError) Error() string {
@@ -159,6 +158,11 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
 	// This MUST be checked before triggers - missing relations are a bigger problem
 	if err := p.ValidateForeignKeyCoverage(ctx); err != nil {
+		return err
+	}
+
+	// INTERNAL_FK_COVERAGE: Validate all internal FK relationships match graph edges
+	if err := p.ValidateInternalFKCoverage(ctx); err != nil {
 		return err
 	}
 
@@ -606,14 +610,85 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 		return &PreflightError{
 			Check:   "FK_COVERAGE_CHECK",
 			Message: fmt.Sprintf("Foreign key constraints not covered by relations (fatal for any ON DELETE rule):\n%s", strings.Join(messages, "\n")),
-			Details: map[string]string{
-				"uncovered_count": fmt.Sprintf("%d", len(uncovered)),
-				"suggestion":      "Add these tables to your relations or use 'purge' mode to skip archiving",
-			},
 		}
 	}
 
 	p.logger.Debug("Foreign key coverage check complete (all FKs covered)")
+	return nil
+}
+
+// ValidateInternalFKCoverage checks that all FK relationships between tables
+// within the graph are properly represented as graph edges with matching columns.
+//
+// This prevents delete failures (Error 1451) caused by missing relation nesting
+// in the configuration. For example, if the DB has item_shipments.item_id -> order_items.item_id
+// but the config puts item_shipments as a sibling of order_items instead of a child.
+func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context) error {
+	p.logger.Debug("Checking internal FK coverage...")
+
+	graphTables := p.graph.AllNodes()
+	graphTableSet := make(map[string]bool, len(graphTables))
+	for _, t := range graphTables {
+		graphTableSet[t] = true
+	}
+
+	fks, err := p.getForeignKeys(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to query foreign keys: %w", err)
+	}
+
+	var messages []string
+	for _, fk := range fks {
+		// Only check FKs where BOTH tables are in the graph
+		if !graphTableSet[fk.Table] || !graphTableSet[fk.ReferencedTable] {
+			continue
+		}
+
+		// Skip self-referencing FKs (e.g., category.parent_id -> category.id)
+		if fk.Table == fk.ReferencedTable {
+			continue
+		}
+
+		edgeMeta := p.graph.GetEdgeMeta(fk.ReferencedTable, fk.Table)
+
+		if edgeMeta == nil {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [no graph edge]",
+				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
+			))
+			continue
+		}
+
+		if edgeMeta.ForeignKey != fk.Column {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [FK column mismatch: config has '%s', DB has '%s']",
+				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
+				edgeMeta.ForeignKey, fk.Column,
+			))
+			continue
+		}
+
+		parentPK := p.graph.GetPK(fk.ReferencedTable)
+		if parentPK != fk.ReferencedColumn {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [reference column mismatch: config PK is '%s', DB references '%s']",
+				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
+				parentPK, fk.ReferencedColumn,
+			))
+		}
+	}
+
+	if len(messages) > 0 {
+		return &PreflightError{
+			Check: "INTERNAL_FK_COVERAGE",
+			Message: fmt.Sprintf(
+				"Internal FK relationships not matching configuration:\n%s\n\nHint: Ensure child tables are nested under their parent in the relations configuration, with matching foreign_key and primary_key values.",
+				strings.Join(messages, "\n"),
+			),
+		}
+	}
+
+	p.logger.Debug("Internal FK coverage check PASSED")
 	return nil
 }
 
@@ -629,6 +704,9 @@ type ColumnDefinition struct {
 
 // ValidateDestinationTablesExist checks that all graph tables exist in destination DB.
 func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, tables []string) error {
+	if p.destinationDB == nil {
+		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
 	p.logger.Debug("Checking destination table existence...")
 
 	const query = `
@@ -640,7 +718,11 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, t
 	if err != nil {
 		return fmt.Errorf("failed to query destination tables: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	existingTables := make(map[string]bool)
 	for rows.Next() {
@@ -675,6 +757,9 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, t
 
 // ValidateDestinationSchemaCompatibility ensures source/destination table columns match exactly.
 func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Context, tables []string) error {
+	if p.destinationDB == nil {
+		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
 	p.logger.Debug("Checking destination schema compatibility...")
 
 	var incompatible []string
@@ -720,6 +805,9 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 
 // ValidateDestinationWritePermissions checks that destination grants INSERT privileges for all graph tables.
 func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, tables []string) error {
+	if p.destinationDB == nil {
+		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
 	p.logger.Debug("Checking destination write permissions...")
 
 	const schemaPrivilegeQuery = `
@@ -785,7 +873,11 @@ func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbNa
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var columns []ColumnDefinition
 	for rows.Next() {
@@ -844,6 +936,9 @@ func (p *PreflightChecker) ValidatePrimaryKeyColumns(ctx context.Context, tables
 
 // ValidateDestinationInsertTriggers checks for INSERT triggers on destination tables.
 func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context, tables []string) error {
+	if p.destinationDB == nil {
+		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
 	p.logger.Debug("Checking destination INSERT triggers...")
 
 	triggers, err := p.CheckInsertTriggers(ctx, tables)
@@ -874,6 +969,9 @@ func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context
 
 // CheckInsertTriggers scans for INSERT triggers on destination tables.
 func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
+	if p.destinationDB == nil {
+		return nil, fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
 	if len(tables) == 0 {
 		return []TriggerCheckResult{}, nil
 	}

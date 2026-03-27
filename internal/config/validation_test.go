@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -468,5 +469,62 @@ func TestCheckIntervalZeroWithReplicaEnabled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "safety.check_interval") {
 		t.Errorf("expected error about safety.check_interval, got: %v", err)
+	}
+}
+
+func TestValidate_RelationMaxDepthExceeded(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "src"}
+	cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "dst"}
+
+	// Build a chain 11 levels deep
+	deepest := Relation{Table: "t11", ForeignKey: "fk", PrimaryKey: "id", DependencyType: "1-N"}
+	for i := 10; i >= 1; i-- {
+		deepest = Relation{
+			Table:          fmt.Sprintf("t%d", i),
+			ForeignKey:     "fk",
+			PrimaryKey:     "id",
+			DependencyType: "1-N",
+			Relations:      []Relation{deepest},
+		}
+	}
+
+	cfg.Jobs = map[string]JobConfig{
+		"deep": {RootTable: "root", PrimaryKey: "id", Relations: []Relation{deepest}},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for depth > 10")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum nesting depth") {
+		t.Errorf("expected depth error, got: %v", err)
+	}
+}
+
+func TestValidate_RelationAtMaxDepth(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "src"}
+	cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "dst"}
+
+	// Build a chain exactly 10 levels deep - should pass
+	deepest := Relation{Table: "t10", ForeignKey: "fk", PrimaryKey: "id", DependencyType: "1-N"}
+	for i := 9; i >= 1; i-- {
+		deepest = Relation{
+			Table:          fmt.Sprintf("t%d", i),
+			ForeignKey:     "fk",
+			PrimaryKey:     "id",
+			DependencyType: "1-N",
+			Relations:      []Relation{deepest},
+		}
+	}
+
+	cfg.Jobs = map[string]JobConfig{
+		"deep": {RootTable: "root", PrimaryKey: "id", Relations: []Relation{deepest}},
+	}
+
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("depth=10 should pass validation, got: %v", err)
 	}
 }

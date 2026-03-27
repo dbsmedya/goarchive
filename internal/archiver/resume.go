@@ -237,10 +237,14 @@ func (r *ResumeManager) GetOrCreateJobWithType(ctx context.Context, jobName, roo
 
 	// Try to get existing job
 	var state JobState
+	var checkpoint sql.NullString
 	err := r.db.QueryRowContext(ctx,
 		"SELECT job_name, root_table, job_type, last_processed_root_pk_id, job_status, created_at, updated_at FROM archiver_job WHERE job_name = ?",
 		jobName,
-	).Scan(&state.JobName, &state.RootTable, &state.JobType, &state.LastProcessedRootPKID, &state.Status, &state.CreatedAt, &state.UpdatedAt)
+	).Scan(&state.JobName, &state.RootTable, &state.JobType, &checkpoint, &state.Status, &state.CreatedAt, &state.UpdatedAt)
+	if checkpoint.Valid {
+		state.LastProcessedRootPKID = checkpoint.String
+	}
 
 	if err == sql.ErrNoRows {
 		// GA-P3-F4-T7: No existing job - create new one

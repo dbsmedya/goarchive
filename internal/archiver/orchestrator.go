@@ -502,12 +502,6 @@ func (o *ArchiveOrchestrator) GetVerificationConfig() config.VerificationConfig 
 	return o.verificationCfg
 }
 
-// UpdateProcessingConfig updates the effective processing configuration.
-// This should be called after applying CLI overrides.
-func (o *ArchiveOrchestrator) UpdateProcessingConfig(cfg config.ProcessingConfig) {
-	o.processingCfg = cfg
-}
-
 // convertRecordSet converts types.RecordSet to archiver.RecordSet
 func convertRecordSet(ts *types.RecordSet) *RecordSet {
 	return &RecordSet{

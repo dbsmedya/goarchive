@@ -924,6 +924,285 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 }
 
 // ============================================================================
+// ValidateInternalFKCoverage Tests
+// ============================================================================
+
+func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Graph: orders -> order_items, orders -> item_shipments (flat, both siblings)
+	// But DB has: item_shipments.item_id -> order_items.item_id (nested FK)
+	g := graph.NewGraph("orders", "order_id")
+	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.AddNode("item_shipments", &graph.Node{Name: "item_shipments", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.SetPK("order_items", "item_id")
+	g.SetPK("item_shipments", "shipment_id")
+	g.AddEdgeWithMeta("orders", "order_items", "order_id", "order_id", "1-N")
+	g.AddEdgeWithMeta("orders", "item_shipments", "order_id", "order_id", "1-N")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	// DB reports an FK from item_shipments.item_id -> order_items.item_id
+	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items)
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("item_shipments", "fk_ship_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+
+	// isColumnIndexed queries for each in-graph FK row
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err == nil {
+		t.Fatal("expected INTERNAL_FK_COVERAGE error for flat config with nested DB FK")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected PreflightError, got %T", err)
+	}
+	if preflightErr.Check != "INTERNAL_FK_COVERAGE" {
+		t.Fatalf("expected INTERNAL_FK_COVERAGE check, got %s", preflightErr.Check)
+	}
+	if !strings.Contains(preflightErr.Error(), "item_shipments") {
+		t.Fatalf("expected error to mention item_shipments, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "no graph edge") {
+		t.Fatalf("expected 'no graph edge' reason, got: %v", preflightErr)
+	}
+}
+
+func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Graph: orders -> order_items -> item_shipments (properly nested)
+	g := graph.NewGraph("orders", "order_id")
+	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.AddNode("item_shipments", &graph.Node{Name: "item_shipments", ForeignKey: "item_id", ReferenceKey: "item_id", DependencyType: "1-N"})
+	g.SetPK("order_items", "item_id")
+	g.SetPK("item_shipments", "shipment_id")
+	g.AddEdgeWithMeta("orders", "order_items", "order_id", "order_id", "1-N")
+	g.AddEdgeWithMeta("order_items", "item_shipments", "item_id", "item_id", "1-N")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+
+	// isColumnIndexed for each in-graph FK row
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error for properly nested config, got: %v", err)
+	}
+}
+
+func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Graph: orders -> payments with FK column "cust_id"
+	// But DB has: payments.customer_id -> orders.order_id
+	g := graph.NewGraph("orders", "order_id")
+	g.AddNode("payments", &graph.Node{Name: "payments", ForeignKey: "cust_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.SetPK("payments", "payment_id")
+	g.AddEdgeWithMeta("orders", "payments", "cust_id", "order_id", "1-N")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("payments", "fk_pay_orders", "customer_id", "orders", "order_id", "RESTRICT", "RESTRICT"))
+
+	// isColumnIndexed for payments (in graph)
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err == nil {
+		t.Fatal("expected error for FK column mismatch")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected PreflightError, got %T", err)
+	}
+	if !strings.Contains(preflightErr.Error(), "FK column mismatch") {
+		t.Fatalf("expected 'FK column mismatch' in error, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "config has 'cust_id'") {
+		t.Fatalf("expected config column in error, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "DB has 'customer_id'") {
+		t.Fatalf("expected DB column in error, got: %v", preflightErr)
+	}
+}
+
+func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Graph: orders (PK: order_id) -> line_items with FK "order_id" referencing "order_id"
+	// But DB has: line_items.order_id -> orders.id (different referenced column)
+	g := graph.NewGraph("orders", "order_id")
+	g.AddNode("line_items", &graph.Node{Name: "line_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.SetPK("line_items", "line_id")
+	g.AddEdgeWithMeta("orders", "line_items", "order_id", "order_id", "1-N")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("line_items", "fk_line_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+
+	// isColumnIndexed for line_items (in graph)
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err == nil {
+		t.Fatal("expected error for reference column mismatch")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected PreflightError, got %T", err)
+	}
+	if !strings.Contains(preflightErr.Error(), "reference column mismatch") {
+		t.Fatalf("expected 'reference column mismatch' in error, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "config PK is 'order_id'") {
+		t.Fatalf("expected config PK in error, got: %v", preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "DB references 'id'") {
+		t.Fatalf("expected DB reference in error, got: %v", preflightErr)
+	}
+}
+
+func TestValidateInternalFKCoverage_NoInternalFKs(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	// Only external FKs returned - no internal ones between graph tables
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("external_table", "fk_ext", "user_id", "users", "id", "RESTRICT", "RESTRICT"))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error when no internal FKs exist, got: %v", err)
+	}
+}
+
+func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := graph.NewGraph("categories", "id")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	// Self-referencing FK: categories.parent_id -> categories.id
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("categories", "fk_cat_parent", "parent_id", "categories", "id", "SET NULL", "RESTRICT"))
+
+	// isColumnIndexed for categories (in graph)
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error for self-referencing FK, got: %v", err)
+	}
+}
+
+func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	// Graph: orders -> order_items, orders -> item_shipments (flat), orders -> payments (wrong FK col)
+	g := graph.NewGraph("orders", "order_id")
+	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.AddNode("item_shipments", &graph.Node{Name: "item_shipments", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.AddNode("payments", &graph.Node{Name: "payments", ForeignKey: "wrong_col", ReferenceKey: "order_id", DependencyType: "1-N"})
+	g.SetPK("order_items", "item_id")
+	g.SetPK("item_shipments", "shipment_id")
+	g.SetPK("payments", "payment_id")
+	g.AddEdgeWithMeta("orders", "order_items", "order_id", "order_id", "1-N")
+	g.AddEdgeWithMeta("orders", "item_shipments", "order_id", "order_id", "1-N")
+	g.AddEdgeWithMeta("orders", "payments", "wrong_col", "order_id", "1-N")
+
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"table_name", "constraint_name", "column_name",
+			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+		}).
+			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT").
+			AddRow("payments", "fk_pay_orders", "customer_id", "orders", "order_id", "RESTRICT", "RESTRICT"))
+
+	// isColumnIndexed for each in-graph FK row
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := checker.ValidateInternalFKCoverage(context.Background())
+	if err == nil {
+		t.Fatal("expected error for multiple failures")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected PreflightError, got %T", err)
+	}
+
+	errMsg := preflightErr.Error()
+	if !strings.Contains(errMsg, "no graph edge") {
+		t.Fatalf("expected 'no graph edge' for item_shipments, got: %v", preflightErr)
+	}
+	if !strings.Contains(errMsg, "FK column mismatch") {
+		t.Fatalf("expected 'FK column mismatch' for payments, got: %v", preflightErr)
+	}
+}
+
+// ============================================================================
 // PreflightError Tests
 // ============================================================================
 
@@ -1035,6 +1314,72 @@ func TestIsColumnIndexed_True(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("Expected no error for indexed column: %v", err)
+	}
+}
+
+// ============================================================================
+// Nil Destination Safety Tests
+// ============================================================================
+
+func TestDestinationMethods_NilDestination(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("Failed to create mock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, err := NewPreflightChecker(db, "sourcedb", g, log)
+	if err != nil {
+		t.Fatalf("NewPreflightChecker failed: %v", err)
+	}
+	// Do NOT call ConfigureDestination - destinationDB stays nil
+
+	ctx := context.Background()
+	tables := []string{"users"}
+
+	err = checker.ValidateDestinationTablesExist(ctx, tables)
+	if err == nil {
+		t.Fatal("ValidateDestinationTablesExist should return error when destination is nil")
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+
+	err = checker.ValidateDestinationSchemaCompatibility(ctx, tables)
+	if err == nil {
+		t.Fatal("ValidateDestinationSchemaCompatibility should return error when destination is nil")
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+
+	err = checker.ValidateDestinationWritePermissions(ctx, tables)
+	if err == nil {
+		t.Fatal("ValidateDestinationWritePermissions should return error when destination is nil")
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+
+	err = checker.ValidateDestinationInsertTriggers(ctx, tables)
+	if err == nil {
+		t.Fatal("ValidateDestinationInsertTriggers should return error when destination is nil")
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Errorf("Unexpected error message: %v", err)
+	}
+
+	triggers, err := checker.CheckInsertTriggers(ctx, tables)
+	if err == nil {
+		t.Fatal("CheckInsertTriggers should return error when destination is nil")
+	}
+	if triggers != nil {
+		t.Errorf("Expected nil triggers, got %v", triggers)
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Errorf("Unexpected error message: %v", err)
 	}
 }
 

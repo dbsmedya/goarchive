@@ -82,21 +82,3 @@ func (c *Config) ApplyOverrides(logLevel, logFormat string, batchSize, batchDele
 		c.Verification.SkipVerification = true
 	}
 }
-
-// ApplyJobOverrides applies CLI flag overrides to a specific job's configuration.
-// This creates a modified ProcessingConfig that combines global, job-specific, and CLI values.
-func (c *Config) ApplyJobOverrides(jobName string, batchSize, batchDeleteSize int, sleepSeconds float64, skipVerify bool) ProcessingConfig {
-	processing := c.GetJobProcessing(jobName)
-
-	if batchSize > 0 {
-		processing.BatchSize = batchSize
-	}
-	if batchDeleteSize > 0 {
-		processing.BatchDeleteSize = batchDeleteSize
-	}
-	if sleepSeconds > 0 {
-		processing.SleepSeconds = sleepSeconds
-	}
-
-	return processing
-}

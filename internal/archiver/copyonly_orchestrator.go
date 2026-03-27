@@ -309,7 +309,11 @@ func (o *CopyOnlyOrchestrator) checkConcurrentJobs(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to query concurrent jobs: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			o.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var conflicts []string
 	for rows.Next() {

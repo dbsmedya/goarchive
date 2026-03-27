@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 GoArchive is a production-grade Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
-**Status**: Phase 4 in progress (126/142 tasks complete, 89%).
+**Status**: Phase 4 in progress.
 
 ## Build Commands
 
@@ -36,17 +36,21 @@ golint ./...
 CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data Layer
 ```
 
-### Package Layout (Target Structure)
+### Package Layout
 
 | Directory | Purpose |
 |-----------|---------|
-| `cmd/` | CLI command implementations |
-| `internal/config/` | Configuration parsing with Viper |
-| `internal/db/` | Database connections and operations |
-| `internal/graph/` | Dependency graph and Kahn's algorithm |
-| `internal/archiver/` | Core archive/purge logic |
-| `internal/verify/` | Count and SHA256 verification |
-| `internal/preflight/` | Preflight check implementations |
+| `cmd/` | CLI command implementations (Cobra) |
+| `internal/archiver/` | Core archive/purge/copy orchestration, preflight checks, batch processing |
+| `internal/config/` | Configuration parsing with Viper, validation |
+| `internal/database/` | Database connection management, signal handling |
+| `internal/graph/` | Dependency graph, Kahn's algorithm, cycle detection |
+| `internal/lock/` | MySQL advisory locking for job concurrency |
+| `internal/logger/` | Structured logging (Zap wrapper) |
+| `internal/mermaidascii/` | ASCII diagram rendering for plan command |
+| `internal/sqlutil/` | SQL identifier quoting and validation |
+| `internal/types/` | Shared types (RecordSet, type conversions) |
+| `internal/verifier/` | Count and SHA256 data verification |
 
 ### Processing Flow
 
@@ -62,7 +66,7 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 
 ## Tech Stack
 
-- Go 1.25.5+, Cobra (CLI), Viper (config), Squirrel (SQL builder)
+- Go 1.24+, Cobra (CLI), Viper (config)
 - MySQL 8.0+ with InnoDB only
 - Zap for structured logging
 
@@ -74,14 +78,19 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - Current state: `docs/project-plan/tracking/CURRENT_STATE.md`
 - Task details: `docs/project-plan/tasks/phase-{n}/GA-P{n}-F{n}-T{n}.md`
 
-## Recent Changes (2026-02-06)
+## Recent Changes
 
-### CLI Improvements (GA-P4-F8)
+### Code Review Refactor (2026-03-27)
+- Removed dead code: `ApplyJobOverrides`, `UpdateProcessingConfig`, `PreflightError.Details`
+- Added nil guards to all destination preflight methods
+- Added max relation nesting depth (10) to config validation
+- Fixed float precision in SHA256 verification (`%f` -> `%.17g`)
+- Standardized `rows.Close()` error handling
+
+### CLI Improvements (GA-P4-F8, 2026-02-06)
 1. **Removed pterm dependency** - Plan command uses plain text output
 2. **Mermaid-ascii integration** - Table relationships shown as ASCII diagrams
 3. **Job-specific configs** - Processing and verification settings can be set per-job
-
-See: `docs/project-plan/CLI_IMPROVEMENTS.md`
 
 ## Key Algorithms
 

@@ -338,7 +338,11 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 			if err != nil {
 				return fmt.Errorf("query failed: %w", err)
 			}
-			defer func() { _ = rows.Close() }()
+			defer func() {
+				if err := rows.Close(); err != nil {
+					v.logger.Warnf("Failed to close rows: %v", err)
+				}
+			}()
 
 			// Get column names
 			columns, err := rows.Columns()
@@ -386,7 +390,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 }
 
 // serializeRow converts a row to a deterministic string representation for hashing.
-// Format: col1=val1,col2=val2,...
+// Format: col1=val1\x00col2=val2\x00... (null-byte separated to avoid ambiguity with commas in values)
 func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
 	type columnValue struct {
 		column string
@@ -406,7 +410,7 @@ func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
 		case int64:
 			valStr = fmt.Sprintf("%d", v)
 		case float64:
-			valStr = fmt.Sprintf("%f", v)
+			valStr = fmt.Sprintf("%.17g", v)
 		case bool:
 			valStr = fmt.Sprintf("%t", v)
 		case string:

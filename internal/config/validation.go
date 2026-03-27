@@ -193,7 +193,7 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 	// Validate relations recursively
 	for i, rel := range job.Relations {
 		relPrefix := fmt.Sprintf("%s.relations[%d]", prefix, i)
-		if err := c.validateRelation(relPrefix, &rel); err != nil {
+		if err := c.validateRelation(relPrefix, &rel, 1); err != nil {
 			errors = append(errors, err...)
 		}
 	}
@@ -213,8 +213,18 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 	return errors
 }
 
-func (c *Config) validateRelation(prefix string, rel *Relation) ValidationErrors {
+const maxRelationDepth = 10
+
+func (c *Config) validateRelation(prefix string, rel *Relation, depth int) ValidationErrors {
 	var errors ValidationErrors
+
+	if depth > maxRelationDepth {
+		errors = append(errors, ValidationError{
+			Field:   prefix,
+			Message: fmt.Sprintf("relation nesting exceeds maximum nesting depth of %d", maxRelationDepth),
+		})
+		return errors
+	}
 
 	if rel.Table == "" {
 		errors = append(errors, ValidationError{
@@ -248,7 +258,7 @@ func (c *Config) validateRelation(prefix string, rel *Relation) ValidationErrors
 	// Validate nested relations
 	for i, nested := range rel.Relations {
 		nestedPrefix := fmt.Sprintf("%s.relations[%d]", prefix, i)
-		if err := c.validateRelation(nestedPrefix, &nested); err != nil {
+		if err := c.validateRelation(nestedPrefix, &nested, depth+1); err != nil {
 			errors = append(errors, err...)
 		}
 	}

@@ -2,6 +2,20 @@
 
 Use this checklist to track your progress through manual testing of GoArchive.
 
+## ⚠️ Test Status Summary
+
+| Test IDs | Status | Use For |
+|----------|--------|---------|
+| **Test 06, 07, 08** | ✅ **Working** | E2E testing & validation |
+| **Test 01-05** | ❌ **Validation Examples** | Demonstrate preflight error detection only |
+
+> **Note:** Tests 01-05 intentionally fail preflight validation and serve as examples of common configuration errors. Use Tests 06-08 for actual end-to-end testing.
+>
+> **Quick Start:** Begin with Test 07 (simplest working configuration):
+> ```bash
+> ./bin/goarchive validate --config tests/configs/test07_actor_film_actor.yaml
+> ```
+
 ---
 
 ## Pre-Test Setup
@@ -38,9 +52,12 @@ cd tests && ./scripts/run-tests.sh --setup
 
 ---
 
-## Test 01: One-to-One Relationship (film → film_text)
+## Test 01: One-to-One Relationship (FK_COVERAGE_CHECK Example)
 
-**Config:** `tests/configs/test01_one_to_one.yaml`
+**Config:** `tests/configs/test01_one_to_one.yaml`  
+**Status:** ❌ **Fails Validation** - Demonstrates FK_COVERAGE_CHECK error
+
+> **Purpose:** This test demonstrates the `ValidateInternalFKCoverage` check detecting missing nested relations. Use Test 06 for a working film hierarchy.
 
 ### Preparation
 
@@ -56,29 +73,29 @@ cd tests && ./scripts/run-tests.sh --setup
 |------|---------|-----------------|--------|
 | 1 | `list-jobs` | Shows `archive-film-with-text` | [ ] |
 | 2 | `plan` | Shows film → film_text tree | [ ] |
-| 3 | `validate --force-triggers` | ✅ "Preflight checks completed" | [ ] |
-| 4 | `dry-run` | Shows estimated row counts | [ ] |
-| 5 | Count source rows (film) | ~1000 total, 50 match WHERE | [ ] |
-| 6 | Count source rows (film_text) | 50 match WHERE | [ ] |
-| 7 | Count archive (before) | Both tables = 0 | [ ] |
-| 8 | `archive --skip-verify` | Completes without errors | [ ] |
+| 3 | `validate --force-triggers` | ❌ **FK_COVERAGE_CHECK fails** | [ ] |
 
-### Verification
+### Expected Validation Error
 
-| Step | Check | Expected | Status |
-|------|-------|----------|--------|
-| 1 | Source film count | 950 (50 archived) | [ ] |
-| 2 | Source film_text count | 950 | [ ] |
-| 3 | Archive film count | 50 | [ ] |
-| 4 | Archive film_text count | 50 | [ ] |
-| 5 | Job log entry | Status = completed | [ ] |
-| 6 | Data integrity | film_ids match between tables | [ ] |
+```
+❌ Preflight checks failed: FK_COVERAGE_CHECK: 
+Foreign key constraints not covered by relations:
+  - inventory is referenced by: [rental]
+  - rental is referenced by: [payment]
+```
+
+**Why it fails:** Test 01 only includes `film → film_text` but the graph must include all tables that reference film (transitively): `film → inventory → rental → payment`.
+
+**Fix:** See Test 06 for correct configuration with proper nesting.
 
 ---
 
-## Test 02: One-to-Many Relationship (language → film)
+## Test 02: One-to-Many Relationship (FK_INDEX_CHECK Example)
 
-**Config:** `tests/configs/test02_one_to_many.yaml`
+**Config:** `tests/configs/test02_one_to_many.yaml`  
+**Status:** ❌ **Fails Validation** - Demonstrates FK_INDEX_CHECK error
+
+> **Purpose:** This test demonstrates the `ValidateFKIndex` check detecting unindexed foreign key columns.
 
 ### Preparation
 
@@ -93,33 +110,26 @@ cd tests && ./scripts/run-tests.sh --setup
 |------|---------|-----------------|--------|
 | 1 | `list-jobs` | Shows `archive-language-1` | [ ] |
 | 2 | `plan` | Shows language → film tree | [ ] |
-| 3 | `validate --force-triggers` | ✅ Passes | [ ] |
-| 4 | `dry-run` | Shows affected rows | [ ] |
-| 5 | Count source (language) | 6 languages | [ ] |
-| 6 | Count source (film) | ~1000 films | [ ] |
-| 7 | `archive --skip-verify` | Completes | [ ] |
+| 3 | `validate --force-triggers` | ❌ **FK_INDEX_CHECK fails** | [ ] |
 
-### Verification
+### Expected Validation Error
 
-| Step | Check | Expected | Status |
-|------|-------|----------|--------|
-| 1 | Source language count | 5 (1 archived) | [ ] |
-| 2 | Source film count | Reduced (films for lang 1 archived) | [ ] |
-| 3 | Archive language count | 1 | [ ] |
-| 4 | Archive film count | > 0 | [ ] |
+```
+❌ Preflight checks failed: FK_INDEX_CHECK: 
+Table `film` column `language_id` (referenced by `fk_film_language`) 
+must have an index for efficient WHERE clause filtering
+```
+
+**Why it fails:** The `film.language_id` foreign key column lacks an index, which is required for efficient archive queries.
 
 ---
 
-## Test 03: One-to-Many Multiple Children (film → inventory + film_actor + film_category)
+## Test 03: One-to-Many Multiple Children (FK_INDEX_CHECK Example)
 
-**Config:** `tests/configs/test03_one_to_many_multiple.yaml`
+**Config:** `tests/configs/test03_one_to_many_multiple.yaml`  
+**Status:** ❌ **Fails Validation** - Demonstrates FK_INDEX_CHECK error
 
-### Preparation
-
-| Step | Task | Status |
-|------|------|--------|
-| 1 | Reset source database | [ ] |
-| 2 | Verify clean state | [ ] |
+> **Purpose:** Similar to Test 02, demonstrates FK_INDEX_CHECK on multiple child tables.
 
 ### Execution
 
@@ -127,101 +137,179 @@ cd tests && ./scripts/run-tests.sh --setup
 |------|---------|-----------------|--------|
 | 1 | `list-jobs` | Shows `archive-film-multiple` | [ ] |
 | 2 | `plan` | Shows film with 3 children | [ ] |
-| 3 | `validate --force-triggers` | ✅ Passes | [ ] |
-| 4 | `dry-run` | Shows all 4 tables | [ ] |
-| 5 | Count source before | Record all table counts | [ ] |
-| 6 | `archive --skip-verify` | Completes | [ ] |
+| 3 | `validate --force-triggers` | ❌ **FK_INDEX_CHECK fails** | [ ] |
 
-### Verification
+### Expected Validation Error
 
-| Step | Check | Expected | Status |
-|------|-------|----------|--------|
-| 1 | Source film count | Reduced | [ ] |
-| 2 | Source inventory count | Reduced | [ ] |
-| 3 | Source film_actor count | Reduced | [ ] |
-| 4 | Source film_category count | Reduced | [ ] |
-| 5 | Archive has all 4 tables | ✅ Yes | [ ] |
-| 6 | Archive counts match archived | ✅ Yes | [ ] |
+```
+❌ Preflight checks failed: FK_INDEX_CHECK: 
+[Multiple unindexed FK columns reported]
+```
 
 ---
 
-## Test 04: Two Nested Levels (country → city → address)
+## Test 04: Two Nested Levels (FK_INDEX_CHECK Example)
 
-**Config:** `tests/configs/test04_one_to_many_two_nested.yaml`
+**Config:** `tests/configs/test04_one_to_many_two_nested.yaml`  
+**Status:** ❌ **Fails Validation** - Demonstrates FK_INDEX_CHECK error
 
-### Preparation
-
-| Step | Task | Status |
-|------|------|--------|
-| 1 | Reset source database | [ ] |
-| 2 | Verify clean state | [ ] |
+> **Purpose:** Demonstrates FK_INDEX_CHECK on nested hierarchy.
 
 ### Execution
 
 | Step | Command | Expected Result | Status |
 |------|---------|-----------------|--------|
-| 1 | `list-jobs` | Shows `archive-country` | [ ] |
-| 2 | `plan` | Shows 3-level hierarchy | [ ] |
-| 3 | `validate --force-triggers` | ✅ Passes | [ ] |
-| 4 | `dry-run` | Shows country → city → address | [ ] |
-| 5 | Count source before | Record all counts | [ ] |
-| 6 | `archive --skip-verify` | Completes | [ ] |
-
-### Verification
-
-| Step | Check | Expected | Status |
-|------|-------|----------|--------|
-| 1 | Source country count | Reduced | [ ] |
-| 2 | Source city count | Reduced (for archived countries) | [ ] |
-| 3 | Source address count | Reduced (for archived cities) | [ ] |
-| 4 | Archive has all 3 tables | ✅ Yes | [ ] |
-| 5 | City records match countries | ✅ Yes | [ ] |
-| 6 | Address records match cities | ✅ Yes | [ ] |
+| 1 | `validate --force-triggers` | ❌ **FK_INDEX_CHECK fails** | [ ] |
 
 ---
 
-## Test 05: Three Nested + 1-1 (country→city→address→customer + film→film_text)
+## Test 05: Three Nested Levels + 1-1 (FK_INDEX_CHECK Example)
 
-**Config:** `tests/configs/test05_one_to_many_three_nested.yaml`
+**Config:** `tests/configs/test05_one_to_many_three_nested.yaml`  
+**Status:** ❌ **Fails Validation** - Demonstrates FK_INDEX_CHECK error
+
+> **Purpose:** Demonstrates FK_INDEX_CHECK on complex nested hierarchy.
+
+### Execution
+
+| Step | Command | Expected Result | Status |
+|------|---------|-----------------|--------|
+| 1 | `validate --force-triggers` | ❌ **FK_INDEX_CHECK fails** | [ ] |
+
+---
+
+## Test 06: Complete Film Hierarchy ✅ WORKING
+
+**Config:** `tests/configs/test06_complete_film_hierarchy.yaml`  
+**Status:** ✅ **Working** - Requires `--force-triggers`
+
+> **Purpose:** Complete 4-level nested hierarchy that passes all preflight checks. Demonstrates correct `ValidateInternalFKCoverage` configuration.
+
+### Hierarchy
+
+```
+Root: film (film_id)
+  └── inventory (film_id) [1-N]
+        └── rental (inventory_id) [1-N]
+              └── payment (rental_id) [1-N]
+```
 
 ### Preparation
 
 | Step | Task | Status |
 |------|------|--------|
 | 1 | Reset source database | [ ] |
-| 2 | Verify clean state | [ ] |
+| 2 | Verify sakila data loaded | [ ] |
+| 3 | Verify archive schema exists | [ ] |
 
-### Job 1: Country Hierarchy
+### Execution
 
-| Step | Command | Expected | Status |
-|------|---------|----------|--------|
-| 1 | `list-jobs` | Shows both jobs | [ ] |
-| 2 | `plan` | Shows complex hierarchy | [ ] |
-| 3 | `validate --force-triggers` | ✅ Passes | [ ] |
-| 4 | `dry-run --job archive-country-hierarchy` | Shows 4-level tree | [ ] |
-| 5 | Count source before | Record counts | [ ] |
-| 6 | `archive --job archive-country-hierarchy` | Completes | [ ] |
-| 7 | Verify source counts | Reduced | [ ] |
-| 8 | Verify archive counts | Match archived | [ ] |
+| Step | Command | Expected Result | Status |
+|------|---------|-----------------|--------|
+| 1 | `list-jobs` | Shows `archive-complete-film-hierarchy` | [ ] |
+| 2 | `plan` | Shows complete 4-level tree | [ ] |
+| 3 | `validate --force-triggers` | ✅ **All preflight checks PASSED** | [ ] |
+| 4 | `dry-run` | Shows estimated row counts | [ ] |
+| 5 | Count archive (before) | All tables = 0 | [ ] |
+| 6 | `archive --force-triggers --skip-verify` | Completes without errors | [ ] |
 
-### Job 2: Film 1-1
-
-| Step | Command | Expected | Status |
-|------|---------|----------|--------|
-| 1 | `dry-run --job archive-film-text` | Shows film → film_text | [ ] |
-| 2 | Count source before | Record counts | [ ] |
-| 3 | `archive --job archive-film-text` | Completes | [ ] |
-| 4 | Verify archive film count | Correct | [ ] |
-| 5 | Verify archive film_text count | Matches film | [ ] |
-
-### Combined Verification
+### Verification
 
 | Step | Check | Expected | Status |
 |------|-------|----------|--------|
-| 1 | Archive has country tables | ✅ Yes | [ ] |
-| 2 | Archive has film tables | ✅ Yes | [ ] |
-| 3 | Job logs for both jobs | ✅ Yes | [ ] |
+| 1 | Source film count | Reduced (film_id <= 10 archived) | [ ] |
+| 2 | Source inventory count | Reduced | [ ] |
+| 3 | Source rental count | Reduced | [ ] |
+| 4 | Source payment count | Reduced | [ ] |
+| 5 | Archive has all 4 tables | ✅ Yes | [ ] |
+| 6 | Archive counts match | ✅ Yes | [ ] |
+| 7 | Job log entry | Status = completed | [ ] |
 
+---
+
+## Test 07: Actor → Film Actor ✅ WORKING
+
+**Config:** `tests/configs/test07_actor_film_actor.yaml`  
+**Status:** ✅ **Working** - Simplest configuration
+
+> **Purpose:** Simple 2-level hierarchy with no external references or triggers. **Start here for first working test.**
+
+### Hierarchy
+
+```
+Root: actor (actor_id)
+  └── film_actor (actor_id) [1-N]
+```
+
+### Preparation
+
+| Step | Task | Status |
+|------|------|--------|
+| 1 | Reset source database | [ ] |
+| 2 | Verify sakila data loaded | [ ] |
+| 3 | Verify archive schema exists | [ ] |
+
+### Execution
+
+| Step | Command | Expected Result | Status |
+|------|---------|-----------------|--------|
+| 1 | `list-jobs` | Shows `archive-actor-with-film-roles` | [ ] |
+| 2 | `plan` | Shows actor → film_actor tree | [ ] |
+| 3 | `validate` | ✅ **All preflight checks PASSED** | [ ] |
+| 4 | `dry-run` | Shows estimated row counts | [ ] |
+| 5 | Count archive (before) | Both tables = 0 | [ ] |
+| 6 | `archive --skip-verify` | Completes without errors | [ ] |
+
+### Verification
+
+| Step | Check | Expected | Status |
+|------|-------|----------|--------|
+| 1 | Source actor count | 195 (5 archived, actor_id <= 5) | [ ] |
+| 2 | Source film_actor count | Reduced | [ ] |
+| 3 | Archive actor count | 5 | [ ] |
+| 4 | Archive film_actor count | Matching rows | [ ] |
+| 5 | Job log entry | Status = completed | [ ] |
+
+---
+
+## Test 08: Category → Film Category ✅ WORKING
+
+**Config:** `tests/configs/test08_category_film_category.yaml`  
+**Status:** ✅ **Working**
+
+> **Purpose:** Simple 2-level hierarchy similar to Test 07.
+
+### Hierarchy
+
+```
+Root: category (category_id)
+  └── film_category (category_id) [1-N]
+```
+
+### Preparation
+
+| Step | Task | Status |
+|------|------|--------|
+| 1 | Reset source database | [ ] |
+| 2 | Verify sakila data loaded | [ ] |
+| 3 | Verify archive schema exists | [ ] |
+
+### Execution
+
+| Step | Command | Expected Result | Status |
+|------|---------|-----------------|--------|
+| 1 | `list-jobs` | Shows `archive-category-with-films` | [ ] |
+| 2 | `plan` | Shows category → film_category tree | [ ] |
+| 3 | `validate` | ✅ **All preflight checks PASSED** | [ ] |
+| 4 | `dry-run` | Shows estimated row counts | [ ] |
+| 5 | `archive --skip-verify` | Completes without errors | [ ] |
+
+### Verification
+
+| Step | Check | Expected | Status |
+|------|-------|----------|--------|
+| 1 | Archive category count | 5 (category_id <= 5) | [ ] |
+| 2 | Archive film_category count | Matching rows | [ ] |
 ---
 
 ## Command Reference

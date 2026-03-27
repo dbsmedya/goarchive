@@ -47,7 +47,7 @@ type JobConfig struct {
 // Relation represents a table relationship for dependency resolution.
 type Relation struct {
 	Table          string     `yaml:"table" mapstructure:"table"`
-	PrimaryKey     string     `yaml:"primary_key" mapstructure:"primary_key"` // PK column name (defaults to "id")
+	PrimaryKey     string     `yaml:"primary_key" mapstructure:"primary_key"` // PK column name (required)
 	ForeignKey     string     `yaml:"foreign_key" mapstructure:"foreign_key"`
 	DependencyType string     `yaml:"dependency_type" mapstructure:"dependency_type"` // "1-1" or "1-N"
 	Relations      []Relation `yaml:"relations" mapstructure:"relations"`             // Nested relations
