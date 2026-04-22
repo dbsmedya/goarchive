@@ -28,6 +28,11 @@ else
     exit 1
 fi
 
+# Default SAKILA_DIR to repo-relative so mysqlsh scripts find the SQL files.
+if [ -z "${SAKILA_DIR:-}" ]; then
+    export SAKILA_DIR="$TESTS_DIR/sakila-db"
+fi
+
 # Colors for output
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -44,7 +49,7 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     echo "Usage: $0"
     echo ""
     echo "Environment Variables (from .env or export):"
-    echo "  TEST_ARCHIVE_HOST, TEST_ARCHIVE_PORT, TEST_ARCHIVE_USER, TEST_ARCHIVE_PASSWORD, TEST_ARCHIVE_DB"
+    echo "  TEST_DEST_HOST, TEST_DEST_PORT, TEST_DEST_USER, TEST_DEST_PASSWORD, TEST_DEST_DB"
     echo "  TEST_SOURCE_HOST, TEST_SOURCE_PORT, TEST_SOURCE_USER, TEST_SOURCE_PASSWORD, TEST_SOURCE_DB"
     echo "  DUMP_DIR"
     exit 0
@@ -72,7 +77,7 @@ fi
 log_info ""
 log_info "Step 2: Loading schemas into archive database..."
 
-if ! mysqlsh --uri "$TEST_ARCHIVE_USER:$TEST_ARCHIVE_PASSWORD@$TEST_ARCHIVE_HOST:$TEST_ARCHIVE_PORT" --js -f "$SCRIPT_DIR/create_archive.js"; then
+if ! mysqlsh --uri "$TEST_DEST_USER:$TEST_DEST_PASSWORD@$TEST_DEST_HOST:$TEST_DEST_PORT" --js -f "$SCRIPT_DIR/create_archive.js"; then
     log_error "Failed to load schemas into archive database"
     exit 1
 fi

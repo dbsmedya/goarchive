@@ -32,11 +32,11 @@ func TestRunVersion(t *testing.T) {
 		wantInOutput []string
 	}{
 		{
-			name:    "dev version",
-			version: "0.0.1-dev",
+			name:    "community default",
+			version: "0.9.0-community",
 			commit:  "unknown",
 			wantInOutput: []string{
-				"goarchive version 0.0.1-dev",
+				"goarchive version 0.9.0-community",
 				"Commit: unknown",
 				"Go version:",
 				"OS/Arch:",

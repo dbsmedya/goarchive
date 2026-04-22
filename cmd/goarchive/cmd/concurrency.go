@@ -3,10 +3,17 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/internal/archiver"
 )
+
+// mysqlErrTableNotFound is the error code MySQL returns when SELECT targets a
+// table that does not exist (ER_NO_SUCH_TABLE).
+const mysqlErrTableNotFound = 1146
 
 func checkConcurrentJobsByRootTable(ctx context.Context, db *sql.DB, rootTable, currentJob, commandName string) error {
 	if db == nil {
@@ -22,6 +29,14 @@ func checkConcurrentJobsByRootTable(ctx context.Context, db *sql.DB, rootTable, 
 
 	rows, err := db.QueryContext(ctx, query, rootTable, archiver.JobStatusRunning, currentJob)
 	if err != nil {
+		// On a fresh destination, archiver_job is created lazily by the
+		// orchestrator's InitializeTables call. If it does not exist yet there
+		// cannot be any concurrent jobs, so treat ER_NO_SUCH_TABLE as "no
+		// conflicts" rather than a hard failure.
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlErrTableNotFound {
+			return nil
+		}
 		return fmt.Errorf("failed to query concurrent jobs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()

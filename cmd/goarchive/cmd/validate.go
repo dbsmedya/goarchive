@@ -91,6 +91,14 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Config file: %s\n", configFile)
 	fmt.Printf("Jobs found: %d\n\n", len(cfg.Jobs))
 
+	if cfg.Safety.DisableForeignKeyChecks {
+		fmt.Println("⚠️  WARNING: safety.disable_foreign_key_checks is ENABLED.")
+		fmt.Println("   Destination inserts will skip FK constraint validation during copy.")
+		fmt.Println("   This is an advanced option — only enable if you have verified the")
+		fmt.Println("   copy order and understand the risk of inserting orphaned rows.")
+		fmt.Println()
+	}
+
 	// Validate each job
 	hasErrors := false
 	for jobName, jobCfgValue := range cfg.Jobs {

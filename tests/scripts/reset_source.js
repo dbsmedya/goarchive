@@ -27,11 +27,11 @@ print("------------------------------------------------------------");
 // Check if Sakila files exist
 if (!os.path.isfile(schemaFile)) {
     print("ERROR: Sakila schema file not found: " + schemaFile);
-    exit(1);
+    throw new Error("aborting reset_source.js");
 }
 if (!os.path.isfile(dataFile)) {
     print("ERROR: Sakila data file not found: " + dataFile);
-    exit(1);
+    throw new Error("aborting reset_source.js");
 }
 
 // Connect if not already connected
@@ -45,7 +45,7 @@ if (!session || !session.isOpen()) {
         shell.connect(connStr);
     } catch (err) {
         print("ERROR: Failed to connect to source database: " + err.message);
-        exit(1);
+        throw new Error("aborting reset_source.js");
     }
 } else {
     print("Using existing database connection...");

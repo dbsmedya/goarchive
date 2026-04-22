@@ -115,6 +115,60 @@ func TestLagMonitor_GetReplicationStatus_Success(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestLagMonitor_GetReplicationStatus_StringLag mirrors the real go-sql-driver
+// text-protocol behavior where numeric columns of SHOW REPLICA STATUS arrive as
+// []byte and are normalized to string before the int64 conversion.
+func TestLagMonitor_GetReplicationStatus_StringLag(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	log := logger.NewDefault()
+	cfg := config.SafetyConfig{LagThreshold: 10}
+	lm, _ := NewLagMonitor(db, cfg, log)
+
+	rows := sqlmock.NewRows([]string{
+		"Seconds_Behind_Master", "Slave_IO_Running", "Slave_SQL_Running", "Last_Error",
+	}).AddRow([]byte("7"), []byte("Yes"), []byte("Yes"), []byte(""))
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(rows)
+
+	ctx := context.Background()
+	status, err := lm.GetReplicationStatus(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.True(t, status.SecondsBehindMaster.Valid)
+	assert.Equal(t, int64(7), status.SecondsBehindMaster.Int64)
+	assert.Equal(t, "Yes", status.SlaveIORunning)
+	assert.Equal(t, "Yes", status.SlaveSQLRunning)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestLagMonitor_GetReplicationStatus_InvalidStringLag guards against a future
+// driver change returning a non-numeric string for Seconds_Behind_Master.
+func TestLagMonitor_GetReplicationStatus_InvalidStringLag(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	log := logger.NewDefault()
+	cfg := config.SafetyConfig{LagThreshold: 10}
+	lm, _ := NewLagMonitor(db, cfg, log)
+
+	rows := sqlmock.NewRows([]string{
+		"Seconds_Behind_Master", "Slave_IO_Running", "Slave_SQL_Running", "Last_Error",
+	}).AddRow([]byte("not-a-number"), []byte("Yes"), []byte("Yes"), []byte(""))
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(rows)
+
+	ctx := context.Background()
+	status, err := lm.GetReplicationStatus(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.False(t, status.SecondsBehindMaster.Valid)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestLagMonitor_GetReplicationStatus_FallbackToSlave(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()

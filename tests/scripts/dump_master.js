@@ -41,7 +41,7 @@ if (!session || !session.isOpen()) {
         shell.connect(connStr);
     } catch (err) {
         print("ERROR: Failed to connect to source database: " + err.message);
-        exit(1);
+        throw new Error("aborting dump_master.js");
     }
 } else {
     print("Using existing database connection...");
@@ -58,7 +58,7 @@ try {
 } catch (err) {
     print("ERROR: Schema dump failed: " + err.message);
     session.close();
-    exit(1);
+    throw new Error("aborting dump_master.js");
 }
 
 session.close();

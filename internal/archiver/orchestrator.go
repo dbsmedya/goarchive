@@ -191,7 +191,10 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		return nil, fmt.Errorf("context is nil")
 	}
 	if !o.skipLock {
-		jobLock := lock.NewJobLock(o.dbManager.Source, o.jobName)
+		// Advisory lock on Destination aligns with where archiver_job metadata
+		// lives, and ensures archive/purge/copy-only serialize against each other
+		// for the same job name.
+		jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
 		if err := jobLock.AcquireOrFail(ctx); err != nil {
 			if errors.Is(err, lock.ErrLockTimeout) {
 				return nil, fmt.Errorf("job %q is already running on another instance", o.jobName)

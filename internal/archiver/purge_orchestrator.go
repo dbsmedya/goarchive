@@ -89,7 +89,9 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 	}
 
 	if !o.skipLock {
-		jobLock := lock.NewJobLock(o.dbManager.Source, o.jobName)
+		// Advisory lock is held on Destination so it serializes against Archive and
+		// Copy-only for the same job name across orchestrators.
+		jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
 		if err := jobLock.AcquireOrFail(ctx); err != nil {
 			if errors.Is(err, lock.ErrLockTimeout) {
 				return nil, fmt.Errorf("job %q is already running on another instance", o.jobName)
@@ -105,7 +107,9 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 		Success:   false,
 	}
 
-	resumeMgr, err := NewResumeManager(o.dbManager.Source, o.logger)
+	// Resume tables live on Destination across all orchestrators (archive, purge,
+	// copy-only) so a single metadata location covers cross-command state.
+	resumeMgr, err := NewResumeManager(o.dbManager.Destination, o.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resume manager: %w", err)
 	}

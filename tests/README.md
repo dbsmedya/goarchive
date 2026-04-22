@@ -8,20 +8,26 @@ The test suite includes:
 
 | Test Type | Description | Command |
 |-----------|-------------|---------|
-| **Unit Tests** | Fast in-memory tests | `./run-tests.sh --unit-only` |
-| **Integration Tests** | Tests with real databases | `./run-tests.sh --integration-only` |
-| **Sakila E2E Tests** | 8 test configurations demonstrating validation & working examples | `./run-tests.sh --sakila` |
+| **Unit Tests** | Fast in-memory tests | `go test ./... -count=1` |
+| **Integration Tests** | Tests with real databases | `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/...` |
+| **Sakila E2E (working)** | Archive 06/07/08 run to completion | `make e2e` |
+| **Sakila E2E (demos)** | Tests 01-05 intentionally fail preflight | `make e2e-examples` |
 
 ### ⚠️ Test Configuration Status
 
-| Test IDs | Status | Use Case |
-|----------|--------|----------|
-| **Test 06, 07, 08** | ✅ **Working** | Valid configurations for E2E testing |
-| **Test 01-05** | ❌ **Validation Examples** | Demonstrate preflight error detection |
+| Test IDs | Status | Use Case | Runner |
+|----------|--------|----------|--------|
+| **Test 06, 07, 08** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
+| **Test 01-05** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
 
-**Quick Start:** Use Test 07 for your first working test:
+**For validation demos:** the runner inverts pass/fail semantics. "Passed" means
+the expected preflight error category was produced. An unexpected *success* of
+`validate` in tests 01-05 is treated as a regression.
+
+**Quick Start:** Run the working E2E suite:
 ```bash
-./bin/goarchive validate --config tests/configs/test07_actor_film_actor.yaml
+make test-up     # if containers aren't running yet
+make e2e         # runs tests 06, 07, 08
 ```
 
 ### Sakila E2E Test Cases
@@ -107,14 +113,21 @@ This will:
 ### Run Sakila E2E Tests
 
 ```bash
-# Run all 5 Sakila tests
-./scripts/run-tests.sh --sakila
+# Working tests (06, 07, 08) — archive runs to completion
+make e2e                                                # short form
+./scripts/run-tests.sh --sakila --skip-docker           # explicit
 
-# Run specific test only
-./scripts/run-tests.sh --sakila -t 1
+# Full bootstrap (docker + database seed + working tests)
+make e2e-setup                                          # short form
+./scripts/run-tests.sh --setup --sakila                 # explicit
 
-# Skip Docker setup (use existing databases)
-./scripts/run-tests.sh --sakila --skip-docker
+# Validation demonstrations (01-05) — preflight MUST fail
+make e2e-examples                                       # short form
+./scripts/run-tests.sh --sakila-examples --skip-docker  # explicit
+
+# Target a specific test
+./scripts/run-tests.sh --sakila -t 7                    # working test 7
+./scripts/run-tests.sh --sakila-examples -t 1           # demo test 1
 ```
 
 ### Verbose Output
@@ -225,17 +238,20 @@ mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT * FRO
 
 ### Example: Detecting Missing Relations (Test 01 vs Test 06)
 
-**Test 01 (Fails Validation):** Missing nested relations
+**Test 01 (Fails Validation):** FK edges between in-graph tables not represented as nested relations
 
 ```bash
 $ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force-triggers
-❌ Preflight checks failed: FK_COVERAGE_CHECK: 
-Foreign key constraints not covered by relations:
-  - inventory is referenced by: [rental]
-  - rental is referenced by: [payment]
+❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
+  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
 ```
 
-This happens because Test 01 only includes `film → film_text` but `film` has other tables referencing it (`inventory`), and `inventory` is referenced by `rental`, which is referenced by `payment`. The `ValidateInternalFKCoverage` check detects this chain of uncovered foreign keys.
+Test 01 *does* include `inventory`, `rental`, and `payment` — but as **siblings** of `film_text`, not as nested children of their actual parents. The `ValidateInternalFKCoverage` check walks the real FK graph from `information_schema` and flags any FK between two graph tables that isn't represented as a parent→child edge in the configuration.
+
+Two categories of the same class of bug:
+- `FK_COVERAGE_CHECK`: a referenced table is **missing** from the graph entirely (e.g. archiving `film` but not including `inventory` at all).
+- `INTERNAL_FK_COVERAGE`: all tables are in the graph but **edges are wrong** (e.g. siblings that should be nested).
 
 **Test 06 (Passes Validation):** Complete nested hierarchy
 
@@ -364,36 +380,38 @@ These configurations intentionally fail preflight checks and serve as examples o
 
 ---
 
-### Test 01: One-to-One Relationship (FK_COVERAGE_CHECK Example)
+### Test 01: One-to-One Relationship (INTERNAL_FK_COVERAGE Example)
 
 **Configuration:** `configs/test01_one_to_one.yaml`
 
-**Status:** ❌ **Fails Validation** - FK_COVERAGE_CHECK
+**Status:** ❌ **Fails Validation** - INTERNAL_FK_COVERAGE
 
-Attempts to archive a simple 1-1 relationship but misses required nested relations.
+Includes `inventory`, `rental`, and `payment` in the graph, but as **siblings**
+under `film` rather than nested under their actual parents. The graph therefore
+misses the `inventory→rental` and `rental→payment` edges.
 
 ```
 Root: film (film_id)
-  └── film_text (film_id) [1-1]
-  └── ❌ MISSING: inventory (film_id) [1-N]
-        └── ❌ MISSING: rental (inventory_id) [1-N]
-              └── ❌ MISSING: payment (rental_id) [1-N]
+  ├── film_text (film_id) [1-1]
+  ├── inventory (film_id) [1-N]
+  ├── ❌ rental      — listed as sibling of inventory, should be nested under it
+  └── ❌ payment     — listed as sibling of rental, should be nested under it
 ```
 
 **Expected Behavior:**
-- `ValidateInternalFKCoverage` detects that `film` is referenced by `inventory` (not in graph)
-- Also detects `inventory` is referenced by `rental`, and `rental` by `payment`
-- Validation fails with: `FK_COVERAGE_CHECK: Foreign key constraints not covered`
+- `ValidateInternalFKCoverage` walks real FK constraints in `information_schema`
+- Detects `rental.inventory_id → inventory.inventory_id` has no graph edge
+- Detects `payment.rental_id → rental.rental_id` has no graph edge
+- Validation fails with `INTERNAL_FK_COVERAGE`
 
 **Error Message:**
 ```
-❌ Preflight checks failed: FK_COVERAGE_CHECK: 
-Foreign key constraints not covered by relations:
-  - inventory is referenced by: [rental]
-  - rental is referenced by: [payment]
+❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
+  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
 ```
 
-**Lesson:** When archiving a table, you must include all tables that reference it (transitively) in your relations graph.
+**Lesson:** Every FK constraint between graph tables must be represented as a parent→child edge. Siblings that share a real FK relationship will be flagged.
 
 ---
 
@@ -536,22 +554,26 @@ The test runner performs **three steps** before executing any archive:
    └── Write results to results/test_summary.txt
 ```
 
-### FK_COVERAGE_CHECK
+### FK_COVERAGE_CHECK and INTERNAL_FK_COVERAGE
 
-The preflight checker includes a new validation that detects uncovered foreign key constraints:
+Two complementary preflight checks cover FK-related misconfigurations:
+
+- **`FK_COVERAGE_CHECK`** — a table outside the graph has an FK pointing to a
+  table inside the graph. Fix: add the outside table to the graph.
+- **`INTERNAL_FK_COVERAGE`** — all involved tables are already in the graph but
+  an FK between two of them is not represented as a parent→child edge. Fix:
+  nest the child table under its real parent instead of as a sibling.
 
 ```bash
 $ goarchive validate --config test01_one_to_one.yaml
-❌ Preflight checks failed: FK_COVERAGE_CHECK: 
-Foreign key constraints not covered by relations:
-  - inventory is referenced by: [rental]
+❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
+  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
 ```
-
-This tells the user exactly which tables need to be added to the configuration.
 
 ### Fixing Configuration Issues
 
-When validation fails with FK_COVERAGE_CHECK:
+When validation fails with FK_COVERAGE_CHECK or INTERNAL_FK_COVERAGE:
 
 1. **Identify missing tables** from the error message
 2. **Add them as NESTED relations** (not siblings) in the config file
@@ -720,20 +742,21 @@ Individual test logs are saved to `results/test_*.log`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MYSQL_ROOT_PASSWORD` | qazokm | MySQL root password |
+| `MYSQL_ROOT_PASSWORD` | (required) | MySQL root password (fallback for *_PASSWORD vars) |
 | `TEST_SOURCE_HOST` | 127.0.0.1 | Source MySQL host |
 | `TEST_SOURCE_PORT` | 3305 | Source MySQL port |
 | `TEST_SOURCE_USER` | root | Source MySQL user |
 | `TEST_SOURCE_PASSWORD` | (from .env) | Source MySQL password |
 | `TEST_SOURCE_DB` | sakila | Source database name |
-| `TEST_ARCHIVE_HOST` | 127.0.0.1 | Archive MySQL host |
-| `TEST_ARCHIVE_PORT` | 3307 | Archive MySQL port |
-| `TEST_ARCHIVE_USER` | root | Archive MySQL user |
-| `TEST_ARCHIVE_PASSWORD` | (from .env) | Archive MySQL password |
-| `TEST_ARCHIVE_DB` | sakila_archive | Archive database name |
-| `TEST_DEST_HOST` | 127.0.0.1 | Destination host (alias) |
-| `TEST_DEST_PORT` | 3307 | Destination port (alias) |
-| `TEST_DEST_DB` | sakila_archive | Destination DB (alias) |
+| `TEST_DEST_HOST` | 127.0.0.1 | Destination MySQL host |
+| `TEST_DEST_PORT` | 3307 | Destination MySQL port |
+| `TEST_DEST_USER` | root | Destination MySQL user |
+| `TEST_DEST_PASSWORD` | (from .env) | Destination MySQL password |
+| `TEST_DEST_DB` | sakila_archive | Destination database name |
+| `TEST_REPLICA_HOST` | 127.0.0.1 | Replica MySQL host (replication-lag tests) |
+| `TEST_REPLICA_PORT` | 3308 | Replica MySQL port |
+| `SAKILA_DIR` | `tests/sakila-db` | Sakila SQL files location (auto-defaulted by run-tests.sh) |
+| `DUMP_DIR` | `/tmp/db1_schema_dump` | Temp dir for destination schema dump |
 
 ## Troubleshooting
 
@@ -803,7 +826,13 @@ chmod +x scripts/*.sh
 
 To add a new Sakila test:
 
-1. Create a new config file in `configs/testNN_description.yaml`
-2. Add test case to `run-tests.sh` in the `run_sakila_test()` function
-3. Define tables to verify in the case statement
-4. Run with `./scripts/run-tests.sh --sakila -t NN`
+1. Create a new config file in `configs/testNN_description.yaml`.
+2. Add a case entry to `run-tests.sh`'s `run_sakila_test()` function.
+3. Set the fields appropriate to the test's purpose:
+   - `mode="working"` → archive runs end-to-end; set `tables="..."` to count.
+   - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"`
+     to the exact error tag (e.g. `FK_INDEX_CHECK`, `INTERNAL_FK_COVERAGE`).
+4. Wire the number into the list passed to `run_sakila_tests`:
+   - Working tests → `run_sakila_tests "6 7 8 N" "working"` in `main()`.
+   - Demo tests → `run_sakila_tests "1 2 3 4 5 N" "validation demos"`.
+5. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).

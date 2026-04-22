@@ -10,7 +10,7 @@ import (
 
 // Version information (set via ldflags at build time)
 var (
-	Version = "0.0.1-dev"
+	Version = "0.9.0-community"
 	Commit  = "unknown"
 )
 
@@ -28,8 +28,13 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "goarchive",
 	Short: "MySQL Batch Archiver & Purger",
-	Long: `A production-grade CLI tool for safely archiving MySQL relational data
-across servers with automatic dependency resolution and crash recovery.
+	Long: `A CLI tool for safely archiving MySQL relational data across servers
+with automatic dependency resolution and crash recovery.
+
+Community edition — recommended for single-operator workstation archival of
+cold data. Use with caution on very large or deeply nested schemas; see README
+for known limits. Enterprise edition (with metrics, parallelism, and load-
+tested scaling) is planned separately.
 
 Features:
   - Automatic table dependency resolution using Kahn's algorithm

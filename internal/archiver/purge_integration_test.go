@@ -17,19 +17,24 @@ import (
 // Purge Integration Test Setup
 // ============================================================================
 
-// setupPurgeDBManager creates a database manager for purge tests (source only)
+// setupPurgeDBManager creates a database manager for purge tests.
+// Purge now requires a real destination connection because resume tables and
+// advisory locks live there.
 func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Manager {
-	var sourceCfg DatabaseConfig
-	found := false
+	var sourceCfg, destCfg DatabaseConfig
+	found := 0
 	for _, db := range setup.Config.Databases {
 		if db.Name == "source" {
 			sourceCfg = db
-			found = true
-			break
+			found++
+		}
+		if db.Name == "destination" {
+			destCfg = db
+			found++
 		}
 	}
-	if !found {
-		t.Fatal("Source database config not found")
+	if found != 2 {
+		t.Fatal("Source and/or destination database config not found")
 	}
 
 	cfg := &config.Config{
@@ -42,11 +47,11 @@ func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Ma
 			TLS:      "disable",
 		},
 		Destination: config.DatabaseConfig{
-			Host:     sourceCfg.Host, // Same as source (purge doesn't use destination)
-			Port:     sourceCfg.Port,
-			User:     sourceCfg.User,
-			Password: sourceCfg.Password,
-			Database: sourceCfg.Database,
+			Host:     destCfg.Host,
+			Port:     destCfg.Port,
+			User:     destCfg.User,
+			Password: destCfg.Password,
+			Database: destCfg.Database,
 			TLS:      "disable",
 		},
 		Processing: config.ProcessingConfig{
@@ -74,7 +79,8 @@ func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Ma
 	return dbManager
 }
 
-// clearPurgeSource truncates all tables in source for purge tests
+// clearPurgeSource truncates source data tables and resets destination state
+// tables so each purge test starts from a clean slate.
 func clearPurgeSource(t *testing.T, setup *IntegrationTestSetup) {
 	t.Helper()
 	sourceDB, ok := setup.GetDB("source")
@@ -89,12 +95,16 @@ func clearPurgeSource(t *testing.T, setup *IntegrationTestSetup) {
 			t.Logf("Warning: failed to truncate %s on source: %v", table, err)
 		}
 	}
-	// Clean up archiver_job and archiver_job_log tables for fresh test state
-	if _, err := sourceDB.Exec("DELETE FROM archiver_job_log"); err != nil {
-		t.Logf("Warning: failed to clear archiver_job_log: %v", err)
-	}
-	if _, err := sourceDB.Exec("DELETE FROM archiver_job"); err != nil {
-		t.Logf("Warning: failed to clear archiver_job: %v", err)
+	// Resume state lives on destination now — clear there for fresh test state.
+	// Tables may not exist yet if this is the first test run; DELETE IGNORE
+	// would work but keeping warnings explicit helps diagnose unexpected state.
+	if destDB, ok := setup.GetDB("destination"); ok {
+		if _, err := destDB.Exec("DELETE FROM archiver_job_log"); err != nil {
+			t.Logf("Note: archiver_job_log not cleared on destination (may not exist yet): %v", err)
+		}
+		if _, err := destDB.Exec("DELETE FROM archiver_job"); err != nil {
+			t.Logf("Note: archiver_job not cleared on destination (may not exist yet): %v", err)
+		}
 	}
 }
 
@@ -626,8 +636,9 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
 
-	// First, create an archive job for the same table
-	resumeMgr, _ := NewResumeManager(sourceDB, nil)
+	// Resume metadata now lives on Destination for all orchestrators.
+	destDB, _ := setup.GetDB("destination")
+	resumeMgr, _ := NewResumeManager(destDB, nil)
 	_ = resumeMgr.InitializeTables(ctx)
 	_, _ = resumeMgr.GetOrCreateJobWithType(ctx, "test_purge_jobtype", "customers", JobTypeArchive)
 
@@ -649,5 +660,5 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 	}
 
 	// Clean up
-	_, _ = sourceDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_purge_jobtype'")
+	_, _ = destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_purge_jobtype'")
 }

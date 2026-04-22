@@ -533,11 +533,108 @@ See [tests/README.md](tests/README.md) for detailed testing documentation includ
 | `check_interval` | Lag check frequency in seconds | 5 |
 | `disable_foreign_key_checks` | Disable FK checks during copy | false |
 
+## Upgrade Notes
+
+### Resume metadata and advisory locks unified on destination
+
+Previously `purge` wrote its `archiver_job` and `archiver_job_log` state tables
+to the **source** database, while `archive` and `copy-only` wrote them to the
+**destination** database. Advisory locks were similarly split (archive and
+purge on source, copy-only on destination). This left gaps in the
+cross-command concurrency check and made state hard to reason about.
+
+After this upgrade:
+
+- `archive`, `purge`, and `copy-only` all use the **destination** database for
+  both `archiver_job`/`archiver_job_log` metadata and for advisory locks.
+- `purge` now requires a destination connection to be configured (it was
+  already implicitly required by validation, but is now load-bearing at
+  runtime).
+
+**DBA action required:** drop the now-unused state tables from the source
+database after upgrading. Any checkpoint rows there are orphaned and will not
+be migrated automatically:
+
+```sql
+-- On the SOURCE server only
+DROP TABLE IF EXISTS archiver_job_log;
+DROP TABLE IF EXISTS archiver_job;
+```
+
+No action is needed on the destination — archive and copy-only already wrote
+there, and purge's existing job rows remain on source (harmless once dropped).
+
+### FOREIGN_KEY_CHECKS handling hardened
+
+`safety.disable_foreign_key_checks` now runs on a dedicated destination
+connection and is explicitly reset before the connection returns to the pool.
+Previously, enabling it could leak `FOREIGN_KEY_CHECKS=0` into other pooled
+destination operations.
+
+The option remains **disabled by default**. If you enable it, `goarchive
+validate` and every copy run will emit a loud warning — use only when you have
+verified the copy order and accept the risk of inserting rows that bypass FK
+constraints.
+
 ## Project Status
 
-- **Current Phase**: Phase 4 - Verification & Polish
-- **Completion**: 131/139 tasks (94%)
-- **Status**: Core functionality complete, testing and documentation in progress
+- **Edition**: Community
+- **Version**: `0.9.0-community` (beta)
+- **Recommended for**: single-operator workstation archival of cold MySQL data
+- **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
+
+### Known Limits & Caution ⚠️
+
+The community edition is suitable for the scope described above. Operators
+should be aware of the following known limits before pointing it at real data:
+
+- **Deep or wide graphs can exhaust memory.** BFS discovery accumulates all
+  descendant primary keys per root batch in memory. Deeply nested schemas
+  (parent → child → grandchild → great-grandchild, each 1-N with high fanout)
+  can grow the accumulator unbounded. If your root table has ~1M matching rows
+  and each has many descendants per level, start with a small `batch_size`
+  (e.g. 100) and scale up only after observing memory.
+- **Copy-phase transaction spans all tables.** One destination transaction
+  covers the entire copy phase, which holds row locks on already-inserted
+  tables while later tables are still streaming. Avoid running this against a
+  shared destination that other workloads are reading.
+- **No built-in metrics or telemetry.** Operators monitor progress through
+  the structured log output and by querying `archiver_job_log` directly.
+- **Sequential by design.** One root PK at a time, one job at a time per
+  destination. The advisory lock prevents concurrent runs of the same job name.
+- **Validate before every run.** `goarchive validate` runs the full preflight
+  chain and should PASS before you trust an `archive` run. For schemas with
+  DELETE triggers (e.g. Sakila's `del_film`), pass `--force-triggers` after
+  you've reviewed what those triggers do.
+- **Schema-stable assumption.** GoArchive assumes source and destination
+  schemas do not change during a batch loop. Run schema migrations either
+  before or after archive jobs, never concurrently.
+- **Data loss on misconfiguration is possible.** A misconfigured job that
+  passes validate but has the wrong `WHERE` clause can delete the wrong rows
+  from source. Always run `goarchive dry-run` and review the estimated row
+  counts before executing `archive`.
+
+### What's Included in Community
+
+Complete end-to-end archive, purge, and copy-only workflows:
+- Dependency graph + topological copy / reverse-topological delete order
+- Preflight checks: storage engine, FK indexes, FK coverage (external + internal),
+  destination schema compatibility, destination write permissions, DELETE
+  triggers, INSERT triggers on destination, CASCADE warnings
+- Crash recovery via `archiver_job` + `archiver_job_log` on destination
+- Advisory locks serialize job-name execution across all three commands
+- Replication lag monitor (pauses batches when replica lag exceeds threshold)
+- Verification by row count or SHA256
+- Dry-run mode with execution plan output
+
+### Planned for Enterprise (Not in Community)
+
+- Observability: Prometheus metrics, OpenTelemetry traces, dashboards
+- Parallelism: multi-root-PK concurrent processing, pipelining copy/verify/delete
+- Large-scale load testing and tuning for 100M+ row datasets
+- Admin API for runtime pause / resume / inspect
+- Multi-tenancy and horizontal scale
+- Adaptive rate limiting
 
 ## Contributing
 

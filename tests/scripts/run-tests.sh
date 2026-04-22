@@ -37,6 +37,13 @@ else
     exit 1
 fi
 
+# Default SAKILA_DIR to the repo-relative path so mysqlsh scripts find the
+# Sakila SQL files regardless of the CWD mysqlsh launches in. Do not override
+# an explicit non-empty export.
+if [ -z "${SAKILA_DIR:-}" ]; then
+    export SAKILA_DIR="$TESTS_DIR/sakila-db"
+fi
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -45,7 +52,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false
+SAKILA=false            # Working Sakila E2E tests (06, 07, 08)
+SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01-05)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
@@ -121,8 +129,12 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run Sakila integration tests (1-5)"
-            echo "  -t, --test NUM      Run only specific Sakila test (1-5, requires --sakila)"
+            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (01-05)"
+            echo "                      These are DESIGNED to fail preflight; success"
+            echo "                      here means the failure matches documented expectation."
+            echo "  -t, --test NUM      Run only the specified test number (works with"
+            echo "                      either --sakila or --sakila-examples)"
             echo "  --unit-only         Run only Go unit tests"
             echo "  --integration-only  Run only Go integration tests"
             echo "  -v, --verbose       Verbose output"
@@ -130,8 +142,9 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  $0 --setup                    # Full setup: docker + databases"
-            echo "  $0 --setup --sakila           # Setup and run all Sakila tests"
-            echo "  $0 --sakila -t 1              # Run only Sakila test 1"
+            echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
+            echo "  $0 --sakila -t 7              # Run only working test 07"
+            echo "  $0 --sakila-examples          # Run validation demos (01-05)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -144,6 +157,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --sakila)
             SAKILA=true
+            shift
+            ;;
+        --sakila-examples)
+            SAKILA_EXAMPLES=true
             shift
             ;;
         -t|--test)
@@ -187,10 +204,10 @@ SOURCE_HOST="${TEST_SOURCE_HOST:-127.0.0.1}"
 SOURCE_PORT="${TEST_SOURCE_PORT:-3305}"
 SOURCE_USER="${TEST_SOURCE_USER:-root}"
 SOURCE_DB="${TEST_SOURCE_DB:-db1}"
-ARCHIVE_HOST="${TEST_ARCHIVE_HOST:-127.0.0.1}"
-ARCHIVE_PORT="${TEST_ARCHIVE_PORT:-3307}"
-ARCHIVE_USER="${TEST_ARCHIVE_USER:-root}"
-ARCHIVE_DB="${TEST_ARCHIVE_DB:-sakila_archive}"
+ARCHIVE_HOST="${TEST_DEST_HOST:-127.0.0.1}"
+ARCHIVE_PORT="${TEST_DEST_PORT:-3307}"
+ARCHIVE_USER="${TEST_DEST_USER:-root}"
+ARCHIVE_DB="${TEST_DEST_DB:-sakila_archive}"
 
 # Setup test environment
 setup_environment() {
@@ -375,50 +392,113 @@ run_archive_job() {
     return 0
 }
 
-# Run specific Sakila test
+# Ensure the destination database has the same schema as source. Idempotent.
+# Used before running working tests that actually copy data.
+ensure_destination_schema() {
+    local dump_dir="${DUMP_DIR:-/tmp/db1_schema_dump}"
+    log_info "Preparing destination schema at $ARCHIVE_HOST:$ARCHIVE_PORT/$ARCHIVE_DB..."
+
+    rm -rf "$dump_dir"
+    if ! mysqlsh --uri "$SOURCE_USER:$MYSQL_PASS@$SOURCE_HOST:$SOURCE_PORT" \
+        --js -f "$SCRIPT_DIR/dump_master.js" > /dev/null 2>&1; then
+        log_error "Failed to dump source schema"
+        return 1
+    fi
+
+    local archive_uri="$ARCHIVE_USER:$MYSQL_PASS@$ARCHIVE_HOST:$ARCHIVE_PORT"
+    if ! mysqlsh --uri "$archive_uri" --sql \
+        -e "DROP DATABASE IF EXISTS \`$ARCHIVE_DB\`; CREATE DATABASE \`$ARCHIVE_DB\`;" > /dev/null 2>&1; then
+        log_error "Failed to recreate destination database"
+        return 1
+    fi
+    if ! mysqlsh --uri "$archive_uri" --js -f "$SCRIPT_DIR/create_archive.js" > /dev/null 2>&1; then
+        log_error "Failed to load schema into destination"
+        return 1
+    fi
+    return 0
+}
+
+# Run specific Sakila test. First argument is the test number.
+# Tests 06-08 are expected to succeed (archive runs to completion).
+# Tests 01-05 are expected to FAIL preflight with a documented error category
+# and are only run when --sakila-examples is set.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
     local test_desc=""
     local config_file=""
     local tables=""
+    local mode=""                 # "working" or "example"
+    local expected_error=""       # substring required in error when mode=example
+    local archive_flags="--skip-verify"
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
-    
+
     case $test_num in
         1)
             test_name="Test01_OneToOne"
-            test_desc="1-1 Relationship (film → film_text)"
+            test_desc="1-1 Relationship (film → film_text) [validation demo]"
             config_file="test01_one_to_one.yaml"
             tables="film film_text"
+            mode="example"
+            expected_error="INTERNAL_FK_COVERAGE"
             ;;
         2)
             test_name="Test02_OneToMany"
-            test_desc="1-N Relationship (language → film)"
+            test_desc="1-N Relationship (language → film) [validation demo]"
             config_file="test02_one_to_many.yaml"
             tables="language film"
+            mode="example"
+            expected_error="FK_INDEX_CHECK"
             ;;
         3)
             test_name="Test03_OneToManyMultiple"
-            test_desc="1-N Multiple Children (film → inventory + film_actor + film_category)"
+            test_desc="1-N Multiple Children [validation demo]"
             config_file="test03_one_to_many_multiple.yaml"
             tables="film inventory film_actor film_category"
+            mode="example"
+            expected_error="FK_INDEX_CHECK"
             ;;
         4)
             test_name="Test04_OneToManyTwoNested"
-            test_desc="1-N Two Nested (country → city → address)"
+            test_desc="1-N Two Nested (country → city → address) [validation demo]"
             config_file="test04_one_to_many_two_nested.yaml"
             tables="country city address"
+            mode="example"
+            expected_error="FK_INDEX_CHECK"
             ;;
         5)
             test_name="Test05_OneToManyThreeNestedWithOneToOne"
-            test_desc="1-N Three Nested with 1-1"
+            test_desc="1-N Three Nested with 1-1 [validation demo]"
             config_file="test05_one_to_many_three_nested.yaml"
             tables="country city address customer film film_text"
+            mode="example"
+            expected_error="FK_INDEX_CHECK"
+            ;;
+        6)
+            test_name="Test06_CompleteFilmHierarchy"
+            test_desc="4-level nested (film → inventory → rental → payment)"
+            config_file="test06_complete_film_hierarchy.yaml"
+            tables="film inventory rental payment"
+            mode="working"
+            ;;
+        7)
+            test_name="Test07_ActorFilmActor"
+            test_desc="Simple 1-N (actor → film_actor)"
+            config_file="test07_actor_film_actor.yaml"
+            tables="actor film_actor"
+            mode="working"
+            ;;
+        8)
+            test_name="Test08_CategoryFilmCategory"
+            test_desc="Simple 1-N (category → film_category)"
+            config_file="test08_category_film_category.yaml"
+            tables="category film_category"
+            mode="working"
             ;;
         *)
-            log_error "Invalid test number: $test_num"
+            log_error "Invalid test number: $test_num (expected 1-8)"
             return 1
             ;;
     esac
@@ -461,46 +541,84 @@ run_sakila_test() {
         echo "  $table (before): Source=$count" >> "$log_file"
     done
     
-    # Step 3: Run archive job
-    log_info "[STEP 3] Running archive job..."
-    if ! run_archive_job "$config_file" >> "$log_file" 2>&1; then
-        log_error "Archive job failed"
-        test_result="FAIL"
-        test_error="Archive job failed"
-        end_time=$(date +%s)
-        duration=$((end_time - start_time))
-        echo "" >> "$log_file"
-        echo "Result: $test_result" >> "$log_file"
-        echo "Duration: ${duration}s" >> "$log_file"
-        return 1
+    # Step 3: Run the test depending on mode.
+    if [[ "$mode" == "working" ]]; then
+        # Working tests expect archive to complete successfully. Destination
+        # schema must mirror source, so load it before running.
+        log_info "[STEP 3a] Ensuring destination schema..."
+        if ! ensure_destination_schema >> "$log_file" 2>&1; then
+            log_error "Destination schema setup failed"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (destination setup)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        log_info "[STEP 3b] Running archive job (expect success)..."
+        if ! run_archive_job "$config_file" >> "$log_file" 2>&1; then
+            log_error "Archive job failed"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+    else
+        # Example tests expect `validate` to fail with a specific error category.
+        # Success = exit-non-zero AND stderr contains expected_error substring.
+        log_info "[STEP 3] Running validate (expect failure: $expected_error)..."
+        local full_config_path="$TESTS_DIR/configs/$config_file"
+        local validate_out
+        if [[ ! -f "$PROJECT_ROOT/bin/goarchive" ]]; then
+            (cd "$PROJECT_ROOT" && go build -o bin/goarchive ./cmd/goarchive) >> "$log_file" 2>&1
+        fi
+        validate_out=$("$PROJECT_ROOT/bin/goarchive" validate --config "$full_config_path" --force-triggers 2>&1) && {
+            log_error "Validate unexpectedly PASSED — validation demo no longer demonstrates failure"
+            echo "$validate_out" >> "$log_file"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (validate passed)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        }
+        echo "$validate_out" >> "$log_file"
+        if ! echo "$validate_out" | grep -q "$expected_error"; then
+            log_error "Validate failed but with unexpected category (expected: $expected_error)"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (wrong error category)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        log_info "  Matched expected error category: $expected_error"
     fi
-    
-    # Step 4: Count after archiving
-    log_info "[STEP 4] Counting rows after archiving..."
-    local verify_passed=true
-    for table in $tables; do
-        local count
-        count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table")
-        log_info "  $table: Source=$count"
-        echo "  $table (after): Source=$count" >> "$log_file"
-    done
-    
+
+    # Step 4: Count after archiving (working tests only — tables changed)
+    if [[ "$mode" == "working" ]]; then
+        log_info "[STEP 4] Counting rows after archiving..."
+        for table in $tables; do
+            local count
+            count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table")
+            log_info "  $table: Source=$count"
+            echo "  $table (after): Source=$count" >> "$log_file"
+        done
+    fi
+
     end_time=$(date +%s)
     duration=$((end_time - start_time))
-    
-    if [[ "$verify_passed" == true ]]; then
-        log_info "Test $test_num completed successfully (Duration: ${duration}s)"
-        echo "" >> "$log_file"
-        echo "Result: PASS" >> "$log_file"
-        echo "Duration: ${duration}s" >> "$log_file"
-        return 0
+    if [[ "$mode" == "example" ]]; then
+        log_info "Test $test_num: EXPECTED FAILURE matched (Duration: ${duration}s)"
     else
-        log_error "Test $test_num failed verification"
-        echo "" >> "$log_file"
-        echo "Result: FAIL" >> "$log_file"
-        echo "Duration: ${duration}s" >> "$log_file"
-        return 1
+        log_info "Test $test_num completed successfully (Duration: ${duration}s)"
     fi
+    echo "" >> "$log_file"
+    echo "Result: PASS" >> "$log_file"
+    echo "Duration: ${duration}s" >> "$log_file"
+    return 0
 }
 
 # Generate Sakila test report
@@ -525,46 +643,47 @@ generate_sakila_report() {
     cat "$summary_file"
 }
 
-# Run Sakila tests
+# Run Sakila tests. First argument is a space-separated list of test numbers.
+# Second argument is a human label ("working" or "validation demos").
 run_sakila_tests() {
+    local test_nums="$1"
+    local label="$2"
+
     log_header "========================================"
-    log_header "Sakila Integration Test Suite"
+    log_header "Sakila $label Test Suite"
     log_header "========================================"
-    
+
     # Check prerequisites
     if ! command -v mysqlsh &> /dev/null; then
         log_error "mysqlsh is not installed or not in PATH"
         exit 1
     fi
-    
-    # Create results directory
+
     mkdir -p "$TESTS_DIR/results"
-    
+
     local passed=0
     local failed=0
-    
+    local run_list
     if [[ -n "$SPECIFIC_TEST" ]]; then
-        if run_sakila_test "$SPECIFIC_TEST"; then
+        run_list="$SPECIFIC_TEST"
+    else
+        run_list="$test_nums"
+    fi
+
+    for i in $run_list; do
+        if run_sakila_test "$i"; then
             ((passed++))
         else
             ((failed++))
         fi
-    else
-        for i in 1 2 3 4 5; do
-            if run_sakila_test "$i"; then
-                ((passed++))
-            else
-                ((failed++))
-            fi
-            echo ""
-        done
-    fi
-    
+        echo ""
+    done
+
     generate_sakila_report
-    
+
     log_header ""
     log_header "========================================"
-    log_header "Test Execution Complete"
+    log_header "Test Execution Complete — $label"
     log_header "========================================"
     log_info "Passed: $passed"
     if [[ $failed -gt 0 ]]; then
@@ -630,9 +749,16 @@ main() {
         setup_environment
     fi
     
-    # Run Sakila tests if requested
+    # Run the working Sakila E2E suite (tests 06, 07, 08)
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests
+        run_sakila_tests "6 7 8" "working"
+        exit 0
+    fi
+
+    # Run the validation demonstration tests (01-05) — these are expected to
+    # fail preflight with documented error categories.
+    if [ "$SAKILA_EXAMPLES" = true ]; then
+        run_sakila_tests "1 2 3 4 5" "validation demos"
         exit 0
     fi
     

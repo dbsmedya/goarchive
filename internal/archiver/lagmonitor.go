@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -145,10 +146,22 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 	// Extract key fields
 	status := &ReplicationStatus{}
 
-	// Seconds_Behind_Master (can be NULL if replica is stopped)
+	// Seconds_Behind_Master (can be NULL if replica is stopped).
+	// The MySQL driver's text protocol returns numeric columns as []byte, which the
+	// loop above normalizes to string. A small number of callers (and sqlmock) may
+	// deliver int64 directly, so both are handled.
 	if sbm, ok := result["Seconds_Behind_Master"]; ok && sbm != nil {
-		if val, ok := sbm.(int64); ok {
-			status.SecondsBehindMaster = sql.NullInt64{Int64: val, Valid: true}
+		switch v := sbm.(type) {
+		case int64:
+			status.SecondsBehindMaster = sql.NullInt64{Int64: v, Valid: true}
+		case string:
+			if v != "" {
+				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+					status.SecondsBehindMaster = sql.NullInt64{Int64: parsed, Valid: true}
+				} else {
+					lm.logger.Warnf("Failed to parse Seconds_Behind_Master %q: %v", v, err)
+				}
+			}
 		}
 	}
 

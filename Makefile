@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT THIS when releasing
 # Or use: make build VERSION=1.2.3
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0-dev")
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.9.0-community")
 
 # Git commit hash (auto-detected, or 'unknown' if not in git repo)
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -211,6 +211,26 @@ test-status:
 	@echo "Test database status:"
 	@cd tests && docker compose ps
 
+# Run the working Sakila end-to-end suite (tests 06/07/08).
+# Assumes Docker test DBs are already up (`make test-up`). Use `make e2e-setup`
+# for a fresh-environment run that also resets source + destination from Sakila.
+.PHONY: e2e
+e2e:
+	@bash tests/scripts/run-tests.sh --sakila --skip-docker
+
+# Run the working Sakila suite with full env bootstrap (docker + sakila load +
+# schema dump + archive schema). Slower — use for clean-slate verification.
+.PHONY: e2e-setup
+e2e-setup:
+	@bash tests/scripts/run-tests.sh --setup --sakila
+
+# Run the validation-demonstration tests (01-05). These are EXPECTED to fail
+# preflight with documented error categories — success here means the failures
+# still match the documented expectations.
+.PHONY: e2e-examples
+e2e-examples:
+	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
+
 # Help target
 .PHONY: help
 help:
@@ -237,6 +257,9 @@ help:
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
+	@echo "  make e2e                - Sakila E2E (working tests 06/07/08) — assumes DBs up"
+	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
+	@echo "  make e2e-examples       - Sakila validation demonstration tests (01-05)"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"

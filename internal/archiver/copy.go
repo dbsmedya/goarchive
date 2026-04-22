@@ -78,6 +78,12 @@ func NewCopyPhase(
 // Copy executes the copy phase for the given discovered record set.
 // It copies all tables in dependency order within a single destination transaction.
 //
+// When DisableForeignKeyChecks is true, the copy runs on a dedicated *sql.Conn
+// so the SET FOREIGN_KEY_CHECKS=0 session variable cannot leak back into the
+// connection pool. The variable is explicitly reset before the connection is
+// returned to the pool, regardless of whether the transaction committed or
+// rolled back. SET is not transactional in MySQL, so explicit reset is required.
+//
 // GA-P3-F3-T1: Uses destination transaction for atomicity
 // GA-P3-F3-T6: Commits on success
 // GA-P3-F3-T7: Rolls back on error
@@ -89,9 +95,39 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 		RowsPerTable: make(map[string]int64),
 	}
 
-	// GA-P3-F3-T1: Begin destination transaction
+	// Loud warning when FK checks are disabled. This is an advanced option that
+	// can mask referential-integrity bugs in the copy order; operators should
+	// see it in every run's log output.
+	if cp.safetyCfg.DisableForeignKeyChecks {
+		cp.logger.Warn("SAFETY: FOREIGN_KEY_CHECKS is DISABLED for this copy phase. " +
+			"Destination inserts will not validate FK constraints. " +
+			"Use only when you have verified the copy order and accept the risk.")
+	}
+
+	// Checkout a dedicated connection so any session state (FOREIGN_KEY_CHECKS)
+	// is contained to this conn and cannot leak back to the pool.
+	conn, err := cp.destDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get destination connection: %w", err)
+	}
+	fkReset := false
+	defer func() {
+		// Reset FK checks before returning the connection to the pool, even if
+		// the transaction rolled back — SET is not transactional in MySQL.
+		if !fkReset && cp.safetyCfg.DisableForeignKeyChecks {
+			if _, resetErr := conn.ExecContext(context.Background(),
+				"SET FOREIGN_KEY_CHECKS = 1"); resetErr != nil {
+				cp.logger.Errorf("Failed to reset FOREIGN_KEY_CHECKS on destination connection: %v", resetErr)
+			}
+		}
+		if closeErr := conn.Close(); closeErr != nil {
+			cp.logger.Warnf("Failed to close destination connection: %v", closeErr)
+		}
+	}()
+
+	// GA-P3-F3-T1: Begin destination transaction on the dedicated connection
 	cp.logger.Debug("Starting destination transaction")
-	tx, err := cp.destDB.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin destination transaction: %w", err)
 	}
@@ -107,7 +143,9 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 		}
 	}()
 
-	// GA-P3-F3-T2: Configure foreign key checks
+	// GA-P3-F3-T2: Configure foreign key checks on the dedicated connection.
+	// Using tx.ExecContext vs conn.ExecContext both land on the same connection,
+	// but SET is not rolled back by tx, so location does not matter for safety.
 	if err := cp.setForeignKeyChecks(ctx, tx, cp.safetyCfg.DisableForeignKeyChecks); err != nil {
 		return nil, fmt.Errorf("failed to configure FK checks: %w", err)
 	}
@@ -146,6 +184,16 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 		stats.RowsPerTable[table] = rowsCopied
 
 		cp.logger.Debugf("Copied %d rows from table %q", rowsCopied, table)
+	}
+
+	// Re-enable FK checks before commit so the reset is part of the same
+	// session's linear statement stream and cannot be interleaved with any
+	// later use of the connection. Belt-and-suspenders with the defer.
+	if cp.safetyCfg.DisableForeignKeyChecks {
+		if _, err := tx.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 1"); err != nil {
+			return nil, fmt.Errorf("failed to reset FOREIGN_KEY_CHECKS before commit: %w", err)
+		}
+		fkReset = true
 	}
 
 	// GA-P3-F3-T6: Commit transaction on success

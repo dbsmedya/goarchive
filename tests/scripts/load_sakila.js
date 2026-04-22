@@ -33,12 +33,12 @@ print("------------------------------------------------------------");
 if (!os.path.isfile(schemaFile)) {
     print("ERROR: Sakila schema file not found: " + schemaFile);
     print("Run get_sakila_db.sh first to download the Sakila database.");
-    exit(1);
+    throw new Error("aborting load_sakila.js");
 }
 if (!os.path.isfile(dataFile)) {
     print("ERROR: Sakila data file not found: " + dataFile);
     print("Run get_sakila_db.sh first to download the Sakila database.");
-    exit(1);
+    throw new Error("aborting load_sakila.js");
 }
 
 // Connect if not already connected
@@ -52,7 +52,7 @@ if (!session || !session.isOpen()) {
         shell.connect(connStr);
     } catch (err) {
         print("ERROR: Failed to connect to source database: " + err.message);
-        exit(1);
+        throw new Error("aborting load_sakila.js");
     }
 } else {
     print("Using existing database connection...");
@@ -86,7 +86,7 @@ try {
 } catch (err) {
     print("ERROR: Failed to load schema: " + err.message);
     session.close();
-    exit(1);
+    throw new Error("aborting load_sakila.js");
 }
 
 // Load data
@@ -99,7 +99,7 @@ try {
 } catch (err) {
     print("ERROR: Failed to load data: " + err.message);
     session.close();
-    exit(1);
+    throw new Error("aborting load_sakila.js");
 }
 
 // Show loaded tables

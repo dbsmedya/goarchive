@@ -187,7 +187,8 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	// Mock commit (no second FK check - implementation only sets once)
+	// FK checks are re-enabled before commit when DisableForeignKeyChecks=true
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
@@ -244,7 +245,8 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	// Mock commit
+	// FK checks are re-enabled before commit when DisableForeignKeyChecks=true
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
@@ -279,6 +281,7 @@ func TestCopyPhase_EmptyTable_Skipped(t *testing.T) {
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 	// No source query or insert expected for empty table
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
@@ -429,6 +432,7 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit().WillReturnError(sql.ErrTxDone)
 	// After failed commit, sqlmock tx is in done state.
 	// The defer will attempt Rollback() which returns ErrTxDone (logged and swallowed).
@@ -439,6 +443,92 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, stats)
 	assert.Contains(t, err.Error(), "failed to commit destination transaction")
+	assert.NoError(t, sourceMock.ExpectationsWereMet())
+	assert.NoError(t, destMock.ExpectationsWereMet())
+}
+
+// TestCopyPhase_FKChecks_ResetAfterRollback verifies that when the copy fails
+// after SET FOREIGN_KEY_CHECKS=0 but before commit, the dedicated connection
+// receives an explicit SET FOREIGN_KEY_CHECKS=1 before being returned to the
+// pool. SET is not transactional in MySQL, so rollback alone does not restore
+// the session default.
+func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph()
+	log := logger.NewDefault()
+	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{int64(1)},
+		Records: map[string][]interface{}{
+			"customers": {int64(1)},
+		},
+	}
+
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Force a source-side error to trigger rollback before the pre-commit
+	// reset path runs. The defer must then restore FK_CHECKS=1 on the conn.
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+		WithArgs(int64(1)).
+		WillReturnError(sql.ErrConnDone)
+	destMock.ExpectRollback()
+
+	// Defer-driven reset via conn.ExecContext. Outside the tx.
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	ctx := context.Background()
+	stats, err := cp.Copy(ctx, recordSet)
+
+	assert.Error(t, err)
+	assert.Nil(t, stats)
+	assert.NoError(t, sourceMock.ExpectationsWereMet())
+	assert.NoError(t, destMock.ExpectationsWereMet(),
+		"deferred SET FOREIGN_KEY_CHECKS = 1 must run on rollback to avoid leaking into pool")
+}
+
+// TestCopyPhase_FKChecks_NoResetWhenNotDisabled verifies that when the feature
+// is off, no SET FOREIGN_KEY_CHECKS statements are issued at all.
+func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph()
+	log := logger.NewDefault()
+	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: false}, log)
+
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{int64(1)},
+		Records: map[string][]interface{}{
+			"customers": {int64(1)},
+		},
+	}
+
+	destMock.ExpectBegin()
+	// Implementation still issues SET FOREIGN_KEY_CHECKS = 1 (the safe default)
+	// via setForeignKeyChecks even when not disabling; only this one SET is expected.
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "Alice"))
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	destMock.ExpectCommit()
+
+	ctx := context.Background()
+	stats, err := cp.Copy(ctx, recordSet)
+
+	require.NoError(t, err)
+	require.NotNil(t, stats)
 	assert.NoError(t, sourceMock.ExpectationsWereMet())
 	assert.NoError(t, destMock.ExpectationsWereMet())
 }

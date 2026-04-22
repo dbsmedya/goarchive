@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GoArchive is a production-grade Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
+GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
-**Status**: Phase 4 in progress.
+**Edition**: Community. Recommended for single-operator workstation archival of cold data.
+**Version**: `0.9.0-community` (beta — use with caution; see README "Known Limits & Caution").
+**Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ## Build Commands
 
@@ -97,6 +99,35 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - **Kahn's Algorithm**: Topological sort for dependency ordering
 - **BFS Traversal**: Discover all child records from root PKs
 - **Advisory Locking**: MySQL `GET_LOCK()` prevents duplicate job execution
+
+## Running tests (for agents)
+
+Prereq: test MySQL containers up (`docker ps` shows ports 3305 / 3307 / 3308).
+If not, run `make test-up` first. Credentials live in `tests/.env` — source
+it before running any integration or E2E command:
+
+```bash
+set -a; source tests/.env; set +a
+```
+
+Then the standard matrix, fastest to slowest:
+
+| Layer | Command | What it covers |
+|-------|---------|----------------|
+| Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
+| Integration | `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/...` | Real MySQL (3305/3307), smaller fixture |
+| E2E (working) | `make e2e` | Sakila tests 06/07/08 — full archive runs |
+| E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
+| E2E (validation demos) | `make e2e-examples` | Sakila tests 01–05 |
+
+**About the validation demos (`make e2e-examples`, tests 01–05):** these are
+designed to FAIL preflight with specific error categories
+(`INTERNAL_FK_COVERAGE`, `FK_INDEX_CHECK`, …). The runner inverts the semantics
+— "pass" means the failure matched the documented expectation. Do not treat an
+`EXPECTED FAILURE matched` line as a regression.
+
+Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
+just working test 7; `--sakila-examples -t 1` runs just demo 1.
 
 ## Test Environment
 

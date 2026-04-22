@@ -144,6 +144,12 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 	if err := resumeMgr.UpdateJobStatus(ctx, o.jobName, JobStatusRunning); err != nil {
 		return fail("failed to set job running status: %w", err)
 	}
+	// Reset to Idle on every exit path so a mid-startup failure (lock contention,
+	// user-cancelled prompt, destination-empty check) does not leave the job
+	// marked Running and blocking subsequent runs.
+	defer func() {
+		_ = resumeMgr.UpdateJobStatus(context.Background(), o.jobName, JobStatusIdle)
+	}()
 	jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
 	if err := jobLock.AcquireOrFail(ctx); err != nil {
 		if errors.Is(err, lock.ErrLockTimeout) {
@@ -263,9 +269,6 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 		}
 	}
 
-	if err := resumeMgr.UpdateJobStatus(ctx, o.jobName, JobStatusIdle); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("failed to set job status to idle: %w", err))
-	}
 	result.Success = len(result.Errors) == 0
 	result.CompletedAt = time.Now()
 	result.Duration = result.CompletedAt.Sub(result.StartedAt)

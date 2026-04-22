@@ -88,7 +88,11 @@ func (m *Manager) Connect(ctx context.Context) error {
 }
 
 // ConnectSource establishes connection to source database only.
-// Use this when only source access is needed (e.g., purge operations).
+//
+// Deprecated: All orchestrators (archive, purge, copy-only) now require a
+// destination connection because resume metadata and advisory locks live on
+// Destination. Use Connect instead. Retained for callers that still need a
+// source-only connection path.
 func (m *Manager) ConnectSource(ctx context.Context) error {
 	if m == nil {
 		return fmt.Errorf("database manager is nil")

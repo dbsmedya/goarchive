@@ -3,15 +3,15 @@
 // Can be run with existing connection or will connect using environment variables.
 //
 // Environment variables:
-//   TEST_ARCHIVE_HOST, TEST_ARCHIVE_PORT, TEST_ARCHIVE_USER, TEST_ARCHIVE_PASSWORD, TEST_ARCHIVE_DB
+//   TEST_DEST_HOST, TEST_DEST_PORT, TEST_DEST_USER, TEST_DEST_PASSWORD, TEST_DEST_DB
 //   DUMP_DIR
 
 // Read configuration from environment variables
-var archiveHost = os.getenv("TEST_ARCHIVE_HOST") || "127.0.0.1";
-var archivePort = os.getenv("TEST_ARCHIVE_PORT") || "3307";
-var archiveUser = os.getenv("TEST_ARCHIVE_USER") || "root";
-var archivePass = os.getenv("TEST_ARCHIVE_PASSWORD") || os.getenv("MYSQL_ROOT_PASSWORD") || "";
-var archiveDb = os.getenv("TEST_ARCHIVE_DB") || "sakila_archive";
+var archiveHost = os.getenv("TEST_DEST_HOST") || "127.0.0.1";
+var archivePort = os.getenv("TEST_DEST_PORT") || "3307";
+var archiveUser = os.getenv("TEST_DEST_USER") || "root";
+var archivePass = os.getenv("TEST_DEST_PASSWORD") || os.getenv("MYSQL_ROOT_PASSWORD") || "";
+var archiveDb = os.getenv("TEST_DEST_DB") || "sakila_archive";
 var dumpDir = os.getenv("DUMP_DIR") || "/tmp/db1_schema_dump";
 
 print("============================================================");
@@ -40,7 +40,7 @@ if (!session || !session.isOpen()) {
         shell.connect(connStr);
     } catch (err) {
         print("ERROR: Failed to connect to archive database: " + err.message);
-        exit(1);
+        throw new Error("aborting create_archive.js");
     }
 } else {
     print("Using existing database connection...");
@@ -73,7 +73,7 @@ try {
 } catch (err) {
     print("ERROR: Failed to load dump: " + err.message);
     session.close();
-    exit(1);
+    throw new Error("aborting create_archive.js");
 }
 
 // Verify tables were created
