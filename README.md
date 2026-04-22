@@ -627,14 +627,14 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - Verification by row count or SHA256
 - Dry-run mode with execution plan output
 
-### Planned for Enterprise (Not in Community)
+### Planned for Enterprise
 
 - Observability: Prometheus metrics, OpenTelemetry traces, dashboards
 - Parallelism: multi-root-PK concurrent processing, pipelining copy/verify/delete
-- Large-scale load testing and tuning for 100M+ row datasets
 - Admin API for runtime pause / resume / inspect
 - Multi-tenancy and horizontal scale
 - Adaptive rate limiting
+- Web based GUI
 
 ## Contributing
 
