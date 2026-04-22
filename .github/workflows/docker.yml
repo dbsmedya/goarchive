@@ -23,6 +23,26 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Need full history + tags so `git describe` can produce a
+          # meaningful VERSION for branch builds.
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          # On tag pushes, use the tag (stripped of the leading 'v') so the
+          # in-image binary version exactly matches the Docker image tag
+          # produced by metadata-action. On branch pushes, fall back to
+          # `git describe` which yields strings like v0.4.3-2-gb191450 —
+          # still unique and traceable, just not a clean semver.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo '0.9.0-community')"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -55,6 +75,13 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Propagate version into the Dockerfile's ARG VERSION / ARG COMMIT so
+          # the in-image binary reports the same version as the image tag.
+          # Without this, ARG VERSION=dev in the Dockerfile wins and the
+          # binary inside would always report "dev".
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ steps.version.outputs.COMMIT }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64

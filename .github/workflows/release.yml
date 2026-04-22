@@ -70,7 +70,10 @@ jobs:
         with:
           name: Release ${{ steps.get_version.outputs.VERSION }}
           draft: false
-          prerelease: false
+          # Any tag containing a hyphen after the version (e.g. v0.9.0-community,
+          # v1.0.0-rc1, v1.2.3-beta) is a SemVer prerelease and should not be
+          # marked "Latest" on GitHub.
+          prerelease: ${{ contains(steps.get_version.outputs.VERSION, '-') }}
           files: dist/*
           generate_release_notes: true
         env:
