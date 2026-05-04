@@ -579,7 +579,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `0.9.0-community` (beta)
+- **Version**: `0.9.2-community` (beta)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
 

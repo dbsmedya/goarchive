@@ -33,10 +33,10 @@ func TestRunVersion(t *testing.T) {
 	}{
 		{
 			name:    "community default",
-			version: "0.9.0-community",
+			version: "0.9.2-community",
 			commit:  "unknown",
 			wantInOutput: []string{
-				"goarchive version 0.9.0-community",
+				"goarchive version 0.9.2-community",
 				"Commit: unknown",
 				"Go version:",
 				"OS/Arch:",

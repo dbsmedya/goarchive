@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT THIS when releasing
 # Or use: make build VERSION=1.2.3
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.9.0-community")
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.9.2-community")
 
 # Git commit hash (auto-detected, or 'unknown' if not in git repo)
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
