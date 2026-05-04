@@ -310,8 +310,8 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 
 	// Insert a fake running job on the same root table
 	_, err := destDB.Exec(`
-		INSERT INTO archiver_job (job_name, root_table, job_type, job_status) 
-		VALUES ('concurrent_job', 'customers', 'archive', 1)`)
+		INSERT INTO archiver_job (job_name, root_table, job_type, job_status, last_heartbeat_at)
+		VALUES ('concurrent_job', 'customers', 'archive', 1, NOW())`)
 	if err != nil {
 		t.Fatalf("Failed to insert fake job: %v", err)
 	}
@@ -339,8 +339,8 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 		t.Fatal("Expected error for concurrent job, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "already running") {
-		t.Errorf("Expected 'already running' error, got: %v", err)
+	if !strings.Contains(err.Error(), "live job") {
+		t.Errorf("Expected live job error, got: %v", err)
 	}
 }
 

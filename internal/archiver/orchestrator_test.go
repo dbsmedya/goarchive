@@ -755,7 +755,7 @@ func TestExecute_ContextCancellation(t *testing.T) {
 
 	foundCancelError := false
 	for _, e := range result.Errors {
-		if e == context.Canceled {
+		if errors.Is(e, context.Canceled) {
 			foundCancelError = true
 			break
 		}
