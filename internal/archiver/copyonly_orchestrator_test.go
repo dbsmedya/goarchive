@@ -83,29 +83,6 @@ func TestCopyOnlyOrchestrator_ExecutePreconditions(t *testing.T) {
 	}
 }
 
-func TestCopyOnlyOrchestrator_CheckConcurrentJobs(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock new failed: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	orch, err := NewCopyOnlyOrchestrator(cfg, "test_job", jobCfg, &database.Manager{Destination: db})
-	if err != nil {
-		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
-	}
-
-	rows := sqlmock.NewRows([]string{"job_name"}).AddRow("other_job")
-	mock.ExpectQuery("SELECT job_name FROM archiver_job").WillReturnRows(rows)
-
-	err = orch.checkConcurrentJobs(context.Background())
-	if err == nil {
-		t.Fatal("expected concurrent job error")
-	}
-}
-
 func TestCopyOnlyOrchestrator_CheckDestinationEmpty(t *testing.T) {
 	cfg := createTestConfig()
 	jobCfg := createTestJobConfig()

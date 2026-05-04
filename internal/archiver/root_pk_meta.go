@@ -29,6 +29,9 @@ func loadRootPKMeta(ctx context.Context, sourceDB *sql.DB, g *graph.Graph) error
 	if err := sourceDB.QueryRowContext(ctx, query, rootTable, rootPK).Scan(&dataType, &columnType); err != nil {
 		return fmt.Errorf("loadRootPKMeta: %w", err)
 	}
+	if !isIntegerRootPKType(dataType) {
+		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT)", rootTable, rootPK, dataType)
+	}
 	g.SetRootPKMeta(strings.ToLower(dataType), strings.Contains(strings.ToLower(columnType), "unsigned"))
 	return nil
 }

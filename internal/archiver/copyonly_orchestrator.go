@@ -328,41 +328,6 @@ func (o *CopyOnlyOrchestrator) displayInfoOrPrompt(force bool) error {
 	return nil
 }
 
-// checkConcurrentJobs blocks copy-only when another job is running on the same root table.
-func (o *CopyOnlyOrchestrator) checkConcurrentJobs(ctx context.Context) error {
-	const query = `
-		SELECT job_name FROM archiver_job
-		WHERE root_table = ?
-		AND job_status = ?
-		AND job_name != ?
-	`
-	rows, err := o.dbManager.Destination.QueryContext(ctx, query, o.jobConfig.RootTable, JobStatusRunning, o.jobName)
-	if err != nil {
-		return fmt.Errorf("failed to query concurrent jobs: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			o.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var conflicts []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("failed to scan concurrent job: %w", err)
-		}
-		conflicts = append(conflicts, name)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("failed to iterate concurrent jobs: %w", err)
-	}
-	if len(conflicts) > 0 {
-		return fmt.Errorf("cannot run copy-only: job(s) already running on root_table %q: %v", o.jobConfig.RootTable, conflicts)
-	}
-	return nil
-}
-
 // checkDestinationEmpty verifies destination tables in copy order do not contain data.
 func (o *CopyOnlyOrchestrator) checkDestinationEmpty(ctx context.Context) error {
 	for _, table := range o.copyOrder {

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 )
@@ -106,6 +107,15 @@ func clearPurgeSource(t *testing.T, setup *IntegrationTestSetup) {
 			t.Logf("Note: archiver_job not cleared on destination (may not exist yet): %v", err)
 		}
 	}
+}
+
+func cleanupPurgeJobState(t *testing.T, setup *IntegrationTestSetup, jobName string) {
+	t.Helper()
+	destDB, ok := setup.GetDB("destination")
+	if !ok {
+		t.Fatal("Destination database not found in setup")
+	}
+	testsupport.CleanupArchiverState(t, destDB, jobName)
 }
 
 // seedPurgeTestData inserts test data with old dates for purge testing
@@ -219,6 +229,7 @@ func TestPurge_FullCycle_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_full")
 
 	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_full", jobCfg, dbManager)
 	if err != nil {
@@ -269,6 +280,7 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
+	cleanupPurgeJobState(t, setup, "test_purge_recovery")
 
 	// First run: simulate crash after processing first batch
 	{
@@ -355,6 +367,7 @@ func TestPurge_EmptyResultSet_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_empty")
 
 	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_empty", jobCfg, dbManager)
 	if err != nil {
@@ -432,6 +445,7 @@ func TestPurge_ContextCancellation_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_cancel")
 
 	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_cancel", jobCfg, dbManager)
 	if err != nil {
@@ -490,6 +504,7 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_resume")
 
 	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_resume", jobCfg, dbManager)
 	if err != nil {
@@ -567,6 +582,7 @@ func TestPurge_MultiLevelHierarchy_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_hierarchy")
 
 	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_hierarchy", jobCfg, dbManager)
 	if err != nil {
@@ -627,6 +643,7 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 
 	jobCfg := createCustomerOrderJobConfig()
 	dbManager := setupPurgeDBManager(t, setup)
+	cleanupPurgeJobState(t, setup, "test_purge_jobtype")
 
 	// Resume metadata now lives on Destination for all orchestrators.
 	destDB, _ := setup.GetDB("destination")
