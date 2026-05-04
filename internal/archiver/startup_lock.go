@@ -12,11 +12,26 @@ import (
 
 const heartbeatStaleThreshold = 60 * time.Second
 
+// finalJobStatus picks the status to persist on orchestrator exit.
+// Non-nil execErr → Failed (visible in archiver_job for post-mortem).
+// Nil execErr → Idle (clean completion).
+func finalJobStatus(execErr error) JobStatus {
+	if execErr != nil {
+		return JobStatusFailed
+	}
+	return JobStatusIdle
+}
+
 type jobStartup struct {
 	resumeMgr      *ResumeManager
 	jobState       *JobState
 	staleAtStartup bool
-	cleanup        func()
+	// cleanup releases startup-acquired resources and writes the final job status.
+	// Pass the orchestrator's final error (or nil) — non-nil → JobStatusFailed,
+	// nil → JobStatusIdle. Use it via:
+	//   defer func() { startup.cleanup(err) }()
+	// where `err` is a named return value of the calling function.
+	cleanup func(execErr error)
 }
 
 func beginJobStartup(
@@ -121,13 +136,22 @@ func beginJobStartup(
 		}
 	}()
 
-	cleanup := func() {
+	cleanup := func(execErr error) {
 		stopHeartbeat()
 		resetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := resumeMgr.UpdateJobStatus(resetCtx, jobName, JobStatusIdle); err != nil {
-			log.Errorw("failed to reset job status to idle", "job", jobName, "error", err)
+
+		finalStatus := finalJobStatus(execErr)
+
+		if err := resumeMgr.UpdateJobStatus(resetCtx, jobName, finalStatus); err != nil {
+			log.Errorw("failed to write final job status",
+				"job", jobName,
+				"target_status", finalStatus,
+				"error", err)
+		} else if finalStatus == JobStatusFailed {
+			log.Warnw("job marked failed", "job", jobName, "exec_error", execErr.Error())
 		}
+
 		if jobLockHeld {
 			_, _ = jobLock.ReleaseLock(context.Background())
 		}

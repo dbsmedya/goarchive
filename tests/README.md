@@ -130,6 +130,13 @@ make e2e-examples                                       # short form
 ./scripts/run-tests.sh --sakila-examples -t 1           # demo test 1
 ```
 
+> ⚠️ **E2E tests must run sequentially** (not concurrently with integration
+> tests or other E2E suites). Each E2E test resets the source database by
+> dropping and recreating `sakila`. Active MySQL connections from concurrently
+> running integration tests can block `DROP DATABASE`, causing the reset to
+> fail with "Failed to reset source database". Run unit and integration tests
+> first, then run E2E working tests, then E2E demo tests.
+
 ### Verbose Output
 
 Add `-v` to any command for verbose output:

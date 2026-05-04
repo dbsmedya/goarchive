@@ -140,6 +140,15 @@ Safety-fix notes:
   contains DELETE triggers.
 - Root primary keys must be integer types (TINYINT through BIGINT, signed or
   unsigned). Preflight rejects non-integer root PKs.
+- **DDL-only destination schemas require `safety.disable_foreign_key_checks: true`.**
+  When the destination is initialized from a schema dump (e.g. `dump_master.js`
+  with `ddlOnly: true`), reference tables such as `language`, `category`, or
+  `film` are empty but still have foreign-key constraints. Copying child rows
+  that reference those empty tables will hit Error 1452 unless FK checks are
+  disabled for the copy phase. This is a normal operator scenario — lookup
+  tables are often not part of the archived subgraph — and is safe because
+  `copy.go` uses a dedicated connection and always resets
+  `FOREIGN_KEY_CHECKS = 1` before returning the connection to the pool.
 
 ## Test Environment
 

@@ -80,7 +80,7 @@ func (o *PurgeOrchestrator) Initialize() error {
 }
 
 // Execute runs purge flow (discover + delete only).
-func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
+func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, err error) {
 	if !o.initialized {
 		return nil, fmt.Errorf("orchestrator not initialized")
 	}
@@ -88,7 +88,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 		return nil, fmt.Errorf("context is nil")
 	}
 
-	result := &PurgeResult{
+	result = &PurgeResult{
 		JobName:   o.jobName,
 		StartedAt: time.Now(),
 		Success:   false,
@@ -98,7 +98,13 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer startup.cleanup()
+	defer func() {
+		if r := recover(); r != nil {
+			startup.cleanup(fmt.Errorf("panic during purge: %v", r))
+			panic(r)
+		}
+		startup.cleanup(err)
+	}()
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup

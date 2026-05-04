@@ -181,7 +181,7 @@ func (o *ArchiveOrchestrator) GetDeleteOrder() ([]string, error) {
 // Execute runs the archive operation. It processes records in batches,
 // copying them to the destination and then deleting from the source.
 // The checkpoint callback is invoked after each root PK is processed.
-func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint CheckpointCallback) (*ArchiveResult, error) {
+func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint CheckpointCallback) (result *ArchiveResult, err error) {
 	if !o.initialized {
 		return nil, fmt.Errorf("orchestrator not initialized")
 	}
@@ -190,7 +190,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		return nil, fmt.Errorf("context is nil")
 	}
 
-	result := &ArchiveResult{
+	result = &ArchiveResult{
 		JobName:            o.jobName,
 		StartedAt:          time.Now(),
 		VerificationMethod: o.verificationCfg.Method,
@@ -216,7 +216,13 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("%w", err)
 	}
-	defer startup.cleanup()
+	defer func() {
+		if r := recover(); r != nil {
+			startup.cleanup(fmt.Errorf("panic during archive: %v", r))
+			panic(r)
+		}
+		startup.cleanup(err)
+	}()
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup

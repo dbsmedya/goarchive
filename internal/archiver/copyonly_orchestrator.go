@@ -107,7 +107,7 @@ func (o *CopyOnlyOrchestrator) Initialize() error {
 }
 
 // Execute runs copy-only operation with copy and optional verify phases.
-func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOnlyResult, error) {
+func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result *CopyOnlyResult, err error) {
 	if !o.initialized {
 		return nil, fmt.Errorf("orchestrator not initialized")
 	}
@@ -115,7 +115,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 		return nil, fmt.Errorf("context is nil")
 	}
 
-	result := &CopyOnlyResult{
+	result = &CopyOnlyResult{
 		JobName:            o.jobName,
 		StartedAt:          time.Now(),
 		VerificationMethod: o.verificationCfg.Method,
@@ -132,7 +132,13 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 	if err != nil {
 		return fail("%w", err)
 	}
-	defer startup.cleanup()
+	defer func() {
+		if r := recover(); r != nil {
+			startup.cleanup(fmt.Errorf("panic during copy-only: %v", r))
+			panic(r)
+		}
+		startup.cleanup(err)
+	}()
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
