@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/database"
@@ -161,34 +160,24 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
 		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
-	// checkConcurrentJobs: no conflicts
-	mock.ExpectQuery("SELECT job_name FROM archiver_job").
-		WillReturnRows(sqlmock.NewRows([]string{"job_name"}))
-
-	// GetOrCreateJobWithType: existing job
-	mock.ExpectQuery("SELECT job_name, root_table").
+	// Root-table lock acquired for the startup critical section.
+	mock.ExpectQuery("SELECT GET_LOCK").
+		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
 		WithArgs("test_job").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"job_name", "root_table", "job_type", "last_processed_root_pk_id",
-			"job_status", "created_at", "updated_at",
-		}).AddRow("test_job", "users", JobTypeCopyOnly, "", JobStatusIdle,
-			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}))
+	mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+		WithArgs("users", JobStatusRunning, "test_job").
+		WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}))
 
-	// UpdateJobStatus -> Running
-	mock.ExpectExec("UPDATE archiver_job SET job_status").
-		WithArgs(JobStatusRunning, "test_job").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	// GET_LOCK returns 0 (timeout) — forces lock acquisition to fail
+	// Job-name GET_LOCK returns 0 (timeout) — forces lock acquisition to fail before status mutation.
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(0)))
-
-	// Deferred UpdateJobStatus -> Idle MUST be called
-	mock.ExpectExec("UPDATE archiver_job SET job_status").
-		WithArgs(JobStatusIdle, "test_job").
-		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT RELEASE_LOCK").
+		WillReturnRows(sqlmock.NewRows([]string{"RELEASE_LOCK"}).AddRow(int64(1)))
 
 	_, execErr := orch.Execute(context.Background(), false)
 	if execErr == nil {

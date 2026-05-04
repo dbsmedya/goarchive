@@ -150,6 +150,35 @@ func TestRunAllChecks_MissingTables(t *testing.T) {
 	}
 }
 
+func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	g := graph.NewGraph("users", "id")
+	checker, _ := NewPreflightChecker(db, "testdb", g, nil)
+
+	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
+		WithArgs("users", "id").
+		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))
+	if err := checker.ValidateRootPKNumeric(context.Background(), "users", "id"); err != nil {
+		t.Fatalf("ValidateRootPKNumeric: %v", err)
+	}
+	dataType, unsigned, ok := g.GetRootPKMeta()
+	if !ok || dataType != "bigint" || !unsigned {
+		t.Fatalf("metadata: dataType=%q unsigned=%v ok=%v", dataType, unsigned, ok)
+	}
+
+	db2, mock2, _ := sqlmock.New()
+	defer func() { _ = db2.Close() }()
+	checker2, _ := NewPreflightChecker(db2, "testdb", graph.NewGraph("orders", "uuid"), nil)
+	mock2.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
+		WithArgs("orders", "uuid").
+		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("varchar", "varchar(36)"))
+	err := checker2.ValidateRootPKNumeric(context.Background(), "orders", "uuid")
+	if err == nil || !strings.Contains(err.Error(), "ROOT_PK_TYPE_UNSUPPORTED") {
+		t.Fatalf("expected ROOT_PK_TYPE_UNSUPPORTED, got %v", err)
+	}
+}
+
 func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -172,6 +201,9 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			WithArgs("testdb", sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
 	}
+	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
+		WithArgs("users", "id").
+		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))
 
 	// Storage engine check - one table is MyISAM
 	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").

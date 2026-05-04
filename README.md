@@ -210,16 +210,16 @@ goarchive validate -c archiver.yaml
 # Preview what would be archived (dry-run)
 goarchive dry-run -c archiver.yaml --job archive_old_orders
 
-# Execute archive (copy to destination, then delete from source)
+# Execute archive (runs preflight, copies to destination, verifies, then deletes)
 goarchive archive -c archiver.yaml --job archive_old_orders
 
-# Copy-only (copy to destination, never delete from source)
+# Copy-only (runs non-destructive preflight, copies to destination, never deletes source)
 goarchive copy-only -c archiver.yaml --job archive_old_orders
 
 # Copy-only force mode (shows confirmation prompt before bypassing duplicate preflight)
 goarchive copy-only -c archiver.yaml --job archive_old_orders --force
 
-# Purge only (delete without copying - USE WITH CAUTION!)
+# Purge only (runs source-side preflight, then deletes without copying - USE WITH CAUTION!)
 goarchive purge -c archiver.yaml --job archive_old_orders
 ```
 
@@ -601,11 +601,30 @@ should be aware of the following known limits before pointing it at real data:
 - **No built-in metrics or telemetry.** Operators monitor progress through
   the structured log output and by querying `archiver_job_log` directly.
 - **Sequential by design.** One root PK at a time, one job at a time per
-  destination. The advisory lock prevents concurrent runs of the same job name.
-- **Validate before every run.** `goarchive validate` runs the full preflight
-  chain and should PASS before you trust an `archive` run. For schemas with
-  DELETE triggers (e.g. Sakila's `del_film`), pass `--force-triggers` after
-  you've reviewed what those triggers do.
+  destination. Advisory locks plus heartbeat-aware same-root checks prevent
+  concurrent runs of the same job name or root table.
+- **Root tables must use integer primary keys.** Community edition supports
+  TINYINT through BIGINT root PKs, signed or unsigned. UUID, VARCHAR, DECIMAL,
+  FLOAT, datetime, and other non-integer root PKs are rejected by preflight.
+  Child tables may use any PK type.
+- **Runtime preflight is automatic.** `archive`, `purge`, and `copy-only` run
+  preflight at startup before any `archiver_job` state is written. `validate`
+  remains useful for inspecting issues before an operational run. Use
+  `--skip-validate-preflight` only for documented recovery scenarios after
+  manually verifying schema safety.
+- **Trigger override is explicit.** For schemas with DELETE triggers (e.g.
+  Sakila's `del_film`), `archive` and `purge` require `--force-triggers` after
+  you've reviewed what those triggers do. `copy-only` skips DELETE-trigger
+  checks because it never deletes from source.
+- **`--force` is not a live-lock bypass.** It proceeds past advisory lock
+  contention only when the previous holder's heartbeat is stale. It cannot
+  bypass a live heartbeating job, the same-root concurrency check, or preflight.
+- **Verification method controls dirty-destination behavior.** In
+  `verification.method: count`, archive uses plain `INSERT` and aborts on any
+  pre-existing destination row with the same key before deleting source data.
+  In `verification.method: sha256`, archive uses `INSERT IGNORE` and verifies
+  destination content by hash, which is the recommended recovery mode for
+  interrupted jobs with pending PKs.
 - **Schema-stable assumption.** GoArchive assumes source and destination
   schemas do not change during a batch loop. Run schema migrations either
   before or after archive jobs, never concurrently.

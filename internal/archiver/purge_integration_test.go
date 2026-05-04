@@ -224,7 +224,6 @@ func TestPurge_FullCycle_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true) // Skip advisory lock for tests
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -278,7 +277,6 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 		}
-		orch.SetSkipLock(true)
 
 		if err := orch.Initialize(); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
@@ -308,7 +306,6 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 		}
-		orch.SetSkipLock(true)
 
 		if err := orch.Initialize(); err != nil {
 			t.Fatalf("Initialize failed: %v", err)
@@ -363,7 +360,6 @@ func TestPurge_EmptyResultSet_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true)
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -441,7 +437,6 @@ func TestPurge_ContextCancellation_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true)
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -500,7 +495,6 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true)
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -537,7 +531,6 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch2.SetSkipLock(true)
 
 	if err := orch2.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -579,7 +572,6 @@ func TestPurge_MultiLevelHierarchy_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true)
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)
@@ -647,7 +639,6 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
-	orch.SetSkipLock(true)
 
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Initialize failed: %v", err)

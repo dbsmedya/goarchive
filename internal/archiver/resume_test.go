@@ -85,12 +85,49 @@ func TestResumeManager_InitializeTables_Success(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
 		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 
 	ctx := context.Background()
 	err := rm.InitializeTables(ctx)
 
 	assert.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_HeartbeatAndStaleness(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+
+	mock.ExpectExec("UPDATE archiver_job SET last_heartbeat_at = NOW\\(\\) WHERE job_name = \\?").
+		WithArgs("job1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := rm.Heartbeat(context.Background(), "job1"); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+		WithArgs("job1").
+		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(5)))
+	stale, age, err := rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)
+	if err != nil {
+		t.Fatalf("IsHeartbeatStale fresh: %v", err)
+	}
+	if stale || age < 5*time.Second {
+		t.Fatalf("fresh heartbeat: stale=%v age=%v", stale, age)
+	}
+
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+		WithArgs("job1").
+		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(120)))
+	stale, age, err = rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)
+	if err != nil {
+		t.Fatalf("IsHeartbeatStale stale: %v", err)
+	}
+	if !stale || age < 120*time.Second {
+		t.Fatalf("stale heartbeat: stale=%v age=%v", stale, age)
+	}
 }
 
 func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {

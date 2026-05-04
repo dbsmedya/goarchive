@@ -58,6 +58,15 @@ type ForeignKeyResult struct {
 	Indexed          bool // Whether the FK column has an index
 }
 
+// PreflightProfile selects the subset of checks needed for a command.
+type PreflightProfile int
+
+const (
+	PreflightProfileFull PreflightProfile = iota
+	PreflightProfileSourceOnly
+	PreflightProfileNonDestructive
+)
+
 // PreflightChecker performs safety checks before archiving.
 //
 // GA-P4-F3: Preflight Checks
@@ -113,7 +122,7 @@ func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName st
 // RunAllChecks runs all preflight checks.
 //
 // GA-P4-F3-T7: Validate command implementation
-func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool) error {
+func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool) error {
 	p.logger.Info("Running preflight checks...")
 
 	// Get all tables from graph
@@ -129,13 +138,18 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 		return err
 	}
 
+	rootTable := p.graph.Root
+	if err := p.ValidateRootPKNumeric(ctx, rootTable, p.graph.GetPK(rootTable)); err != nil {
+		return err
+	}
+
 	// GA-P4-F3-T1: Storage engine check
 	if err := p.ValidateStorageEngine(ctx, tables); err != nil {
 		return err
 	}
 
 	// Destination checks ensure copy target is safe before archive execution.
-	if p.destinationDB != nil && p.destinationDBName != "" {
+	if profile != PreflightProfileSourceOnly && p.destinationDB != nil && p.destinationDBName != "" {
 		if err := p.ValidateDestinationTablesExist(ctx, tables); err != nil {
 			return err
 		}
@@ -166,18 +180,59 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 		return err
 	}
 
-	// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
-	if err := p.ValidateTriggers(ctx, tables, forceTriggers); err != nil {
-		return err
-	}
+	if profile == PreflightProfileFull || profile == PreflightProfileSourceOnly {
+		// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
+		if err := p.ValidateTriggers(ctx, tables, forceTriggers); err != nil {
+			return err
+		}
 
-	// GA-P4-F3-T6: CASCADE rule warning
-	if err := p.WarnCascadeRules(ctx); err != nil {
-		return err
+		// GA-P4-F3-T6: CASCADE rule warning
+		if err := p.WarnCascadeRules(ctx); err != nil {
+			return err
+		}
 	}
 
 	p.logger.Info("All preflight checks PASSED")
 	return nil
+}
+
+// RunAllChecks runs the full preflight profile.
+//
+// GA-P4-F3-T7: Validate command implementation
+func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool) error {
+	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers)
+}
+
+// ValidateRootPKNumeric ensures the root table primary key is an integer type.
+func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, rootTable, rootPKColumn string) error {
+	const query = `
+		SELECT DATA_TYPE, COLUMN_TYPE
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE()
+		  AND TABLE_NAME = ?
+		  AND COLUMN_NAME = ?
+	`
+	var dataType, columnType string
+	err := p.db.QueryRowContext(ctx, query, rootTable, rootPKColumn).Scan(&dataType, &columnType)
+	if err != nil {
+		return fmt.Errorf("ROOT_PK_TYPE_LOOKUP: failed to look up data type for %s.%s: %w", rootTable, rootPKColumn, err)
+	}
+	if !isIntegerRootPKType(dataType) {
+		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'.", rootTable, rootPKColumn, dataType)
+	}
+	if p.graph != nil {
+		p.graph.SetRootPKMeta(strings.ToLower(dataType), strings.Contains(strings.ToLower(columnType), "unsigned"))
+	}
+	return nil
+}
+
+func isIntegerRootPKType(dataType string) bool {
+	switch strings.ToLower(dataType) {
+	case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateTablesExist checks that all tables in the graph exist in the source database.

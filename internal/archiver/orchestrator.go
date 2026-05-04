@@ -3,14 +3,12 @@ package archiver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/lock"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/dbsmedya/goarchive/internal/types"
 	"github.com/dbsmedya/goarchive/internal/verifier"
@@ -50,7 +48,8 @@ type ArchiveOrchestrator struct {
 	initialized     bool
 	processingCfg   config.ProcessingConfig   // Effective processing config (job-specific or global)
 	verificationCfg config.VerificationConfig // Effective verification config (job-specific or global)
-	skipLock        bool
+	force           bool
+	staleAtStartup  bool
 }
 
 // NewOrchestrator creates a new archive orchestrator with the given configuration
@@ -190,19 +189,6 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if ctx == nil {
 		return nil, fmt.Errorf("context is nil")
 	}
-	if !o.skipLock {
-		// Advisory lock on Destination aligns with where archiver_job metadata
-		// lives, and ensures archive/purge/copy-only serialize against each other
-		// for the same job name.
-		jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
-		if err := jobLock.AcquireOrFail(ctx); err != nil {
-			if errors.Is(err, lock.ErrLockTimeout) {
-				return nil, fmt.Errorf("job %q is already running on another instance", o.jobName)
-			}
-			return nil, fmt.Errorf("failed to acquire job lock: %w", err)
-		}
-		defer func() { _, _ = jobLock.ReleaseLock(context.Background()) }()
-	}
 
 	result := &ArchiveResult{
 		JobName:            o.jobName,
@@ -226,19 +212,16 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		"skip_verification", o.verificationCfg.SkipVerification,
 	)
 
-	// Initialize resume system
-	resumeMgr, err := NewResumeManager(o.dbManager.Destination, o.logger)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeArchive, "archive", o.force)
 	if err != nil {
-		return fail("failed to create resume manager: %w", err)
+		return fail("%w", err)
 	}
-	if err := resumeMgr.InitializeTables(ctx); err != nil {
-		return fail("failed to initialize resume tables: %w", err)
-	}
-
-	// Get or create job (auto-detects resume)
-	jobState, err := resumeMgr.GetOrCreateJob(ctx, o.jobName, o.jobConfig.RootTable)
-	if err != nil {
-		return fail("failed to get/create job: %w", err)
+	defer startup.cleanup()
+	resumeMgr := startup.resumeMgr
+	jobState := startup.jobState
+	o.staleAtStartup = startup.staleAtStartup
+	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
+		return fail("failed to load root PK metadata: %w", err)
 	}
 
 	// Check if resuming
@@ -293,6 +276,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create copy phase: %w", err)
 	}
+	copyPhase.SetStrictInsert(o.verificationCfg.Method == "count")
 
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
@@ -313,6 +297,25 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	)
 	if err != nil {
 		return fail("failed to create delete phase: %w", err)
+	}
+
+	if shouldResume {
+		if err := o.replayPendingPKs(ctx, resumeMgr, func(ctx context.Context, rawPK string) error {
+			dataType, unsigned, ok := o.graph.GetRootPKMeta()
+			if !ok {
+				return fmt.Errorf("root PK metadata not loaded")
+			}
+			typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
+			if err != nil {
+				return fmt.Errorf("convert pending PK %q: %w", rawPK, err)
+			}
+			if err := o.processRoot(ctx, typedPK, discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, result, checkpoint); err != nil {
+				return fmt.Errorf("replay processRoot for pk=%v: %w", typedPK, err)
+			}
+			return nil
+		}); err != nil {
+			return fail("pending replay failed: %w", err)
+		}
 	}
 
 	// Batch processing loop
@@ -357,75 +360,11 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			return fail("failed to log pending batch entries: %w", err)
 		}
 
-		// Process each root ID in batch
 		for _, rootID := range rootIDs {
-			// Discovery phase (BFS)
-			discovered, err := discovery.Discover(ctx, []interface{}{rootID})
-			if err != nil {
-				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-				}
-				return fail("discovery failed: %w", err)
+			if err := o.processRoot(ctx, rootID, discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, result, checkpoint); err != nil {
+				return fail("processRoot failed for pk=%v: %w", rootID, err)
 			}
-
-			// Convert types.RecordSet to archiver.RecordSet for copy/delete
-			recordSet := convertRecordSet(discovered)
-
-			// Copy phase (with transaction)
-			copyStats, err := copyPhase.Copy(ctx, recordSet)
-			if err != nil {
-				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-				}
-				return fail("copy failed: %w", err)
-			}
-
-			// Verify phase
-			if !o.verificationCfg.SkipVerification {
-				verifyStats, err := dataVerifier.Verify(ctx, discovered)
-				if err != nil {
-					if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-						o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-					}
-					return fail("verification failed: %w", err)
-				}
-				if verifyStats != nil {
-					result.TablesVerified += verifyStats.TablesVerified
-					result.RecordsVerified += verifyStats.TotalRows
-				}
-			}
-
-			// Delete phase
-			deleteStats, err := deletePhase.Delete(ctx, recordSet)
-			if err != nil {
-				if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-					o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-				}
-				return fail("delete failed: %w", err)
-			}
-
-			// Update checkpoint
-			if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-				return fail("checkpoint update failed: %w", err)
-			}
-			fetcher.UpdateCheckpoint(rootID)
-
-			// Mark as completed
-			if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-				return fail("failed to mark completed: %w", err)
-			}
-
-			// Update stats
-			result.RecordsCopied += copyStats.RowsCopied
-			result.RecordsDeleted += deleteStats.RowsDeleted
 			totalProcessed++
-
-			// Call checkpoint callback if provided
-			if checkpoint != nil {
-				if err := checkpoint(rootID, "completed"); err != nil {
-					o.logger.Warnw("Checkpoint callback failed", "error", err)
-				}
-			}
 		}
 
 		// Sleep between batches
@@ -447,12 +386,6 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	result.TablesCopied = len(o.copyOrder)
 	result.TablesDeleted = len(o.deleteOrder)
 
-	// Mark job as idle
-	if err := resumeMgr.UpdateJobStatus(ctx, o.jobName, JobStatusIdle); err != nil {
-		o.logger.Warnw("Failed to set job status to idle", "error", err)
-		result.Errors = append(result.Errors, fmt.Errorf("failed to set job status to idle: %w", err))
-	}
-
 	o.logger.Infow("Archive execution completed",
 		"duration", result.Duration,
 		"success", result.Success,
@@ -465,9 +398,114 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	return result, nil
 }
 
-// SetSkipLock controls whether Execute acquires advisory lock.
-func (o *ArchiveOrchestrator) SetSkipLock(skip bool) {
-	o.skipLock = skip
+func (o *ArchiveOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, processRoot func(context.Context, string) error) error {
+	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	if err != nil {
+		return fmt.Errorf("failed to get pending PKs: %w", err)
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if o.verificationCfg.Method == "count" {
+		preview := pending
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return fmt.Errorf(
+			"job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count.\n\n"+
+				"Resuming a count-mode job with pending entries is unsafe - pre-existing destination rows cannot be verified equal to source.\n\n"+
+				"To recover, choose one:\n"+
+				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
+				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the pending entries:\n"+
+				"       UPDATE archiver_job_log SET log_status='completed' WHERE job_name='%s' AND log_status='pending';\n"+
+				"     and re-run.\n\n"+
+				"Pending PKs (first 10): %v",
+			o.jobName, len(pending), o.jobName, preview)
+	}
+	o.logger.Infow("Replaying pending PKs from prior run", "job", o.jobName, "count", len(pending))
+	for _, rawPK := range pending {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := processRoot(ctx, rawPK); err != nil {
+			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
+		}
+	}
+	return nil
+}
+
+func (o *ArchiveOrchestrator) processRoot(
+	ctx context.Context,
+	rootID interface{},
+	discovery *RecordDiscovery,
+	copyPhase *CopyPhase,
+	dataVerifier *verifier.Verifier,
+	deletePhase *DeletePhase,
+	fetcher *RootIDFetcher,
+	resumeMgr *ResumeManager,
+	result *ArchiveResult,
+	checkpoint CheckpointCallback,
+) error {
+	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
+	if err != nil {
+		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
+			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+		}
+		return fmt.Errorf("discovery failed: %w", err)
+	}
+
+	recordSet := convertRecordSet(discovered)
+	copyStats, err := copyPhase.Copy(ctx, recordSet)
+	if err != nil {
+		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
+			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+		}
+		return fmt.Errorf("copy failed: %w", err)
+	}
+
+	if !o.verificationCfg.SkipVerification {
+		verifyStats, err := dataVerifier.Verify(ctx, discovered)
+		if err != nil {
+			if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
+				o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+			}
+			return fmt.Errorf("verification failed: %w", err)
+		}
+		if verifyStats != nil {
+			result.TablesVerified += verifyStats.TablesVerified
+			result.RecordsVerified += verifyStats.TotalRows
+		}
+	}
+
+	deleteStats, err := deletePhase.Delete(ctx, recordSet)
+	if err != nil {
+		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
+			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
+		}
+		return fmt.Errorf("delete failed: %w", err)
+	}
+
+	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
+		return fmt.Errorf("checkpoint update failed: %w", err)
+	}
+	fetcher.UpdateCheckpoint(rootID)
+	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
+		return fmt.Errorf("failed to mark completed: %w", err)
+	}
+
+	result.RecordsCopied += copyStats.RowsCopied
+	result.RecordsDeleted += deleteStats.RowsDeleted
+	if checkpoint != nil {
+		if err := checkpoint(rootID, "completed"); err != nil {
+			o.logger.Warnw("Checkpoint callback failed", "error", err)
+		}
+	}
+	return nil
+}
+
+// SetForce controls heartbeat-aware advisory lock bypass.
+func (o *ArchiveOrchestrator) SetForce(force bool) {
+	o.force = force
 }
 
 // IsInitialized returns true if the orchestrator has been initialized.

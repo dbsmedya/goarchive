@@ -265,6 +265,22 @@ func NewJobLock(db *sql.DB, jobName string) *AdvisoryLock {
 	return NewAdvisoryLock(db, lockName)
 }
 
+// GenerateRootTableLockName creates a consistent lock name for serializing startup on a root table.
+func GenerateRootTableLockName(rootTable string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, rootTable)
+	return fmt.Sprintf("goarchive:root:%s", sanitized)
+}
+
+// NewRootTableLock creates an advisory lock keyed on a root table.
+func NewRootTableLock(db *sql.DB, rootTable string) *AdvisoryLock {
+	return NewAdvisoryLock(db, GenerateRootTableLockName(rootTable))
+}
+
 // IsJobRunning checks if a specific job is currently running by attempting
 // to acquire its lock immediately without waiting.
 //

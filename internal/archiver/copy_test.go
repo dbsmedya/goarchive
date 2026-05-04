@@ -81,6 +81,23 @@ func TestNewCopyPhase_Validation(t *testing.T) {
 	}
 }
 
+func TestExtractDuplicatePK(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want string
+	}{
+		{"Duplicate entry '123' for key 'PRIMARY'", "123"},
+		{"Duplicate entry 'abc-def' for key 'PRIMARY'", "abc-def"},
+		{"unrelated error", "unrelated error"},
+		{"no quotes 'only one", "no quotes 'only one"},
+	}
+	for _, tt := range tests {
+		if got := extractDuplicatePK(tt.msg); got != tt.want {
+			t.Fatalf("extractDuplicatePK(%q): want %q, got %q", tt.msg, tt.want, got)
+		}
+	}
+}
+
 func TestNewCopyPhase_NilLoggerDefaults(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()

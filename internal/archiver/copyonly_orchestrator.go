@@ -14,9 +14,9 @@ import (
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/lock"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/dbsmedya/goarchive/internal/sqlutil"
+	"github.com/dbsmedya/goarchive/internal/types"
 	"github.com/dbsmedya/goarchive/internal/verifier"
 )
 
@@ -48,6 +48,7 @@ type CopyOnlyOrchestrator struct {
 	processingCfg   config.ProcessingConfig
 	verificationCfg config.VerificationConfig
 	promptReader    io.Reader
+	staleAtStartup  bool
 }
 
 // NewCopyOnlyOrchestrator creates a new copy-only orchestrator.
@@ -127,37 +128,21 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 		return result, err
 	}
 
-	resumeMgr, err := NewResumeManager(o.dbManager.Destination, o.logger)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeCopyOnly, "copy-only", force)
 	if err != nil {
-		return fail("failed to create resume manager: %w", err)
+		return fail("%w", err)
 	}
-	if err := resumeMgr.InitializeTables(ctx); err != nil {
-		return fail("failed to initialize resume tables: %w", err)
+	defer startup.cleanup()
+	resumeMgr := startup.resumeMgr
+	jobState := startup.jobState
+	o.staleAtStartup = startup.staleAtStartup
+	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
+		return fail("failed to load root PK metadata: %w", err)
 	}
-	if err := o.checkConcurrentJobs(ctx); err != nil {
-		return fail("concurrent job check failed: %w", err)
-	}
-	jobState, err := resumeMgr.GetOrCreateJobWithType(ctx, o.jobName, o.jobConfig.RootTable, JobTypeCopyOnly)
+	shouldResume, err := resumeMgr.ShouldResume(ctx, o.jobName)
 	if err != nil {
-		return fail("failed to get/create job: %w", err)
+		return fail("failed to check resume: %w", err)
 	}
-	if err := resumeMgr.UpdateJobStatus(ctx, o.jobName, JobStatusRunning); err != nil {
-		return fail("failed to set job running status: %w", err)
-	}
-	// Reset to Idle on every exit path so a mid-startup failure (lock contention,
-	// user-cancelled prompt, destination-empty check) does not leave the job
-	// marked Running and blocking subsequent runs.
-	defer func() {
-		_ = resumeMgr.UpdateJobStatus(context.Background(), o.jobName, JobStatusIdle)
-	}()
-	jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
-	if err := jobLock.AcquireOrFail(ctx); err != nil {
-		if errors.Is(err, lock.ErrLockTimeout) {
-			return fail("job %q is already running on destination", o.jobName)
-		}
-		return fail("failed to acquire destination lock: %w", err)
-	}
-	defer func() { _, _ = jobLock.ReleaseLock(context.Background()) }()
 	if err := o.displayInfoOrPrompt(force); err != nil {
 		return fail("%w", err)
 	}
@@ -204,6 +189,12 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 		return fail("failed to create verifier: %w", err)
 	}
 
+	if shouldResume {
+		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, copyPhase, dataVerifier, fetcher, result); err != nil {
+			return fail("pending replay failed: %w", err)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -224,39 +215,11 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 		}
 
 		for _, rootID := range rootIDs {
-			discovered, err := discovery.Discover(ctx, []interface{}{rootID})
+			copied, err := o.processCopyOnlyRoot(ctx, rootID, discovery, copyPhase, dataVerifier, fetcher, resumeMgr, result)
 			if err != nil {
-				_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
-				return fail("discovery failed: %w", err)
+				return fail("%w", err)
 			}
-
-			copyStats, err := copyPhase.Copy(ctx, convertRecordSet(discovered))
-			if err != nil {
-				_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
-				return fail("copy failed: %w", err)
-			}
-
-			if !o.verificationCfg.SkipVerification {
-				verifyStats, err := dataVerifier.Verify(ctx, discovered)
-				if err != nil {
-					_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
-					return fail("verification failed: %w", err)
-				}
-				if verifyStats != nil {
-					result.TablesVerified += verifyStats.TablesVerified
-					result.RecordsVerified += verifyStats.TotalRows
-				}
-			}
-
-			if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-				return fail("checkpoint update failed: %w", err)
-			}
-			fetcher.UpdateCheckpoint(rootID)
-			if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-				return fail("failed to mark completed: %w", err)
-			}
-
-			result.RecordsCopied += copyStats.RowsCopied
+			result.RecordsCopied += copied
 		}
 
 		if o.processingCfg.SleepSeconds > 0 {
@@ -275,6 +238,71 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (*CopyOn
 	result.TablesCopied = len(o.copyOrder)
 
 	return result, nil
+}
+
+func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, result *CopyOnlyResult) error {
+	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if o.verificationCfg.Method == "count" {
+		preview := pending
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return fmt.Errorf("job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count. Switch this job to verification.method: sha256 and re-run. Pending PKs (first 10): %v", o.jobName, len(pending), preview)
+	}
+	for _, rawPK := range pending {
+		dataType, unsigned, ok := o.graph.GetRootPKMeta()
+		if !ok {
+			return fmt.Errorf("root PK metadata not loaded")
+		}
+		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
+		if err != nil {
+			return err
+		}
+		copied, err := o.processCopyOnlyRoot(ctx, typedPK, discovery, copyPhase, dataVerifier, fetcher, resumeMgr, result)
+		if err != nil {
+			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
+		}
+		result.RecordsCopied += copied
+	}
+	return nil
+}
+
+func (o *CopyOnlyOrchestrator) processCopyOnlyRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, resumeMgr *ResumeManager, result *CopyOnlyResult) (int64, error) {
+	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
+	if err != nil {
+		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		return 0, fmt.Errorf("discovery failed: %w", err)
+	}
+	copyStats, err := copyPhase.Copy(ctx, convertRecordSet(discovered))
+	if err != nil {
+		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		return 0, fmt.Errorf("copy failed: %w", err)
+	}
+	if !o.verificationCfg.SkipVerification {
+		verifyStats, err := dataVerifier.Verify(ctx, discovered)
+		if err != nil {
+			_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+			return 0, fmt.Errorf("verification failed: %w", err)
+		}
+		if verifyStats != nil {
+			result.TablesVerified += verifyStats.TablesVerified
+			result.RecordsVerified += verifyStats.TotalRows
+		}
+	}
+	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
+		return 0, fmt.Errorf("checkpoint update failed: %w", err)
+	}
+	fetcher.UpdateCheckpoint(rootID)
+	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
+		return 0, fmt.Errorf("failed to mark completed: %w", err)
+	}
+	return copyStats.RowsCopied, nil
 }
 
 func (o *CopyOnlyOrchestrator) displayInfoOrPrompt(force bool) error {

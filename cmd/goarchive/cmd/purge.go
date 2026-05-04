@@ -14,8 +14,10 @@ import (
 )
 
 var (
-	purgeJob   string
-	purgeForce bool
+	purgeJob                   string
+	purgeForce                 bool
+	purgeSkipValidatePreflight bool
+	purgeForceTriggers         bool
 )
 
 var purgeCmd = &cobra.Command{
@@ -41,7 +43,11 @@ func init() {
 	_ = purgeCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	purgeCmd.Flags().BoolVar(&purgeForce, "force", false,
-		"Force execution even if job lock cannot be acquired (use with caution)")
+		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Cannot bypass a live, heartbeating job. Cannot bypass: same-root concurrency check or preflight checks.")
+	purgeCmd.Flags().BoolVar(&purgeSkipValidatePreflight, "skip-validate-preflight", false,
+		"Skip preflight checks before this run (DANGEROUS - see docs)")
+	purgeCmd.Flags().BoolVar(&purgeForceTriggers, "force-triggers", false,
+		"Proceed despite DELETE triggers detected by preflight")
 
 	rootCmd.AddCommand(purgeCmd)
 }
@@ -112,8 +118,9 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
-	if err := checkConcurrentJobsByRootTable(ctx, dbManager.Destination, jobCfg.RootTable, purgeJob, "purge"); err != nil {
-		return fmt.Errorf("concurrent job check failed: %w", err)
+	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log,
+		archiver.PreflightProfileSourceOnly, purgeForceTriggers, purgeSkipValidatePreflight); err != nil {
+		return err
 	}
 
 	orch, err := archiver.NewPurgeOrchestrator(cfg, purgeJob, jobCfg, dbManager)
@@ -123,10 +130,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("purge orchestrator initialization failed: %w", err)
 	}
-	orch.SetSkipLock(purgeForce)
-	if purgeForce {
-		log.Warnw("Skipping advisory lock acquisition in orchestrator (--force flag used)", "job", purgeJob)
-	}
+	orch.SetForce(purgeForce)
 	result, err := orch.Execute(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

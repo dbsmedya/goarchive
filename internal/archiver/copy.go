@@ -4,9 +4,12 @@ package archiver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -36,14 +39,34 @@ type CopyStats struct {
 // GA-P3-F3-T7: Rollback on error
 // GA-P3-F3-T8: Copy stats logging
 type CopyPhase struct {
-	sourceDB  *sql.DB
-	destDB    *sql.DB
-	graph     *graph.Graph
-	safetyCfg config.SafetyConfig
-	logger    *logger.Logger
+	sourceDB     *sql.DB
+	destDB       *sql.DB
+	graph        *graph.Graph
+	safetyCfg    config.SafetyConfig
+	logger       *logger.Logger
+	strictInsert bool
 }
 
 const copyInsertBatchSize = 200
+const mysqlErrDuplicateEntry = 1062
+
+// ErrDestinationDuplicate is returned when strict INSERT sees a destination duplicate.
+type ErrDestinationDuplicate struct {
+	Table         string
+	ConflictingPK string
+	RawMySQLError string
+}
+
+func (e *ErrDestinationDuplicate) Error() string {
+	return fmt.Sprintf(
+		"Archive aborted: destination already contains a row in table %q with primary key %q (MySQL: %s).\n\n"+
+			"This is unsafe under verification.method: count, which only checks row counts and cannot prove pre-existing destination rows match the source. Additional conflicting rows may exist beyond the one MySQL reported above.\n\n"+
+			"To resolve:\n"+
+			"  1. Switch this job to verification.method: sha256 (recommended), OR\n"+
+			"  2. Manually remove the conflicting destination rows and re-run.\n\n"+
+			"Source data has NOT been deleted.",
+		e.Table, e.ConflictingPK, e.RawMySQLError)
+}
 
 // NewCopyPhase creates a new copy phase coordinator.
 func NewCopyPhase(
@@ -73,6 +96,11 @@ func NewCopyPhase(
 		safetyCfg: safetyCfg,
 		logger:    log,
 	}, nil
+}
+
+// SetStrictInsert switches copy to plain INSERT. Used for destructive count verification.
+func (cp *CopyPhase) SetStrictInsert(strict bool) {
+	cp.strictInsert = strict
 }
 
 // Copy executes the copy phase for the given discovered record set.
@@ -247,8 +275,21 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 		}
 
 		insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowsInBatch)
+		if cp.strictInsert {
+			insertQuery = cp.buildInsertBatchQuery(table, columns, rowsInBatch)
+		}
 		result, err := tx.ExecContext(ctx, insertQuery, batchValues...)
 		if err != nil {
+			if cp.strictInsert {
+				var mysqlErr *mysql.MySQLError
+				if errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlErrDuplicateEntry {
+					return &ErrDestinationDuplicate{
+						Table:         table,
+						ConflictingPK: extractDuplicatePK(mysqlErr.Message),
+						RawMySQLError: mysqlErr.Message,
+					}
+				}
+			}
 			return fmt.Errorf("failed to insert batch: %w", err)
 		}
 
@@ -366,6 +407,23 @@ func (cp *CopyPhase) buildInsertIgnoreBatchQuery(table string, columns []string,
 		columnList,
 		strings.Join(valueTuples, ", "),
 	)
+}
+
+func (cp *CopyPhase) buildInsertBatchQuery(table string, columns []string, rowCount int) string {
+	query := cp.buildInsertIgnoreBatchQuery(table, columns, rowCount)
+	return strings.Replace(query, "INSERT IGNORE INTO", "INSERT INTO", 1)
+}
+
+func extractDuplicatePK(mysqlMsg string) string {
+	first := strings.IndexByte(mysqlMsg, '\'')
+	if first == -1 {
+		return mysqlMsg
+	}
+	last := strings.IndexByte(mysqlMsg[first+1:], '\'')
+	if last == -1 {
+		return mysqlMsg
+	}
+	return mysqlMsg[first+1 : first+1+last]
 }
 
 // setForeignKeyChecks configures FOREIGN_KEY_CHECKS for the transaction.

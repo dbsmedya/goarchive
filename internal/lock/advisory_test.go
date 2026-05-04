@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -32,6 +33,31 @@ func getEnv(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
+}
+
+func TestGenerateRootTableLockName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"users", "goarchive:root:users"},
+		{"order_items", "goarchive:root:order_items"},
+		{"weird table!", "goarchive:root:weird_table_"},
+	}
+	for _, tt := range tests {
+		if got := GenerateRootTableLockName(tt.input); got != tt.want {
+			t.Fatalf("GenerateRootTableLockName(%q): want %q, got %q", tt.input, tt.want, got)
+		}
+	}
+}
+
+func TestNewRootTableLock(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	l := NewRootTableLock(db, "users")
+	if l.LockName() != "goarchive:root:users" {
+		t.Fatalf("lock name: want %q, got %q", "goarchive:root:users", l.LockName())
+	}
 }
 
 // connectToTestDB establishes a connection to the test MySQL server

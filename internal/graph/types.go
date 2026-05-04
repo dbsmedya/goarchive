@@ -23,8 +23,15 @@ type Graph struct {
 	Parents      map[string][]string // table name -> parent table names (incoming edges)
 	Root         string              // Root table name
 	RootPK       string              // Primary key column of root table
+	rootPKMeta   rootPKMeta          // Root PK data type metadata loaded by preflight/orchestrators
 	pkColumns    map[string]string   // table name -> primary key column name (for all tables)
 	edgeMetadata map[Edge]*EdgeMeta  // Edge -> metadata
+}
+
+type rootPKMeta struct {
+	dataType string
+	unsigned bool
+	set      bool
 }
 
 // EdgeMeta contains metadata about an edge relationship.
@@ -193,4 +200,15 @@ func (g *Graph) GetPK(table string) string {
 func (g *Graph) HasPK(table string) bool {
 	_, exists := g.pkColumns[table]
 	return exists
+}
+
+// SetRootPKMeta records the root primary key column's MySQL data type and signedness.
+func (g *Graph) SetRootPKMeta(dataType string, unsigned bool) {
+	g.rootPKMeta = rootPKMeta{dataType: dataType, unsigned: unsigned, set: true}
+}
+
+// GetRootPKMeta returns the root primary key metadata if it has been loaded.
+func (g *Graph) GetRootPKMeta() (dataType string, unsigned bool, ok bool) {
+	m := g.rootPKMeta
+	return m.dataType, m.unsigned, m.set
 }

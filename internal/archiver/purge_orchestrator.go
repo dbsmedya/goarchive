@@ -2,15 +2,14 @@ package archiver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/lock"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/types"
 )
 
 // PurgeResult contains statistics and status of purge operation.
@@ -26,15 +25,16 @@ type PurgeResult struct {
 
 // PurgeOrchestrator coordinates purge operation using dependency graph.
 type PurgeOrchestrator struct {
-	config        *config.Config
-	jobConfig     *config.JobConfig
-	jobName       string
-	dbManager     *database.Manager
-	graph         *graph.Graph
-	logger        *logger.Logger
-	initialized   bool
-	processingCfg config.ProcessingConfig
-	skipLock      bool
+	config         *config.Config
+	jobConfig      *config.JobConfig
+	jobName        string
+	dbManager      *database.Manager
+	graph          *graph.Graph
+	logger         *logger.Logger
+	initialized    bool
+	processingCfg  config.ProcessingConfig
+	force          bool
+	staleAtStartup bool
 }
 
 // NewPurgeOrchestrator creates a new purge orchestrator.
@@ -88,44 +88,27 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 		return nil, fmt.Errorf("context is nil")
 	}
 
-	if !o.skipLock {
-		// Advisory lock is held on Destination so it serializes against Archive and
-		// Copy-only for the same job name across orchestrators.
-		jobLock := lock.NewJobLock(o.dbManager.Destination, o.jobName)
-		if err := jobLock.AcquireOrFail(ctx); err != nil {
-			if errors.Is(err, lock.ErrLockTimeout) {
-				return nil, fmt.Errorf("job %q is already running on another instance", o.jobName)
-			}
-			return nil, fmt.Errorf("failed to acquire job lock: %w", err)
-		}
-		defer func() { _, _ = jobLock.ReleaseLock(context.Background()) }()
-	}
-
 	result := &PurgeResult{
 		JobName:   o.jobName,
 		StartedAt: time.Now(),
 		Success:   false,
 	}
 
-	// Resume tables live on Destination across all orchestrators (archive, purge,
-	// copy-only) so a single metadata location covers cross-command state.
-	resumeMgr, err := NewResumeManager(o.dbManager.Destination, o.logger)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypePurge, "purge", o.force)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create resume manager: %w", err)
+		return nil, err
 	}
-	if err := resumeMgr.InitializeTables(ctx); err != nil {
-		return nil, fmt.Errorf("failed to initialize resume tables: %w", err)
+	defer startup.cleanup()
+	resumeMgr := startup.resumeMgr
+	jobState := startup.jobState
+	o.staleAtStartup = startup.staleAtStartup
+	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
+		return nil, fmt.Errorf("failed to load root PK metadata: %w", err)
 	}
-	jobState, err := resumeMgr.GetOrCreateJobWithType(ctx, o.jobName, o.jobConfig.RootTable, JobTypePurge)
+	shouldResume, err := resumeMgr.ShouldResume(ctx, o.jobName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get/create job: %w", err)
+		return nil, fmt.Errorf("failed to check resume: %w", err)
 	}
-	if err := resumeMgr.UpdateJobStatus(ctx, o.jobName, JobStatusRunning); err != nil {
-		return nil, fmt.Errorf("failed to set job running status: %w", err)
-	}
-	defer func() {
-		_ = resumeMgr.UpdateJobStatus(context.Background(), o.jobName, JobStatusIdle)
-	}()
 
 	rootPKColumn := o.graph.GetPK(o.jobConfig.RootTable)
 	fetcher := NewRootIDFetcher(
@@ -144,6 +127,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 	deletePhase, err := NewDeletePhase(o.dbManager.Source, o.graph, o.processingCfg.BatchDeleteSize, o.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create delete phase: %w", err)
+	}
+
+	if shouldResume {
+		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, deletePhase, fetcher); err != nil {
+			return nil, fmt.Errorf("pending replay failed: %w", err)
+		}
 	}
 
 	for {
@@ -167,27 +156,11 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 		}
 
 		for _, rootID := range rootIDs {
-			discovered, err := discovery.Discover(ctx, []interface{}{rootID})
+			deleted, err := o.processPurgeRoot(ctx, rootID, discovery, deletePhase, fetcher, resumeMgr)
 			if err != nil {
-				_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
-				return nil, fmt.Errorf("discovery failed: %w", err)
+				return nil, err
 			}
-
-			deleteStats, err := deletePhase.Delete(ctx, convertRecordSet(discovered))
-			if err != nil {
-				_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
-				return nil, fmt.Errorf("delete failed: %w", err)
-			}
-
-			if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-				return nil, fmt.Errorf("checkpoint update failed: %w", err)
-			}
-			fetcher.UpdateCheckpoint(rootID)
-			if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-				return nil, fmt.Errorf("failed to mark completed: %w", err)
-			}
-
-			result.RecordsDeleted += deleteStats.RowsDeleted
+			result.RecordsDeleted += deleted
 		}
 
 		if o.processingCfg.SleepSeconds > 0 {
@@ -206,7 +179,49 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (*PurgeResult, error) {
 	return result, nil
 }
 
-// SetSkipLock toggles advisory lock acquisition during Execute.
-func (o *PurgeOrchestrator) SetSkipLock(skip bool) {
-	o.skipLock = skip
+func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher) error {
+	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	if err != nil {
+		return err
+	}
+	for _, rawPK := range pending {
+		dataType, unsigned, ok := o.graph.GetRootPKMeta()
+		if !ok {
+			return fmt.Errorf("root PK metadata not loaded")
+		}
+		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
+		if err != nil {
+			return err
+		}
+		if _, err := o.processPurgeRoot(ctx, typedPK, discovery, deletePhase, fetcher, resumeMgr); err != nil {
+			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
+		}
+	}
+	return nil
+}
+
+func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher, resumeMgr *ResumeManager) (int64, error) {
+	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
+	if err != nil {
+		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		return 0, fmt.Errorf("discovery failed: %w", err)
+	}
+	deleteStats, err := deletePhase.Delete(ctx, convertRecordSet(discovered))
+	if err != nil {
+		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		return 0, fmt.Errorf("delete failed: %w", err)
+	}
+	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
+		return 0, fmt.Errorf("checkpoint update failed: %w", err)
+	}
+	fetcher.UpdateCheckpoint(rootID)
+	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
+		return 0, fmt.Errorf("failed to mark completed: %w", err)
+	}
+	return deleteStats.RowsDeleted, nil
+}
+
+// SetForce controls heartbeat-aware advisory lock bypass.
+func (o *PurgeOrchestrator) SetForce(force bool) {
+	o.force = force
 }

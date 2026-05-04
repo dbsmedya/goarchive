@@ -44,6 +44,23 @@ func TestNewGraph(t *testing.T) {
 	}
 }
 
+func TestGraph_RootPKMeta(t *testing.T) {
+	g := NewGraph("users", "id")
+	dataType, unsigned, ok := g.GetRootPKMeta()
+	if ok {
+		t.Fatalf("expected ok=false for unset metadata, got dataType=%q unsigned=%v", dataType, unsigned)
+	}
+
+	g.SetRootPKMeta("bigint", true)
+	dataType, unsigned, ok = g.GetRootPKMeta()
+	if !ok {
+		t.Fatal("expected ok=true after SetRootPKMeta")
+	}
+	if dataType != "bigint" || !unsigned {
+		t.Fatalf("metadata: dataType=%q unsigned=%v, want bigint/true", dataType, unsigned)
+	}
+}
+
 func TestAddNode(t *testing.T) {
 	g := NewGraph("orders", "id")
 

@@ -14,8 +14,10 @@ import (
 )
 
 var (
-	archiveJob   string
-	archiveForce bool
+	archiveJob                   string
+	archiveForce                 bool
+	archiveSkipValidatePreflight bool
+	archiveForceTriggers         bool
 )
 
 var archiveCmd = &cobra.Command{
@@ -41,7 +43,11 @@ func init() {
 	_ = archiveCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	archiveCmd.Flags().BoolVar(&archiveForce, "force", false,
-		"Force execution even if job lock cannot be acquired (use with caution)")
+		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Cannot bypass a live, heartbeating job. Cannot bypass: same-root concurrency check or preflight checks.")
+	archiveCmd.Flags().BoolVar(&archiveSkipValidatePreflight, "skip-validate-preflight", false,
+		"Skip preflight checks before this run (DANGEROUS - see docs)")
+	archiveCmd.Flags().BoolVar(&archiveForceTriggers, "force-triggers", false,
+		"Proceed despite DELETE triggers detected by preflight")
 
 	rootCmd.AddCommand(archiveCmd)
 }
@@ -113,8 +119,9 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
-	if err := checkConcurrentJobsByRootTable(ctx, dbManager.Destination, jobCfg.RootTable, archiveJob, "archive"); err != nil {
-		return fmt.Errorf("concurrent job check failed: %w", err)
+	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log,
+		archiver.PreflightProfileFull, archiveForceTriggers, archiveSkipValidatePreflight); err != nil {
+		return err
 	}
 
 	// Create orchestrator
@@ -127,10 +134,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("orchestrator initialization failed: %w", err)
 	}
-	orch.SetSkipLock(archiveForce)
-	if archiveForce {
-		log.Warnw("Skipping advisory lock acquisition in orchestrator (--force flag used)", "job", archiveJob)
-	}
+	orch.SetForce(archiveForce)
 
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)

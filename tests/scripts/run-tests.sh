@@ -384,7 +384,7 @@ run_archive_job() {
     
     # STEP 3: Run actual archive
     log_info "[STEP 3/3] Executing archive..."
-    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --skip-verify 2>&1; then
+    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --skip-verify --force-triggers 2>&1; then
         log_error "Archive job failed"
         return 1
     fi

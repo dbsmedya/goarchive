@@ -129,6 +129,18 @@ designed to FAIL preflight with specific error categories
 Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
 just working test 7; `--sakila-examples -t 1` runs just demo 1.
 
+Safety-fix notes:
+- New orchestrator integration tests should clean `archiver_job` and
+  `archiver_job_log` state for their job names before/after execution so
+  heartbeat and lock state cannot leak across tests.
+- Destructive CLI tests that intentionally use broken-schema fixtures must pass
+  `--skip-validate-preflight`; normal `archive`, `purge`, and `copy-only`
+  commands now run preflight at startup.
+- Sakila archive/purge E2E invocations need `--force-triggers` because Sakila
+  contains DELETE triggers.
+- Root primary keys must be integer types (TINYINT through BIGINT, signed or
+  unsigned). Preflight rejects non-integer root PKs.
+
 ## Test Environment
 
 Three MySQL 8.4 servers are available for testing. **Ask the user if connection fails.**

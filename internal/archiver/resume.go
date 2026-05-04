@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS archiver_job (
 	job_status TINYINT NOT NULL DEFAULT 0,
 	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+	last_heartbeat_at DATETIME NULL,
 	INDEX idx_status (job_status),
 	INDEX idx_updated (updated_at)
 ) ENGINE=InnoDB;
@@ -61,6 +62,18 @@ AND column_name = 'job_type'
 const addJobTypeColumnSQL = `
 ALTER TABLE archiver_job
 ADD COLUMN job_type VARCHAR(32) NOT NULL DEFAULT 'archive'
+`
+
+const checkHeartbeatColumnSQL = `
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_schema = DATABASE()
+AND table_name = 'archiver_job'
+AND column_name = 'last_heartbeat_at'
+`
+
+const addHeartbeatColumnSQL = `
+ALTER TABLE archiver_job
+ADD COLUMN last_heartbeat_at DATETIME NULL
 `
 
 // GA-P3-F4-T2: Create archiver_job_log table
@@ -214,6 +227,17 @@ func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 		}
 	}
 
+	var heartbeatExists int
+	if err := r.db.QueryRowContext(ctx, checkHeartbeatColumnSQL).Scan(&heartbeatExists); err != nil {
+		return fmt.Errorf("failed to check last_heartbeat_at column: %w", err)
+	}
+	if heartbeatExists == 0 {
+		if _, err := r.db.ExecContext(ctx, addHeartbeatColumnSQL); err != nil {
+			return fmt.Errorf("failed to add last_heartbeat_at column: %w", err)
+		}
+		r.logger.Debug("Added last_heartbeat_at column to archiver_job table")
+	}
+
 	r.logger.Info("Resume log tables initialized")
 	return nil
 }
@@ -298,6 +322,37 @@ func (r *ResumeManager) UpdateJobStatus(ctx context.Context, jobName string, sta
 
 	r.logger.Debugf("Job %q status updated to %d", jobName, status)
 	return nil
+}
+
+// Heartbeat updates the job heartbeat to the database server's current time.
+func (r *ResumeManager) Heartbeat(ctx context.Context, jobName string) error {
+	_, err := r.db.ExecContext(ctx, "UPDATE archiver_job SET last_heartbeat_at = NOW() WHERE job_name = ?", jobName)
+	if err != nil {
+		return fmt.Errorf("failed to update heartbeat for job %q: %w", jobName, err)
+	}
+	return nil
+}
+
+// IsHeartbeatStale reports whether a job row is missing, has no heartbeat, or is older than threshold.
+func (r *ResumeManager) IsHeartbeatStale(ctx context.Context, jobName string, threshold time.Duration) (bool, time.Duration, error) {
+	const query = `
+		SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW())
+		FROM archiver_job
+		WHERE job_name = ?
+	`
+	var ageSeconds sql.NullInt64
+	err := r.db.QueryRowContext(ctx, query, jobName).Scan(&ageSeconds)
+	if err == sql.ErrNoRows {
+		return true, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("failed to query heartbeat for job %q: %w", jobName, err)
+	}
+	if !ageSeconds.Valid {
+		return true, 0, nil
+	}
+	age := time.Duration(ageSeconds.Int64) * time.Second
+	return age > threshold, age, nil
 }
 
 // UpdateCheckpoint updates the last processed root PK for resumption.
