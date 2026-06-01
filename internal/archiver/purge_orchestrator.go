@@ -108,6 +108,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
+	ctx = startup.runCtx
 	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
 		return nil, fmt.Errorf("failed to load root PK metadata: %w", err)
 	}

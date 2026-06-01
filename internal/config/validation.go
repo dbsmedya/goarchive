@@ -205,7 +205,7 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 	}
 
 	if job.Verification != nil {
-		if err := c.validateVerificationConfig(prefix+".verification", job.Verification); err != nil {
+		if err := c.validateVerificationConfig(prefix+".verification", job.Verification, false); err != nil {
 			errors = append(errors, err...)
 		}
 	}
@@ -318,13 +318,16 @@ func (c *Config) validateSafety() ValidationErrors {
 }
 
 func (c *Config) validateVerification() ValidationErrors {
-	return c.validateVerificationConfig("verification", &c.Verification)
+	return c.validateVerificationConfig("verification", &c.Verification, true)
 }
 
-func (c *Config) validateVerificationConfig(prefix string, verification *VerificationConfig) ValidationErrors {
+func (c *Config) validateVerificationConfig(prefix string, verification *VerificationConfig, requireMethod bool) ValidationErrors {
 	var errors ValidationErrors
 
-	validMethods := map[string]bool{"count": true, "sha256": true, "": true}
+	validMethods := map[string]bool{"count": true, "sha256": true}
+	if !requireMethod && verification.Method == "" {
+		return errors
+	}
 	if !validMethods[verification.Method] {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".method",

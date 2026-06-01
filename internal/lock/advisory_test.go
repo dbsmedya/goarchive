@@ -4,6 +4,7 @@ package lock
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -57,6 +58,80 @@ func TestNewRootTableLock(t *testing.T) {
 	l := NewRootTableLock(db, "users")
 	if l.LockName() != "goarchive:root:users" {
 		t.Fatalf("lock name: want %q, got %q", "goarchive:root:users", l.LockName())
+	}
+}
+
+func TestAdvisoryLock_CheckOwnership(t *testing.T) {
+	tests := []struct {
+		name     string
+		rows     *sqlmock.Rows
+		queryErr error
+		wantHeld bool
+		wantErr  bool
+	}{
+		{
+			name:     "matching owner keeps lock held",
+			rows:     sqlmock.NewRows([]string{"IS_USED_LOCK(?)"}).AddRow(123),
+			wantHeld: true,
+		},
+		{
+			name:    "null owner marks lost",
+			rows:    sqlmock.NewRows([]string{"IS_USED_LOCK(?)"}).AddRow(nil),
+			wantErr: true,
+		},
+		{
+			name:    "mismatched owner marks lost",
+			rows:    sqlmock.NewRows([]string{"IS_USED_LOCK(?)"}).AddRow(456),
+			wantErr: true,
+		},
+		{
+			name:     "query error marks lost",
+			queryErr: errors.New("connection closed"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+
+			conn, err := db.Conn(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+
+			if tt.queryErr != nil {
+				mock.ExpectQuery("SELECT IS_USED_LOCK\\(\\?\\)").WithArgs("test-lock").WillReturnError(tt.queryErr)
+			} else {
+				mock.ExpectQuery("SELECT IS_USED_LOCK\\(\\?\\)").WithArgs("test-lock").WillReturnRows(tt.rows)
+			}
+
+			lock := &AdvisoryLock{
+				db:       db,
+				conn:     conn,
+				lockName: "test-lock",
+				connID:   123,
+				held:     true,
+			}
+			err = lock.checkOwnership(context.Background())
+			if tt.wantErr && err == nil {
+				t.Fatal("expected ownership error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected ownership error: %v", err)
+			}
+			if lock.IsHeld() != tt.wantHeld {
+				t.Fatalf("IsHeld() = %v, want %v", lock.IsHeld(), tt.wantHeld)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

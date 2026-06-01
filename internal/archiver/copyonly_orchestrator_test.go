@@ -144,6 +144,8 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 	// Root-table lock acquired for the startup critical section.
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(101)))
 	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
 		WithArgs("test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}))
@@ -204,6 +206,8 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 	// Root-table lock + heartbeat staleness + same-root concurrency check (all clean).
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(201)))
 	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
 		WithArgs("test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}))
@@ -214,6 +218,8 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 	// Job-name lock acquired.
 	mock.ExpectQuery("SELECT GET_LOCK").
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(202)))
 
 	// GetOrCreateJobWithType — return existing job row.
 	mock.ExpectQuery("SELECT job_name, root_table, job_type, last_processed_root_pk_id, job_status, created_at, updated_at FROM archiver_job").

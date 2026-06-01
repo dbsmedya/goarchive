@@ -3,6 +3,7 @@ package archiver
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -34,6 +35,12 @@ type ArchiveResult struct {
 // CheckpointCallback is called after each root PK is processed for crash recovery.
 type CheckpointCallback func(rootPK interface{}, status string) error
 
+type lagWaiter interface {
+	WaitForLag(context.Context) error
+}
+
+type lagMonitorFactory func(*sql.DB, config.SafetyConfig, *logger.Logger) (lagWaiter, error)
+
 // ArchiveOrchestrator coordinates the archive operation using the dependency graph
 // to determine the correct order for copying and deleting records.
 type ArchiveOrchestrator struct {
@@ -48,6 +55,7 @@ type ArchiveOrchestrator struct {
 	initialized     bool
 	processingCfg   config.ProcessingConfig   // Effective processing config (job-specific or global)
 	verificationCfg config.VerificationConfig // Effective verification config (job-specific or global)
+	lagFactory      lagMonitorFactory
 	force           bool
 	staleAtStartup  bool
 }
@@ -81,6 +89,9 @@ func NewOrchestrator(cfg *config.Config, jobName string, jobCfg *config.JobConfi
 		logger:          log,
 		processingCfg:   processingCfg,
 		verificationCfg: verificationCfg,
+		lagFactory: func(db *sql.DB, safety config.SafetyConfig, log *logger.Logger) (lagWaiter, error) {
+			return NewLagMonitor(db, safety, log)
+		},
 	}, nil
 }
 
@@ -193,7 +204,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	result = &ArchiveResult{
 		JobName:            o.jobName,
 		StartedAt:          time.Now(),
-		VerificationMethod: o.verificationCfg.Method,
+		VerificationMethod: o.verificationCfg.EffectiveMethod(),
 		Errors:             make([]error, 0),
 		Success:            false,
 	}
@@ -208,9 +219,12 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		"batch_size", o.processingCfg.BatchSize,
 		"batch_delete_size", o.processingCfg.BatchDeleteSize,
 		"sleep_seconds", o.processingCfg.SleepSeconds,
-		"verification_method", o.verificationCfg.Method,
+		"verification_method", o.verificationCfg.EffectiveMethod(),
 		"skip_verification", o.verificationCfg.SkipVerification,
 	)
+	if o.verificationCfg.SkipVerification {
+		o.logger.Warn(skipVerificationBanner)
+	}
 
 	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeArchive, "archive", o.force)
 	if err != nil {
@@ -226,6 +240,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
+	ctx = startup.runCtx
 	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
 		return fail("failed to load root PK metadata: %w", err)
 	}
@@ -244,13 +259,13 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	}
 
 	// Initialize lag monitor if enabled
-	var lagMonitor *LagMonitor
+	var lagMonitor lagWaiter
 	if o.config.Replica.Enabled {
 		replica := o.dbManager.Replica
 		if replica == nil {
 			return fail("replication monitoring enabled but no replica connection")
 		}
-		lagMonitor, err = NewLagMonitor(replica, o.config.Safety, o.logger)
+		lagMonitor, err = o.lagFactory(replica, o.config.Safety, o.logger)
 		if err != nil {
 			return fail("failed to create lag monitor: %w", err)
 		}
@@ -282,13 +297,14 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create copy phase: %w", err)
 	}
-	copyPhase.SetStrictInsert(o.verificationCfg.Method == "count")
+	effectiveVerificationMethod := o.verificationCfg.EffectiveMethod()
+	copyPhase.SetStrictInsert(effectiveVerificationMethod == "count")
 
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
 		o.dbManager.Destination,
 		o.graph,
-		verifier.VerificationMethod(o.verificationCfg.Method),
+		verifier.VerificationMethod(effectiveVerificationMethod),
 		o.logger,
 	)
 	if err != nil {
@@ -307,6 +323,11 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 
 	if shouldResume {
 		if err := o.replayPendingPKs(ctx, resumeMgr, func(ctx context.Context, rawPK string) error {
+			if lagMonitor != nil {
+				if err := lagMonitor.WaitForLag(ctx); err != nil {
+					return fmt.Errorf("lag monitor error: %w", err)
+				}
+			}
 			dataType, unsigned, ok := o.graph.GetRootPKMeta()
 			if !ok {
 				return fmt.Errorf("root PK metadata not loaded")
@@ -336,13 +357,6 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		default:
 		}
 
-		// Check replication lag before batch
-		if lagMonitor != nil {
-			if err := lagMonitor.WaitForLag(ctx); err != nil {
-				return fail("lag monitor error: %w", err)
-			}
-		}
-
 		// Fetch next batch of root IDs
 		rootIDs, err := fetcher.FetchNextBatch(ctx)
 		if err != nil {
@@ -367,6 +381,11 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		}
 
 		for _, rootID := range rootIDs {
+			if lagMonitor != nil {
+				if err := lagMonitor.WaitForLag(ctx); err != nil {
+					return fail("lag monitor error: %w", err)
+				}
+			}
 			if err := o.processRoot(ctx, rootID, discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, result, checkpoint); err != nil {
 				return fail("processRoot failed for pk=%v: %w", rootID, err)
 			}
@@ -412,7 +431,7 @@ func (o *ArchiveOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *R
 	if len(pending) == 0 {
 		return nil
 	}
-	if o.verificationCfg.Method == "count" {
+	if o.verificationCfg.EffectiveMethod() == "count" {
 		preview := pending
 		if len(preview) > 10 {
 			preview = preview[:10]

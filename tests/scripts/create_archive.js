@@ -63,6 +63,14 @@ function runSQL(query) {
 print("Creating archive database if not exists...");
 runSQL("CREATE DATABASE IF NOT EXISTS `" + archiveDb + "`");
 
+print("Ensuring local_infile is enabled...");
+try {
+    runSQL("SET GLOBAL local_infile = ON");
+    print("local_infile enabled successfully");
+} catch (err) {
+    print("WARNING: Could not enable local_infile: " + err.message);
+}
+
 print("Loading schema from " + dumpDir + " into database " + archiveDb + "...");
 print("------------------------------------------------------------");
 

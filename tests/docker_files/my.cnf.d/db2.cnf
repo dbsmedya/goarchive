@@ -1,4 +1,5 @@
 [mysqld]
+local_infile              = ON
 server_id		    = 2
 report_host		    = db2.local
 

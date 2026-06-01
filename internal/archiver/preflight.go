@@ -218,7 +218,7 @@ func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, rootTable,
 		return fmt.Errorf("ROOT_PK_TYPE_LOOKUP: failed to look up data type for %s.%s: %w", rootTable, rootPKColumn, err)
 	}
 	if !isIntegerRootPKType(dataType) {
-		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'.", rootTable, rootPKColumn, dataType)
+		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'", rootTable, rootPKColumn, dataType)
 	}
 	if p.graph != nil {
 		p.graph.SetRootPKMeta(strings.ToLower(dataType), strings.Contains(strings.ToLower(columnType), "unsigned"))

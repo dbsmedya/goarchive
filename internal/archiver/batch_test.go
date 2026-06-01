@@ -152,21 +152,39 @@ func TestRootIDFetcher_GetCheckpoint(t *testing.T) {
 	assert.Equal(t, 200, fetcher.GetCheckpoint())
 }
 
-func TestRootIDFetcher_NilCheckpointDefaultsToZero(t *testing.T) {
+func TestRootIDFetcher_NilCheckpointStartsUnbounded(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2)
-	mock.ExpectQuery("SELECT `id` FROM `users` WHERE \\(1=1\\) AND `id` > \\? ORDER BY `id` ASC LIMIT \\?").
-		WithArgs(0, 2).
+	rows := sqlmock.NewRows([]string{"id"}).AddRow(-1).AddRow(0).AddRow(1)
+	mock.ExpectQuery("SELECT `id` FROM `users` WHERE \\(1=1\\) ORDER BY `id` ASC LIMIT \\?").
+		WithArgs(3).
 		WillReturnRows(rows)
 
-	fetcher := NewRootIDFetcher(db, "users", "id", "", 2, nil)
+	fetcher := NewRootIDFetcher(db, "users", "id", "", 3, nil)
 	ids, err := fetcher.FetchNextBatch(context.Background())
 
 	assert.NoError(t, err)
-	assert.Equal(t, []interface{}{int64(1), int64(2)}, ids)
+	assert.Equal(t, []interface{}{int64(-1), int64(0), int64(1)}, ids)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRootIDFetcher_EmptyStringCheckpointStartsUnbounded(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"id"}).AddRow(0).AddRow(1)
+	mock.ExpectQuery("SELECT `id` FROM `users` WHERE \\(1=1\\) ORDER BY `id` ASC LIMIT \\?").
+		WithArgs(2).
+		WillReturnRows(rows)
+
+	fetcher := NewRootIDFetcher(db, "users", "id", "", 2, "")
+	ids, err := fetcher.FetchNextBatch(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, []interface{}{int64(0), int64(1)}, ids)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 

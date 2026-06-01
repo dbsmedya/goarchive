@@ -73,6 +73,14 @@ type VerificationConfig struct {
 	SkipVerification bool   `yaml:"skip_verification" mapstructure:"skip_verification"`
 }
 
+// EffectiveMethod returns the verifier method after applying defaults.
+func (v VerificationConfig) EffectiveMethod() string {
+	if v.Method == "" {
+		return "count"
+	}
+	return v.Method
+}
+
 // LoggingConfig represents logging settings.
 type LoggingConfig struct {
 	Level  string `yaml:"level" mapstructure:"level"`   // debug, info, warn, error

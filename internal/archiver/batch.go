@@ -22,7 +22,7 @@ type RootIDFetcher struct {
 	pkColumn   string
 	criteria   string
 	batchSize  int
-	checkpoint interface{} // Last processed PK value (int64, string, etc.)
+	checkpoint interface{} // Last processed integer PK value; nil means no lower bound.
 }
 
 // NewRootIDFetcher creates a new RootIDFetcher for the specified root table.
@@ -41,7 +41,7 @@ func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSiz
 		pkColumn:   pkColumn,
 		criteria:   criteria,
 		batchSize:  batchSize,
-		checkpoint: checkpoint,
+		checkpoint: normalizeCheckpoint(checkpoint),
 	}
 }
 
@@ -63,28 +63,41 @@ func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, erro
 		whereClause = "1=1"
 	}
 
-	// Query format: SELECT pk FROM table WHERE criteria AND pk > checkpoint ORDER BY pk ASC LIMIT batch_size
+	// Query format with checkpoint:
+	// SELECT pk FROM table WHERE criteria AND pk > checkpoint ORDER BY pk ASC LIMIT batch_size
+	//
+	// Query format without checkpoint:
+	// SELECT pk FROM table WHERE criteria ORDER BY pk ASC LIMIT batch_size
+	//
 	// This ensures:
 	// 1. Only rows matching criteria are selected
-	// 2. Resume from checkpoint (pk > last_processed)
+	// 2. Resume from checkpoint (pk > last_processed), or start unbounded on first run
 	// 3. Deterministic ordering (pk ASC)
 	// 4. Controlled batch size
-	query := fmt.Sprintf(
-		"SELECT %s FROM %s WHERE (%s) AND %s > ? ORDER BY %s ASC LIMIT ?",
-		sqlutil.QuoteIdentifier(f.pkColumn),
-		sqlutil.QuoteIdentifier(f.rootTable),
-		whereClause,
-		sqlutil.QuoteIdentifier(f.pkColumn),
-		sqlutil.QuoteIdentifier(f.pkColumn),
-	)
-
-	// Use checkpoint value (default to 0 for int types if nil)
-	startVal := f.checkpoint
-	if startVal == nil {
-		startVal = 0
+	var query string
+	var args []interface{}
+	if f.checkpoint == nil {
+		query = fmt.Sprintf(
+			"SELECT %s FROM %s WHERE (%s) ORDER BY %s ASC LIMIT ?",
+			sqlutil.QuoteIdentifier(f.pkColumn),
+			sqlutil.QuoteIdentifier(f.rootTable),
+			whereClause,
+			sqlutil.QuoteIdentifier(f.pkColumn),
+		)
+		args = []interface{}{f.batchSize}
+	} else {
+		query = fmt.Sprintf(
+			"SELECT %s FROM %s WHERE (%s) AND %s > ? ORDER BY %s ASC LIMIT ?",
+			sqlutil.QuoteIdentifier(f.pkColumn),
+			sqlutil.QuoteIdentifier(f.rootTable),
+			whereClause,
+			sqlutil.QuoteIdentifier(f.pkColumn),
+			sqlutil.QuoteIdentifier(f.pkColumn),
+		)
+		args = []interface{}{f.checkpoint, f.batchSize}
 	}
 
-	rows, err := f.db.QueryContext(ctx, query, startVal, f.batchSize)
+	rows, err := f.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch root IDs from %s: %w", f.rootTable, err)
 	}
@@ -116,12 +129,19 @@ func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, erro
 // UpdateCheckpoint updates the last processed PK value.
 // This should be called after successfully processing a batch to enable resumption.
 func (f *RootIDFetcher) UpdateCheckpoint(lastID interface{}) {
-	f.checkpoint = lastID
+	f.checkpoint = normalizeCheckpoint(lastID)
 }
 
 // GetCheckpoint returns the current checkpoint value.
 func (f *RootIDFetcher) GetCheckpoint() interface{} {
 	return f.checkpoint
+}
+
+func normalizeCheckpoint(checkpoint interface{}) interface{} {
+	if checkpoint == "" {
+		return nil
+	}
+	return checkpoint
 }
 
 // BatchProcessor orchestrates the batch processing loop for archiving.

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `0.9.2-community` (beta — use with caution; see README "Known Limits & Caution").
+**Version**: `1.0.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ## Build Commands
@@ -140,6 +140,19 @@ Safety-fix notes:
   contains DELETE triggers.
 - Root primary keys must be integer types (TINYINT through BIGINT, signed or
   unsigned). Preflight rejects non-integer root PKs.
+- The job advisory lock is held on a dedicated MySQL connection. Keepalive now
+  verifies `IS_USED_LOCK()` against that connection id and aborts if ownership
+  is lost; document/assume MySQL `wait_timeout` is higher than expected job
+  duration.
+- `--force` is a best-effort heartbeat takeover only. It blocks later startups
+  after seeding a fresh heartbeat but cannot stop an old process that is stale
+  yet still alive and still owns `GET_LOCK()`. Operators must verify the old
+  process is dead before forcing.
+- Archive deletes are auto-committed in batches. Interruptions can leave source
+  temporarily child-gone/parent-present until resume, after copy+verify has
+  already succeeded.
+- Shared many-to-many membership rows are a documented caveat: discovery/delete
+  is per root and can delete a shared child with the first referencing root.
 - **DDL-only destination schemas require `safety.disable_foreign_key_checks: true`.**
   When the destination is initialized from a schema dump (e.g. `dump_master.js`
   with `ddlOnly: true`), reference tables such as `language`, `category`, or

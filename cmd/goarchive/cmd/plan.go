@@ -337,7 +337,7 @@ func generateMermaidSyntax(job *config.JobConfig, cfg *config.Config) string {
 
 	// Add root node (just the name, mermaid-ascii will box it)
 	rootID := sanitizeNodeID(job.RootTable)
-	sb.WriteString(fmt.Sprintf("    %s\n", rootID))
+	fmt.Fprintf(&sb, "    %s\n", rootID)
 
 	// Recursively add nodes and edges
 	addRelationsToMermaid(&sb, job.RootTable, job.Relations, cfg)

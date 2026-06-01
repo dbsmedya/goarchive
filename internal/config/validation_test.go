@@ -32,6 +32,7 @@ func TestValidConfig(t *testing.T) {
 			BatchSize:       1000,
 			BatchDeleteSize: 500,
 		},
+		Verification: VerificationConfig{Method: "count"},
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -214,6 +215,79 @@ func TestInvalidVerificationMethod(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "verification.method") {
 		t.Errorf("expected error about verification.method, got: %v", err)
+	}
+}
+
+func TestTopLevelEmptyVerificationMethodInvalid(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {RootTable: "orders", PrimaryKey: "id"},
+		},
+		Processing: ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+		Verification: VerificationConfig{
+			Method: "",
+		},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Error("expected validation error for empty top-level verification method")
+	}
+	if !strings.Contains(err.Error(), "verification.method") {
+		t.Errorf("expected error about verification.method, got: %v", err)
+	}
+}
+
+func TestJobLevelEmptyVerificationMethodInheritsGlobal(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {
+				RootTable:  "orders",
+				PrimaryKey: "id",
+				Verification: &VerificationConfig{
+					Method:           "",
+					SkipVerification: true,
+				},
+			},
+		},
+		Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+		Verification: VerificationConfig{Method: "sha256"},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected job-level empty method to be valid for inheritance, got: %v", err)
+	}
+
+	got := cfg.GetJobVerification("test_job")
+	if got.Method != "sha256" {
+		t.Fatalf("expected job verification method to inherit sha256, got %q", got.Method)
+	}
+	if !got.SkipVerification {
+		t.Fatal("expected job skip_verification override to remain true")
 	}
 }
 

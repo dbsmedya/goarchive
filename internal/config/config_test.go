@@ -55,6 +55,26 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestVerificationConfigEffectiveMethod(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  VerificationConfig
+		want string
+	}{
+		{name: "empty defaults to count", cfg: VerificationConfig{}, want: "count"},
+		{name: "count remains count", cfg: VerificationConfig{Method: "count"}, want: "count"},
+		{name: "sha256 remains sha256", cfg: VerificationConfig{Method: "sha256"}, want: "sha256"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.EffectiveMethod(); got != tt.want {
+				t.Fatalf("EffectiveMethod() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNestedRelations(t *testing.T) {
 	// Test that nested relations structure works
 	job := JobConfig{

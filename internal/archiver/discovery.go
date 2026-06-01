@@ -20,17 +20,17 @@ import (
 // GA-P3-F2-T1: BFS Traversal Structure
 // GA-P3-F2-T3: Multi-level discovery
 type RecordDiscovery struct {
-	graph     *graph.Graph
-	db        *sql.DB
-	batchSize int
-	logger    *logger.Logger
+	graph           *graph.Graph
+	db              *sql.DB
+	batchSize       int
+	logger          *logger.Logger
+	allowSimulation bool
 }
 
 // NewRecordDiscovery creates a new discovery service with the given dependency graph,
 // database connection, and batch size limit for IN clause chunking.
 //
-// Note: db can be nil for testing/simulation mode. In production, a valid
-// database connection should always be provided.
+// A valid database connection is required for non-empty discovery.
 func NewRecordDiscovery(g *graph.Graph, db *sql.DB, batchSize int) (*RecordDiscovery, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
@@ -123,13 +123,15 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 		for _, childTable := range children {
 			// GA-P3-F2-T2: Fetch child IDs via database query or simulation
 			var childPKs []interface{}
-			if d.db == nil {
+			if d.db == nil && d.allowSimulation {
 				childPKs = d.simulateDiscovery(childTable, parentPKs)
-			} else {
+			} else if d.db != nil {
 				childPKs, err = d.fetchChildIDs(ctx, table, childTable, parentPKs)
 				if err != nil {
 					return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
 				}
+			} else {
+				return nil, fmt.Errorf("discovery database is nil")
 			}
 
 			if len(childPKs) == 0 {

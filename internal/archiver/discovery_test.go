@@ -54,6 +54,16 @@ func createDiamondGraph() *graph.Graph {
 	return g
 }
 
+func newSimulatedRecordDiscovery(t *testing.T, g *graph.Graph, batchSize int) *RecordDiscovery {
+	t.Helper()
+	discovery, err := NewRecordDiscovery(g, nil, batchSize)
+	if err != nil {
+		t.Fatalf("NewRecordDiscovery failed: %v", err)
+	}
+	discovery.allowSimulation = true
+	return discovery
+}
+
 // ============================================================================
 // NewRecordDiscovery Tests
 // ============================================================================
@@ -61,10 +71,7 @@ func createDiamondGraph() *graph.Graph {
 func TestNewRecordDiscovery_Success(t *testing.T) {
 	g := createTestGraph()
 
-	discovery, err := NewRecordDiscovery(g, nil, 100)
-	if err != nil {
-		t.Fatalf("NewRecordDiscovery failed: %v", err)
-	}
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	if discovery == nil {
 		t.Fatal("NewRecordDiscovery returned nil")
@@ -89,10 +96,7 @@ func TestNewRecordDiscovery_NilGraph(t *testing.T) {
 func TestNewRecordDiscovery_DefaultBatchSize(t *testing.T) {
 	g := createTestGraph()
 
-	discovery, err := NewRecordDiscovery(g, nil, 0)
-	if err != nil {
-		t.Fatalf("NewRecordDiscovery failed: %v", err)
-	}
+	discovery := newSimulatedRecordDiscovery(t, g, 0)
 
 	if discovery.batchSize != 1000 {
 		t.Errorf("Expected default batch size 1000, got %d", discovery.batchSize)
@@ -102,10 +106,7 @@ func TestNewRecordDiscovery_DefaultBatchSize(t *testing.T) {
 func TestNewRecordDiscovery_NegativeBatchSize(t *testing.T) {
 	g := createTestGraph()
 
-	discovery, err := NewRecordDiscovery(g, nil, -1)
-	if err != nil {
-		t.Fatalf("NewRecordDiscovery failed: %v", err)
-	}
+	discovery := newSimulatedRecordDiscovery(t, g, -1)
 
 	if discovery.batchSize != 1000 {
 		t.Errorf("Expected default batch size 1000 for negative input, got %d", discovery.batchSize)
@@ -118,7 +119,7 @@ func TestNewRecordDiscovery_NegativeBatchSize(t *testing.T) {
 
 func TestDiscover_EmptyRootPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	result, err := discovery.Discover(ctx, []interface{}{})
@@ -146,7 +147,7 @@ func TestDiscover_EmptyRootPKs(t *testing.T) {
 
 func TestDiscover_SingleRootPK(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -174,9 +175,22 @@ func TestDiscover_SingleRootPK(t *testing.T) {
 	}
 }
 
+func TestDiscover_NilDBErrorsForNonEmptyInput(t *testing.T) {
+	g := createTestGraph()
+	discovery, err := NewRecordDiscovery(g, nil, 100)
+	if err != nil {
+		t.Fatalf("NewRecordDiscovery failed: %v", err)
+	}
+
+	_, err = discovery.Discover(context.Background(), []interface{}{"user1"})
+	if err == nil {
+		t.Fatal("expected nil DB discovery to fail")
+	}
+}
+
 func TestDiscover_MultipleRootPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -198,7 +212,7 @@ func TestDiscover_MultipleRootPKs(t *testing.T) {
 
 func TestDiscover_BFSTraversalOrder(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -220,7 +234,7 @@ func TestDiscover_BFSTraversalOrder(t *testing.T) {
 
 func TestDiscover_DeepGraph(t *testing.T) {
 	g := createDeepGraph() // A -> B -> C -> D -> E
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1"}
@@ -246,7 +260,7 @@ func TestDiscover_DeepGraph(t *testing.T) {
 
 func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
 	g := createDiamondGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1", "a2"}
@@ -271,7 +285,7 @@ func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
 
 func TestDiscover_RecordsPopulated(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -305,7 +319,7 @@ func TestDiscover_RecordsPopulated(t *testing.T) {
 
 func TestDiscover_ContextCancellation(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
@@ -325,7 +339,7 @@ func TestDiscover_ContextCancellation(t *testing.T) {
 
 func TestDiscover_ContextTimeout(t *testing.T) {
 	g := createDeepGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	// Create context with very short timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
@@ -350,7 +364,7 @@ func TestDiscover_ContextTimeout(t *testing.T) {
 
 func TestDiscoverBatch_Success(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -368,7 +382,7 @@ func TestDiscoverBatch_Success(t *testing.T) {
 func TestDiscoverBatch_RespectsBatchSize(t *testing.T) {
 	g := createTestGraph()
 	batchSize := 2
-	discovery, _ := NewRecordDiscovery(g, nil, batchSize)
+	discovery := newSimulatedRecordDiscovery(t, g, batchSize)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3", "user4", "user5"}
@@ -390,7 +404,7 @@ func TestDiscoverBatch_RespectsBatchSize(t *testing.T) {
 
 func TestDiscoverBatch_EmptyPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	result, err := discovery.DiscoverBatch(ctx, []interface{}{})
@@ -414,7 +428,7 @@ func TestDiscoverBatch_EmptyPKs(t *testing.T) {
 
 func TestDiscoveryStats_Populated(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -447,7 +461,7 @@ func TestDiscoveryStats_Populated(t *testing.T) {
 
 func TestDiscoveryStats_MultipleRootPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -472,7 +486,7 @@ func TestDiscoveryStats_MultipleRootPKs(t *testing.T) {
 
 func TestDiscoveryStats_EmptyDiscovery(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	result, err := discovery.Discover(ctx, []interface{}{})
@@ -500,7 +514,7 @@ func TestDiscoveryStats_EmptyDiscovery(t *testing.T) {
 
 func TestRecordSet_ContainsAllTables(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -534,7 +548,7 @@ func TestRecordSet_ContainsAllTables(t *testing.T) {
 
 func TestRecordSet_RootPKsMatch(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -561,7 +575,7 @@ func TestRecordSet_RootPKsMatch(t *testing.T) {
 
 func TestDiscoveryGetGraph(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	if discovery.GetGraph() != g {
 		t.Error("GetGraph returned wrong graph")
@@ -570,7 +584,7 @@ func TestDiscoveryGetGraph(t *testing.T) {
 
 func TestGetBatchSize(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 500)
+	discovery := newSimulatedRecordDiscovery(t, g, 500)
 
 	if discovery.GetBatchSize() != 500 {
 		t.Errorf("Expected batch size 500, got %d", discovery.GetBatchSize())
@@ -579,7 +593,7 @@ func TestGetBatchSize(t *testing.T) {
 
 func TestSetLogger(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	// Get default logger
 	originalLogger := discovery.logger
@@ -598,7 +612,7 @@ func TestSetLogger(t *testing.T) {
 
 func TestSimulateDiscovery_Orders(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	parentPKs := []interface{}{"user1", "user2", "user3"}
 	childPKs := discovery.simulateDiscovery("orders", parentPKs)
@@ -623,7 +637,7 @@ func TestSimulateDiscovery_Orders(t *testing.T) {
 
 func TestSimulateDiscovery_Profiles(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	parentPKs := []interface{}{"user1", "user2", "user3"}
 	childPKs := discovery.simulateDiscovery("profiles", parentPKs)
@@ -636,7 +650,7 @@ func TestSimulateDiscovery_Profiles(t *testing.T) {
 
 func TestSimulateDiscovery_UnknownTable(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	parentPKs := []interface{}{"user1"}
 	childPKs := discovery.simulateDiscovery("unknown_table", parentPKs)
@@ -653,10 +667,7 @@ func TestSimulateDiscovery_UnknownTable(t *testing.T) {
 
 func TestDiscovery_FullWorkflow(t *testing.T) {
 	g := createTestGraph()
-	discovery, err := NewRecordDiscovery(g, nil, 1000)
-	if err != nil {
-		t.Fatalf("NewRecordDiscovery failed: %v", err)
-	}
+	discovery := newSimulatedRecordDiscovery(t, g, 1000)
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3", "user4", "user5"}
@@ -690,7 +701,7 @@ func TestDiscovery_FullWorkflow(t *testing.T) {
 
 func TestDiscovery_BatchVsFull(t *testing.T) {
 	g := createTestGraph()
-	discovery, _ := NewRecordDiscovery(g, nil, 2) // Batch size 2
+	discovery := newSimulatedRecordDiscovery(t, g, 2) // Batch size 2
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3", "user4"}

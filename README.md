@@ -579,7 +579,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `0.9.2-community` (beta)
+- **Version**: `1.0.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
 
@@ -603,6 +603,11 @@ should be aware of the following known limits before pointing it at real data:
 - **Sequential by design.** One root PK at a time, one job at a time per
   destination. Advisory locks plus heartbeat-aware same-root checks prevent
   concurrent runs of the same job name or root table.
+- **Advisory lock sessions must stay alive.** GoArchive keeps the job
+  `GET_LOCK()` connection alive and aborts if ownership is lost. MySQL
+  `wait_timeout` should be higher than the longest expected job duration; very
+  low timeout or flaky network settings can correctly fail a job instead of
+  letting it delete without a lock.
 - **Root tables must use integer primary keys.** Community edition supports
   TINYINT through BIGINT root PKs, signed or unsigned. UUID, VARCHAR, DECIMAL,
   FLOAT, datetime, and other non-integer root PKs are rejected by preflight.
@@ -616,9 +621,22 @@ should be aware of the following known limits before pointing it at real data:
   Sakila's `del_film`), `archive` and `purge` require `--force-triggers` after
   you've reviewed what those triggers do. `copy-only` skips DELETE-trigger
   checks because it never deletes from source.
-- **`--force` is not a live-lock bypass.** It proceeds past advisory lock
-  contention only when the previous holder's heartbeat is stale. It cannot
-  bypass a live heartbeating job, the same-root concurrency check, or preflight.
+- **`--force` is best-effort takeover, not hard exclusion.** It proceeds past
+  advisory lock contention only when the previous holder's heartbeat is stale,
+  and then refreshes the heartbeat so additional startups are blocked. A stale
+  heartbeat does not prove the old process is dead; it may still own MySQL's
+  `GET_LOCK()` and continue deleting. Operators must verify the old process is
+  actually dead before forcing. It cannot bypass a live heartbeating job, the
+  same-root concurrency check, or preflight.
+- **Partial auto-commit deletes are expected after interruption.** Deletes are
+  intentionally committed in batches to avoid long source locks. If a run stops
+  between child and parent deletes, the source can temporarily have children
+  removed while the parent remains. This is not data loss because rows were
+  copied and verified first; resume completes the remaining work.
+- **Shared/M-N child rows are outside the automatic model.** GoArchive deletes
+  discovered child rows with the first referencing root. Membership/shared rows
+  inside a many-to-many-style subgraph can be deleted earlier than another root
+  expects; model those relationships explicitly and validate on staging.
 - **Verification method controls dirty-destination behavior.** In
   `verification.method: count`, archive uses plain `INSERT` and aborts on any
   pre-existing destination row with the same key before deleting source data.

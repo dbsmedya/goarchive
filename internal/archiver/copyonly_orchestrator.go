@@ -118,7 +118,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	result = &CopyOnlyResult{
 		JobName:            o.jobName,
 		StartedAt:          time.Now(),
-		VerificationMethod: o.verificationCfg.Method,
+		VerificationMethod: o.verificationCfg.EffectiveMethod(),
 		Errors:             make([]error, 0),
 		Success:            false,
 	}
@@ -142,6 +142,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	resumeMgr := startup.resumeMgr
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
+	ctx = startup.runCtx
 	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
 		return fail("failed to load root PK metadata: %w", err)
 	}
@@ -151,6 +152,9 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	}
 	if err := o.displayInfoOrPrompt(force); err != nil {
 		return fail("%w", err)
+	}
+	if o.verificationCfg.SkipVerification {
+		o.logger.Warn(copyOnlySkipVerificationNote)
 	}
 	if !force {
 		if err := o.checkDestinationEmpty(ctx); err != nil {
@@ -188,7 +192,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		o.dbManager.Source,
 		o.dbManager.Destination,
 		o.graph,
-		verifier.VerificationMethod(o.verificationCfg.Method),
+		verifier.VerificationMethod(o.verificationCfg.EffectiveMethod()),
 		o.logger,
 	)
 	if err != nil {
@@ -254,7 +258,7 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 	if len(pending) == 0 {
 		return nil
 	}
-	if o.verificationCfg.Method == "count" {
+	if o.verificationCfg.EffectiveMethod() == "count" {
 		preview := pending
 		if len(preview) > 10 {
 			preview = preview[:10]

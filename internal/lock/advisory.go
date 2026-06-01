@@ -41,11 +41,14 @@ const (
 // It uses MySQL's GET_LOCK() function to acquire a named lock that is automatically
 // released when the connection closes or RELEASE_LOCK() is called.
 type AdvisoryLock struct {
-	db       *sql.DB
-	conn     *sql.Conn
-	lockName string
-	held     bool
-	mu       sync.Mutex
+	db              *sql.DB
+	conn            *sql.Conn
+	lockName        string
+	connID          int64
+	held            bool
+	keepAliveCancel context.CancelFunc
+	keepAliveDone   chan struct{}
+	mu              sync.Mutex
 }
 
 // NewAdvisoryLock creates a new advisory lock with the given name.
@@ -102,7 +105,13 @@ func (a *AdvisoryLock) AcquireLock(ctx context.Context, timeoutSeconds int) (boo
 	// Check result value
 	switch result.Int64 {
 	case 1:
+		var connID int64
+		if err := conn.QueryRowContext(ctx, "SELECT CONNECTION_ID()").Scan(&connID); err != nil {
+			_ = conn.Close()
+			return false, fmt.Errorf("failed to read advisory lock connection id: %w", err)
+		}
 		a.conn = conn
+		a.connID = connID
 		a.held = true
 		return true, nil
 	case 0:
@@ -131,6 +140,14 @@ func (a *AdvisoryLock) ReleaseLock(ctx context.Context) (bool, error) {
 	defer a.mu.Unlock()
 
 	if !a.held {
+		if a.conn != nil {
+			closeErr := a.conn.Close()
+			a.conn = nil
+			a.connID = 0
+			if closeErr != nil {
+				return false, fmt.Errorf("failed to close unheld lock connection: %w", closeErr)
+			}
+		}
 		return false, nil // Not holding the lock
 	}
 	if a.conn == nil {
@@ -144,6 +161,7 @@ func (a *AdvisoryLock) ReleaseLock(ctx context.Context) (bool, error) {
 	err := a.conn.QueryRowContext(ctx, query, a.lockName).Scan(&result)
 	closeErr := a.conn.Close()
 	a.conn = nil
+	a.connID = 0
 	a.held = false
 
 	if err != nil {
@@ -187,6 +205,112 @@ func (a *AdvisoryLock) IsHeld() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.held
+}
+
+// StartKeepAlive periodically verifies that this instance still owns the lock.
+func (a *AdvisoryLock) StartKeepAlive(ctx context.Context, interval time.Duration) <-chan error {
+	lost := make(chan error, 1)
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	a.mu.Lock()
+	if a.keepAliveCancel != nil {
+		a.mu.Unlock()
+		return lost
+	}
+	keepAliveCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	a.keepAliveCancel = cancel
+	a.keepAliveDone = done
+	a.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-keepAliveCtx.Done():
+				return
+			case <-t.C:
+				if err := a.checkOwnership(keepAliveCtx); err != nil {
+					// Don't report loss if we're shutting down; a cancelled keepalive
+					// context is normal cleanup, not a lost lock.
+					if keepAliveCtx.Err() != nil {
+						return
+					}
+					select {
+					case lost <- err:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	return lost
+}
+
+// StopKeepAlive stops the advisory lock keepalive goroutine.
+func (a *AdvisoryLock) StopKeepAlive() {
+	a.mu.Lock()
+	cancel := a.keepAliveCancel
+	done := a.keepAliveDone
+	a.keepAliveCancel = nil
+	a.keepAliveDone = nil
+	a.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
+}
+
+func (a *AdvisoryLock) checkOwnership(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.held {
+		return fmt.Errorf("lock %q is not held", a.lockName)
+	}
+	if a.conn == nil {
+		a.held = false
+		return fmt.Errorf("lock %q marked as held but dedicated connection is nil", a.lockName)
+	}
+
+	var owner sql.NullInt64
+	if err := a.conn.QueryRowContext(ctx, "SELECT IS_USED_LOCK(?)", a.lockName).Scan(&owner); err != nil {
+		// A cancelled context means the keepalive is shutting down (job completing or
+		// aborting via the shared run context), not that we lost ownership. Don't tear
+		// down the lock or report loss; let normal cleanup release it.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		a.markLostLocked()
+		return fmt.Errorf("failed to verify ownership for lock %q: %w", a.lockName, err)
+	}
+	if !owner.Valid {
+		a.markLostLocked()
+		return fmt.Errorf("lock %q is no longer used", a.lockName)
+	}
+	if owner.Int64 != a.connID {
+		a.markLostLocked()
+		return fmt.Errorf("lock %q owner changed: got connection %d, want %d", a.lockName, owner.Int64, a.connID)
+	}
+	return nil
+}
+
+func (a *AdvisoryLock) markLostLocked() {
+	a.held = false
+	if a.conn != nil {
+		_ = a.conn.Close()
+		a.conn = nil
+	}
+	a.connID = 0
 }
 
 // LockName returns the name of the advisory lock.
