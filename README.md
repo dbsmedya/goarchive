@@ -76,7 +76,7 @@ GoArchive intentionally treats configuration files as **operator-controlled and 
 ---
 
 > [!WARNING]
-> **BETA STATUS**: This project is currently in a pre-production/beta state. While the core features are implemented, it has not yet undergone exhaustive large-scale testing. **DO NOT use this tool on production systems without extensive prior verification in your staging or test environments.**
+>  This project is currently in a pre-production state. While the core features are implemented, it has not yet undergone exhaustive large-scale testing. **DO NOT use this tool on production systems without extensive prior verification in your staging or test environments.**
 
 
 ## ⚠️ Important Disclaimer
@@ -666,6 +666,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 
 ### Planned for Enterprise
 
+- Archive to BigQuery
 - Observability: Prometheus metrics, OpenTelemetry traces, dashboards
 - Parallelism: multi-root-PK concurrent processing, pipelining copy/verify/delete
 - Admin API for runtime pause / resume / inspect
