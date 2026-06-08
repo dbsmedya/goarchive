@@ -45,9 +45,10 @@ type CopyPhase struct {
 	safetyCfg    config.SafetyConfig
 	logger       *logger.Logger
 	strictInsert bool
+	batchSize    int // fetch+insert chunk size; 0 => defaultCopyBatchSize
 }
 
-const copyInsertBatchSize = 200
+const defaultCopyBatchSize = 200
 const mysqlErrDuplicateEntry = 1062
 
 // ErrDestinationDuplicate is returned when strict INSERT sees a destination duplicate.
@@ -101,6 +102,22 @@ func NewCopyPhase(
 // SetStrictInsert switches copy to plain INSERT. Used for destructive count verification.
 func (cp *CopyPhase) SetStrictInsert(strict bool) {
 	cp.strictInsert = strict
+}
+
+// SetBatchSize sets the fetch+insert chunk size for the copy phase. Values <= 0
+// are ignored. When never set, defaultCopyBatchSize is used.
+func (cp *CopyPhase) SetBatchSize(n int) {
+	if n > 0 {
+		cp.batchSize = n
+	}
+}
+
+// effectiveBatchSize returns the configured chunk size or the default.
+func (cp *CopyPhase) effectiveBatchSize() int {
+	if cp.batchSize > 0 {
+		return cp.batchSize
+	}
+	return defaultCopyBatchSize
 }
 
 // Copy executes the copy phase for the given discovered record set.
@@ -245,132 +262,108 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 	return stats, nil
 }
 
-// copyTable copies all specified records from source to destination for a single table.
+// copyTable copies all specified records for one table, in batchSize-sized
+// chunks. Each chunk is one SELECT (fetch) followed by one INSERT, all inside
+// the caller's single destination transaction tx.
 //
-// GA-P3-F3-T5: Uses INSERT IGNORE for idempotent inserts
+// GA-P3-F3-T5: Uses INSERT IGNORE for idempotent inserts (unless strictInsert)
 func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
 	if len(pks) == 0 {
 		return 0, nil
 	}
 
-	// Step 1: Fetch full rows from source database
-	rows, columns, err := cp.fetchRows(ctx, table, pks)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch rows from source: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			cp.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	// Step 2: Insert rows in batches
+	chunk := cp.effectiveBatchSize()
 	var rowsCopied int64
-	batchValues := make([]interface{}, 0, len(columns)*copyInsertBatchSize)
-	rowsInBatch := 0
 
-	flushBatch := func() error {
-		if rowsInBatch == 0 {
-			return nil
-		}
-
-		insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowsInBatch)
-		if cp.strictInsert {
-			insertQuery = cp.buildInsertBatchQuery(table, columns, rowsInBatch)
-		}
-		result, err := tx.ExecContext(ctx, insertQuery, batchValues...)
-		if err != nil {
-			if cp.strictInsert {
-				var mysqlErr *mysql.MySQLError
-				if errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlErrDuplicateEntry {
-					return &ErrDestinationDuplicate{
-						Table:         table,
-						ConflictingPK: extractDuplicatePK(mysqlErr.Message),
-						RawMySQLError: mysqlErr.Message,
-					}
-				}
-			}
-			return fmt.Errorf("failed to insert batch: %w", err)
-		}
-
-		affected, _ := result.RowsAffected()
-		rowsCopied += affected
-		batchValues = batchValues[:0]
-		rowsInBatch = 0
-		return nil
-	}
-
-	for rows.Next() {
-		// Check context cancellation
+	for start := 0; start < len(pks); start += chunk {
 		if err := ctx.Err(); err != nil {
 			return rowsCopied, fmt.Errorf("copy interrupted: %w", err)
 		}
-
-		// Scan row values
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
+		end := start + chunk
+		if end > len(pks) {
+			end = len(pks)
 		}
-
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return rowsCopied, fmt.Errorf("failed to scan row: %w", err)
+		copied, err := cp.copyChunk(ctx, tx, table, pks[start:end])
+		if err != nil {
+			return rowsCopied, err
 		}
-
-		batchValues = append(batchValues, values...)
-		rowsInBatch++
-		if rowsInBatch >= copyInsertBatchSize {
-			if err := flushBatch(); err != nil {
-				return rowsCopied, err
-			}
-		}
+		rowsCopied += copied
 	}
-
-	if err := rows.Err(); err != nil {
-		return rowsCopied, fmt.Errorf("error iterating rows: %w", err)
-	}
-	if err := flushBatch(); err != nil {
-		return rowsCopied, err
-	}
-
 	return rowsCopied, nil
 }
 
-// fetchRows retrieves full rows from source database for the given primary keys.
-// Returns the result set, column names, and any error.
-func (cp *CopyPhase) fetchRows(ctx context.Context, table string, pks []interface{}) (*sql.Rows, []string, error) {
-	if len(pks) == 0 {
-		return nil, nil, fmt.Errorf("no PKs provided")
-	}
-
-	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs for all tables)
+// copyChunk fetches one chunk of rows from source and inserts them into dest
+// within tx as a single INSERT statement.
+func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
 	pkColumn := cp.graph.GetPK(table)
 
 	placeholders := make([]string, len(pks))
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
-
-	query := fmt.Sprintf(
+	selectQuery := fmt.Sprintf(
 		"SELECT * FROM %s WHERE %s IN (%s)",
 		sqlutil.QuoteIdentifier(table),
 		sqlutil.QuoteIdentifier(pkColumn),
 		strings.Join(placeholders, ", "),
 	)
 
-	rows, err := cp.sourceDB.QueryContext(ctx, query, pks...)
+	rows, err := cp.sourceDB.QueryContext(ctx, selectQuery, pks...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("query failed: %w", err)
+		return 0, fmt.Errorf("failed to fetch rows from source for %s: %w", table, err)
 	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			cp.logger.Warnf("Failed to close rows: %v", cerr)
+		}
+	}()
 
-	// Get column names from result set
 	columns, err := rows.Columns()
 	if err != nil {
-		_ = rows.Close() // Ignore error during cleanup of failed operation
-		return nil, nil, fmt.Errorf("failed to get column names: %w", err)
+		return 0, fmt.Errorf("failed to get columns for %s: %w", table, err)
 	}
 
-	return rows, columns, nil
+	batchValues := make([]interface{}, 0, len(columns)*len(pks))
+	rowsInBatch := 0
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return 0, fmt.Errorf("failed to scan row for %s: %w", table, err)
+		}
+		batchValues = append(batchValues, values...)
+		rowsInBatch++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("error iterating rows for %s: %w", table, err)
+	}
+	if rowsInBatch == 0 {
+		return 0, nil
+	}
+
+	insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowsInBatch)
+	if cp.strictInsert {
+		insertQuery = cp.buildInsertBatchQuery(table, columns, rowsInBatch)
+	}
+	result, err := tx.ExecContext(ctx, insertQuery, batchValues...)
+	if err != nil {
+		if cp.strictInsert {
+			var mysqlErr *mysql.MySQLError
+			if errors.As(err, &mysqlErr) && mysqlErr.Number == mysqlErrDuplicateEntry {
+				return 0, &ErrDestinationDuplicate{
+					Table:         table,
+					ConflictingPK: extractDuplicatePK(mysqlErr.Message),
+					RawMySQLError: mysqlErr.Message,
+				}
+			}
+		}
+		return 0, fmt.Errorf("failed to insert batch into %s: %w", table, err)
+	}
+	affected, _ := result.RowsAffected()
+	return affected, nil
 }
 
 // buildInsertIgnoreQuery constructs an INSERT IGNORE statement for the given table and columns.

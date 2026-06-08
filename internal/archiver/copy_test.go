@@ -550,6 +550,53 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 	assert.NoError(t, destMock.ExpectationsWereMet())
 }
 
+func TestCopyTableChunksByBatchSize(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph() // table "customers", PK "id"
+	log := logger.NewDefault()
+	// SafetyConfig{} => FK checks NOT disabled => Copy issues "SET FOREIGN_KEY_CHECKS = 1".
+	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	cp.SetBatchSize(2) // force 2 PKs per chunk
+
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{int64(1), int64(2), int64(3)},
+		Records: map[string][]interface{}{
+			"customers": {int64(1), int64(2), int64(3)}, // 3 PKs => 2 chunks: [1,2],[3]
+		},
+	}
+
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Chunk 1: SELECT ids (1,2) -> 2 rows, then one INSERT.
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
+		WithArgs(int64(1), int64(2)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(1, "a").AddRow(2, "b"))
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	// Chunk 2: SELECT id (3) -> 1 row, then one INSERT.
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(3)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
+			AddRow(3, "c"))
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	destMock.ExpectCommit()
+
+	stats, err := cp.Copy(context.Background(), recordSet)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), stats.RowsCopied)
+	assert.NoError(t, sourceMock.ExpectationsWereMet())
+	assert.NoError(t, destMock.ExpectationsWereMet())
+}
+
 func TestBuildInsertIgnoreQuery_QuotesColumnNames(t *testing.T) {
 	cp := &CopyPhase{}
 	query := cp.buildInsertIgnoreQuery("orders", []string{"id", "order", "group"})
