@@ -667,6 +667,7 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 		t.Error("Expected error for job type mismatch, got nil")
 	}
 
-	// Clean up
+	// Clean up (delete log rows first; archiver_job_log no longer cascades)
+	_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'test_purge_jobtype'")
 	_, _ = destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_purge_jobtype'")
 }

@@ -316,7 +316,8 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 		t.Fatalf("Failed to insert fake job: %v", err)
 	}
 	defer func() {
-		// Cleanup
+		// Cleanup (delete log rows first; archiver_job_log no longer cascades)
+		_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'concurrent_job'")
 		_, _ = destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'concurrent_job'")
 	}()
 
@@ -571,6 +572,8 @@ func TestCopyOnly_ForceMode_Cancelled_Integration(t *testing.T) {
 	}
 
 	// Clean up the abandoned job to prevent blocking other tests
+	// (delete log rows first; archiver_job_log no longer cascades)
+	_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'test_force_cancel'")
 	if _, err := destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_force_cancel'"); err != nil {
 		t.Logf("Warning: failed to clean up test job: %v", err)
 	}

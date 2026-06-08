@@ -387,6 +387,15 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			break
 		}
 
+		// Operator pause switch: pause at the batch boundary BEFORE logging any
+		// pending entries, so a paused job leaves NO rows in 'pending'. By the time
+		// we reach here the previous batch has fully completed (copy+verify+delete+
+		// CompleteBatch). A finished job exits via the empty-fetch check above
+		// rather than pausing forever.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return fail("%w", err)
+		}
+
 		batchNum++
 		o.logger.Infow("Processing batch",
 			"batch", batchNum,
@@ -470,13 +479,6 @@ func (o *ArchiveOrchestrator) processBatch(
 	stats := &BatchStats{}
 	if len(rootIDs) == 0 {
 		return stats, nil
-	}
-
-	// Operator pause switch: block before processing this batch while the
-	// sentinel file exists (covers both the main loop and resume recovery, which
-	// both flow through processBatch).
-	if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
-		return stats, err
 	}
 
 	discovered, err := discovery.Discover(ctx, rootIDs)
@@ -641,6 +643,13 @@ func (o *ArchiveOrchestrator) recoverChunks(
 				return fmt.Errorf("convert PK %q: %w", raw, err)
 			}
 			typed = append(typed, pk)
+		}
+		// Operator pause switch: pause before processing the next recovery chunk so
+		// each started chunk runs to completion first. Rows from earlier chunks not
+		// yet recovered remain in their prior-run status during the pause — that is
+		// pre-existing state, not created by the pause.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return err
 		}
 		if lagMonitor != nil {
 			if err := lagMonitor.WaitForLag(ctx); err != nil {

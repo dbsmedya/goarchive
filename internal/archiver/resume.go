@@ -91,9 +91,7 @@ CREATE TABLE IF NOT EXISTS archiver_job_log (
 	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 	error_message TEXT,
 	UNIQUE KEY uk_job_pk (job_name, root_pk_id),
-	INDEX idx_job_status (job_name, log_status),
-	INDEX idx_status (log_status),
-	FOREIGN KEY (job_name) REFERENCES archiver_job(job_name) ON DELETE CASCADE
+	INDEX idx_job_status (job_name, log_status)
 ) ENGINE=InnoDB;
 `
 
