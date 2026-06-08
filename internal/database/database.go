@@ -182,21 +182,33 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
-	dsnCfg := mysql.Config{
-		User:            cfg.User,
-		Passwd:          cfg.Password,
-		Net:             "tcp",
-		Addr:            net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
-		DBName:          cfg.Database,
-		ParseTime:       true,
-		MultiStatements: true,
-	}
+	// Start from NewConfig() so the driver's safe defaults are preserved.
+	// A bare mysql.Config{} literal would zero AllowNativePasswords (default
+	// true), CheckConnLiveness (default true) and MaxAllowedPacket, emitting
+	// allowNativePasswords=false — which breaks any server whose user
+	// authenticates with the mysql_native_password plugin (e.g. MySQL 8.4 /
+	// Cloud SQL) with "this user requires mysql native password authentication".
+	dsnCfg := mysql.NewConfig()
+	dsnCfg.User = cfg.User
+	dsnCfg.Passwd = cfg.Password
+	dsnCfg.Net = "tcp"
+	dsnCfg.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	dsnCfg.DBName = cfg.Database
+	dsnCfg.ParseTime = true
+	dsnCfg.MultiStatements = true
 
 	switch cfg.TLS {
 	case "disable":
 		dsnCfg.TLSConfig = "false"
 	case "required":
+		// Full verification: chain + hostname/IP. Use a CA-signed cert with the
+		// host in its SAN, or choose "skip-verify" for self-signed/Cloud SQL.
 		dsnCfg.TLSConfig = "true"
+	case "skip-verify":
+		// Encrypted but the server certificate is NOT validated. Needed for
+		// self-signed or Cloud SQL certs whose CN/SAN cannot pass Go's x509
+		// checks (e.g. no IP SANs, non-RFC-compliant CN). No MITM protection.
+		dsnCfg.TLSConfig = "skip-verify"
 	case "preferred", "":
 		dsnCfg.TLSConfig = "preferred"
 	}

@@ -120,11 +120,11 @@ func (c *Config) validateDatabase(prefix string, db *DatabaseConfig) ValidationE
 		})
 	}
 
-	validTLS := map[string]bool{"disable": true, "preferred": true, "required": true, "": true}
+	validTLS := map[string]bool{"disable": true, "preferred": true, "skip-verify": true, "required": true, "": true}
 	if !validTLS[db.TLS] {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".tls",
-			Message: "tls must be 'disable', 'preferred', or 'required'",
+			Message: "tls must be 'disable', 'preferred', 'skip-verify', or 'required'",
 		})
 	}
 

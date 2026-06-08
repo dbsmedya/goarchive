@@ -276,6 +276,7 @@ func TestBuildDSN_TLSVariants(t *testing.T) {
 		{name: "TLS preferred", tlsValue: "preferred", expectedTLS: "tls=preferred"},
 		{name: "TLS disable", tlsValue: "disable", expectedTLS: "tls=false"},
 		{name: "TLS required", tlsValue: "required", expectedTLS: "tls=true"},
+		{name: "TLS skip-verify", tlsValue: "skip-verify", expectedTLS: "tls=skip-verify"},
 		{name: "TLS empty defaults to preferred", tlsValue: "", expectedTLS: "tls=preferred"},
 	}
 
@@ -294,6 +295,24 @@ func TestBuildDSN_TLSVariants(t *testing.T) {
 				t.Errorf("BuildDSN() = %q, should contain %q", result, tt.expectedTLS)
 			}
 		})
+	}
+}
+
+// TestBuildDSN_AllowsNativePasswords guards against the struct-literal
+// regression that emitted allowNativePasswords=false, breaking servers whose
+// users authenticate via the mysql_native_password plugin (MySQL 8.4 / Cloud SQL).
+func TestBuildDSN_AllowsNativePasswords(t *testing.T) {
+	cfg := &config.DatabaseConfig{
+		Host:     "localhost",
+		Port:     3306,
+		User:     "sinan",
+		Password: "secret",
+		Database: "testdb",
+		TLS:      "skip-verify",
+	}
+	result := BuildDSN(cfg)
+	if contains(result, "allowNativePasswords=false") {
+		t.Errorf("BuildDSN() = %q, must not disable native passwords", result)
 	}
 }
 

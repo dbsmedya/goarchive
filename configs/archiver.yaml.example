@@ -8,7 +8,7 @@ source:
   user: archiver
   password: change_me
   database: production
-  tls: preferred  # disable, preferred, required
+  tls: skip-verify  # disable, preferred, skip-verify, required
   max_connections: 10
   max_idle_connections: 5
 
@@ -19,7 +19,7 @@ destination:
   user: archiver
   password: change_me
   database: archive
-  tls: preferred
+  tls: skip-verify  # disable, preferred, skip-verify, required
   max_connections: 10
   max_idle_connections: 5
 

@@ -20,7 +20,7 @@ type DatabaseConfig struct {
 	User               string `yaml:"user" mapstructure:"user"`
 	Password           string `yaml:"password" mapstructure:"password"`
 	Database           string `yaml:"database" mapstructure:"database"`
-	TLS                string `yaml:"tls" mapstructure:"tls"` // disable, preferred, required
+	TLS                string `yaml:"tls" mapstructure:"tls"` // disable, preferred, skip-verify, required
 	MaxConnections     int    `yaml:"max_connections" mapstructure:"max_connections"`
 	MaxIdleConnections int    `yaml:"max_idle_connections" mapstructure:"max_idle_connections"`
 }
