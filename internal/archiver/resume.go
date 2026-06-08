@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -26,9 +27,12 @@ type LogStatus string
 
 const (
 	LogStatusPending   LogStatus = "pending"
+	LogStatusCopied    LogStatus = "copied"
 	LogStatusCompleted LogStatus = "completed"
 	LogStatusFailed    LogStatus = "failed"
 )
+
+const defaultResumeChunkSize = 1000
 
 const (
 	JobTypeArchive  = "archive"
@@ -156,8 +160,9 @@ type LogEntry struct {
 //
 // GA-P3-F4: Resume Logging System
 type ResumeManager struct {
-	db     *sql.DB
-	logger *logger.Logger
+	db        *sql.DB
+	logger    *logger.Logger
+	chunkSize int
 }
 
 // NewResumeManager creates a new resume manager for job state tracking.
@@ -173,6 +178,21 @@ func NewResumeManager(db *sql.DB, log *logger.Logger) (*ResumeManager, error) {
 		db:     db,
 		logger: log,
 	}, nil
+}
+
+// SetChunkSize sets the multi-row statement chunk size for batch bookkeeping.
+// Values <= 0 are ignored. Defaults to defaultResumeChunkSize.
+func (r *ResumeManager) SetChunkSize(n int) {
+	if n > 0 {
+		r.chunkSize = n
+	}
+}
+
+func (r *ResumeManager) effectiveChunkSize() int {
+	if r.chunkSize > 0 {
+		return r.chunkSize
+	}
+	return defaultResumeChunkSize
 }
 
 // InitializeTables creates resume log tables if they don't exist.
@@ -377,43 +397,77 @@ func (r *ResumeManager) UpdateCheckpoint(ctx context.Context, jobName string, la
 	return nil
 }
 
-// LogBatchPending inserts log entries for a batch of root PKs with status 'pending'.
-//
-// This is called before processing each batch to enable idempotent reprocessing
-// on crash recovery.
+// LogBatchPending inserts 'pending' log entries for a batch of root PKs using
+// chunked multi-row INSERT IGNORE (idempotent on retry).
 //
 // GA-P3-F4-T3: Insert pending log entries
 func (r *ResumeManager) LogBatchPending(ctx context.Context, jobName string, rootPKs []interface{}) error {
 	if len(rootPKs) == 0 {
 		return nil
 	}
+	chunk := r.effectiveChunkSize()
+	for start := 0; start < len(rootPKs); start += chunk {
+		end := start + chunk
+		if end > len(rootPKs) {
+			end = len(rootPKs)
+		}
+		group := rootPKs[start:end]
 
-	// Use INSERT IGNORE to make this idempotent (safe for retries)
-	stmt, err := r.db.PrepareContext(ctx,
-		"INSERT IGNORE INTO archiver_job_log (job_name, root_pk_id, log_status) VALUES (?, ?, ?)",
-	)
-	if err != nil {
-		return fmt.Errorf("failed to prepare log insert: %w", err)
+		tuples := make([]string, len(group))
+		args := make([]interface{}, 0, len(group)*3)
+		for i, pk := range group {
+			pkID, err := formatPK(pk)
+			if err != nil {
+				return fmt.Errorf("unsupported PK type %T: %w", pk, err)
+			}
+			tuples[i] = "(?, ?, ?)"
+			args = append(args, jobName, pkID, LogStatusPending)
+		}
+		query := "INSERT IGNORE INTO archiver_job_log (job_name, root_pk_id, log_status) VALUES " +
+			strings.Join(tuples, ", ")
+		if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to log pending batch: %w", err)
+		}
 	}
-	defer func() {
-		if err := stmt.Close(); err != nil {
-			r.logger.Warnf("Failed to close statement: %v", err)
-		}
-	}()
-
-	// GA-P3-F4-T3: Insert pending entries for each root PK
-	for _, pk := range rootPKs {
-		pkID, err := formatPK(pk)
-		if err != nil {
-			return fmt.Errorf("unsupported PK type %T: %w", pk, err)
-		}
-
-		if _, err := stmt.ExecContext(ctx, jobName, pkID, LogStatusPending); err != nil {
-			return fmt.Errorf("failed to log pending PK=%q: %w", pkID, err)
-		}
-	}
-
 	r.logger.Debugf("Logged %d pending entries for job %q", len(rootPKs), jobName)
+	return nil
+}
+
+// MarkBatchCopied transitions a batch's log rows pending -> copied, recording
+// that copy (and verify, if enabled) succeeded and only deletion remains.
+// Chunked multi-row UPDATE.
+func (r *ResumeManager) MarkBatchCopied(ctx context.Context, jobName string, rootPKs []interface{}) error {
+	if len(rootPKs) == 0 {
+		return nil
+	}
+	chunk := r.effectiveChunkSize()
+	for start := 0; start < len(rootPKs); start += chunk {
+		end := start + chunk
+		if end > len(rootPKs) {
+			end = len(rootPKs)
+		}
+		group := rootPKs[start:end]
+
+		placeholders := make([]string, len(group))
+		args := make([]interface{}, 0, len(group)+2)
+		args = append(args, LogStatusCopied, jobName)
+		for i, pk := range group {
+			pkID, err := formatPK(pk)
+			if err != nil {
+				return fmt.Errorf("invalid copied PK: %w", err)
+			}
+			placeholders[i] = "?"
+			args = append(args, pkID)
+		}
+		query := fmt.Sprintf(
+			"UPDATE archiver_job_log SET log_status = ?, updated_at = CURRENT_TIMESTAMP "+
+				"WHERE job_name = ? AND root_pk_id IN (%s)",
+			strings.Join(placeholders, ", "),
+		)
+		if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to mark batch copied: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -459,41 +513,120 @@ func (r *ResumeManager) MarkFailed(ctx context.Context, jobName string, rootPKID
 	return nil
 }
 
+// CompleteBatch atomically marks all rootPKs 'completed' and, when checkpointPK
+// is non-nil, advances the job checkpoint to it — all in one transaction (the
+// T3 invariant: never "checkpoint advanced but rows still pending").
+//
+// Pass checkpointPK == nil on the resume/replay path so the main checkpoint is
+// not derived from a (lexicographically-ordered) pending list.
+func (r *ResumeManager) CompleteBatch(ctx context.Context, jobName string, rootPKs []interface{}, checkpointPK interface{}) error {
+	if len(rootPKs) == 0 && checkpointPK == nil {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin completion tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				r.logger.Warnf("Failed to rollback completion tx: %v", rbErr)
+			}
+		}
+	}()
+
+	chunk := r.effectiveChunkSize()
+	for start := 0; start < len(rootPKs); start += chunk {
+		end := start + chunk
+		if end > len(rootPKs) {
+			end = len(rootPKs)
+		}
+		group := rootPKs[start:end]
+
+		placeholders := make([]string, len(group))
+		args := make([]interface{}, 0, len(group)+2)
+		args = append(args, LogStatusCompleted, jobName)
+		for i, pk := range group {
+			pkID, err := formatPK(pk)
+			if err != nil {
+				return fmt.Errorf("invalid completion PK: %w", err)
+			}
+			placeholders[i] = "?"
+			args = append(args, pkID)
+		}
+		query := fmt.Sprintf(
+			"UPDATE archiver_job_log SET log_status = ?, updated_at = CURRENT_TIMESTAMP "+
+				"WHERE job_name = ? AND root_pk_id IN (%s)",
+			strings.Join(placeholders, ", "),
+		)
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return fmt.Errorf("failed to mark batch completed: %w", err)
+		}
+	}
+
+	if checkpointPK != nil {
+		pk, err := formatPK(checkpointPK)
+		if err != nil {
+			return fmt.Errorf("invalid checkpoint PK: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE archiver_job SET last_processed_root_pk_id = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?",
+			pk, jobName,
+		); err != nil {
+			return fmt.Errorf("failed to update checkpoint: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit completion tx: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// GetRootPKsByStatus returns root_pk_ids for a job filtered by log_status,
+// ordered lexicographically by the VARCHAR column (callers re-sort numerically).
+func (r *ResumeManager) GetRootPKsByStatus(ctx context.Context, jobName string, status LogStatus) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT root_pk_id FROM archiver_job_log WHERE job_name = ? AND log_status = ? ORDER BY root_pk_id ASC",
+		jobName, status,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query %s PKs: %w", status, err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			r.logger.Warnf("Failed to close rows: %v", cerr)
+		}
+	}()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan %s PK: %w", status, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating %s PKs: %w", status, err)
+	}
+	return ids, nil
+}
+
 // GetPendingPKs retrieves all pending root PKs for a job (for reprocessing).
 //
 // GA-P3-F4-T9: Reprocess pending
 func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx,
-		"SELECT root_pk_id FROM archiver_job_log WHERE job_name = ? AND log_status = ? ORDER BY root_pk_id ASC",
-		jobName, LogStatusPending,
-	)
+	pks, err := r.GetRootPKsByStatus(ctx, jobName, LogStatusPending)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query pending PKs: %w", err)
+		return nil, err
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			r.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var pks []string
-	for rows.Next() {
-		var pk string
-		if err := rows.Scan(&pk); err != nil {
-			return nil, fmt.Errorf("failed to scan pending PK: %w", err)
-		}
-		pks = append(pks, pk)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating pending PKs: %w", err)
-	}
-
 	// GA-P3-F4-T9: Return pending PKs for reprocessing
 	if len(pks) > 0 {
 		r.logger.Infof("Found %d pending PKs for job %q (requires reprocessing)", len(pks), jobName)
 	}
-
 	return pks, nil
 }
 
@@ -549,19 +682,17 @@ func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool,
 		return true, nil
 	}
 
-	// Check for pending entries
-	pendingCount := 0
+	// Check for non-terminal entries (pending OR copied) left by a crash.
+	nonTerminal := 0
 	err = r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM archiver_job_log WHERE job_name = ? AND log_status = ?",
-		jobName, LogStatusPending,
-	).Scan(&pendingCount)
-
+		"SELECT COUNT(*) FROM archiver_job_log WHERE job_name = ? AND log_status IN (?, ?)",
+		jobName, LogStatusPending, LogStatusCopied,
+	).Scan(&nonTerminal)
 	if err != nil {
-		return false, fmt.Errorf("failed to count pending entries: %w", err)
+		return false, fmt.Errorf("failed to count non-terminal entries: %w", err)
 	}
-
-	if pendingCount > 0 {
-		r.logger.Infof("Job %q has %d pending entries, reprocessing required", jobName, pendingCount)
+	if nonTerminal > 0 {
+		r.logger.Infof("Job %q has %d non-terminal entries, reprocessing required", jobName, nonTerminal)
 		return true, nil
 	}
 

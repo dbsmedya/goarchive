@@ -309,16 +309,10 @@ func TestResumeManager_LogBatchPending_Success(t *testing.T) {
 
 	rootPKs := []interface{}{int64(1), int64(2), int64(3)}
 
-	mock.ExpectPrepare("INSERT IGNORE INTO archiver_job_log")
+	// Default chunk size is 1000, so all 3 PKs go in one multi-row INSERT.
 	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
-		WithArgs("test_job", "1", LogStatusPending).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
-		WithArgs("test_job", "2", LogStatusPending).
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
-		WithArgs("test_job", "3", LogStatusPending).
-		WillReturnResult(sqlmock.NewResult(1, 1))
+		WithArgs("test_job", "1", LogStatusPending, "test_job", "2", LogStatusPending, "test_job", "3", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(3, 3))
 
 	ctx := context.Background()
 	err := rm.LogBatchPending(ctx, "test_job", rootPKs)
@@ -432,10 +426,10 @@ func TestResumeManager_ShouldResume_True(t *testing.T) {
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 
-	// Then mock pending count > 0 (triggers resume)
+	// Then mock non-terminal count > 0 (pending OR copied) triggers resume.
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(5)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM archiver_job_log WHERE job_name").
-		WithArgs("test_job", LogStatusPending).
+		WithArgs("test_job", LogStatusPending, LogStatusCopied).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -459,10 +453,10 @@ func TestResumeManager_ShouldResume_False(t *testing.T) {
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 
-	// Then mock pending count = 0 (no resume needed)
+	// Non-terminal count = 0 (no resume needed).
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(0)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM archiver_job_log WHERE job_name").
-		WithArgs("test_job", LogStatusPending).
+		WithArgs("test_job", LogStatusPending, LogStatusCopied).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -496,4 +490,165 @@ func TestResumeManager_GetStats_Success(t *testing.T) {
 	assert.Equal(t, 95, completed)
 	assert.Equal(t, 2, failed)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestLogBatchPendingMultiRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, err := NewResumeManager(db, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewResumeManager: %v", err)
+	}
+	rm.SetChunkSize(2) // force chunking at 2
+
+	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
+		WithArgs("job1", "1", LogStatusPending, "job1", "2", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("INSERT IGNORE INTO archiver_job_log").
+		WithArgs("job1", "3", LogStatusPending).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = rm.LogBatchPending(context.Background(), "job1",
+		[]interface{}{int64(1), int64(2), int64(3)})
+	if err != nil {
+		t.Fatalf("LogBatchPending: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCompleteBatchAtomicWithCheckpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+	rm.SetChunkSize(10)
+
+	cp := interface{}(int64(42))
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCompleted, "job1", "1", "2").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE archiver_job SET last_processed_root_pk_id").
+		WithArgs("42", "job1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err = rm.CompleteBatch(context.Background(), "job1",
+		[]interface{}{int64(1), int64(2)}, cp)
+	if err != nil {
+		t.Fatalf("CompleteBatch: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestCompleteBatchNoCheckpointForReplay(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCompleted, "job1", "1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err = rm.CompleteBatch(context.Background(), "job1",
+		[]interface{}{int64(1)}, nil)
+	if err != nil {
+		t.Fatalf("CompleteBatch (replay): %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestMarkBatchCopiedChunked(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+	rm.SetChunkSize(2)
+
+	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCopied, "job1", "1", "2").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCopied, "job1", "3").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := rm.MarkBatchCopied(context.Background(), "job1",
+		[]interface{}{int64(1), int64(2), int64(3)}); err != nil {
+		t.Fatalf("MarkBatchCopied: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestGetRootPKsByStatus(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+
+	mock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name = \\? AND log_status = \\?").
+		WithArgs("job1", LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("5").AddRow("6"))
+
+	got, err := rm.GetRootPKsByStatus(context.Background(), "job1", LogStatusCopied)
+	if err != nil {
+		t.Fatalf("GetRootPKsByStatus: %v", err)
+	}
+	if len(got) != 2 || got[0] != "5" || got[1] != "6" {
+		t.Fatalf("got %v, want [5 6]", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestShouldResumeTriggersOnCopied(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	rm, _ := NewResumeManager(db, logger.NewDefault())
+
+	// No checkpoint set.
+	mock.ExpectQuery("SELECT last_processed_root_pk_id FROM archiver_job WHERE job_name = \\?").
+		WithArgs("job1").
+		WillReturnRows(sqlmock.NewRows([]string{"last_processed_root_pk_id"}).AddRow(nil))
+	// No pending, but one copied -> must still resume.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM archiver_job_log WHERE job_name = \\? AND log_status IN \\(\\?, \\?\\)").
+		WithArgs("job1", LogStatusPending, LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+
+	should, err := rm.ShouldResume(context.Background(), "job1")
+	if err != nil {
+		t.Fatalf("ShouldResume: %v", err)
+	}
+	if !should {
+		t.Fatal("expected ShouldResume=true when only 'copied' entries exist")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
 }
