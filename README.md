@@ -329,6 +329,44 @@ Delete Order:  shipment_items → shipments → order_items → order_payments �
 4. **Delete** - Removes data from source in reverse dependency order
 5. **Checkpoint** - Progress saved for crash recovery
 
+### Tuning Throughput: batch_size and batch_delete_size
+
+GoArchive processes root rows in batches. `batch_size` is the universal copy
+chunk size: GoArchive fetches `batch_size` root PKs per batch, discovers their
+full subgraph, and copies (fetch + insert) **every** table — root and children
+— `batch_size` rows at a time. `batch_delete_size` is an independent throttle
+controlling how many rows are deleted per statement (lower it to reduce
+replication lag on the destination replica).
+
+**Always validate batch_size before a real run — follow this three-step flow:**
+
+1. **`goarchive validate -c archiver.yaml`** — validates configuration syntax,
+   database connectivity, InnoDB engine, FK indexes, trigger warnings, and other
+   preflight checks for all configured jobs.
+
+2. **`goarchive dry-run -c archiver.yaml --job archive_old_orders`** — estimates
+   row counts AND validates that `batch_size` fits the destination's limits:
+   - **Placeholder check (exact):** `batch_size × column_count` must be less than
+     65,535 (MySQL's prepared-statement placeholder limit). This check runs even
+     for empty tables — a wide table is caught before you have data.
+   - **`max_allowed_packet` check (measured):** the dry-run copies a
+     `batch_size`-sized sample into a destination transaction and immediately
+     rolls it back — nothing is persisted. It fails fast and tells you to lower
+     `batch_size` if a table's row width exceeds the packet limit.
+
+   > **Note:** The packet check for child tables is approximate — child rows are
+   > sampled arbitrarily rather than via full discovery (which would be too
+   > expensive for a dry-run). The placeholder check is exact for every table.
+
+3. **`goarchive archive -c archiver.yaml --job archive_old_orders`** — the real
+   run: discover → copy → verify → delete, with crash recovery and replication
+   lag monitoring.
+
+If you skip dry-run and `batch_size` is too large, the real run fails fast on
+the first copy chunk. Already-processed root PKs are checkpointed; the
+interrupted batch's PKs are left in a resumable state and replayed automatically
+on the next run after you lower `batch_size` in your config.
+
 ### Crash Recovery
 
 If interrupted, GoArchive can resume from the last checkpoint:

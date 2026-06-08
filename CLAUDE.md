@@ -82,6 +82,11 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 
 ## Recent Changes
 
+### Batched Archive Pipeline (fix/batch_size, 2026-06-08)
+- `batch_size` is now the real copy chunk unit: root and every child table are fetched and inserted `batch_size` rows at a time (previously only root fetch was chunked)
+- `archiver_job_log` gains a `copied` status as a durable "copy+verify succeeded, safe to delete" marker; crash recovery is now status-aware (`pending` → full replay, `copied` → delete-only, no re-verify)
+- `dry-run` validates that `batch_size` fits MySQL's 65,535-placeholder limit and `max_allowed_packet` via a rolled-back destination transaction (placeholder check exact; packet check measured, approximate for child tables)
+
 ### Code Review Refactor (2026-03-27)
 - Removed dead code: `ApplyJobOverrides`, `UpdateProcessingConfig`, `PreflightError.Details`
 - Added nil guards to all destination preflight methods
