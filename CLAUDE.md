@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.0.3-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.1.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ## Build Commands
@@ -88,13 +88,6 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - `dry-run` validates that `batch_size` fits MySQL's 65,535-placeholder limit and `max_allowed_packet` via a rolled-back destination transaction (placeholder check exact; packet check measured, approximate for child tables)
 - `delete_sleep_seconds` (default 0) throttles the delete phase by pausing between `batch_delete_size` delete chunks to limit binlog/replication lag — independent of `sleep_seconds`, which paces whole batches for source/archive load
 - `sentinel_file` (default empty) is an operator pause switch honored by archive/purge/copy-only: while the file exists, processing pauses before each batch (re-check every 1s, context-interruptible) and resumes when removed
-
-### Code Review Refactor (2026-03-27)
-- Removed dead code: `ApplyJobOverrides`, `UpdateProcessingConfig`, `PreflightError.Details`
-- Added nil guards to all destination preflight methods
-- Added max relation nesting depth (10) to config validation
-- Fixed float precision in SHA256 verification (`%f` -> `%.17g`)
-- Standardized `rows.Close()` error handling
 
 ### CLI Improvements (GA-P4-F8, 2026-02-06)
 1. **Removed pterm dependency** - Plan command uses plain text output
