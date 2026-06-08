@@ -118,6 +118,35 @@ func TestLagMonitor_GetReplicationStatus_Success(t *testing.T) {
 // TestLagMonitor_GetReplicationStatus_StringLag mirrors the real go-sql-driver
 // text-protocol behavior where numeric columns of SHOW REPLICA STATUS arrive as
 // []byte and are normalized to string before the int64 conversion.
+// MySQL 8.4 renamed Seconds_Behind_Master -> Seconds_Behind_Source (and
+// Slave_*_Running -> Replica_*_Running) and removed SHOW SLAVE STATUS. The
+// monitor must read the new column names, otherwise lag is misreported as NULL.
+func TestLagMonitor_GetReplicationStatus_MySQL84Columns(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	log := logger.NewDefault()
+	cfg := config.SafetyConfig{LagThreshold: 10}
+	lm, _ := NewLagMonitor(db, cfg, log)
+
+	rows := sqlmock.NewRows([]string{
+		"Seconds_Behind_Source", "Replica_IO_Running", "Replica_SQL_Running", "Last_Error",
+	}).AddRow(7, "Yes", "Yes", "")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS").WillReturnRows(rows)
+
+	ctx := context.Background()
+	status, err := lm.GetReplicationStatus(ctx)
+
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.True(t, status.SecondsBehindMaster.Valid)
+	assert.Equal(t, int64(7), status.SecondsBehindMaster.Int64)
+	assert.Equal(t, "Yes", status.SlaveIORunning)
+	assert.Equal(t, "Yes", status.SlaveSQLRunning)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestLagMonitor_GetReplicationStatus_StringLag(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()

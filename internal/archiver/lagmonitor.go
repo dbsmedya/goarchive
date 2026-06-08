@@ -146,11 +146,17 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 	// Extract key fields
 	status := &ReplicationStatus{}
 
-	// Seconds_Behind_Master (can be NULL if replica is stopped).
+	// Seconds_Behind_Master (MySQL <8.4) or Seconds_Behind_Source (MySQL 8.4+,
+	// which renamed the column and removed SHOW SLAVE STATUS). Can be NULL if the
+	// replica is stopped.
 	// The MySQL driver's text protocol returns numeric columns as []byte, which the
 	// loop above normalizes to string. A small number of callers (and sqlmock) may
 	// deliver int64 directly, so both are handled.
-	if sbm, ok := result["Seconds_Behind_Master"]; ok && sbm != nil {
+	sbm, ok := result["Seconds_Behind_Master"]
+	if !ok || sbm == nil {
+		sbm, ok = result["Seconds_Behind_Source"]
+	}
+	if ok && sbm != nil {
 		switch v := sbm.(type) {
 		case int64:
 			status.SecondsBehindMaster = sql.NullInt64{Int64: v, Valid: true}
@@ -159,7 +165,7 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
 					status.SecondsBehindMaster = sql.NullInt64{Int64: parsed, Valid: true}
 				} else {
-					lm.logger.Warnf("Failed to parse Seconds_Behind_Master %q: %v", v, err)
+					lm.logger.Warnf("Failed to parse seconds-behind-source value %q: %v", v, err)
 				}
 			}
 		}
@@ -223,7 +229,7 @@ func (lm *LagMonitor) CheckLag(ctx context.Context) (bool, int, error) {
 	// Check lag value
 	if !status.SecondsBehindMaster.Valid {
 		// GA-P3-F5-T6: NULL lag value - replica may be stopped
-		lm.logger.Warn("Seconds_Behind_Master is NULL (replica may be stopped)")
+		lm.logger.Warn("Seconds_Behind_Source/Master is NULL (replica may be stopped)")
 		return false, -1, fmt.Errorf("replication lag is NULL")
 	}
 
