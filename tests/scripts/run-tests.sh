@@ -129,7 +129,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08)"
+            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08, 09)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-05)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -497,8 +497,15 @@ run_sakila_test() {
             tables="category film_category"
             mode="working"
             ;;
+        9)
+            test_name="Test09_PaymentBatch"
+            test_desc="High-volume payment archive (batch_size=100, multi-batch)"
+            config_file="test09_payment_batch.yaml"
+            tables="payment"
+            mode="working"
+            ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-8)"
+            log_error "Invalid test number: $test_num (expected 1-9)"
             return 1
             ;;
     esac
@@ -749,9 +756,9 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite (tests 06, 07, 08)
+    # Run the working Sakila E2E suite (tests 06, 07, 08, 09)
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "6 7 8" "working"
+        run_sakila_tests "6 7 8 9" "working"
         exit 0
     fi
 
