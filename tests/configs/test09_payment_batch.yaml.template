@@ -1,0 +1,40 @@
+# Test 09: High-volume payment archive (batch_size throughput)
+# Archives a large slice of the payment table (a leaf in the Sakila graph)
+# directly as the root, with batch_size=100, to exercise the batched pipeline
+# over many batches (multi-batch copy + delete chunking).
+#
+# payment has ~16k rows; archiving payment_id <= 2000 drives ~20 batches of
+# 100-row copy/delete chunks through the real CLI (validate -> dry-run ->
+# archive). payment is a leaf (no table references it), so it needs no child
+# relations; FK checks are disabled for the copy into the archive destination.
+#
+# Copy this file to test09_payment_batch.yaml and substitute the password
+# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+jobs:
+  archive-payment-rows:
+    root_table: payment
+    primary_key: payment_id
+    # Archive a large slice to span many batches at batch_size=100
+    where: "payment_id <= 2000"
+    # batch_size=100 -> ~20 batches over the 2000 selected payment rows
+    processing:
+      batch_size: 100
+      batch_delete_size: 100
