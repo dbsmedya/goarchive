@@ -33,10 +33,16 @@ type DeleteStats struct {
 // GA-P4-F2-T5: Delete progress logging
 // GA-P4-F2-T6: Idempotent deletes (no error on re-delete)
 type DeletePhase struct {
-	db        *sql.DB
-	graph     *graph.Graph
-	batchSize int // GA-P4-F2-T2: Batch delete size
-	logger    *logger.Logger
+	db           *sql.DB
+	graph        *graph.Graph
+	batchSize    int     // GA-P4-F2-T2: Batch delete size
+	sleepSeconds float64 // Throttle: pause between delete chunks (0 = disabled)
+	logger       *logger.Logger
+
+	// sleepFn is an injectable seam for the inter-chunk throttle sleep so unit
+	// tests can assert the throttle deterministically without waiting. When nil,
+	// the real (context-interruptible) sleep is used.
+	sleepFn func(ctx context.Context, d time.Duration) error
 }
 
 // NewDeletePhase creates a new delete phase coordinator.
@@ -172,9 +178,34 @@ func (dp *DeletePhase) deleteTable(ctx context.Context, table string, pks []inte
 			dp.logger.Debugf("Deleted %d rows from %s (batch %d/%d)",
 				rowsDeleted, table, batchNum+1, totalBatches)
 		}
+
+		// Replication-lag throttle: pause between delete chunks (not after the
+		// last chunk of this table) so a replica can drain the binlog this
+		// auto-committed DELETE just generated before the next one is issued.
+		if dp.sleepSeconds > 0 && batchNum < totalBatches-1 {
+			d := time.Duration(dp.sleepSeconds * float64(time.Second))
+			if err := dp.sleepBetweenChunks(ctx, d); err != nil {
+				return totalDeleted, fmt.Errorf("delete interrupted during throttle sleep: %w", err)
+			}
+		}
 	}
 
 	return totalDeleted, nil
+}
+
+// sleepBetweenChunks pauses for d between delete chunks, honoring context
+// cancellation. Uses the injected sleepFn when set (tests); otherwise a real
+// interruptible sleep.
+func (dp *DeletePhase) sleepBetweenChunks(ctx context.Context, d time.Duration) error {
+	if dp.sleepFn != nil {
+		return dp.sleepFn(ctx, d)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
 }
 
 // executeDelete executes a single DELETE statement for a batch of PKs.
@@ -233,6 +264,21 @@ func (dp *DeletePhase) SetBatchSize(size int) {
 // GetBatchSize returns the current batch size.
 func (dp *DeletePhase) GetBatchSize() int {
 	return dp.batchSize
+}
+
+// SetSleepSeconds sets the inter-chunk throttle pause (in seconds) applied
+// between delete chunks. 0 disables the throttle (the default). Negative values
+// are ignored. Use this to limit binlog generation / replication lag on the
+// delete side, independently of the per-batch sleep_seconds.
+func (dp *DeletePhase) SetSleepSeconds(s float64) {
+	if s >= 0 {
+		dp.sleepSeconds = s
+	}
+}
+
+// GetSleepSeconds returns the current inter-chunk throttle pause in seconds.
+func (dp *DeletePhase) GetSleepSeconds() float64 {
+	return dp.sleepSeconds
 }
 
 // GetGraph returns the dependency graph used by this delete phase.

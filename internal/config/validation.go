@@ -294,6 +294,13 @@ func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingC
 		})
 	}
 
+	if processing.DeleteSleepSeconds < 0 {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".delete_sleep_seconds",
+			Message: "delete_sleep_seconds cannot be negative",
+		})
+	}
+
 	return errors
 }
 

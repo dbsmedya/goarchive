@@ -338,6 +338,17 @@ full subgraph, and copies (fetch + insert) **every** table — root and children
 controlling how many rows are deleted per statement (lower it to reduce
 replication lag on the destination replica).
 
+There are two independent pacing knobs, addressing two different pressures:
+
+- **`sleep_seconds`** pauses **between batches** (after each `batch_size` batch).
+  Use it to keep general load on the source/archive servers controllable.
+- **`delete_sleep_seconds`** pauses **between delete chunks** (after each
+  `batch_delete_size` delete, except the last in a table). Use it to limit how
+  fast the delete phase generates binary-log events, so a replica does not fall
+  behind. Defaults to `0` (no delete throttle). Pair a small `batch_delete_size`
+  with `delete_sleep_seconds` when replication lag — not source load — is your
+  bottleneck.
+
 **Always validate batch_size before a real run — follow this three-step flow:**
 
 1. **`goarchive validate -c archiver.yaml`** — validates configuration syntax,
@@ -559,9 +570,10 @@ See [tests/README.md](tests/README.md) for detailed testing documentation includ
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `batch_size` | Root IDs processed per batch | 1000 |
+| `batch_size` | Root IDs processed per batch (universal copy chunk size) | 1000 |
 | `batch_delete_size` | Rows per DELETE statement | 500 |
-| `sleep_seconds` | Pause between batches | 1 |
+| `sleep_seconds` | Pause between batches (source/archive load throttle) | 1 |
+| `delete_sleep_seconds` | Pause between delete chunks (replication/binlog throttle) | 0 |
 
 ### Safety Settings
 

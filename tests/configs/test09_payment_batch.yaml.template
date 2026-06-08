@@ -41,3 +41,6 @@ jobs:
       batch_size: 100
       batch_delete_size: 20
       sleep_seconds: 1
+      # Throttle deletes: pause 0.2s between each batch_delete_size delete chunk
+      # to limit binlog generation / replication lag.
+      delete_sleep_seconds: 0.2

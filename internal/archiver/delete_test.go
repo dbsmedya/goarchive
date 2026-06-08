@@ -570,6 +570,123 @@ func TestDeletePhase_SetBatchSize(t *testing.T) {
 	}
 }
 
+func TestDeletePhase_SetSleepSeconds(t *testing.T) {
+	db, _, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createDeleteTestGraph()
+	log := logger.NewDefault()
+	dp, _ := NewDeletePhase(db, g, 500, log)
+
+	// Default is 0 (no throttle).
+	if dp.GetSleepSeconds() != 0 {
+		t.Errorf("expected default delete sleep 0, got %v", dp.GetSleepSeconds())
+	}
+
+	dp.SetSleepSeconds(1.5)
+	if dp.GetSleepSeconds() != 1.5 {
+		t.Errorf("expected delete sleep 1.5, got %v", dp.GetSleepSeconds())
+	}
+
+	// Zero is a valid value (explicitly disables the throttle).
+	dp.SetSleepSeconds(0)
+	if dp.GetSleepSeconds() != 0 {
+		t.Errorf("expected delete sleep 0 after explicit disable, got %v", dp.GetSleepSeconds())
+	}
+
+	// Negative is ignored.
+	dp.SetSleepSeconds(2)
+	dp.SetSleepSeconds(-1)
+	if dp.GetSleepSeconds() != 2 {
+		t.Errorf("delete sleep should not change on negative, got %v", dp.GetSleepSeconds())
+	}
+}
+
+// TestDelete_ThrottleSleepBetweenChunks verifies that delete_sleep_seconds pauses
+// between delete chunks (after each batch_delete_size delete, except the last in a
+// table) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
+// so the assertion is deterministic and the test does not actually wait.
+func TestDelete_ThrottleSleepBetweenChunks(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createDeleteTestGraph()
+	log := logger.NewDefault()
+	dp, _ := NewDeletePhase(db, g, 3, log) // batch size 3
+	dp.SetSleepSeconds(0.5)
+
+	var sleeps []time.Duration
+	dp.sleepFn = func(_ context.Context, d time.Duration) error {
+		sleeps = append(sleeps, d)
+		return nil
+	}
+
+	// Only order_items so the sleep count is isolated to one table:
+	// 7 PKs / batch 3 => 3 chunks => 2 between-chunk sleeps.
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{1},
+		Records: map[string][]interface{}{
+			"order_items": {100, 101, 102, 103, 104, 105, 106},
+		},
+	}
+	ctx := context.Background()
+
+	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
+		WithArgs(100, 101, 102).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
+		WithArgs(103, 104, 105).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
+		WithArgs(106).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if _, err := dp.Delete(ctx, recordSet); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	if len(sleeps) != 2 {
+		t.Fatalf("expected 2 between-chunk sleeps (3 chunks), got %d", len(sleeps))
+	}
+	for i, d := range sleeps {
+		if d != 500*time.Millisecond {
+			t.Errorf("sleep %d = %v, want 500ms", i, d)
+		}
+	}
+}
+
+// TestDelete_NoThrottleByDefault verifies that with delete_sleep_seconds unset
+// (0), no throttle sleep is invoked.
+func TestDelete_NoThrottleByDefault(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createDeleteTestGraph()
+	log := logger.NewDefault()
+	dp, _ := NewDeletePhase(db, g, 3, log)
+
+	sleepCalls := 0
+	dp.sleepFn = func(_ context.Context, _ time.Duration) error {
+		sleepCalls++
+		return nil
+	}
+
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{1},
+		Records: map[string][]interface{}{
+			"order_items": {100, 101, 102, 103},
+		},
+	}
+	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
+		WithArgs(100, 101, 102).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
+		WithArgs(103).WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if sleepCalls != 0 {
+		t.Fatalf("expected 0 throttle sleeps when delete_sleep_seconds=0, got %d", sleepCalls)
+	}
+}
+
 func TestDeletePhase_GetGraph(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()

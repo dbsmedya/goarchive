@@ -351,6 +351,8 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create delete phase: %w", err)
 	}
+	// Throttle deletes (between batch_delete_size chunks) to limit binlog/replication lag.
+	deletePhase.SetSleepSeconds(o.processingCfg.DeleteSleepSeconds)
 
 	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
 

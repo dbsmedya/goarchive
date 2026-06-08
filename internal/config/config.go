@@ -62,6 +62,10 @@ type ProcessingConfig struct {
 	BatchSize       int     `yaml:"batch_size" mapstructure:"batch_size"`
 	BatchDeleteSize int     `yaml:"batch_delete_size" mapstructure:"batch_delete_size"`
 	SleepSeconds    float64 `yaml:"sleep_seconds" mapstructure:"sleep_seconds"`
+	// DeleteSleepSeconds throttles the delete phase by pausing between delete
+	// chunks (every batch_delete_size rows) to limit binlog generation and
+	// replication lag. 0 (default) disables the throttle.
+	DeleteSleepSeconds float64 `yaml:"delete_sleep_seconds" mapstructure:"delete_sleep_seconds"`
 }
 
 // SafetyConfig represents safety settings for archive operations.
@@ -167,6 +171,9 @@ func (jc *JobConfig) GetJobProcessing(global ProcessingConfig) ProcessingConfig 
 	}
 	if jc.Processing.SleepSeconds > 0 {
 		result.SleepSeconds = jc.Processing.SleepSeconds
+	}
+	if jc.Processing.DeleteSleepSeconds > 0 {
+		result.DeleteSleepSeconds = jc.Processing.DeleteSleepSeconds
 	}
 	return result
 }
