@@ -34,7 +34,10 @@ jobs:
     primary_key: payment_id
     # Archive a large slice to span many batches at batch_size=100
     where: "payment_id <= 2000"
-    # batch_size=100 -> ~20 batches over the 2000 selected payment rows
+    # batch_size=100 -> ~20 batches over the 2000 selected payment rows.
+    # batch_delete_size=20 -> 5 delete chunks per batch (100 delete chunks total),
+    # to observe how sleep_seconds interacts with delete chunking.
     processing:
       batch_size: 100
-      batch_delete_size: 100
+      batch_delete_size: 20
+      sleep_seconds: 1
