@@ -343,11 +343,13 @@ There are two independent pacing knobs, addressing two different pressures:
 - **`sleep_seconds`** pauses **between batches** (after each `batch_size` batch).
   Use it to keep general load on the source/archive servers controllable.
 - **`delete_sleep_seconds`** pauses **between delete chunks** (after each
-  `batch_delete_size` delete, except the last in a table). Use it to limit how
-  fast the delete phase generates binary-log events, so a replica does not fall
-  behind. Defaults to `0` (no delete throttle). Pair a small `batch_delete_size`
-  with `delete_sleep_seconds` when replication lag — not source load — is your
-  bottleneck.
+  `batch_delete_size` delete, except the last chunk of each table). Use it to
+  limit how fast the delete phase generates binary-log events, so a replica does
+  not fall behind. Defaults to `0` (no delete throttle). Pair a small
+  `batch_delete_size` with `delete_sleep_seconds` when replication lag — not
+  source load — is your bottleneck. The pause applies between chunks *within* a
+  table (the high-frequency case); like the other processing knobs, a job-level
+  value only overrides the global when it is greater than `0`.
 
 **Always validate batch_size before a real run — follow this three-step flow:**
 
