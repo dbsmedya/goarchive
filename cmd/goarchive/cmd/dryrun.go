@@ -70,7 +70,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	}
 	defer syncLogger(log)
 
-	// Create database manager (source only for dry-run)
+	// Create database manager (source for estimation, destination for payload validation)
 	dbManager := database.NewManager(cfg)
 
 	// Setup context

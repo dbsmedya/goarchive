@@ -11,4 +11,11 @@ func TestPlaceholderCheck(t *testing.T) {
 	if err := checkPlaceholderLimit("narrow", 5, 1000); err != nil {
 		t.Fatalf("unexpected error for narrow table: %v", err)
 	}
+	// Exact boundary: 65535 placeholders must fail (>=), 65534 must pass.
+	if err := checkPlaceholderLimit("exact", 65535, 1); err == nil {
+		t.Fatal("expected limit error at exact boundary (65535)")
+	}
+	if err := checkPlaceholderLimit("below", 65534, 1); err != nil {
+		t.Fatalf("unexpected error one below boundary (65534): %v", err)
+	}
 }

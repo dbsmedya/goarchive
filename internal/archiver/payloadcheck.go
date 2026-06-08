@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -84,7 +85,7 @@ func (p *PayloadValidator) Validate(ctx context.Context) error {
 		// Project to a full batch_size chunk when the sample was smaller.
 		projected := rowBytes
 		if sampled < p.batchSize {
-			projected = rowBytes / sampled * p.batchSize
+			projected = rowBytes * p.batchSize / sampled
 			p.logger.Infof("table %q: only %d rows available; projected full-chunk payload ≈ %d bytes", table, sampled, projected)
 		}
 		if int64(projected) >= maxPacket {
@@ -100,11 +101,14 @@ func (p *PayloadValidator) Validate(ctx context.Context) error {
 }
 
 func (p *PayloadValidator) maxAllowedPacket(ctx context.Context) (int64, error) {
-	var name string
-	var val int64
+	var name, valStr string
 	row := p.dest.QueryRowContext(ctx, "SHOW VARIABLES LIKE 'max_allowed_packet'")
-	if err := row.Scan(&name, &val); err != nil {
+	if err := row.Scan(&name, &valStr); err != nil {
 		return 0, err
+	}
+	val, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unexpected max_allowed_packet value %q: %w", valStr, err)
 	}
 	return val, nil
 }
