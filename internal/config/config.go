@@ -32,6 +32,10 @@ type ReplicaConfig struct {
 	Port     int    `yaml:"port" mapstructure:"port"`
 	User     string `yaml:"user" mapstructure:"user"`
 	Password string `yaml:"password" mapstructure:"password"`
+	// ReplicationChannel scopes lag checks to a named replication channel via
+	// SHOW REPLICA STATUS FOR CHANNEL '<name>'. Empty (default) queries the
+	// default/unnamed channel.
+	ReplicationChannel string `yaml:"replication_channel" mapstructure:"replication_channel"`
 }
 
 // JobConfig represents an archive job configuration.

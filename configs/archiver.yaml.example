@@ -30,6 +30,9 @@ replica:
   port: 3306
   user: repl_user
   password: change_me
+  # Named replication channel to monitor (SHOW REPLICA STATUS FOR CHANNEL '<name>').
+  # Leave empty to monitor the default/unnamed channel.
+  replication_channel: ""
 
 # Archive jobs configuration
 jobs:

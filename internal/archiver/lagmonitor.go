@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -33,6 +34,7 @@ type LagMonitor struct {
 	enabled   bool
 	threshold int           // Maximum acceptable lag in seconds
 	interval  time.Duration // How often to check lag
+	channel   string        // Optional named replication channel (empty = default)
 	logger    *logger.Logger
 }
 
@@ -92,12 +94,17 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 	}
 
 	// GA-P3-F5-T1: Try SHOW REPLICA STATUS (MySQL 8.0.22+)
-	// Fall back to SHOW SLAVE STATUS for older versions
-	query := "SHOW REPLICA STATUS"
+	// Fall back to SHOW SLAVE STATUS for older versions. When a named channel is
+	// configured, scope both forms to it with FOR CHANNEL '<name>'.
+	channelClause := ""
+	if lm.channel != "" {
+		channelClause = " FOR CHANNEL " + quoteSQLString(lm.channel)
+	}
+	query := "SHOW REPLICA STATUS" + channelClause
 	rows, err := lm.db.QueryContext(ctx, query)
 	if err != nil {
 		// Try legacy command
-		query = "SHOW SLAVE STATUS"
+		query = "SHOW SLAVE STATUS" + channelClause
 		rows, err = lm.db.QueryContext(ctx, query)
 		if err != nil {
 			// GA-P3-F5-T6: Replica error handling
@@ -324,6 +331,15 @@ func parseSecondsBehind(v interface{}) (int64, bool) {
 	default:
 		return parseLagDigits(fmt.Sprintf("%v", x))
 	}
+}
+
+// quoteSQLString renders a value as a safe single-quoted MySQL string literal,
+// escaping backslashes and single quotes. Used for the FOR CHANNEL '<name>'
+// clause, whose name comes from operator config.
+func quoteSQLString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "''")
+	return "'" + s + "'"
 }
 
 func parseLagDigits(s string) (int64, bool) {

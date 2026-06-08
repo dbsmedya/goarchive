@@ -178,6 +178,35 @@ func TestLagMonitor_GetReplicationStatus_MySQL84Columns(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// A configured replication channel must scope the query with FOR CHANNEL.
+func TestLagMonitor_GetReplicationStatus_NamedChannel(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	lm, _ := NewLagMonitor(db, config.SafetyConfig{LagThreshold: 10}, logger.NewDefault())
+	lm.channel = "group_repl"
+
+	rows := sqlmock.NewRows([]string{
+		"Seconds_Behind_Source", "Replica_IO_Running", "Replica_SQL_Running", "Last_Error",
+	}).AddRow(2, "Yes", "Yes", "")
+
+	mock.ExpectQuery("SHOW REPLICA STATUS FOR CHANNEL 'group_repl'").WillReturnRows(rows)
+
+	status, err := lm.GetReplicationStatus(context.Background())
+
+	require.NoError(t, err)
+	require.NotNil(t, status)
+	assert.True(t, status.SecondsBehindMaster.Valid)
+	assert.Equal(t, int64(2), status.SecondsBehindMaster.Int64)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestQuoteSQLString(t *testing.T) {
+	assert.Equal(t, "'group_repl'", quoteSQLString("group_repl"))
+	assert.Equal(t, "'o''brien'", quoteSQLString("o'brien"))
+	assert.Equal(t, "'a\\\\b'", quoteSQLString("a\\b"))
+}
+
 func TestLagMonitor_GetReplicationStatus_StringLag(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()

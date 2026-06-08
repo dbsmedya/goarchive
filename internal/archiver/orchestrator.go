@@ -90,7 +90,12 @@ func NewOrchestrator(cfg *config.Config, jobName string, jobCfg *config.JobConfi
 		processingCfg:   processingCfg,
 		verificationCfg: verificationCfg,
 		lagFactory: func(db *sql.DB, safety config.SafetyConfig, log *logger.Logger) (lagWaiter, error) {
-			return NewLagMonitor(db, safety, log)
+			lm, err := NewLagMonitor(db, safety, log)
+			if err != nil {
+				return nil, err
+			}
+			lm.channel = cfg.Replica.ReplicationChannel
+			return lm, nil
 		},
 	}, nil
 }
