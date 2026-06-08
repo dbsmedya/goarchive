@@ -130,7 +130,14 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 	pkColumn := p.graph.GetPK(table)
 	var query string
 	if p.jobCfg.RootTable == table && strings.TrimSpace(p.jobCfg.Where) != "" {
-		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) ORDER BY %s DESC LIMIT %d",
+		// Order ASC to mirror the real copy fetch (batch.go uses ORDER BY pk ASC):
+		// the sample becomes exactly the first batch the archive would process. ASC
+		// is also the only safe direction here — archive WHERE clauses select OLD
+		// rows, which in an append-only table have the LOWEST pk values. ORDER BY pk
+		// DESC would start at the newest rows (all failing the WHERE) and scan
+		// backward across the whole table before reaching qualifying rows, which on
+		// a large production table looks like an indefinite hang.
+		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) ORDER BY %s ASC LIMIT %d",
 			sqlutil.QuoteIdentifier(table), p.jobCfg.Where,
 			sqlutil.QuoteIdentifier(pkColumn), p.batchSize)
 	} else {
