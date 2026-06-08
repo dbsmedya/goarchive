@@ -154,21 +154,10 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 	// deliver int64 directly, so both are handled.
 	sbm, ok := result["Seconds_Behind_Master"]
 	if !ok || sbm == nil {
-		sbm, ok = result["Seconds_Behind_Source"]
+		sbm = result["Seconds_Behind_Source"]
 	}
-	if ok && sbm != nil {
-		switch v := sbm.(type) {
-		case int64:
-			status.SecondsBehindMaster = sql.NullInt64{Int64: v, Valid: true}
-		case string:
-			if v != "" {
-				if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
-					status.SecondsBehindMaster = sql.NullInt64{Int64: parsed, Valid: true}
-				} else {
-					lm.logger.Warnf("Failed to parse seconds-behind-source value %q: %v", v, err)
-				}
-			}
-		}
+	if lag, valid := parseSecondsBehind(sbm); valid {
+		status.SecondsBehindMaster = sql.NullInt64{Int64: lag, Valid: true}
 	}
 
 	// Slave_IO_Running (or Replica_IO_Running)
@@ -308,6 +297,44 @@ func (lm *LagMonitor) GetInterval() time.Duration {
 // SetLogger sets a custom logger for the lag monitor.
 func (lm *LagMonitor) SetLogger(log *logger.Logger) {
 	lm.logger = log
+}
+
+// parseSecondsBehind normalizes a Seconds_Behind_Source / Seconds_Behind_Master
+// value into an int64 lag and a validity flag.
+//
+// go-sql-driver returns this column as a typed integer — uint64 for the unsigned
+// column on MySQL 8.4 — which is why a plain int64/string type switch dropped the
+// value and lag was misreported as NULL. Older paths, SHOW SLAVE STATUS, and
+// sqlmock may instead deliver it as a string or []byte. A nil/empty/unparseable
+// value means NULL (replica stopped) and returns valid=false.
+func parseSecondsBehind(v interface{}) (int64, bool) {
+	switch x := v.(type) {
+	case nil:
+		return 0, false
+	case int64:
+		return x, true
+	case uint64:
+		return int64(x), true
+	case int:
+		return int64(x), true
+	case []byte:
+		return parseLagDigits(string(x))
+	case string:
+		return parseLagDigits(x)
+	default:
+		return parseLagDigits(fmt.Sprintf("%v", x))
+	}
+}
+
+func parseLagDigits(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func statusFieldToString(v interface{}) string {

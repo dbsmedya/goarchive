@@ -118,6 +118,37 @@ func TestLagMonitor_GetReplicationStatus_Success(t *testing.T) {
 // TestLagMonitor_GetReplicationStatus_StringLag mirrors the real go-sql-driver
 // text-protocol behavior where numeric columns of SHOW REPLICA STATUS arrive as
 // []byte and are normalized to string before the int64 conversion.
+// parseSecondsBehind must accept the integer types go-sql-driver actually
+// returns for the unsigned Seconds_Behind_Source column (uint64 on MySQL 8.4),
+// not only string/[]byte. A uint64 falling through the type switch was the cause
+// of lag being misreported as NULL even though the replica was healthy.
+func TestParseSecondsBehind(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    interface{}
+		want  int64
+		valid bool
+	}{
+		{"uint64 (MySQL 8.4 driver)", uint64(1), 1, true},
+		{"int64", int64(5), 5, true},
+		{"int", 3, 3, true},
+		{"string", "7", 7, true},
+		{"bytes", []byte("9"), 9, true},
+		{"empty string is NULL", "", 0, false},
+		{"nil is NULL", nil, 0, false},
+		{"unparseable is NULL", "n/a", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, valid := parseSecondsBehind(c.in)
+			assert.Equal(t, c.valid, valid)
+			if valid {
+				assert.Equal(t, c.want, got)
+			}
+		})
+	}
+}
+
 // MySQL 8.4 renamed Seconds_Behind_Master -> Seconds_Behind_Source (and
 // Slave_*_Running -> Replica_*_Running) and removed SHOW SLAVE STATUS. The
 // monitor must read the new column names, otherwise lag is misreported as NULL.
