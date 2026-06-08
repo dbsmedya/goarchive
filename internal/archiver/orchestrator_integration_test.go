@@ -723,3 +723,60 @@ func TestOrchestrator_MultiLevelHierarchy_Integration(t *testing.T) {
 	verifyRowCount(t, verifyDest, "customers", 2)
 	verifyRowCount(t, verifyDest, "orders", 4)
 }
+
+// TestOrchestrator_BatchArchive_Integration verifies a single batch large enough
+// to cover all root PKs archives every row correctly and leaves no pending log
+// entries — exercising the batched processBatch path.
+func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	setup, ctx := SetupIntegrationTest(t)
+	defer setup.Close()
+
+	clearDestination(t, setup)
+	sourceDB, _ := setup.GetDB("source")
+	seedTestData(t, sourceDB)
+
+	jobCfg := createCustomerOrderJobConfig()
+	jobCfg.Processing = &config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000}
+
+	dbManager := setupRealDBManager(t, setup)
+	cfg := dbManager.GetConfig()
+
+	orch, err := NewOrchestrator(cfg, "test_batch_archive", jobCfg, dbManager)
+	if err != nil {
+		t.Fatalf("NewOrchestrator failed: %v", err)
+	}
+	if err := orch.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	result, err := orch.Execute(ctx, nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("expected success, got errors: %v", result.Errors)
+	}
+
+	verifySource := getVerificationDB(t, setup, "source")
+	defer func() { _ = verifySource.Close() }()
+	verifyDest := getVerificationDB(t, setup, "destination")
+	defer func() { _ = verifyDest.Close() }()
+
+	verifyRowCount(t, verifyDest, "customers", 2)
+	verifyRowCount(t, verifyDest, "orders", 4)
+	verifyRowCount(t, verifySource, "customers", 1)
+	verifyRowCount(t, verifySource, "orders", 1)
+
+	var pending int
+	if err := verifyDest.QueryRow(
+		"SELECT COUNT(*) FROM archiver_job_log WHERE job_name = ? AND log_status = 'pending'",
+		"test_batch_archive").Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if pending != 0 {
+		t.Fatalf("expected 0 pending log entries, got %d", pending)
+	}
+}

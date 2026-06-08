@@ -7,9 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/verifier"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -1056,4 +1060,145 @@ func TestOrchestrator_CycleDetection(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected cycle detection error")
 	}
+}
+
+func TestSortPendingPKsNumeric(t *testing.T) {
+	signed := []string{"10", "100", "9"}
+	sortPendingPKsNumeric(signed, false)
+	wantSigned := []string{"9", "10", "100"}
+	for i := range wantSigned {
+		if signed[i] != wantSigned[i] {
+			t.Fatalf("signed sort = %v, want %v", signed, wantSigned)
+		}
+	}
+	unsigned := []string{"18446744073709551615", "2", "100"}
+	sortPendingPKsNumeric(unsigned, true)
+	wantUnsigned := []string{"2", "100", "18446744073709551615"}
+	for i := range wantUnsigned {
+		if unsigned[i] != wantUnsigned[i] {
+			t.Fatalf("unsigned sort = %v, want %v", unsigned, wantUnsigned)
+		}
+	}
+}
+
+func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New() // MUST remain untouched
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph() // root "customers", PK "id", leaf (no children)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log)
+
+	o := &ArchiveOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		verificationCfg: config.VerificationConfig{},
+	}
+
+	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(1)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	archMock.ExpectBegin()
+	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCompleted, "job1", "1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	archMock.ExpectCommit()
+
+	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, false, nil,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+	require.NoError(t, err)
+
+	require.NoError(t, destMock.ExpectationsWereMet())
+	require.NoError(t, sourceMock.ExpectationsWereMet())
+	require.NoError(t, archMock.ExpectationsWereMet())
+}
+
+func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph()
+	g.SetRootPKMeta("bigint", false)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log)
+
+	o := &ArchiveOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	}
+	result := &ArchiveResult{}
+
+	// arch DB: status fetches first (copied, then pending)
+	archMock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name = \\? AND log_status = \\?").
+		WithArgs("job1", LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10"))
+	archMock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name = \\? AND log_status = \\?").
+		WithArgs("job1", LogStatusPending).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
+	// Phase A (copied=10): CompleteBatch only.
+	archMock.ExpectBegin()
+	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCompleted, "job1", "10").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	archMock.ExpectCommit()
+	// Phase B (pending=20): MarkBatchCopied, then CompleteBatch.
+	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCopied, "job1", "20").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	archMock.ExpectBegin()
+	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
+		WithArgs(LogStatusCompleted, "job1", "20").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	archMock.ExpectCommit()
+
+	// source DB: copied delete (10) before pending copy SELECT (20), then pending delete (20)
+	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(10)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(20)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(20, "p"))
+	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(20)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// dest DB: only the pending copy writes
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	destMock.ExpectCommit()
+
+	err := o.resumePending(context.Background(), resumeMgr,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	require.NoError(t, err)
+	require.NoError(t, archMock.ExpectationsWereMet())
+	require.NoError(t, sourceMock.ExpectationsWereMet())
+	require.NoError(t, destMock.ExpectationsWereMet())
 }

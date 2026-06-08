@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -34,6 +36,28 @@ type ArchiveResult struct {
 
 // CheckpointCallback is called after each root PK is processed for crash recovery.
 type CheckpointCallback func(rootPK interface{}, status string) error
+
+// BatchStats holds per-batch processing totals returned by processBatch so the
+// caller can aggregate run-level result fields.
+type BatchStats struct {
+	RootsProcessed  int
+	RecordsCopied   int64
+	RecordsDeleted  int64
+	TablesVerified  int
+	RecordsVerified int64
+}
+
+// batchMode selects how a batch is recovered/processed.
+type batchMode int
+
+const (
+	// batchFull: Discover -> Copy -> Verify -> MarkBatchCopied -> Delete -> Complete.
+	batchFull batchMode = iota
+	// batchDeleteOnly: Discover -> Delete -> Complete (skip Copy/Verify). Used only
+	// by replay of 'copied' batches (already copied+verified; source may be partially
+	// deleted, so re-verify would be invalid).
+	batchDeleteOnly
+)
 
 type lagWaiter interface {
 	WaitForLag(context.Context) error
@@ -304,6 +328,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	}
 	effectiveVerificationMethod := o.verificationCfg.EffectiveMethod()
 	copyPhase.SetStrictInsert(effectiveVerificationMethod == "count")
+	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
 
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
@@ -315,6 +340,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create verifier: %w", err)
 	}
+	dataVerifier.SetChunkSize(o.processingCfg.BatchSize)
 
 	deletePhase, err := NewDeletePhase(
 		o.dbManager.Source,
@@ -326,27 +352,12 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		return fail("failed to create delete phase: %w", err)
 	}
 
+	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
+
 	if shouldResume {
-		if err := o.replayPendingPKs(ctx, resumeMgr, func(ctx context.Context, rawPK string) error {
-			if lagMonitor != nil {
-				if err := lagMonitor.WaitForLag(ctx); err != nil {
-					return fmt.Errorf("lag monitor error: %w", err)
-				}
-			}
-			dataType, unsigned, ok := o.graph.GetRootPKMeta()
-			if !ok {
-				return fmt.Errorf("root PK metadata not loaded")
-			}
-			typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
-			if err != nil {
-				return fmt.Errorf("convert pending PK %q: %w", rawPK, err)
-			}
-			if err := o.processRoot(ctx, typedPK, discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, result, checkpoint); err != nil {
-				return fmt.Errorf("replay processRoot for pk=%v: %w", typedPK, err)
-			}
-			return nil
-		}); err != nil {
-			return fail("pending replay failed: %w", err)
+		if err := o.resumePending(ctx, resumeMgr,
+			discovery, copyPhase, dataVerifier, deletePhase, fetcher, lagMonitor, checkpoint, result); err != nil {
+			return fail("resume failed: %w", err)
 		}
 	}
 
@@ -385,17 +396,21 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			return fail("failed to log pending batch entries: %w", err)
 		}
 
-		for _, rootID := range rootIDs {
-			if lagMonitor != nil {
-				if err := lagMonitor.WaitForLag(ctx); err != nil {
-					return fail("lag monitor error: %w", err)
-				}
+		if lagMonitor != nil {
+			if err := lagMonitor.WaitForLag(ctx); err != nil {
+				return fail("lag monitor error: %w", err)
 			}
-			if err := o.processRoot(ctx, rootID, discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, result, checkpoint); err != nil {
-				return fail("processRoot failed for pk=%v: %w", rootID, err)
-			}
-			totalProcessed++
 		}
+		batchStats, err := o.processBatch(ctx, rootIDs, batchFull, true /* advanceCheckpoint */, checkpoint,
+			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+		if err != nil {
+			return fail("processBatch failed: %w", err)
+		}
+		result.RecordsCopied += batchStats.RecordsCopied
+		result.RecordsDeleted += batchStats.RecordsDeleted
+		result.TablesVerified += batchStats.TablesVerified
+		result.RecordsVerified += batchStats.RecordsVerified
+		totalProcessed += int64(batchStats.RootsProcessed)
 
 		// Sleep between batches
 		if o.processingCfg.SleepSeconds > 0 {
@@ -428,109 +443,226 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	return result, nil
 }
 
-func (o *ArchiveOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, processRoot func(context.Context, string) error) error {
-	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
-	if err != nil {
-		return fmt.Errorf("failed to get pending PKs: %w", err)
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	if o.verificationCfg.EffectiveMethod() == "count" {
-		preview := pending
-		if len(preview) > 10 {
-			preview = preview[:10]
-		}
-		return fmt.Errorf(
-			"job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count.\n\n"+
-				"Resuming a count-mode job with pending entries is unsafe - pre-existing destination rows cannot be verified equal to source.\n\n"+
-				"To recover, choose one:\n"+
-				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
-				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the pending entries:\n"+
-				"       UPDATE archiver_job_log SET log_status='completed' WHERE job_name='%s' AND log_status='pending';\n"+
-				"     and re-run.\n\n"+
-				"Pending PKs (first 10): %v",
-			o.jobName, len(pending), o.jobName, preview)
-	}
-	o.logger.Infow("Replaying pending PKs from prior run", "job", o.jobName, "count", len(pending))
-	for _, rawPK := range pending {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := processRoot(ctx, rawPK); err != nil {
-			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
-		}
-	}
-	return nil
-}
-
-func (o *ArchiveOrchestrator) processRoot(
+// processBatch runs a whole batch of root PKs through the pipeline, then performs
+// the atomic T3 bookkeeping (CompleteBatch). In batchFull it also records the
+// durable 'copied' marker after a successful copy+verify (MarkBatchCopied).
+// advanceCheckpoint advances the checkpoint to the numeric max PK (main loop
+// only; both replay paths pass false). The checkpoint callback, when non-nil, is
+// invoked once per root with "completed" after T3 commits.
+//
+// On any error, the batch's PKs are left in their current non-terminal status
+// (pending or copied) — NEVER MarkFailed — so status-aware replay recovers them.
+func (o *ArchiveOrchestrator) processBatch(
 	ctx context.Context,
-	rootID interface{},
+	rootIDs []interface{},
+	mode batchMode,
+	advanceCheckpoint bool,
+	checkpoint CheckpointCallback,
 	discovery *RecordDiscovery,
 	copyPhase *CopyPhase,
 	dataVerifier *verifier.Verifier,
 	deletePhase *DeletePhase,
 	fetcher *RootIDFetcher,
 	resumeMgr *ResumeManager,
-	result *ArchiveResult,
-	checkpoint CheckpointCallback,
-) error {
-	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
-	if err != nil {
-		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-		}
-		return fmt.Errorf("discovery failed: %w", err)
+) (*BatchStats, error) {
+	stats := &BatchStats{}
+	if len(rootIDs) == 0 {
+		return stats, nil
 	}
 
+	discovered, err := discovery.Discover(ctx, rootIDs)
+	if err != nil {
+		return stats, fmt.Errorf("discovery failed: %w", err)
+	}
 	recordSet := convertRecordSet(discovered)
-	copyStats, err := copyPhase.Copy(ctx, recordSet)
-	if err != nil {
-		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-		}
-		return fmt.Errorf("copy failed: %w", err)
-	}
 
-	if !o.verificationCfg.SkipVerification {
-		verifyStats, err := dataVerifier.Verify(ctx, discovered)
+	if mode == batchFull {
+		copyStats, err := copyPhase.Copy(ctx, recordSet)
 		if err != nil {
-			if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-				o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-			}
-			return fmt.Errorf("verification failed: %w", err)
+			return stats, fmt.Errorf("copy failed: %w", err)
 		}
-		if verifyStats != nil {
-			result.TablesVerified += verifyStats.TablesVerified
-			result.RecordsVerified += verifyStats.TotalRows
+		stats.RecordsCopied = copyStats.RowsCopied
+
+		if !o.verificationCfg.SkipVerification {
+			verifyStats, err := dataVerifier.Verify(ctx, discovered)
+			if err != nil {
+				return stats, fmt.Errorf("verification failed: %w", err)
+			}
+			if verifyStats != nil {
+				stats.TablesVerified += verifyStats.TablesVerified
+				stats.RecordsVerified += verifyStats.TotalRows
+			}
+		}
+
+		// T1.5: durable "copy+verify succeeded, safe to delete" marker.
+		if err := resumeMgr.MarkBatchCopied(ctx, o.jobName, rootIDs); err != nil {
+			return stats, fmt.Errorf("mark batch copied failed: %w", err)
 		}
 	}
 
 	deleteStats, err := deletePhase.Delete(ctx, recordSet)
 	if err != nil {
-		if markErr := resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error()); markErr != nil {
-			o.logger.Errorf("Failed to mark root PK as failed: %v", markErr)
-		}
-		return fmt.Errorf("delete failed: %w", err)
+		return stats, fmt.Errorf("delete failed: %w", err)
+	}
+	stats.RecordsDeleted = deleteStats.RowsDeleted
+
+	// T3: atomic completion (+ optional checkpoint). rootIDs come from a numeric
+	// ORDER BY pkColumn ASC on the main loop, so the last element is the max PK.
+	var checkpointPK interface{}
+	if advanceCheckpoint {
+		checkpointPK = rootIDs[len(rootIDs)-1]
+	}
+	if err := resumeMgr.CompleteBatch(ctx, o.jobName, rootIDs, checkpointPK); err != nil {
+		return stats, fmt.Errorf("batch completion bookkeeping failed: %w", err)
+	}
+	if advanceCheckpoint {
+		fetcher.UpdateCheckpoint(checkpointPK)
 	}
 
-	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-		return fmt.Errorf("checkpoint update failed: %w", err)
-	}
-	fetcher.UpdateCheckpoint(rootID)
-	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-		return fmt.Errorf("failed to mark completed: %w", err)
-	}
-
-	result.RecordsCopied += copyStats.RowsCopied
-	result.RecordsDeleted += deleteStats.RowsDeleted
 	if checkpoint != nil {
-		if err := checkpoint(rootID, "completed"); err != nil {
-			o.logger.Warnw("Checkpoint callback failed", "error", err)
+		for _, rootID := range rootIDs {
+			if err := checkpoint(rootID, "completed"); err != nil {
+				o.logger.Warnw("Checkpoint callback failed", "error", err)
+			}
 		}
+	}
+
+	stats.RootsProcessed = len(rootIDs)
+	return stats, nil
+}
+
+// resumePending recovers any non-terminal batches left by a prior run, in the
+// correct order: 'copied' (delete-only) first, then 'pending' (full pipeline).
+func (o *ArchiveOrchestrator) resumePending(
+	ctx context.Context,
+	resumeMgr *ResumeManager,
+	discovery *RecordDiscovery,
+	copyPhase *CopyPhase,
+	dataVerifier *verifier.Verifier,
+	deletePhase *DeletePhase,
+	fetcher *RootIDFetcher,
+	lagMonitor lagWaiter,
+	checkpoint CheckpointCallback,
+	result *ArchiveResult,
+) error {
+	copied, err := resumeMgr.GetRootPKsByStatus(ctx, o.jobName, LogStatusCopied)
+	if err != nil {
+		return fmt.Errorf("failed to get copied PKs: %w", err)
+	}
+	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	if err != nil {
+		return fmt.Errorf("failed to get pending PKs: %w", err)
+	}
+	if len(copied) == 0 && len(pending) == 0 {
+		return nil
+	}
+
+	// count-mode cannot safely re-derive ANY non-terminal rows.
+	if o.verificationCfg.EffectiveMethod() == "count" {
+		total := len(copied) + len(pending)
+		preview := append(append([]string{}, copied...), pending...)
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return fmt.Errorf(
+			"job %q has %d non-terminal root PKs (copied/pending) from a prior interrupted run, and is configured with verification.method: count.\n\n"+
+				"Resuming a count-mode job is unsafe - pre-existing destination rows cannot be verified equal to source.\n\n"+
+				"To recover, choose one:\n"+
+				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
+				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the entries:\n"+
+				"       UPDATE archiver_job_log SET log_status='completed' WHERE job_name='%s' AND log_status IN ('copied','pending');\n"+
+				"     and re-run.\n\n"+
+				"PKs (first 10): %v",
+			o.jobName, total, o.jobName, preview)
+	}
+
+	// Phase A: finish copied batches (already verified; delete-only).
+	if err := o.recoverChunks(ctx, copied, batchDeleteOnly, resumeMgr,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, lagMonitor, checkpoint, result); err != nil {
+		return fmt.Errorf("copied recovery failed: %w", err)
+	}
+	// Phase B: finish pending batches (source intact; full pipeline).
+	if err := o.recoverChunks(ctx, pending, batchFull, resumeMgr,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, lagMonitor, checkpoint, result); err != nil {
+		return fmt.Errorf("pending recovery failed: %w", err)
 	}
 	return nil
+}
+
+// recoverChunks numerically sorts a status set, chunks it by batch_size, and
+// runs each chunk through processBatch in the given mode (advanceCheckpoint=false).
+func (o *ArchiveOrchestrator) recoverChunks(
+	ctx context.Context,
+	rawPKs []string,
+	mode batchMode,
+	resumeMgr *ResumeManager,
+	discovery *RecordDiscovery,
+	copyPhase *CopyPhase,
+	dataVerifier *verifier.Verifier,
+	deletePhase *DeletePhase,
+	fetcher *RootIDFetcher,
+	lagMonitor lagWaiter,
+	checkpoint CheckpointCallback,
+	result *ArchiveResult,
+) error {
+	if len(rawPKs) == 0 {
+		return nil
+	}
+	dataType, unsigned, ok := o.graph.GetRootPKMeta()
+	if !ok {
+		return fmt.Errorf("root PK metadata not loaded")
+	}
+	sortPendingPKsNumeric(rawPKs, unsigned)
+	o.logger.Infow("Recovering non-terminal PKs from prior run",
+		"job", o.jobName, "count", len(rawPKs), "mode", mode)
+
+	batchSize := o.processingCfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	for start := 0; start < len(rawPKs); start += batchSize {
+		end := start + batchSize
+		if end > len(rawPKs) {
+			end = len(rawPKs)
+		}
+		typed := make([]interface{}, 0, end-start)
+		for _, raw := range rawPKs[start:end] {
+			pk, err := types.ConvertRootPK(raw, dataType, unsigned)
+			if err != nil {
+				return fmt.Errorf("convert PK %q: %w", raw, err)
+			}
+			typed = append(typed, pk)
+		}
+		if lagMonitor != nil {
+			if err := lagMonitor.WaitForLag(ctx); err != nil {
+				return fmt.Errorf("lag monitor error: %w", err)
+			}
+		}
+		batchStats, err := o.processBatch(ctx, typed, mode, false /* advanceCheckpoint */, checkpoint,
+			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+		if err != nil {
+			return fmt.Errorf("recovery processBatch failed: %w", err)
+		}
+		result.RecordsCopied += batchStats.RecordsCopied
+		result.RecordsDeleted += batchStats.RecordsDeleted
+		result.TablesVerified += batchStats.TablesVerified
+		result.RecordsVerified += batchStats.RecordsVerified
+	}
+	return nil
+}
+
+// sortPendingPKsNumeric sorts string PKs by their numeric value in place.
+func sortPendingPKsNumeric(pending []string, unsigned bool) {
+	sort.Slice(pending, func(i, j int) bool {
+		if unsigned {
+			a, _ := strconv.ParseUint(pending[i], 10, 64)
+			b, _ := strconv.ParseUint(pending[j], 10, 64)
+			return a < b
+		}
+		a, _ := strconv.ParseInt(pending[i], 10, 64)
+		b, _ := strconv.ParseInt(pending[j], 10, 64)
+		return a < b
+	})
 }
 
 // SetForce controls heartbeat-aware advisory lock bypass.
