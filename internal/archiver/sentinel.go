@@ -25,6 +25,11 @@ type sentinelGate struct {
 	path   string
 	logger *logger.Logger
 
+	// statErrWarned ensures a non-not-exist stat error is logged at most once per
+	// gate, so a misconfigured path does not silently disable the pause without
+	// spamming the log at the 1s poll cadence.
+	statErrWarned bool
+
 	// Test seams (nil in production): presentFn overrides the filesystem check,
 	// sleepFn overrides the interruptible poll sleep.
 	presentFn func(path string) bool
@@ -48,7 +53,18 @@ func (g *sentinelGate) present() bool {
 		return g.presentFn(g.path)
 	}
 	_, err := os.Stat(g.path)
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// A persistent non-not-exist error (e.g. EACCES on the parent dir) would
+	// otherwise silently disable the pause; surface it once so operators can fix
+	// the path. Treated as "absent" either way (never pause forever on a stat
+	// failure).
+	if !os.IsNotExist(err) && !g.statErrWarned {
+		g.logger.Warnf("Sentinel file %q could not be checked (treating as absent / not paused): %v", g.path, err)
+		g.statErrWarned = true
+	}
+	return false
 }
 
 // sleep waits for d or until ctx is cancelled, returning ctx.Err() on cancel.

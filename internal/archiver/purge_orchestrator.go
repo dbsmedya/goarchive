@@ -200,6 +200,10 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 		return err
 	}
 	for _, rawPK := range pending {
+		// Operator pause switch also applies during resume/recovery.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return err
+		}
 		dataType, unsigned, ok := o.graph.GetRootPKMeta()
 		if !ok {
 			return fmt.Errorf("root PK metadata not loaded")

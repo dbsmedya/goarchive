@@ -272,6 +272,10 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 		return fmt.Errorf("job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count. Switch this job to verification.method: sha256 and re-run. Pending PKs (first 10): %v", o.jobName, len(pending), preview)
 	}
 	for _, rawPK := range pending {
+		// Operator pause switch also applies during resume/recovery.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return err
+		}
 		dataType, unsigned, ok := o.graph.GetRootPKMeta()
 		if !ok {
 			return fmt.Errorf("root PK metadata not loaded")
