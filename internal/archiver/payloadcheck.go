@@ -168,7 +168,32 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 	// Build the same INSERT IGNORE the real copy would send.
 	insert := buildInsertIgnoreBatchQueryStandalone(table, columns, count)
 
-	tx, err := p.dest.BeginTx(ctx, nil)
+	// Check out a dedicated connection so the session-scoped SET FOREIGN_KEY_CHECKS
+	// = 0 below is contained to this conn and reset before it returns to the pool.
+	// SET is NOT transactional in MySQL, so tx.Rollback() does not restore it; a
+	// pooled connection would otherwise be handed back with FK enforcement silently
+	// disabled. Mirrors CopyPhase's dedicated-conn + explicit-reset pattern.
+	conn, err := p.dest.Conn(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to get destination connection: %w", err)
+	}
+	fkReset := false
+	defer func() {
+		// Always re-enable FK checks before returning the connection to the pool,
+		// even on error/rollback. Uses context.Background() so the reset still runs
+		// if ctx was cancelled.
+		if !fkReset {
+			if _, resetErr := conn.ExecContext(context.Background(),
+				"SET FOREIGN_KEY_CHECKS = 1"); resetErr != nil {
+				p.logger.Errorf("Failed to reset FOREIGN_KEY_CHECKS on destination connection: %v", resetErr)
+			}
+		}
+		if closeErr := conn.Close(); closeErr != nil {
+			p.logger.Warnf("Failed to close destination connection: %v", closeErr)
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -185,6 +210,14 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 	if _, err := tx.ExecContext(ctx, insert, values...); err != nil {
 		return 0, 0, fmt.Errorf("destination rejected sample INSERT (likely max_allowed_packet or a schema mismatch): %w", err)
 	}
+
+	// Re-enable FK checks on this connection before it returns to the pool, inside
+	// the linear statement stream (belt-and-suspenders with the defer above). SET
+	// survives the rollback, so the connection is restored regardless.
+	if _, err := tx.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 1"); err != nil {
+		return 0, 0, fmt.Errorf("failed to reset FOREIGN_KEY_CHECKS: %w", err)
+	}
+	fkReset = true
 
 	// Approximate the byte size: query text + a coarse per-value estimate.
 	approx := len(insert)
