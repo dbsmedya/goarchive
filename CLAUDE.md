@@ -87,6 +87,7 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - `archiver_job_log` gains a `copied` status as a durable "copy+verify succeeded, safe to delete" marker; crash recovery is now status-aware (`pending` → full replay, `copied` → delete-only, no re-verify)
 - `dry-run` validates that `batch_size` fits MySQL's 65,535-placeholder limit and `max_allowed_packet` via a rolled-back destination transaction (placeholder check exact; packet check measured, approximate for child tables)
 - `delete_sleep_seconds` (default 0) throttles the delete phase by pausing between `batch_delete_size` delete chunks to limit binlog/replication lag — independent of `sleep_seconds`, which paces whole batches for source/archive load
+- `sentinel_file` (default empty) is an operator pause switch honored by archive/purge/copy-only: while the file exists, processing pauses before each batch (re-check every 1s, context-interruptible) and resumes when removed
 
 ### Code Review Refactor (2026-03-27)
 - Removed dead code: `ApplyJobOverrides`, `UpdateProcessingConfig`, `PreflightError.Details`

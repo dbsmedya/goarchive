@@ -220,6 +220,12 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 			break
 		}
 
+		// Operator pause switch: block before processing this batch while the
+		// sentinel file exists.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return fail("%w", err)
+		}
+
 		if err := resumeMgr.LogBatchPending(ctx, o.jobName, rootIDs); err != nil {
 			return fail("failed to log pending batch entries: %w", err)
 		}

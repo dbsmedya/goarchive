@@ -159,6 +159,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 			break
 		}
 
+		// Operator pause switch: block before processing this batch while the
+		// sentinel file exists.
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+			return nil, err
+		}
+
 		result.BatchesProcessed++
 		if err := resumeMgr.LogBatchPending(ctx, o.jobName, rootIDs); err != nil {
 			return nil, fmt.Errorf("failed to log pending batch entries: %w", err)

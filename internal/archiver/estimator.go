@@ -181,6 +181,13 @@ func (e *Estimator) DisplayExecutionPlan(result *EstimateResult) {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
+	if e.processing.SentinelFile != "" {
+		fmt.Printf("  Sentinel pause file: %s", e.processing.SentinelFile)
+		if e.jobCfg.Processing != nil && e.jobCfg.Processing.SentinelFile != "" {
+			fmt.Print(" (job-specific)")
+		}
+		fmt.Println()
+	}
 	fmt.Printf("  Verification method: %s", e.verification.Method)
 	if e.jobCfg.Verification != nil && e.jobCfg.Verification.Method != "" {
 		fmt.Print(" (job-specific)")

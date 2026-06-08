@@ -472,6 +472,13 @@ func (o *ArchiveOrchestrator) processBatch(
 		return stats, nil
 	}
 
+	// Operator pause switch: block before processing this batch while the
+	// sentinel file exists (covers both the main loop and resume recovery, which
+	// both flow through processBatch).
+	if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		return stats, err
+	}
+
 	discovered, err := discovery.Discover(ctx, rootIDs)
 	if err != nil {
 		return stats, fmt.Errorf("discovery failed: %w", err)

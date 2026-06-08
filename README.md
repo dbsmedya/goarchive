@@ -380,6 +380,33 @@ the first copy chunk. Already-processed root PKs are checkpointed; the
 interrupted batch's PKs are left in a resumable state and replayed automatically
 on the next run after you lower `batch_size` in your config.
 
+### Pausing a run: `sentinel_file`
+
+`sentinel_file` is an operator pause switch. Set it to a full file path in the
+`processing` block:
+
+```yaml
+processing:
+  sentinel_file: /var/run/goarchive/pause.flag
+```
+
+Before each batch, GoArchive checks whether that file exists. **While the file is
+present, processing pauses** and re-checks once per second; **remove the file to
+resume.** Create it with `touch /var/run/goarchive/pause.flag` to pause an
+in-flight run (e.g. to relieve a struggling replica) without killing the process,
+and `rm` it to continue. Presence is the only signal — the file's contents are
+ignored.
+
+Notes:
+- The pause is honored by `archive`, `purge`, and `copy-only`, at the start of
+  every batch (including resume/recovery batches).
+- The wait is interruptible: `Ctrl-C` / shutdown aborts a paused run immediately,
+  leaving the current batch unprocessed and recoverable on the next run.
+- A very long pause leaves database connections idle; keep MySQL `wait_timeout`
+  comfortably above your expected pause duration so the job's advisory lock and
+  pooled connections are not dropped.
+- Empty (default) disables the switch.
+
 ### Crash Recovery
 
 If interrupted, GoArchive can resume from the last checkpoint:
@@ -576,6 +603,7 @@ See [tests/README.md](tests/README.md) for detailed testing documentation includ
 | `batch_delete_size` | Rows per DELETE statement | 500 |
 | `sleep_seconds` | Pause between batches (source/archive load throttle) | 1 |
 | `delete_sleep_seconds` | Pause between delete chunks (replication/binlog throttle) | 0 |
+| `sentinel_file` | Operator pause switch: while this file exists, pause before each batch (re-check every 1s) | _(empty)_ |
 
 ### Safety Settings
 

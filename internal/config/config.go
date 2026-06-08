@@ -66,6 +66,10 @@ type ProcessingConfig struct {
 	// chunks (every batch_delete_size rows) to limit binlog generation and
 	// replication lag. 0 (default) disables the throttle.
 	DeleteSleepSeconds float64 `yaml:"delete_sleep_seconds" mapstructure:"delete_sleep_seconds"`
+	// SentinelFile, when set, is an operator pause switch. Before each batch, if
+	// this file exists, processing pauses and re-checks every second until the
+	// file is removed. Empty (default) disables the pause switch.
+	SentinelFile string `yaml:"sentinel_file" mapstructure:"sentinel_file"`
 }
 
 // SafetyConfig represents safety settings for archive operations.
@@ -174,6 +178,9 @@ func (jc *JobConfig) GetJobProcessing(global ProcessingConfig) ProcessingConfig 
 	}
 	if jc.Processing.DeleteSleepSeconds > 0 {
 		result.DeleteSleepSeconds = jc.Processing.DeleteSleepSeconds
+	}
+	if jc.Processing.SentinelFile != "" {
+		result.SentinelFile = jc.Processing.SentinelFile
 	}
 	return result
 }
