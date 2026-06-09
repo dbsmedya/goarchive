@@ -926,10 +926,11 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 
 // formatGrantee converts CURRENT_USER() output (user@host) into the quoted
 // GRANTEE format used by information_schema privilege tables ('user'@'host').
-// Embedded single quotes are doubled to match the GRANTEE column's quoting.
-// Account names containing other quote-like exotica are not supported.
+// Verified against MySQL 8.4: the GRANTEE column is built by plain
+// concatenation of quotes around the raw name — embedded single quotes are
+// NOT escaped (user o'brien appears as 'o'brien'@'%'), so none are added here.
 func formatGrantee(currentUser string) string {
-	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	quote := func(s string) string { return "'" + s + "'" }
 	at := strings.LastIndex(currentUser, "@")
 	if at < 0 {
 		return quote(currentUser) + "@'%'"
@@ -960,7 +961,9 @@ func roleGrantees(currentRole string) []string {
 // the authenticated account plus any active roles. CURRENT_ROLE() exists on
 // all supported MySQL versions (8.0+); an error there is real and fails
 // preflight rather than being ignored — missing roles would false-fail the
-// privilege checks anyway.
+// privilege checks anyway. Only directly activated roles are listed;
+// privileges held via roles granted to roles (nested) are not detected and
+// will conservatively fail the check.
 func (p *PreflightChecker) currentGrantees(ctx context.Context, db *sql.DB) ([]string, error) {
 	var user string
 	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&user); err != nil {

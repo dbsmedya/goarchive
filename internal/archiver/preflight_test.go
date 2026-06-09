@@ -1112,7 +1112,7 @@ func TestValidateDestinationWritePermissions_GlobalGrant(t *testing.T) {
 	defer cleanup()
 
 	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
 
@@ -1121,15 +1121,32 @@ func TestValidateDestinationWritePermissions_GlobalGrant(t *testing.T) {
 	}
 }
 
+func TestValidateDestinationWritePermissions_RoleGrant(t *testing.T) {
+	checker, destMock, cleanup := newWritePermChecker(t)
+	defer cleanup()
+
+	destMock.ExpectQuery("SELECT CURRENT_USER()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
+	destMock.ExpectQuery("SELECT CURRENT_ROLE()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("`app_writer`@`%`"))
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?,\\?\\)").
+		WithArgs("'archiver'@'%'", "'app_writer'@'%'", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
+		t.Fatalf("role-held global INSERT grant should pass, got: %v", err)
+	}
+}
+
 func TestValidateDestinationWritePermissions_SchemaGrant(t *testing.T) {
 	checker, destMock, cleanup := newWritePermChecker(t)
 	defer cleanup()
 
 	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT", "destdb").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
 
@@ -1138,18 +1155,38 @@ func TestValidateDestinationWritePermissions_SchemaGrant(t *testing.T) {
 	}
 }
 
+func TestValidateDestinationWritePermissions_TableGrant(t *testing.T) {
+	checker, destMock, cleanup := newWritePermChecker(t)
+	defer cleanup()
+
+	expectGrantees(destMock)
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
+		WithArgs("'archiver'@'%'", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
+		WithArgs("'archiver'@'%'", "INSERT", "destdb").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
+		WithArgs("'archiver'@'%'", "INSERT", "destdb", "users").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
+		t.Fatalf("table-level INSERT grant should pass, got: %v", err)
+	}
+}
+
 func TestValidateDestinationWritePermissions_NoInsertPrivilege(t *testing.T) {
 	checker, destMock, cleanup := newWritePermChecker(t)
 	defer cleanup()
 
 	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT", "destdb").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES").
+	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "INSERT", "destdb", "users").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
 
@@ -1752,13 +1789,13 @@ func TestValidateSourceDeletePermissions_Missing(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
 	sourceMock.ExpectQuery("SELECT CURRENT_ROLE()").
 		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
-	sourceMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+	sourceMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "DELETE").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	sourceMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+	sourceMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "DELETE", "sourcedb").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	sourceMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES").
+	sourceMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
 		WithArgs("'archiver'@'%'", "DELETE", "sourcedb", "users").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
 
@@ -1779,7 +1816,9 @@ func TestFormatGrantee(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"archiver@10.0.0.5", "'archiver'@'10.0.0.5'"},
 		{"root@%", "'root'@'%'"},
-		{"o'brien@%", "'o''brien'@'%'"}, // embedded quote doubled, as in the GRANTEE column
+		// Embedded quote NOT escaped — verified on MySQL 8.4: the GRANTEE
+		// column concatenates quotes around the raw name without doubling.
+		{"o'brien@%", "'o'brien'@'%'"},
 	}
 	for _, tt := range tests {
 		if got := formatGrantee(tt.in); got != tt.want {
