@@ -46,6 +46,7 @@ type JobConfig struct {
 	Relations    []Relation          `yaml:"relations" mapstructure:"relations"`
 	Processing   *ProcessingConfig   `yaml:"processing,omitempty" mapstructure:"processing"`
 	Verification *VerificationConfig `yaml:"verification,omitempty" mapstructure:"verification"`
+	Logging      *LoggingConfig      `yaml:"logging,omitempty" mapstructure:"logging"`
 }
 
 // Relation represents a table relationship for dependency resolution.
@@ -95,9 +96,10 @@ func (v VerificationConfig) EffectiveMethod() string {
 
 // LoggingConfig represents logging settings.
 type LoggingConfig struct {
-	Level  string `yaml:"level" mapstructure:"level"`   // debug, info, warn, error
-	Format string `yaml:"format" mapstructure:"format"` // json or text
-	Output string `yaml:"output" mapstructure:"output"` // stdout, stderr, or file path
+	Level    string `yaml:"level" mapstructure:"level"`         // debug, info, warn, error
+	Format   string `yaml:"format" mapstructure:"format"`       // json or text
+	Output   string `yaml:"output" mapstructure:"output"`       // stdout, stderr, or file path
+	FileOnly bool   `yaml:"file_only" mapstructure:"file_only"` // suppress stdout tee when output is a file
 }
 
 // DefaultConfig returns a Config with sensible default values.
@@ -182,6 +184,36 @@ func (jc *JobConfig) GetJobProcessing(global ProcessingConfig) ProcessingConfig 
 	if jc.Processing.SentinelFile != "" {
 		result.SentinelFile = jc.Processing.SentinelFile
 	}
+	return result
+}
+
+// GetJobLogging returns the logging config for a job by name, falling back to global if not set.
+func (c *Config) GetJobLogging(jobName string) LoggingConfig {
+	job, err := c.GetJob(jobName)
+	if err != nil {
+		return c.Logging
+	}
+	return job.GetJobLogging(c.Logging)
+}
+
+// GetJobLogging returns the logging config for a job, falling back to global if not set.
+func (jc *JobConfig) GetJobLogging(global LoggingConfig) LoggingConfig {
+	if jc.Logging == nil {
+		return global
+	}
+
+	// Merge job-specific with global defaults
+	result := global
+	if jc.Logging.Level != "" {
+		result.Level = jc.Logging.Level
+	}
+	if jc.Logging.Format != "" {
+		result.Format = jc.Logging.Format
+	}
+	if jc.Logging.Output != "" {
+		result.Output = jc.Logging.Output
+	}
+	result.FileOnly = jc.Logging.FileOnly
 	return result
 }
 

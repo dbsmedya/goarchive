@@ -9,7 +9,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -78,8 +77,8 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Initialize logger
-	log, err := logger.New(&cfg.Logging)
+	// Initialize logger (per-job logging config, CLI flags win)
+	log, err := newJobLogger(cfg, jobCfg, archiveJob)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
@@ -129,6 +128,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create orchestrator: %w", err)
 	}
+	orch.SetLogger(log)
 
 	// Initialize (build graph, validate)
 	if err := orch.Initialize(); err != nil {
@@ -145,6 +145,17 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("archive operation failed: %w", err)
 	}
+
+	// Log the structured summary (reaches file outputs), then print for the console
+	log.Infow("Archive complete",
+		"duration", result.Duration,
+		"tables_copied", result.TablesCopied,
+		"tables_deleted", result.TablesDeleted,
+		"records_copied", result.RecordsCopied,
+		"records_deleted", result.RecordsDeleted,
+		"success", result.Success,
+		"errors", len(result.Errors),
+	)
 
 	// Display results
 	fmt.Printf("\n=== Archive Complete ===\n")

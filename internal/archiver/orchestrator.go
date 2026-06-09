@@ -315,6 +315,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create record discovery: %w", err)
 	}
+	discovery.SetLogger(o.logger)
 
 	copyPhase, err := NewCopyPhase(
 		o.dbManager.Source,
@@ -686,6 +687,12 @@ func sortPendingPKsNumeric(pending []string, unsigned bool) {
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *ArchiveOrchestrator) SetForce(force bool) {
 	o.force = force
+}
+
+// SetLogger sets a custom logger for the orchestrator. Call before
+// Initialize/Execute so all phases inherit it.
+func (o *ArchiveOrchestrator) SetLogger(log *logger.Logger) {
+	o.logger = log
 }
 
 // IsInitialized returns true if the orchestrator has been initialized.

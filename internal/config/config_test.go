@@ -187,3 +187,74 @@ func TestGetJobVerification_NilJobVerificationUsesGlobal(t *testing.T) {
 		t.Error("expected global skip_verification=true when job verification is nil")
 	}
 }
+
+func TestGetJobLogging_NilJobLoggingUsesGlobal(t *testing.T) {
+	global := LoggingConfig{Level: "warn", Format: "json", Output: "/var/log/global.log", FileOnly: true}
+	job := JobConfig{}
+
+	result := job.GetJobLogging(global)
+
+	if result != global {
+		t.Errorf("expected global logging config when job logging is nil, got %+v", result)
+	}
+}
+
+func TestGetJobLogging_JobOverridesFields(t *testing.T) {
+	global := LoggingConfig{Level: "warn", Format: "json", Output: "stdout"}
+	job := JobConfig{
+		Logging: &LoggingConfig{
+			Level:    "debug",
+			Format:   "text",
+			Output:   "/opt/goarchive/ShipmentErrorLogs.log",
+			FileOnly: true,
+		},
+	}
+
+	result := job.GetJobLogging(global)
+
+	if result.Level != "debug" {
+		t.Errorf("expected level debug, got %s", result.Level)
+	}
+	if result.Format != "text" {
+		t.Errorf("expected format text, got %s", result.Format)
+	}
+	if result.Output != "/opt/goarchive/ShipmentErrorLogs.log" {
+		t.Errorf("expected job output path, got %s", result.Output)
+	}
+	if !result.FileOnly {
+		t.Error("expected job-level file_only=true")
+	}
+}
+
+func TestGetJobLogging_PartialOverrideInheritsGlobal(t *testing.T) {
+	global := LoggingConfig{Level: "warn", Format: "json", Output: "stdout"}
+	job := JobConfig{
+		Logging: &LoggingConfig{Output: "/var/log/job.log"},
+	}
+
+	result := job.GetJobLogging(global)
+
+	if result.Level != "warn" {
+		t.Errorf("expected inherited level warn, got %s", result.Level)
+	}
+	if result.Format != "json" {
+		t.Errorf("expected inherited format json, got %s", result.Format)
+	}
+	if result.Output != "/var/log/job.log" {
+		t.Errorf("expected job output path, got %s", result.Output)
+	}
+	if result.FileOnly {
+		t.Error("expected file_only=false when job block does not set it")
+	}
+}
+
+func TestConfigGetJobLogging_UnknownJobUsesGlobal(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Logging = LoggingConfig{Level: "error", Format: "json", Output: "stderr"}
+
+	result := cfg.GetJobLogging("missing_job")
+
+	if result != cfg.Logging {
+		t.Errorf("expected global logging for unknown job, got %+v", result)
+	}
+}

@@ -346,22 +346,48 @@ func (c *Config) validateVerificationConfig(prefix string, verification *Verific
 }
 
 func (c *Config) validateLogging() ValidationErrors {
+	errors := validateLoggingConfig(c.Logging, "logging")
+
+	// Validate each job's effective (merged) logging config so errors in
+	// job-level overrides are reported against the job that set them.
+	for name, job := range c.Jobs {
+		if job.Logging == nil {
+			continue
+		}
+		merged := job.GetJobLogging(c.Logging)
+		errors = append(errors, validateLoggingConfig(merged, "jobs."+name+".logging")...)
+	}
+
+	return errors
+}
+
+func validateLoggingConfig(lc LoggingConfig, prefix string) ValidationErrors {
 	var errors ValidationErrors
 
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true, "": true}
-	if !validLevels[c.Logging.Level] {
+	if !validLevels[lc.Level] {
 		errors = append(errors, ValidationError{
-			Field:   "logging.level",
+			Field:   prefix + ".level",
 			Message: "level must be 'debug', 'info', 'warn', or 'error'",
 		})
 	}
 
 	validFormats := map[string]bool{"json": true, "text": true, "": true}
-	if !validFormats[c.Logging.Format] {
+	if !validFormats[lc.Format] {
 		errors = append(errors, ValidationError{
-			Field:   "logging.format",
+			Field:   prefix + ".format",
 			Message: "format must be 'json' or 'text'",
 		})
+	}
+
+	if lc.FileOnly {
+		switch lc.Output {
+		case "", "stdout", "stderr":
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".file_only",
+				Message: "file_only requires " + prefix + ".output to be a file path",
+			})
+		}
 	}
 
 	return errors

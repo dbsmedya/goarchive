@@ -79,6 +79,12 @@ func NewCopyOnlyOrchestrator(cfg *config.Config, jobName string, jobCfg *config.
 	}, nil
 }
 
+// SetLogger sets a custom logger for the orchestrator. Call before
+// Initialize/Execute so all phases inherit it.
+func (o *CopyOnlyOrchestrator) SetLogger(log *logger.Logger) {
+	o.logger = log
+}
+
 // Initialize builds dependency graph and computes copy order.
 func (o *CopyOnlyOrchestrator) Initialize() error {
 	if o.initialized {
@@ -176,6 +182,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	if err != nil {
 		return fail("failed to create record discovery: %w", err)
 	}
+	discovery.SetLogger(o.logger)
 
 	copyPhase, err := NewCopyPhase(
 		o.dbManager.Source,

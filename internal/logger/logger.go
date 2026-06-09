@@ -3,6 +3,7 @@ package logger
 
 import (
 	"errors"
+	"io"
 	"os"
 	"sync"
 
@@ -20,17 +21,39 @@ type Logger struct {
 	closeOnce *sync.Once
 }
 
+// nopSyncWriter wraps a console stream so Sync is a no-op. fsync on a
+// terminal or pipe fails with EINVAL on Linux, and zap does not buffer
+// console writes, so there is nothing to flush.
+type nopSyncWriter struct{ io.Writer }
+
+func (nopSyncWriter) Sync() error { return nil }
+
 // New creates a new Logger from configuration.
 func New(cfg *config.LoggingConfig) (*Logger, error) {
 	level := parseLevel(cfg.Level)
-	encoder := buildEncoder(cfg.Format)
-	writers, logFile, err := buildWriters(cfg.Output)
-	if err != nil {
-		return nil, err
+
+	var cores []zapcore.Core
+	var logFile *os.File
+
+	switch cfg.Output {
+	case "stdout", "":
+		cores = append(cores, zapcore.NewCore(buildEncoder(cfg.Format, true), nopSyncWriter{os.Stdout}, level))
+	case "stderr":
+		cores = append(cores, zapcore.NewCore(buildEncoder(cfg.Format, true), nopSyncWriter{os.Stderr}, level))
+	default:
+		// File output, plain encoder (no ANSI color codes)
+		file, err := os.OpenFile(cfg.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return nil, err
+		}
+		logFile = file
+		cores = append(cores, zapcore.NewCore(buildEncoder(cfg.Format, false), zapcore.AddSync(file), level))
+		if !cfg.FileOnly {
+			cores = append(cores, zapcore.NewCore(buildEncoder(cfg.Format, true), nopSyncWriter{os.Stdout}, level))
+		}
 	}
 
-	core := zapcore.NewCore(encoder, writers, level)
-	baseLogger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	baseLogger := zap.New(zapcore.NewTee(cores...), zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 
 	return &Logger{
 		SugaredLogger: baseLogger.Sugar(),
@@ -67,8 +90,10 @@ func parseLevel(level string) zapcore.Level {
 	}
 }
 
-// buildEncoder creates the appropriate encoder based on format.
-func buildEncoder(format string) zapcore.Encoder {
+// buildEncoder creates the appropriate encoder based on format. Colored
+// level output is only used for text format on console streams; file
+// outputs get a plain encoder so log files stay free of ANSI codes.
+func buildEncoder(format string, console bool) zapcore.Encoder {
 	encoderConfig := zapcore.EncoderConfig{
 		TimeKey:        "time",
 		LevelKey:       "level",
@@ -88,30 +113,13 @@ func buildEncoder(format string) zapcore.Encoder {
 		return zapcore.NewJSONEncoder(encoderConfig)
 	}
 
-	// Text format with colored output
-	encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	return zapcore.NewConsoleEncoder(encoderConfig)
-}
-
-// buildWriters creates the output writers based on configuration.
-func buildWriters(output string) (zapcore.WriteSyncer, *os.File, error) {
-	switch output {
-	case "stdout", "":
-		return zapcore.AddSync(os.Stdout), nil, nil
-	case "stderr":
-		return zapcore.AddSync(os.Stderr), nil, nil
-	default:
-		// File output
-		file, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return nil, nil, err
-		}
-		// Write to both file and stdout
-		return zapcore.NewMultiWriteSyncer(
-			zapcore.AddSync(file),
-			zapcore.AddSync(os.Stdout),
-		), file, nil
+	// Text format: colored levels on console, plain in files
+	if console {
+		encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	} else {
+		encoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 	}
+	return zapcore.NewConsoleEncoder(encoderConfig)
 }
 
 // WithJob returns a Logger with job context.

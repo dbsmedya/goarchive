@@ -82,6 +82,24 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 
 ## Recent Changes
 
+### Logging Production Audit (fix/varios, 2026-06-09)
+- `RecordDiscovery` now receives the orchestrator logger via `SetLogger` (was silently using a default stdout logger in all three orchestrators)
+- `newJobLogger` tags every entry with `job=<name>` (`WithJob`), so all cmd/preflight/orchestrator/phase logs are attributable
+- archive/purge/copy-only log a structured completion summary (`Infow`) in addition to the console `fmt` output, so file logs capture run results
+- No rotation built in: files open in append mode; example config documents logrotate `copytruncate`
+- Audited clean: no credentials/DSNs logged; defer ordering flushes logger last; second-signal handler syncs before exit; zap loggers are goroutine-safe
+
+### Per-Job Logging (fix/varios, 2026-06-09)
+- Jobs can carry their own `logging:` block (level/format/output/file_only); unset fields inherit from the global `logging:` block, and CLI `--log-level`/`--log-format` flags override both (`effectiveJobLogging` in `cmd/goarchive/cmd/root.go`)
+- archive/purge/copy-only/dry-run build their logger from the job-effective config; orchestrators now expose `SetLogger` and receive the cmd logger (previously they always logged to a default stdout logger)
+- Validation checks each job's merged logging config and reports errors as `jobs.<name>.logging.<field>`
+
+### Logging Fixes (fix/varios, 2026-06-09)
+- Stdout/stderr zap syncers are now no-op on `Sync()` — kills the spurious `warning: failed to sync logger: sync /dev/stdout: invalid argument` on Linux (fsync on tty/pipe returns EINVAL)
+- File output (`logging.output: <path>`) writes plain text (no ANSI color codes); the stdout tee keeps colored output
+- New `logging.file_only: true` suppresses the stdout tee; validation rejects it when output is stdout/stderr
+- Reminder: config is loaded from exactly one file (`--config`, default `./archiver.yaml`) — there is no merging or fallback between multiple yaml files
+
 ### Batched Archive Pipeline (fix/batch_size, 2026-06-08)
 - `batch_size` is now the real copy chunk unit: root and every child table are fetched and inserted `batch_size` rows at a time (previously only root fetch was chunked)
 - `archiver_job_log` gains a `copied` status as a durable "copy+verify succeeded, safe to delete" marker; crash recovery is now status-aware (`pending` → full replay, `copied` → delete-only, no re-verify)

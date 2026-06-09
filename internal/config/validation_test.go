@@ -40,6 +40,54 @@ func TestValidConfig(t *testing.T) {
 	}
 }
 
+func TestFileOnlyRequiresFileOutput(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Source: DatabaseConfig{
+				Host:     "localhost",
+				Port:     3306,
+				User:     "root",
+				Password: "pass",
+				Database: "testdb",
+			},
+			Destination: DatabaseConfig{
+				Host:     "localhost",
+				Port:     3307,
+				User:     "root",
+				Password: "pass",
+				Database: "archivedb",
+			},
+			Jobs: map[string]JobConfig{
+				"test_job": {RootTable: "orders", PrimaryKey: "id"},
+			},
+			Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+			Verification: VerificationConfig{Method: "count"},
+		}
+	}
+
+	for _, output := range []string{"", "stdout", "stderr"} {
+		t.Run("rejects_"+output, func(t *testing.T) {
+			cfg := base()
+			cfg.Logging = LoggingConfig{Output: output, FileOnly: true}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for file_only with output %q", output)
+			}
+			if !strings.Contains(err.Error(), "logging.file_only") {
+				t.Errorf("expected error to mention 'logging.file_only', got: %v", err)
+			}
+		})
+	}
+
+	t.Run("accepts_file_path", func(t *testing.T) {
+		cfg := base()
+		cfg.Logging = LoggingConfig{Output: "/var/log/goarchive.log", FileOnly: true}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no validation error for file_only with file path, got: %v", err)
+		}
+	})
+}
+
 func TestMissingSourceHost(t *testing.T) {
 	cfg := &Config{
 		Source: DatabaseConfig{
@@ -601,4 +649,84 @@ func TestValidate_RelationAtMaxDepth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("depth=10 should pass validation, got: %v", err)
 	}
+}
+
+func TestJobLoggingValidation(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Source: DatabaseConfig{
+				Host: "localhost", Port: 3306, User: "root", Password: "p", Database: "testdb",
+			},
+			Destination: DatabaseConfig{
+				Host: "localhost", Port: 3307, User: "root", Password: "p", Database: "archivedb",
+			},
+			Jobs: map[string]JobConfig{
+				"test_job": {RootTable: "orders", PrimaryKey: "id"},
+			},
+			Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+			Verification: VerificationConfig{Method: "count"},
+		}
+	}
+
+	withJobLogging := func(cfg *Config, lc *LoggingConfig) {
+		job := cfg.Jobs["test_job"]
+		job.Logging = lc
+		cfg.Jobs["test_job"] = job
+	}
+
+	t.Run("invalid job level", func(t *testing.T) {
+		cfg := base()
+		withJobLogging(cfg, &LoggingConfig{Level: "verbose"})
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected validation error for invalid job logging level")
+		}
+		if !strings.Contains(err.Error(), "jobs.test_job.logging.level") {
+			t.Errorf("expected error to mention 'jobs.test_job.logging.level', got: %v", err)
+		}
+	})
+
+	t.Run("invalid job format", func(t *testing.T) {
+		cfg := base()
+		withJobLogging(cfg, &LoggingConfig{Format: "xml"})
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected validation error for invalid job logging format")
+		}
+		if !strings.Contains(err.Error(), "jobs.test_job.logging.format") {
+			t.Errorf("expected error to mention 'jobs.test_job.logging.format', got: %v", err)
+		}
+	})
+
+	t.Run("job file_only with inherited stdout output", func(t *testing.T) {
+		cfg := base()
+		withJobLogging(cfg, &LoggingConfig{FileOnly: true})
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected validation error for job file_only with inherited stdout output")
+		}
+		if !strings.Contains(err.Error(), "jobs.test_job.logging.file_only") {
+			t.Errorf("expected error to mention 'jobs.test_job.logging.file_only', got: %v", err)
+		}
+	})
+
+	t.Run("job file_only with job file output is valid", func(t *testing.T) {
+		cfg := base()
+		withJobLogging(cfg, &LoggingConfig{
+			Level: "info", Format: "text",
+			Output: "/opt/goarchive/ShipmentErrorLogs.log", FileOnly: true,
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no validation error, got: %v", err)
+		}
+	})
+
+	t.Run("job file_only valid with global file output inherited", func(t *testing.T) {
+		cfg := base()
+		cfg.Logging = LoggingConfig{Output: "/var/log/goarchive.log"}
+		withJobLogging(cfg, &LoggingConfig{FileOnly: true})
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("expected no validation error (output inherited from global), got: %v", err)
+		}
+	})
 }

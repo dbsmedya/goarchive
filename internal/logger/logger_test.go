@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -236,79 +237,13 @@ func TestChaining(t *testing.T) {
 }
 
 func TestBuildEncoder(t *testing.T) {
-	// Test JSON encoder
-	jsonEncoder := buildEncoder("json")
-	if jsonEncoder == nil {
-		t.Error("buildEncoder('json') returned nil")
+	for _, format := range []string{"json", "text", "unknown"} {
+		for _, console := range []bool{true, false} {
+			if buildEncoder(format, console) == nil {
+				t.Errorf("buildEncoder(%q, %v) returned nil", format, console)
+			}
+		}
 	}
-
-	// Test text/console encoder
-	textEncoder := buildEncoder("text")
-	if textEncoder == nil {
-		t.Error("buildEncoder('text') returned nil")
-	}
-
-	// Test default (unknown format should return text)
-	defaultEncoder := buildEncoder("unknown")
-	if defaultEncoder == nil {
-		t.Error("buildEncoder('unknown') returned nil")
-	}
-}
-
-func TestBuildWriters(t *testing.T) {
-	// Test stdout
-	stdoutWriter, stdoutFile, err := buildWriters("stdout")
-	if stdoutWriter == nil {
-		t.Error("buildWriters('stdout') returned nil")
-	}
-	if err != nil {
-		t.Errorf("buildWriters('stdout') returned error: %v", err)
-	}
-	if stdoutFile != nil {
-		t.Error("buildWriters('stdout') should not return file handle")
-	}
-
-	// Test stderr
-	stderrWriter, stderrFile, err := buildWriters("stderr")
-	if stderrWriter == nil {
-		t.Error("buildWriters('stderr') returned nil")
-	}
-	if err != nil {
-		t.Errorf("buildWriters('stderr') returned error: %v", err)
-	}
-	if stderrFile != nil {
-		t.Error("buildWriters('stderr') should not return file handle")
-	}
-
-	// Test empty string (defaults to stdout)
-	emptyWriter, emptyFile, err := buildWriters("")
-	if emptyWriter == nil {
-		t.Error("buildWriters('') returned nil")
-	}
-	if err != nil {
-		t.Errorf("buildWriters('') returned error: %v", err)
-	}
-	if emptyFile != nil {
-		t.Error("buildWriters('') should not return file handle")
-	}
-
-	// Test file output
-	tmpFile := "/tmp/test-logger-output.log"
-	fileWriter, fileHandle, err := buildWriters(tmpFile)
-	if fileWriter == nil {
-		t.Error("buildWriters(file) returned nil")
-	}
-	if err != nil {
-		t.Errorf("buildWriters(file) returned error: %v", err)
-	}
-	if fileHandle == nil {
-		t.Error("buildWriters(file) should return file handle")
-	} else {
-		_ = fileHandle.Close()
-	}
-
-	// Cleanup
-	_ = os.Remove(tmpFile)
 }
 
 func TestSync(t *testing.T) {
@@ -327,6 +262,125 @@ func TestSync(t *testing.T) {
 	err = logger.Sync()
 	// Note: Sync may return error on stdout, that's expected behavior
 	_ = err
+}
+
+func TestCloseIgnoresConsoleSyncError(t *testing.T) {
+	// Replace stdout with a pipe whose write end we close, so a real
+	// Sync() on it would fail — mirrors fsync(/dev/stdout) returning
+	// EINVAL on Linux terminals/pipes.
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() failed: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = orig
+		_ = r.Close()
+	}()
+
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: "stdout"})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	_ = w.Close()
+
+	if err := log.Close(); err != nil {
+		t.Errorf("Close() should ignore console sync errors, got: %v", err)
+	}
+}
+
+func TestFileOutputTextFormatNoColorCodes(t *testing.T) {
+	logPath := t.TempDir() + "/out.log"
+
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "text", Output: logPath})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+
+	log.Info("color check message")
+	_ = log.Close()
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	if strings.Contains(string(content), "\x1b[") {
+		t.Errorf("log file should not contain ANSI color codes, got: %q", content)
+	}
+	if !strings.Contains(string(content), "color check message") {
+		t.Error("log file should contain the logged message")
+	}
+}
+
+// captureStdoutDuring redirects os.Stdout while fn runs and returns what was
+// written to it.
+func captureStdoutDuring(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() failed: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	fn()
+
+	_ = w.Close()
+	captured, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatalf("reading captured stdout failed: %v", err)
+	}
+	return string(captured)
+}
+
+func TestFileOnlySuppressesStdout(t *testing.T) {
+	logPath := t.TempDir() + "/out.log"
+
+	captured := captureStdoutDuring(t, func() {
+		log, err := New(&config.LoggingConfig{
+			Level: "info", Format: "json", Output: logPath, FileOnly: true,
+		})
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		log.Info("file-only-marker")
+		_ = log.Close()
+	})
+
+	if strings.Contains(captured, "file-only-marker") {
+		t.Error("file_only output should not write to stdout")
+	}
+
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	if !strings.Contains(string(content), "file-only-marker") {
+		t.Error("log file should contain the logged message")
+	}
+}
+
+func TestFileOutputTeesToStdoutByDefault(t *testing.T) {
+	logPath := t.TempDir() + "/out.log"
+
+	captured := captureStdoutDuring(t, func() {
+		log, err := New(&config.LoggingConfig{
+			Level: "info", Format: "json", Output: logPath,
+		})
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		log.Info("tee-marker")
+		_ = log.Close()
+	})
+
+	if !strings.Contains(captured, "tee-marker") {
+		t.Error("file output without file_only should still write to stdout")
+	}
 }
 
 func TestLoggingOutput(t *testing.T) {

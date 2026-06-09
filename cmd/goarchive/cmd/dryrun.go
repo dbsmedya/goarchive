@@ -8,7 +8,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -64,7 +63,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	jobCfg := &jobCfgValue
 
 	// Initialize logger
-	log, err := logger.New(&cfg.Logging)
+	log, err := newJobLogger(cfg, jobCfg, dryrunJob)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}

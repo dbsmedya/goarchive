@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
@@ -89,6 +90,34 @@ func validateCLIOverrides(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("--sleep must be >= 0")
 	}
 	return nil
+}
+
+// effectiveJobLogging resolves the logging config for a job run with
+// precedence: CLI flags > job logging block > global logging.
+func effectiveJobLogging(cfg *config.Config, jobCfg *config.JobConfig, overrides CLIOverrides) config.LoggingConfig {
+	logCfg := cfg.Logging
+	if jobCfg != nil {
+		logCfg = jobCfg.GetJobLogging(cfg.Logging)
+	}
+	if overrides.LogLevel != "" {
+		logCfg.Level = overrides.LogLevel
+	}
+	if overrides.LogFormat != "" {
+		logCfg.Format = overrides.LogFormat
+	}
+	return logCfg
+}
+
+// newJobLogger builds the logger for a job command from the effective
+// per-job logging configuration. Every entry is tagged with the job name
+// so runs remain attributable when jobs share an output.
+func newJobLogger(cfg *config.Config, jobCfg *config.JobConfig, jobName string) (*logger.Logger, error) {
+	logCfg := effectiveJobLogging(cfg, jobCfg, GetCLIOverrides())
+	log, err := logger.New(&logCfg)
+	if err != nil {
+		return nil, err
+	}
+	return log.WithJob(jobName), nil
 }
 
 func syncLogger(log *logger.Logger) {

@@ -9,7 +9,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -78,7 +77,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize logger
-	log, err := logger.New(&cfg.Logging)
+	log, err := newJobLogger(cfg, jobCfg, purgeJob)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
@@ -127,6 +126,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create purge orchestrator: %w", err)
 	}
+	orch.SetLogger(log)
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("purge orchestrator initialization failed: %w", err)
 	}
@@ -139,6 +139,13 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("purge operation failed: %w", err)
 	}
+
+	// Log the structured summary (reaches file outputs), then print for the console
+	log.Infow("Purge complete",
+		"duration", result.Duration,
+		"batches_processed", result.BatchesProcessed,
+		"records_deleted", result.RecordsDeleted,
+	)
 
 	// Display results
 	fmt.Printf("\n=== Purge Complete ===\n")

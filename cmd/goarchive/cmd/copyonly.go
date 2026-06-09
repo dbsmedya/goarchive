@@ -9,7 +9,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/archiver"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +66,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	log, err := logger.New(&cfg.Logging)
+	log, err := newJobLogger(cfg, jobCfg, copyOnlyJob)
 	if err != nil {
 		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
@@ -105,6 +104,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create copy-only orchestrator: %w", err)
 	}
+	orch.SetLogger(log)
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("copy-only orchestrator initialization failed: %w", err)
 	}
@@ -116,6 +116,15 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("copy-only operation failed: %w", err)
 	}
+
+	// Log the structured summary (reaches file outputs), then print for the console
+	log.Infow("Copy-only complete",
+		"duration", result.Duration,
+		"tables_copied", result.TablesCopied,
+		"records_copied", result.RecordsCopied,
+		"success", result.Success,
+		"errors", len(result.Errors),
+	)
 
 	fmt.Printf("\n=== Copy-Only Complete ===\n")
 	fmt.Printf("Job: %s\n", result.JobName)

@@ -62,6 +62,15 @@ jobs:
             foreign_key: shipment_id
             dependency_type: "1-N"
 
+    # Optional per-job logging (fields not set here are inherited from the
+    # global logging block; CLI --log-level/--log-format flags win over both).
+    # Give each job its own file to keep job runs in separate logs.
+    # logging:
+    #   level: info
+    #   format: text
+    #   output: /var/log/goarchive/archive_old_orders.log
+    #   file_only: true        # don't tee this job's logs to stdout
+
 # Processing settings
 processing:
   batch_size: 1000           # Root IDs per batch
@@ -84,3 +93,11 @@ logging:
   level: info                # debug, info, warn, error
   format: json               # json or text
   output: stdout             # stdout, stderr, or file path
+                             # a file path logs to the file AND stdout (tee)
+  file_only: false           # true = log only to the file (requires output
+                             # to be a file path); default false
+
+# Log rotation: goarchive does not rotate log files itself. Files are opened
+# in append mode, so external rotation is safe — e.g. logrotate with the
+# `copytruncate` option (goarchive keeps the file handle open for the whole
+# run), or rotate between runs when scheduling via cron.

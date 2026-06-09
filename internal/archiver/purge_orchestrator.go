@@ -131,6 +131,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 	if err != nil {
 		return nil, fmt.Errorf("failed to create record discovery: %w", err)
 	}
+	discovery.SetLogger(o.logger)
 	deletePhase, err := NewDeletePhase(o.dbManager.Source, o.graph, o.processingCfg.BatchDeleteSize, o.logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create delete phase: %w", err)
@@ -243,4 +244,10 @@ func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interfa
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *PurgeOrchestrator) SetForce(force bool) {
 	o.force = force
+}
+
+// SetLogger sets a custom logger for the orchestrator. Call before
+// Initialize/Execute so all phases inherit it.
+func (o *PurgeOrchestrator) SetLogger(log *logger.Logger) {
+	o.logger = log
 }
