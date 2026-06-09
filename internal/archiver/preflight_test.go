@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
@@ -1634,6 +1635,32 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "destination database not configured") {
 		t.Errorf("Unexpected error message: %v", err)
+	}
+}
+
+func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
+	_ = checker.ConfigureDestination(destDB, "destdb")
+	checker.SetVerification(config.VerificationConfig{Method: "sha256", SkipVerification: false})
+
+	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
+		"COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}
+	sourceRows := sqlmock.NewRows(columns).
+		AddRow(1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci")
+	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").WithArgs("sourcedb", "users").WillReturnRows(sourceRows)
+	destRows := sqlmock.NewRows(columns).
+		AddRow(1, "name", "varchar(255)", "YES", "", "", "latin1", "latin1_swedish_ci")
+	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").WithArgs("destdb", "users").WillReturnRows(destRows)
+
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
+	if err != nil {
+		t.Fatalf("charset mismatch should be allowed (warn) under sha256 verification, got: %v", err)
 	}
 }
 

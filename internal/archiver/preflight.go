@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
@@ -79,6 +80,7 @@ type PreflightChecker struct {
 	logger            *logger.Logger
 	fkCache           []ForeignKeyResult
 	fkCacheLoaded     bool
+	verification      config.VerificationConfig
 }
 
 // NewPreflightChecker creates a new preflight checker.
@@ -820,7 +822,9 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, t
 // It must not be stricter: the primary key is required for INSERT IGNORE
 // idempotency during crash recovery, and extra constraints (NOT NULL, unique
 // indexes, generated columns) would reject or silently skip rows.
-func columnIncompatibility(s, d ColumnDefinition) string {
+// charsetStrict controls whether a charset mismatch is fatal (true) or only
+// a warning (false, used when sha256 verification will catch any corruption).
+func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
 	if s.ColumnName != d.ColumnName {
 		return "column name mismatch"
 	}
@@ -839,7 +843,7 @@ func columnIncompatibility(s, d ColumnDefinition) string {
 	if isGeneratedColumn(s.Extra) != isGeneratedColumn(d.Extra) {
 		return "generated column mismatch"
 	}
-	if s.CharacterSet != d.CharacterSet {
+	if charsetStrict && s.CharacterSet != d.CharacterSet {
 		return fmt.Sprintf("character set mismatch (source=%s, destination=%s): copying can silently transliterate or truncate text and count verification cannot detect it; align charsets or use sha256 verification",
 			s.CharacterSet, d.CharacterSet)
 	}
@@ -877,15 +881,25 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 			continue
 		}
 
+		charsetStrict := p.charsetMismatchFatal()
 		for i := range sourceColumns {
 			s := sourceColumns[i]
 			d := destColumns[i]
-			if reason := columnIncompatibility(s, d); reason != "" {
+			if reason := columnIncompatibility(s, d, charsetStrict); reason != "" {
 				incompatible = append(incompatible, fmt.Sprintf("%s(position %d: %s; source=%s %s nullable=%s key=%s extra=%s, destination=%s %s nullable=%s key=%s extra=%s)",
 					table, s.OrdinalPosition, reason,
 					s.ColumnName, s.ColumnType, s.IsNullable, s.ColumnKey, s.Extra,
 					d.ColumnName, d.ColumnType, d.IsNullable, d.ColumnKey, d.Extra))
 				break
+			}
+			// Emit advisory warnings for charset/collation differences that are
+			// not fatal in this run (non-strict path: sha256 verification active).
+			if s.CharacterSet != d.CharacterSet {
+				p.logger.Warnf("Table %s column %s: charset differs (source=%s destination=%s); sha256 verification will fail before delete if data is altered",
+					table, s.ColumnName, s.CharacterSet, d.CharacterSet)
+			} else if s.Collation != d.Collation {
+				p.logger.Warnf("Table %s column %s: collation differs (source=%s destination=%s); stored bytes are identical but comparisons/sorting may differ in the archive",
+					table, s.ColumnName, s.Collation, d.Collation)
 			}
 		}
 	}
@@ -1118,4 +1132,18 @@ func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []str
 // SetLogger sets a custom logger for the preflight checker.
 func (p *PreflightChecker) SetLogger(log *logger.Logger) {
 	p.logger = log
+}
+
+// SetVerification tells the checker which verification the job will run.
+// Charset mismatches are fatal under count verification (which cannot detect
+// transcoded text) but only warnings under sha256 (which fails closed at
+// verify time, before any delete). Defaults to the zero value, whose
+// EffectiveMethod is "count" — the strict path.
+func (p *PreflightChecker) SetVerification(v config.VerificationConfig) {
+	p.verification = v
+}
+
+// charsetMismatchFatal reports whether a charset difference must fail preflight.
+func (p *PreflightChecker) charsetMismatchFatal() bool {
+	return p.verification.SkipVerification || p.verification.EffectiveMethod() != "sha256"
 }

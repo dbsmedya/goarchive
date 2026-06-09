@@ -63,6 +63,7 @@ func runRuntimePreflight(
 			return fmt.Errorf("preflight: failed to configure destination: %w", err)
 		}
 	}
+	checker.SetVerification(verification)
 	if err := checker.RunWithProfile(ctx, profile, forceTriggers); err != nil {
 		return fmt.Errorf("preflight checks failed (run 'goarchive validate' for full diagnostics): %w", err)
 	}

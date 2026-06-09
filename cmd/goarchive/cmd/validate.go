@@ -141,6 +141,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			hasErrors = true
 			continue
 		}
+		checker.SetVerification(jobCfg.GetJobVerification(cfg.Verification))
 
 		// Run all checks
 		if err := checker.RunAllChecks(ctx, validateForceTriggers); err != nil {
