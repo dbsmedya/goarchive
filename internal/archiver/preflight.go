@@ -821,7 +821,11 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, t
 // values for every column and never relies on destination defaults or indexes.
 // It must not be stricter: the primary key is required for INSERT IGNORE
 // idempotency during crash recovery, and extra constraints (NOT NULL, unique
-// indexes, generated columns) would reject or silently skip rows.
+// indexes, destination generated columns) would reject or silently skip rows.
+// Generated-column rule is destination-only: if the destination column is
+// generated, MySQL rejects explicit inserts with Error 3105 even under INSERT
+// IGNORE. A source-generated column writing into a plain destination column is
+// fine — SELECT materialises the value and the destination accepts it.
 // charsetStrict controls whether a charset mismatch is fatal (true) or only
 // a warning (false, used when sha256 verification will catch any corruption).
 func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
@@ -840,8 +844,8 @@ func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
 	if d.ColumnKey == "UNI" && s.ColumnKey != "UNI" {
 		return "destination has a unique index the source lacks (INSERT IGNORE would silently skip rows)"
 	}
-	if isGeneratedColumn(s.Extra) != isGeneratedColumn(d.Extra) {
-		return "generated column mismatch"
+	if isGeneratedColumn(d.Extra) {
+		return "destination column is generated (copy inserts explicit values for every column; MySQL rejects them with Error 3105 even under INSERT IGNORE)"
 	}
 	if charsetStrict && s.CharacterSet != d.CharacterSet {
 		return fmt.Sprintf("character set mismatch (source=%s, destination=%s): copying can silently transliterate or truncate text and count verification cannot detect it; align charsets or use sha256 verification",

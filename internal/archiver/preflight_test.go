@@ -1005,6 +1005,30 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 			wantErr: true,
 		},
 		{
+			name: "generated column on both sides is rejected (copy cannot insert into it)",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "source generated column with plain destination is allowed",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
 			name: "column type mismatch is rejected",
 			sourceCols: [][]driverValue{
 				{1, "id", "bigint", "NO", "PRI", "", "", ""},

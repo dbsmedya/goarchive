@@ -82,6 +82,19 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 
 ## Recent Changes
 
+### Relaxed Destination Schema Check (chore/validation, 2026-06-10)
+- `DEST_SCHEMA_COMPATIBILITY_CHECK` is now direction-aware instead of demanding
+  byte-identical column metadata: the destination may drop secondary indexes
+  (`MUL`/`UNI`), `auto_increment`, and column defaults (`DEFAULT_GENERATED`,
+  `ON UPDATE`), and may relax `NOT NULL` — dropping destination secondary
+  indexes is a supported write-performance optimization
+- Still rejected (destination stricter than source): missing/different primary
+  key (required for `INSERT IGNORE` idempotency during crash recovery),
+  destination-only unique indexes (INSERT IGNORE would silently skip rows),
+  destination-only `NOT NULL`, destination generated columns (copy inserts explicit values), and any
+  name/type/count/order difference (`columnIncompatibility` in
+  `internal/archiver/preflight.go`)
+
 ### Logging Production Audit (fix/varios, 2026-06-09)
 - `RecordDiscovery` now receives the orchestrator logger via `SetLogger` (was silently using a default stdout logger in all three orchestrators)
 - `newJobLogger` tags every entry with `job=<name>` (`WithJob`), so all cmd/preflight/orchestrator/phase logs are attributable
