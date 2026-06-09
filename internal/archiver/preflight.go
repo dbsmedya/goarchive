@@ -183,6 +183,10 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	if profile == PreflightProfileFull || profile == PreflightProfileSourceOnly {
+		if err := p.ValidateSourceDeletePermissions(ctx, tables); err != nil {
+			return err
+		}
+
 		// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
 		if err := p.ValidateTriggers(ctx, tables, forceTriggers); err != nil {
 			return err
@@ -1052,6 +1056,31 @@ func (p *PreflightChecker) tablesMissingPrivilege(ctx context.Context, db *sql.D
 		}
 	}
 	return missing, nil
+}
+
+// ValidateSourceDeletePermissions checks the source account can DELETE from
+// all graph tables. Without it, archive fails only after copy has committed.
+func (p *PreflightChecker) ValidateSourceDeletePermissions(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking source delete permissions...")
+
+	grantees, err := p.currentGrantees(ctx, p.db)
+	if err != nil {
+		return err
+	}
+	missing, err := p.tablesMissingPrivilege(ctx, p.db, grantees, p.sourceDBName, tables, "DELETE")
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return &PreflightError{
+			Check:   "SOURCE_DELETE_PERMISSION_CHECK",
+			Message: fmt.Sprintf("Source account %s lacks DELETE privilege on required tables", grantees[0]),
+			Tables:  missing,
+		}
+	}
+
+	p.logger.Debug("Source delete permission check PASSED")
+	return nil
 }
 
 func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbName, table string) ([]ColumnDefinition, error) {

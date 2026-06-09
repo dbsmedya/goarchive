@@ -1738,6 +1738,40 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 }
 
 // ============================================================================
+// Source DELETE Privilege Tests (Task 6)
+// ============================================================================
+
+func TestValidateSourceDeletePermissions_Missing(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
+
+	sourceMock.ExpectQuery("SELECT CURRENT_USER()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
+	sourceMock.ExpectQuery("SELECT CURRENT_ROLE()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
+	sourceMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	sourceMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "DELETE", "sourcedb").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	sourceMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "DELETE", "sourcedb", "users").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+
+	err := checker.ValidateSourceDeletePermissions(context.Background(), []string{"users"})
+	if err == nil {
+		t.Fatal("expected source delete permission error, got nil")
+	}
+	if !strings.Contains(err.Error(), "SOURCE_DELETE_PERMISSION_CHECK") {
+		t.Fatalf("expected SOURCE_DELETE_PERMISSION_CHECK, got: %v", err)
+	}
+}
+
+// ============================================================================
 // Grantee Resolution Helper Tests (Task 4)
 // ============================================================================
 
