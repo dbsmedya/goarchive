@@ -3,6 +3,7 @@ package archiver
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"strings"
 	"testing"
@@ -822,16 +823,16 @@ func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
 	_ = checker.ConfigureDestination(destDB, "destdb")
 
-	sourceRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA"}).
-		AddRow(1, "id", "bigint(20)", "NO", "PRI", "").
-		AddRow(2, "name", "varchar(255)", "YES", "", "")
+	sourceRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
+		AddRow(1, "id", "bigint(20)", "NO", "PRI", "", "", "").
+		AddRow(2, "name", "varchar(255)", "YES", "", "", "", "")
 	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
 		WithArgs("sourcedb", "users").
 		WillReturnRows(sourceRows)
 
-	destRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA"}).
-		AddRow(1, "id", "bigint(20)", "NO", "PRI", "").
-		AddRow(2, "name", "varchar(100)", "YES", "", "") // mismatch
+	destRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
+		AddRow(1, "id", "bigint(20)", "NO", "PRI", "", "", "").
+		AddRow(2, "name", "varchar(100)", "YES", "", "", "", "") // mismatch
 	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
 		WithArgs("destdb", "users").
 		WillReturnRows(destRows)
@@ -839,6 +840,227 @@ func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
 	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
 	if err == nil {
 		t.Fatal("expected destination schema compatibility error")
+	}
+}
+
+// runSchemaCompatibilityCheck wires sqlmock source/destination column rows for
+// a single "users" table and returns the check result.
+func runSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols [][]driverValue) error {
+	t.Helper()
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	_ = checker.ConfigureDestination(destDB, "destdb")
+
+	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
+		"COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}
+	sourceRows := sqlmock.NewRows(columns)
+	for _, row := range sourceCols {
+		sourceRows.AddRow(row...)
+	}
+	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
+		WithArgs("sourcedb", "users").
+		WillReturnRows(sourceRows)
+
+	destRows := sqlmock.NewRows(columns)
+	for _, row := range destCols {
+		destRows.AddRow(row...)
+	}
+	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
+		WithArgs("destdb", "users").
+		WillReturnRows(destRows)
+
+	return checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
+}
+
+type driverValue = driver.Value
+
+func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceCols [][]driverValue
+		destCols   [][]driverValue
+		wantErr    bool
+	}{
+		{
+			name: "destination may drop secondary index",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
+				{2, "aiErrorId", "bigint", "YES", "MUL", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
+				{2, "aiErrorId", "bigint", "YES", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination may add secondary index",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "MUL", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination may drop unique index",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "email", "varchar(255)", "NO", "UNI", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "email", "varchar(255)", "NO", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination may drop auto_increment",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination may drop DEFAULT_GENERATED and on update",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "updated_at", "timestamp", "NO", "", "DEFAULT_GENERATED on update CURRENT_TIMESTAMP", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "updated_at", "timestamp", "NO", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination may be more permissive about NULLs",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "NO", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			name: "destination missing primary key is rejected",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "", "", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "destination stricter NULLability is rejected",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "NO", "", "", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "destination-only unique index is rejected",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "email", "varchar(255)", "NO", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "email", "varchar(255)", "NO", "UNI", "", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "destination-only generated column is rejected",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "column type mismatch is rejected",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(100)", "YES", "", "", "", ""},
+			},
+			wantErr: true,
+		},
+		{
+			name: "charset mismatch is rejected under count verification",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "latin1", "latin1_swedish_ci"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "collation-only mismatch is allowed (warn only)",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_general_ci"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "identical charsets pass",
+			sourceCols: [][]driverValue{
+				{1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			},
+			destCols: [][]driverValue{
+				{1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runSchemaCompatibilityCheck(t, tt.sourceCols, tt.destCols)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected schema compatibility error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected schemas to be compatible, got: %v", err)
+			}
+		})
 	}
 }
 

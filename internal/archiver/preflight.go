@@ -755,6 +755,8 @@ type ColumnDefinition struct {
 	IsNullable      string
 	ColumnKey       string
 	Extra           string
+	CharacterSet    string // empty for non-string columns
+	Collation       string // empty for non-string columns
 }
 
 // ValidateDestinationTablesExist checks that all graph tables exist in destination DB.
@@ -810,7 +812,49 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, t
 	return nil
 }
 
-// ValidateDestinationSchemaCompatibility ensures source/destination table columns match exactly.
+// columnIncompatibility reports why a destination column cannot receive copies
+// of the source column, or "" when compatible. The destination may be more
+// permissive than the source — secondary indexes dropped, auto_increment and
+// default generation removed, NULLs allowed — because the copy inserts explicit
+// values for every column and never relies on destination defaults or indexes.
+// It must not be stricter: the primary key is required for INSERT IGNORE
+// idempotency during crash recovery, and extra constraints (NOT NULL, unique
+// indexes, generated columns) would reject or silently skip rows.
+func columnIncompatibility(s, d ColumnDefinition) string {
+	if s.ColumnName != d.ColumnName {
+		return "column name mismatch"
+	}
+	if s.ColumnType != d.ColumnType {
+		return "column type mismatch"
+	}
+	if s.IsNullable == "YES" && d.IsNullable == "NO" {
+		return "destination is NOT NULL but source allows NULL"
+	}
+	if (s.ColumnKey == "PRI") != (d.ColumnKey == "PRI") {
+		return "primary key mismatch (destination must keep the source primary key for idempotent resume)"
+	}
+	if d.ColumnKey == "UNI" && s.ColumnKey != "UNI" {
+		return "destination has a unique index the source lacks (INSERT IGNORE would silently skip rows)"
+	}
+	if isGeneratedColumn(s.Extra) != isGeneratedColumn(d.Extra) {
+		return "generated column mismatch"
+	}
+	if s.CharacterSet != d.CharacterSet {
+		return fmt.Sprintf("character set mismatch (source=%s, destination=%s): copying can silently transliterate or truncate text and count verification cannot detect it; align charsets or use sha256 verification",
+			s.CharacterSet, d.CharacterSet)
+	}
+	return ""
+}
+
+func isGeneratedColumn(extra string) bool {
+	return strings.Contains(extra, "VIRTUAL GENERATED") || strings.Contains(extra, "STORED GENERATED")
+}
+
+// ValidateDestinationSchemaCompatibility ensures destination tables can receive
+// copies of the source tables: identical column names, order, and types, with
+// the same primary key. The destination is allowed to drop secondary indexes,
+// auto_increment, and column defaults, and to relax NOT NULL — see
+// columnIncompatibility for the exact rules.
 func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Context, tables []string) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
@@ -836,9 +880,9 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 		for i := range sourceColumns {
 			s := sourceColumns[i]
 			d := destColumns[i]
-			if s.ColumnName != d.ColumnName || s.ColumnType != d.ColumnType || s.IsNullable != d.IsNullable || s.ColumnKey != d.ColumnKey || s.Extra != d.Extra {
-				incompatible = append(incompatible, fmt.Sprintf("%s(position %d: source=%s %s nullable=%s key=%s extra=%s, destination=%s %s nullable=%s key=%s extra=%s)",
-					table, s.OrdinalPosition,
+			if reason := columnIncompatibility(s, d); reason != "" {
+				incompatible = append(incompatible, fmt.Sprintf("%s(position %d: %s; source=%s %s nullable=%s key=%s extra=%s, destination=%s %s nullable=%s key=%s extra=%s)",
+					table, s.OrdinalPosition, reason,
 					s.ColumnName, s.ColumnType, s.IsNullable, s.ColumnKey, s.Extra,
 					d.ColumnName, d.ColumnType, d.IsNullable, d.ColumnKey, d.Extra))
 				break
@@ -918,7 +962,9 @@ func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbNa
 			COLUMN_TYPE,
 			IS_NULLABLE,
 			COLUMN_KEY,
-			EXTRA
+			EXTRA,
+			COALESCE(CHARACTER_SET_NAME, ''),
+			COALESCE(COLLATION_NAME, '')
 		FROM information_schema.COLUMNS
 		WHERE TABLE_SCHEMA = ?
 		AND TABLE_NAME = ?
@@ -937,7 +983,7 @@ func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbNa
 	var columns []ColumnDefinition
 	for rows.Next() {
 		var col ColumnDefinition
-		if err := rows.Scan(&col.OrdinalPosition, &col.ColumnName, &col.ColumnType, &col.IsNullable, &col.ColumnKey, &col.Extra); err != nil {
+		if err := rows.Scan(&col.OrdinalPosition, &col.ColumnName, &col.ColumnType, &col.IsNullable, &col.ColumnKey, &col.Extra, &col.CharacterSet, &col.Collation); err != nil {
 			return nil, err
 		}
 		columns = append(columns, col)
