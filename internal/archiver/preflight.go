@@ -973,56 +973,85 @@ func (p *PreflightChecker) currentGrantees(ctx context.Context, db *sql.DB) ([]s
 	return grantees, nil
 }
 
-// ValidateDestinationWritePermissions checks that destination grants INSERT privileges for all graph tables.
+// ValidateDestinationWritePermissions checks that the connected destination
+// account (including active roles) holds INSERT at the global, schema, or
+// per-table level for all graph tables.
 func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, tables []string) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	p.logger.Debug("Checking destination write permissions...")
 
-	const schemaPrivilegeQuery = `
-		SELECT COUNT(*)
-		FROM information_schema.SCHEMA_PRIVILEGES
-		WHERE TABLE_SCHEMA = ?
-		AND PRIVILEGE_TYPE IN ('INSERT', 'ALL PRIVILEGES')`
-
-	var schemaPrivilegeCount int
-	if err := p.destinationDB.QueryRowContext(ctx, schemaPrivilegeQuery, p.destinationDBName).Scan(&schemaPrivilegeCount); err != nil {
-		return fmt.Errorf("failed to check destination schema privileges: %w", err)
-	}
-	if schemaPrivilegeCount > 0 {
-		p.logger.Debug("Destination write permission check PASSED (schema-level privilege)")
-		return nil
+	grantees, err := p.currentGrantees(ctx, p.destinationDB)
+	if err != nil {
+		return err
 	}
 
-	const tablePrivilegeQuery = `
-		SELECT COUNT(*)
-		FROM information_schema.TABLE_PRIVILEGES
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME = ?
-		AND PRIVILEGE_TYPE IN ('INSERT', 'ALL PRIVILEGES')`
+	missing, err := p.tablesMissingPrivilege(ctx, p.destinationDB, grantees, p.destinationDBName, tables, "INSERT")
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return &PreflightError{
+			Check:   "DEST_WRITE_PERMISSION_CHECK",
+			Message: fmt.Sprintf("Destination account %s lacks INSERT privilege on required tables", grantees[0]),
+			Tables:  missing,
+		}
+	}
 
+	p.logger.Debug("Destination write permission check PASSED")
+	return nil
+}
+
+// tablesMissingPrivilege returns the tables for which none of the grantees
+// holds the privilege at global, schema, or table level. GRANT ALL is
+// expanded into individual privilege rows by MySQL, so matching the specific
+// privilege type covers it.
+func (p *PreflightChecker) tablesMissingPrivilege(ctx context.Context, db *sql.DB, grantees []string, dbName string, tables []string, privilege string) ([]string, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
+	granteeArgs := make([]interface{}, 0, len(grantees)+1)
+	for _, g := range grantees {
+		granteeArgs = append(granteeArgs, g)
+	}
+	granteeArgs = append(granteeArgs, privilege)
+
+	var count int
+	globalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
+		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
+	if err := db.QueryRowContext(ctx, globalQuery, granteeArgs...).Scan(&count); err != nil {
+		return nil, fmt.Errorf("failed to check global privileges: %w", err)
+	}
+	if count > 0 {
+		return nil, nil
+	}
+
+	schemaArgs := make([]interface{}, 0, len(grantees)+2)
+	schemaArgs = append(schemaArgs, granteeArgs...)
+	schemaArgs = append(schemaArgs, dbName)
+	schemaQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES
+		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ?`, placeholders)
+	if err := db.QueryRowContext(ctx, schemaQuery, schemaArgs...).Scan(&count); err != nil {
+		return nil, fmt.Errorf("failed to check schema privileges: %w", err)
+	}
+	if count > 0 {
+		return nil, nil
+	}
+
+	tableQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES
+		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ? AND TABLE_NAME = ?`, placeholders)
 	var missing []string
 	for _, table := range tables {
-		var count int
-		if err := p.destinationDB.QueryRowContext(ctx, tablePrivilegeQuery, p.destinationDBName, table).Scan(&count); err != nil {
-			return fmt.Errorf("failed to check destination table privileges for %s: %w", table, err)
+		tableArgs := make([]interface{}, 0, len(grantees)+3)
+		tableArgs = append(tableArgs, granteeArgs...)
+		tableArgs = append(tableArgs, dbName, table)
+		if err := db.QueryRowContext(ctx, tableQuery, tableArgs...).Scan(&count); err != nil {
+			return nil, fmt.Errorf("failed to check table privileges for %s: %w", table, err)
 		}
 		if count == 0 {
 			missing = append(missing, table)
 		}
 	}
-
-	if len(missing) > 0 {
-		return &PreflightError{
-			Check:   "DEST_WRITE_PERMISSION_CHECK",
-			Message: "Destination user lacks INSERT privilege on required tables",
-			Tables:  missing,
-		}
-	}
-
-	p.logger.Debug("Destination write permission check PASSED (table-level privileges)")
-	return nil
+	return missing, nil
 }
 
 func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbName, table string) ([]ColumnDefinition, error) {

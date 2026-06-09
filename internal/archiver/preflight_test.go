@@ -1089,27 +1089,76 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 	}
 }
 
-func TestValidateDestinationWritePermissions_NoInsertPrivilege(t *testing.T) {
+func newWritePermChecker(t *testing.T) (*PreflightChecker, sqlmock.Sqlmock, func()) {
+	t.Helper()
 	sourceDB, _, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
 	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
 	_ = checker.ConfigureDestination(destDB, "destdb")
+	cleanup := func() { _ = sourceDB.Close(); _ = destDB.Close() }
+	return checker, destMock, cleanup
+}
 
-	destMock.ExpectQuery("SELECT COUNT\\(\\*\\)\\s+FROM information_schema.SCHEMA_PRIVILEGES").
-		WithArgs("destdb").
+func expectGrantees(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT CURRENT_USER()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE()").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
+}
+
+func TestValidateDestinationWritePermissions_GlobalGrant(t *testing.T) {
+	checker, destMock, cleanup := newWritePermChecker(t)
+	defer cleanup()
+
+	expectGrantees(destMock)
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
+		t.Fatalf("global INSERT grant should pass, got: %v", err)
+	}
+}
+
+func TestValidateDestinationWritePermissions_SchemaGrant(t *testing.T) {
+	checker, destMock, cleanup := newWritePermChecker(t)
+	defer cleanup()
+
+	expectGrantees(destMock)
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("SELECT COUNT\\(\\*\\)\\s+FROM information_schema.TABLE_PRIVILEGES").
-		WithArgs("destdb", "users").
+	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT", "destdb").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
+		t.Fatalf("schema INSERT grant should pass, got: %v", err)
+	}
+}
+
+func TestValidateDestinationWritePermissions_NoInsertPrivilege(t *testing.T) {
+	checker, destMock, cleanup := newWritePermChecker(t)
+	defer cleanup()
+
+	expectGrantees(destMock)
+	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT", "destdb").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES").
+		WithArgs("'archiver'@'%'", "INSERT", "destdb", "users").
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
 
 	err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"})
 	if err == nil {
-		t.Fatal("expected destination write permission error")
+		t.Fatal("expected write permission error, got nil")
+	}
+	if !strings.Contains(err.Error(), "DEST_WRITE_PERMISSION_CHECK") {
+		t.Fatalf("expected DEST_WRITE_PERMISSION_CHECK, got: %v", err)
 	}
 }
 
