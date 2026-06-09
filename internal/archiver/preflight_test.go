@@ -1689,5 +1689,41 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 }
 
 // ============================================================================
+// Grantee Resolution Helper Tests (Task 4)
+// ============================================================================
+
+func TestFormatGrantee(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"archiver@10.0.0.5", "'archiver'@'10.0.0.5'"},
+		{"root@%", "'root'@'%'"},
+		{"o'brien@%", "'o''brien'@'%'"}, // embedded quote doubled, as in the GRANTEE column
+	}
+	for _, tt := range tests {
+		if got := formatGrantee(tt.in); got != tt.want {
+			t.Errorf("formatGrantee(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestRoleGrantees(t *testing.T) {
+	got := roleGrantees("`app_writer`@`%`, `auditor`@`localhost`")
+	want := []string{"'app_writer'@'%'", "'auditor'@'localhost'"}
+	if len(got) != len(want) {
+		t.Fatalf("roleGrantees returned %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("role %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if r := roleGrantees("NONE"); len(r) != 0 {
+		t.Errorf("roleGrantees(NONE) = %v, want empty", r)
+	}
+	if r := roleGrantees(""); len(r) != 0 {
+		t.Errorf("roleGrantees(\"\") = %v, want empty", r)
+	}
+}
+
+// ============================================================================
 // Integration Tests
 // ============================================================================

@@ -920,6 +920,59 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 	return nil
 }
 
+// formatGrantee converts CURRENT_USER() output (user@host) into the quoted
+// GRANTEE format used by information_schema privilege tables ('user'@'host').
+// Embedded single quotes are doubled to match the GRANTEE column's quoting.
+// Account names containing other quote-like exotica are not supported.
+func formatGrantee(currentUser string) string {
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	at := strings.LastIndex(currentUser, "@")
+	if at < 0 {
+		return quote(currentUser) + "@'%'"
+	}
+	return quote(currentUser[:at]) + "@" + quote(currentUser[at+1:])
+}
+
+// roleGrantees converts CURRENT_ROLE() output (`r1`@`%`,`r2`@`host` or NONE)
+// into GRANTEE-format strings. Privilege grants held via active roles do not
+// appear under the user's own GRANTEE in information_schema.
+func roleGrantees(currentRole string) []string {
+	currentRole = strings.TrimSpace(currentRole)
+	if currentRole == "" || strings.EqualFold(currentRole, "NONE") {
+		return nil
+	}
+	var grantees []string
+	for _, role := range strings.Split(currentRole, ",") {
+		role = strings.TrimSpace(role)
+		if role == "" {
+			continue
+		}
+		grantees = append(grantees, strings.ReplaceAll(role, "`", "'"))
+	}
+	return grantees
+}
+
+// currentGrantees returns the GRANTEE strings to match in privilege tables:
+// the authenticated account plus any active roles. CURRENT_ROLE() exists on
+// all supported MySQL versions (8.0+); an error there is real and fails
+// preflight rather than being ignored — missing roles would false-fail the
+// privilege checks anyway.
+func (p *PreflightChecker) currentGrantees(ctx context.Context, db *sql.DB) ([]string, error) {
+	var user string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&user); err != nil {
+		return nil, fmt.Errorf("failed to resolve CURRENT_USER(): %w", err)
+	}
+	grantees := []string{formatGrantee(user)}
+	var role sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&role); err != nil {
+		return nil, fmt.Errorf("failed to resolve CURRENT_ROLE(): %w", err)
+	}
+	if role.Valid {
+		grantees = append(grantees, roleGrantees(role.String)...)
+	}
+	return grantees, nil
+}
+
 // ValidateDestinationWritePermissions checks that destination grants INSERT privileges for all graph tables.
 func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, tables []string) error {
 	if p.destinationDB == nil {
