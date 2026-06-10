@@ -60,19 +60,19 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Get job config first
-	jobCfgValue, exists := cfg.Jobs[purgeJob]
-	if !exists {
-		return fmt.Errorf("job '%s' not found in configuration", purgeJob)
-	}
-	jobCfg := &jobCfgValue
-
 	// Apply CLI overrides
 	overrides := GetCLIOverrides()
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+
+	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
+	jobCfgValue, exists := cfg.Jobs[purgeJob]
+	if !exists {
+		return fmt.Errorf("job '%s' not found in configuration", purgeJob)
+	}
+	jobCfg := &jobCfgValue
 
 	// Initialize logger
 	log, err := newJobLogger(cfg, jobCfg, purgeJob)

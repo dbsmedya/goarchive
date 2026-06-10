@@ -127,8 +127,22 @@ func TestArchiveCmd_Execute_InvalidJob(t *testing.T) {
 		rootCmd.SetArgs(nil)
 	}()
 
-	// Create temp config file with valid structure but different job name
+	// Create temp config file that passes validation but has a different job name.
+	// source/destination must be populated so cfg.Validate() succeeds and we reach
+	// the job-not-found error (job lookup now happens after ApplyOverrides+Validate).
 	configFile := createTempTestConfig(t, map[string]interface{}{
+		"source": map[string]interface{}{
+			"host":     "127.0.0.1",
+			"port":     3306,
+			"user":     "root",
+			"database": "testdb",
+		},
+		"destination": map[string]interface{}{
+			"host":     "127.0.0.1",
+			"port":     3307,
+			"user":     "root",
+			"database": "testdb",
+		},
 		"jobs": map[string]interface{}{
 			"valid_job": map[string]interface{}{
 				"root_table":  "customers",

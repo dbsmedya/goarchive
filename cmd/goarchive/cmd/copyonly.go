@@ -48,17 +48,18 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	jobCfgValue, exists := cfg.Jobs[copyOnlyJob]
-	if !exists {
-		return fmt.Errorf("job %q not found in configuration", copyOnlyJob)
-	}
-	jobCfg := &jobCfgValue
-
 	overrides := GetCLIOverrides()
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+
+	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
+	jobCfgValue, exists := cfg.Jobs[copyOnlyJob]
+	if !exists {
+		return fmt.Errorf("job %q not found in configuration", copyOnlyJob)
+	}
+	jobCfg := &jobCfgValue
 
 	log, err := newJobLogger(cfg, jobCfg, copyOnlyJob)
 	if err != nil {

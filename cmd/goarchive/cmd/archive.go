@@ -60,20 +60,20 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Get job config first (before applying overrides)
-	jobCfgValue, exists := cfg.Jobs[archiveJob]
-	if !exists {
-		return fmt.Errorf("job '%s' not found in configuration", archiveJob)
-	}
-	// Use pointer to job config
-	jobCfg := &jobCfgValue
-
 	// Apply CLI overrides (to global config for logging, and get effective processing config)
 	overrides := GetCLIOverrides()
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
+
+	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
+	jobCfgValue, exists := cfg.Jobs[archiveJob]
+	if !exists {
+		return fmt.Errorf("job '%s' not found in configuration", archiveJob)
+	}
+	// Use pointer to job config
+	jobCfg := &jobCfgValue
 
 	// Initialize logger (per-job logging config, CLI flags win)
 	log, err := newJobLogger(cfg, jobCfg, archiveJob)

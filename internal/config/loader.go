@@ -75,6 +75,8 @@ func (c *Config) ApplyOverrides(logLevel, logFormat string, skipVerify bool) {
 		c.Verification.SkipVerification = true
 		// CLI > job > global: a job's explicit skip_verification: false must
 		// not undo an operator's --skip-verify for this run.
+		// Mutates through the shared pointer AND writes the value back, so the
+		// override reaches both pre-extracted job copies and the map itself.
 		for name, job := range c.Jobs {
 			if job.Verification != nil {
 				job.Verification.SkipVerification = nil
