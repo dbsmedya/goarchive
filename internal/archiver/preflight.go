@@ -76,6 +76,7 @@ type PreflightChecker struct {
 	sourceDBName      string
 	destinationDB     *sql.DB
 	destinationDBName string
+	jobSchemaName     string
 	graph             *graph.Graph
 	logger            *logger.Logger
 	fkCache           []ForeignKeyResult
@@ -109,15 +110,21 @@ func NewPreflightChecker(db *sql.DB, sourceDBName string, g *graph.Graph, log *l
 }
 
 // ConfigureDestination sets destination database context for destination-side preflight checks.
-func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName string) error {
+// jobSchema is the schema holding tracking tables (archiver_job + per-job logs);
+// pass cfg.Destination.EffectiveJobSchema().
+func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName, jobSchema string) error {
 	if db == nil {
 		return fmt.Errorf("destination database is nil")
 	}
 	if destinationDBName == "" {
 		return fmt.Errorf("destination database name is required")
 	}
+	if jobSchema == "" {
+		return fmt.Errorf("job schema is required")
+	}
 	p.destinationDB = db
 	p.destinationDBName = destinationDBName
+	p.jobSchemaName = jobSchema
 	return nil
 }
 
@@ -148,6 +155,15 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// GA-P4-F3-T1: Storage engine check
 	if err := p.ValidateStorageEngine(ctx, tables); err != nil {
 		return err
+	}
+
+	// Tracking-schema privileges are needed by every command that writes
+	// archiver_job / per-job logs (archive, purge, copy-only), independent of
+	// the data-table destination checks below.
+	if p.destinationDB != nil && p.jobSchemaName != "" {
+		if err := p.ValidateJobSchemaPermissions(ctx); err != nil {
+			return err
+		}
 	}
 
 	// Destination checks ensure copy target is safe before archive execution.
@@ -1007,6 +1023,77 @@ func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Conte
 	}
 
 	p.logger.Debug("Destination write permission check PASSED")
+	return nil
+}
+
+// schemaMissingPrivileges returns the subset of privs not held by any grantee
+// at global (USER_PRIVILEGES) or schema (SCHEMA_PRIVILEGES) level for schema.
+// No per-table fallback — the per-job tracking tables don't exist yet at
+// preflight time.
+func (p *PreflightChecker) schemaMissingPrivileges(ctx context.Context, db *sql.DB, grantees []string, schema string, privs []string) ([]string, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
+	var missing []string
+	for _, priv := range privs {
+		gArgs := make([]interface{}, 0, len(grantees)+1)
+		for _, g := range grantees {
+			gArgs = append(gArgs, g)
+		}
+		gArgs = append(gArgs, priv)
+
+		var count int
+		globalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
+			WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
+		if err := db.QueryRowContext(ctx, globalQuery, gArgs...).Scan(&count); err != nil {
+			return nil, fmt.Errorf("failed to check global %s: %w", priv, err)
+		}
+		if count > 0 {
+			continue
+		}
+		sArgs := append(append([]interface{}{}, gArgs...), schema)
+		schemaQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES
+			WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ?`, placeholders)
+		if err := db.QueryRowContext(ctx, schemaQuery, sArgs...).Scan(&count); err != nil {
+			return nil, fmt.Errorf("failed to check schema %s: %w", priv, err)
+		}
+		if count == 0 {
+			missing = append(missing, priv)
+		}
+	}
+	return missing, nil
+}
+
+// ValidateJobSchemaPermissions checks the destination account holds CREATE +
+// SELECT/INSERT/UPDATE on the tracking schema. CREATE is required at runtime
+// because per-job log tables are created on the fly. DELETE/DROP are optional
+// (DBA cleanup only) and intentionally not required.
+func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context) error {
+	if p.destinationDB == nil {
+		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
+	grantees, err := p.currentGrantees(ctx, p.destinationDB)
+	if err != nil {
+		return err
+	}
+	missing, err := p.schemaMissingPrivileges(ctx, p.destinationDB, grantees, p.jobSchemaName,
+		[]string{"CREATE", "SELECT", "INSERT", "UPDATE"})
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		grant := fmt.Sprintf("GRANT %s ON `%s`.* TO <user>", strings.Join(missing, ", "), p.jobSchemaName)
+		hint := grant
+		for _, p2 := range missing {
+			if p2 == "CREATE" {
+				hint = fmt.Sprintf("CREATE DATABASE `%s`; %s", p.jobSchemaName, grant)
+				break
+			}
+		}
+		return &PreflightError{
+			Check:   "JOB_SCHEMA_PERMISSION_CHECK",
+			Message: fmt.Sprintf("destination account %s lacks %s on tracking schema %q (DBA must: %s)", grantees[0], strings.Join(missing, ", "), p.jobSchemaName, hint),
+		}
+	}
+	p.logger.Debug("Job schema permission check PASSED")
 	return nil
 }
 

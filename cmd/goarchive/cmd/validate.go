@@ -134,7 +134,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			hasErrors = true
 			continue
 		}
-		if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database); err != nil {
+		if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database, cfg.Destination.EffectiveJobSchema()); err != nil {
 			fmt.Printf("❌ Failed to configure destination preflight checks: %v\n\n", err)
 			hasErrors = true
 			continue

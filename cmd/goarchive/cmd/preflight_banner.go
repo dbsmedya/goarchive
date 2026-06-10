@@ -59,7 +59,7 @@ func runRuntimePreflight(
 		return fmt.Errorf("preflight: failed to create checker: %w", err)
 	}
 	if dbManager.Destination != nil && cfg.Destination.Database != "" {
-		if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database); err != nil {
+		if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database, cfg.Destination.EffectiveJobSchema()); err != nil {
 			return fmt.Errorf("preflight: failed to configure destination: %w", err)
 		}
 	}

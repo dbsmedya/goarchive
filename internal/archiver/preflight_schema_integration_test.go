@@ -51,7 +51,8 @@ func setupSchemaCompatibilityChecker(t *testing.T, setup *IntegrationTestSetup) 
 	if err != nil {
 		t.Fatalf("failed to create preflight checker: %v", err)
 	}
-	if err := checker.ConfigureDestination(destDB, destDBName); err != nil {
+	// tracking schema == destination DB in this fixture
+	if err := checker.ConfigureDestination(destDB, destDBName, destDBName); err != nil {
 		t.Fatalf("failed to configure destination: %v", err)
 	}
 

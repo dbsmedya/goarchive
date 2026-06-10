@@ -778,7 +778,7 @@ func TestConfigureDestination_Success(t *testing.T) {
 		t.Fatalf("NewPreflightChecker failed: %v", err)
 	}
 
-	if err := checker.ConfigureDestination(destDB, "destdb"); err != nil {
+	if err := checker.ConfigureDestination(destDB, "destdb", "destdb"); err != nil {
 		t.Fatalf("ConfigureDestination failed: %v", err)
 	}
 
@@ -787,6 +787,9 @@ func TestConfigureDestination_Success(t *testing.T) {
 	}
 	if checker.destinationDBName != "destdb" {
 		t.Fatalf("expected destinationDBName=destdb, got %s", checker.destinationDBName)
+	}
+	if checker.jobSchemaName != "destdb" {
+		t.Fatalf("expected jobSchemaName=destdb, got %s", checker.jobSchemaName)
 	}
 }
 
@@ -799,7 +802,7 @@ func TestValidateDestinationTablesExist_MissingTables(t *testing.T) {
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
 	tables := []string{"users", "orders"}
 	destRows := sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("users")
@@ -822,7 +825,7 @@ func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
 	sourceRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
 		AddRow(1, "id", "bigint(20)", "NO", "PRI", "", "", "").
@@ -856,7 +859,7 @@ func runSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols [][]driverVa
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
 	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
 		"COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}
@@ -1095,7 +1098,7 @@ func newWritePermChecker(t *testing.T) (*PreflightChecker, sqlmock.Sqlmock, func
 	destDB, destMock, _ := sqlmock.New()
 	g := createPreflightTestGraph()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 	cleanup := func() { _ = sourceDB.Close(); _ = destDB.Close() }
 	return checker, destMock, cleanup
 }
@@ -1208,7 +1211,7 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
 	destMock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
 		WithArgs("destdb", "users").
@@ -1238,7 +1241,7 @@ func TestCheckInsertTriggers_EmptyTablesInput(t *testing.T) {
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
 	triggers, err := checker.CheckInsertTriggers(context.Background(), []string{})
 	if err != nil {
@@ -1756,7 +1759,7 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 
 	g := createPreflightTestGraph()
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb")
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 	checker.SetVerification(config.VerificationConfig{Method: "sha256", SkipVerification: false})
 
 	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
@@ -1843,6 +1846,165 @@ func TestRoleGrantees(t *testing.T) {
 	}
 	if r := roleGrantees(""); len(r) != 0 {
 		t.Errorf("roleGrantees(\"\") = %v, want empty", r)
+	}
+}
+
+// ============================================================================
+// ValidateJobSchemaPermissions Tests
+// ============================================================================
+
+func TestValidateJobSchemaPermissions_AllMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
+
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
+	// Loop over ["CREATE","SELECT","INSERT","UPDATE"]: global+schema check per priv.
+	// CREATE: global=0, schema=0 -> missing
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	// SELECT: global=0, schema=0 -> missing
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	// INSERT: global=0, schema=0 -> missing
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	// UPDATE: global=0, schema=0 -> missing
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+
+	err = p.ValidateJobSchemaPermissions(context.Background())
+	if err == nil {
+		t.Fatal("expected missing-privilege error")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) || pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
+		t.Fatalf("expected JOB_SCHEMA_PERMISSION_CHECK PreflightError, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+func TestValidateJobSchemaPermissions_GlobalGrant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
+
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
+	// CREATE at global level
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	// SELECT at global level
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	// INSERT at global level
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	// UPDATE at global level
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+
+	if err := p.ValidateJobSchemaPermissions(context.Background()); err != nil {
+		t.Fatalf("expected all privileges to pass with global grants, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+func TestValidateJobSchemaPermissions_SchemaGrant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
+
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
+	// For each privilege: global=0, then schema=1
+	for i := 0; i < 4; i++ {
+		mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+		mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	}
+
+	if err := p.ValidateJobSchemaPermissions(context.Background()); err != nil {
+		t.Fatalf("expected all privileges to pass with schema grants, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
+	p := &PreflightChecker{logger: logger.NewDefault(), jobSchemaName: "goarchive"}
+	err := p.ValidateJobSchemaPermissions(context.Background())
+	if err == nil {
+		t.Fatal("expected error for nil destination")
+	}
+	if !strings.Contains(err.Error(), "destination database not configured") {
+		t.Fatalf("expected 'destination database not configured', got: %v", err)
+	}
+}
+
+// TestValidateJobSchemaPermissions_OnlyCreateMissing verifies that when a
+// grantee holds SELECT, INSERT, and UPDATE but not CREATE, the error message
+// lists only CREATE and includes the CREATE DATABASE hint.
+func TestValidateJobSchemaPermissions_OnlyCreateMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
+
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
+	// CREATE: global=0, schema=0 -> missing
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	// SELECT: global=0, schema=1 -> present
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	// INSERT: global=0, schema=1 -> present
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	// UPDATE: global=0, schema=1 -> present
+	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+
+	err = p.ValidateJobSchemaPermissions(context.Background())
+	if err == nil {
+		t.Fatal("expected JOB_SCHEMA_PERMISSION_CHECK error, got nil")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) || pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
+		t.Fatalf("expected JOB_SCHEMA_PERMISSION_CHECK PreflightError, got %v", err)
+	}
+	msg := pe.Message
+	if !strings.Contains(msg, "CREATE") {
+		t.Errorf("expected message to mention CREATE, got: %s", msg)
+	}
+	if !strings.Contains(msg, "CREATE DATABASE") {
+		t.Errorf("expected CREATE DATABASE hint in message, got: %s", msg)
+	}
+	// Must NOT list privileges the user already holds
+	for _, held := range []string{"SELECT", "INSERT", "UPDATE"} {
+		if strings.Contains(msg, held) {
+			t.Errorf("message must not list already-held privilege %s, got: %s", held, msg)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
 	}
 }
 
