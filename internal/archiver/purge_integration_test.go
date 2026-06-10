@@ -97,12 +97,8 @@ func clearPurgeSource(t *testing.T, setup *IntegrationTestSetup) {
 		}
 	}
 	// Resume state lives on destination now — clear there for fresh test state.
-	// Tables may not exist yet if this is the first test run; DELETE IGNORE
-	// would work but keeping warnings explicit helps diagnose unexpected state.
 	if destDB, ok := setup.GetDB("destination"); ok {
-		if _, err := destDB.Exec("DELETE FROM archiver_job_log"); err != nil {
-			t.Logf("Note: archiver_job_log not cleared on destination (may not exist yet): %v", err)
-		}
+		dropAllJobLogTables(t, destDB)
 		if _, err := destDB.Exec("DELETE FROM archiver_job"); err != nil {
 			t.Logf("Note: archiver_job not cleared on destination (may not exist yet): %v", err)
 		}
@@ -302,8 +298,10 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 	}
 
 	// Verify job is in idle status after first run
+	// Tracking lives on destination, not source.
 	var jobStatus string
-	err := sourceDB.QueryRow("SELECT job_status FROM archiver_job WHERE job_name = 'test_purge_recovery'").Scan(&jobStatus)
+	destDB, _ := setup.GetDB("destination")
+	err := destDB.QueryRow("SELECT job_status FROM archiver_job WHERE job_name = 'test_purge_recovery'").Scan(&jobStatus)
 	if err != nil {
 		t.Logf("Job may not exist after first run: %v", err)
 	}
@@ -647,7 +645,8 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 
 	// Resume metadata now lives on Destination for all orchestrators.
 	destDB, _ := setup.GetDB("destination")
-	resumeMgr, _ := NewResumeManager(destDB, nil)
+	destSchema := dbManager.GetConfig().Destination.EffectiveJobSchema()
+	resumeMgr, _ := NewResumeManager(destDB, nil, destSchema)
 	_ = resumeMgr.InitializeTables(ctx)
 	_, _ = resumeMgr.GetOrCreateJobWithType(ctx, "test_purge_jobtype", "customers", JobTypeArchive)
 
@@ -667,7 +666,10 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 		t.Error("Expected error for job type mismatch, got nil")
 	}
 
-	// Clean up (delete log rows first; archiver_job_log no longer cascades)
-	_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'test_purge_jobtype'")
+	// Clean up: resolve id, drop per-job log table, then delete the job row.
+	var jtID int64
+	if qerr := destDB.QueryRow("SELECT id FROM archiver_job WHERE job_name = 'test_purge_jobtype'").Scan(&jtID); qerr == nil {
+		_, _ = destDB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `archiver_job_log_%d`", jtID))
+	}
 	_, _ = destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_purge_jobtype'")
 }

@@ -29,7 +29,8 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	jobName := "force_lock_test_fresh"
 	testsupport.CleanupArchiverState(t, destDB, jobName)
 
-	resumeMgr, err := NewResumeManager(destDB, nil)
+	destSchema := getDestSchema(setup)
+	resumeMgr, err := NewResumeManager(destDB, nil, destSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +92,8 @@ func TestArchiveForceAllowedOnStaleHeartbeat(t *testing.T) {
 	jobName := "force_lock_test_stale"
 	testsupport.CleanupArchiverState(t, destDB, jobName)
 
-	resumeMgr, err := NewResumeManager(destDB, nil)
+	destSchema := getDestSchema(setup)
+	resumeMgr, err := NewResumeManager(destDB, nil, destSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +163,8 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	jobName := "force_lock_test_plain_blocked"
 	testsupport.CleanupArchiverState(t, destDB, jobName)
 
-	resumeMgr, err := NewResumeManager(destDB, nil)
+	destSchema := getDestSchema(setup)
+	resumeMgr, err := NewResumeManager(destDB, nil, destSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +231,8 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 	testsupport.CleanupArchiverState(t, destDB, incumbentJob)
 	testsupport.CleanupArchiverState(t, destDB, contenderJob)
 
-	resumeMgr, err := NewResumeManager(destDB, nil)
+	destSchema := getDestSchema(setup)
+	resumeMgr, err := NewResumeManager(destDB, nil, destSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,11 +275,20 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 	}
 }
 
+// getDestSchema returns the destination database name from the integration test setup.
+// Since JobSchema is not set in these tests, EffectiveJobSchema() returns Database.
+func getDestSchema(setup *IntegrationTestSetup) string {
+	for _, db := range setup.Config.Databases {
+		if db.Name == "destination" {
+			return db.Database
+		}
+	}
+	return "goarchive_test"
+}
+
 func clearArchiverStateNow(t *testing.T, destDB *sql.DB) {
 	t.Helper()
-	if _, err := destDB.Exec("DELETE FROM archiver_job_log"); err != nil {
-		t.Logf("archiver_job_log cleanup skipped: %v", err)
-	}
+	dropAllJobLogTables(t, destDB)
 	if _, err := destDB.Exec("DELETE FROM archiver_job"); err != nil {
 		t.Logf("archiver_job cleanup skipped: %v", err)
 	}

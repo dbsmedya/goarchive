@@ -772,10 +772,13 @@ func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
 	verifyRowCount(t, verifySource, "customers", 1)
 	verifyRowCount(t, verifySource, "orders", 1)
 
+	var jobID int64
+	if err := verifyDest.QueryRow("SELECT id FROM archiver_job WHERE job_name = ?", "test_batch_archive").Scan(&jobID); err != nil {
+		t.Fatalf("resolve job id: %v", err)
+	}
 	var pending int
-	if err := verifyDest.QueryRow(
-		"SELECT COUNT(*) FROM archiver_job_log WHERE job_name = ? AND log_status = 'pending'",
-		"test_batch_archive").Scan(&pending); err != nil {
+	q := fmt.Sprintf("SELECT COUNT(*) FROM `archiver_job_log_%d` WHERE log_status = 0", jobID)
+	if err := verifyDest.QueryRow(q).Scan(&pending); err != nil {
 		t.Fatalf("count pending: %v", err)
 	}
 	if pending != 0 {

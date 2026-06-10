@@ -98,10 +98,8 @@ func clearCopyOnlyDestination(t *testing.T, setup *IntegrationTestSetup) {
 			t.Logf("Warning: failed to truncate %s on destination: %v", table, err)
 		}
 	}
-	// Clean up archiver_job and archiver_job_log tables for fresh test state
-	if _, err := destDB.Exec("DELETE FROM archiver_job_log"); err != nil {
-		t.Logf("Warning: failed to clear archiver_job_log: %v", err)
-	}
+	// Clean up archiver_job and per-job log tables for fresh test state.
+	dropAllJobLogTables(t, destDB)
 	if _, err := destDB.Exec("DELETE FROM archiver_job"); err != nil {
 		t.Logf("Warning: failed to clear archiver_job: %v", err)
 	}
@@ -303,7 +301,8 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 
 	// Manually insert a running job record to simulate concurrent job
 	destDB, _ := setup.GetDB("destination")
-	resumeMgr, _ := NewResumeManager(destDB, nil)
+	destSchema := getDestSchema(setup)
+	resumeMgr, _ := NewResumeManager(destDB, nil, destSchema)
 	if err := resumeMgr.InitializeTables(ctx); err != nil {
 		t.Fatalf("Failed to initialize resume tables: %v", err)
 	}
@@ -316,8 +315,11 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 		t.Fatalf("Failed to insert fake job: %v", err)
 	}
 	defer func() {
-		// Cleanup (delete log rows first; archiver_job_log no longer cascades)
-		_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'concurrent_job'")
+		// Cleanup: resolve id, drop per-job log table, then delete the job row.
+		var cid int64
+		if qerr := destDB.QueryRow("SELECT id FROM archiver_job WHERE job_name = 'concurrent_job'").Scan(&cid); qerr == nil {
+			_, _ = destDB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `archiver_job_log_%d`", cid))
+		}
 		_, _ = destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'concurrent_job'")
 	}()
 
@@ -571,9 +573,12 @@ func TestCopyOnly_ForceMode_Cancelled_Integration(t *testing.T) {
 		t.Errorf("Expected 0 customers in destination after cancel, got %d", destCustomers)
 	}
 
-	// Clean up the abandoned job to prevent blocking other tests
-	// (delete log rows first; archiver_job_log no longer cascades)
-	_, _ = destDB.Exec("DELETE FROM archiver_job_log WHERE job_name = 'test_force_cancel'")
+	// Clean up the abandoned job to prevent blocking other tests.
+	// Resolve id and drop the per-job log table, then delete the job row.
+	var cancelID int64
+	if qerr := destDB.QueryRow("SELECT id FROM archiver_job WHERE job_name = 'test_force_cancel'").Scan(&cancelID); qerr == nil {
+		_, _ = destDB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `archiver_job_log_%d`", cancelID))
+	}
 	if _, err := destDB.Exec("DELETE FROM archiver_job WHERE job_name = 'test_force_cancel'"); err != nil {
 		t.Logf("Warning: failed to clean up test job: %v", err)
 	}
