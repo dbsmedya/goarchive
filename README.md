@@ -76,7 +76,7 @@ GoArchive intentionally treats configuration files as **operator-controlled and 
 ---
 
 > [!WARNING]
->  This project is currently in a pre-production state. While the core features are implemented, it has not yet undergone exhaustive large-scale testing. **DO NOT use this tool on production systems without extensive prior verification in your staging or test environments.**
+>  This tool performs data deletion on your source database. It is in use in limited production environments, but has not yet undergone exhaustive large-scale testing. **Rigorously test every archive job in a staging or test environment with representative data before running it against production.**
 
 
 ## ⚠️ Important Disclaimer
