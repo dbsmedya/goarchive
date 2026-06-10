@@ -34,7 +34,10 @@ func createTestConfig() *config.Config {
 			Port:     3307,
 			User:     "root",
 			Password: "password",
-			Database: "archive",
+			// Matches the real connection used by realDBManager (TEST_DEST_DB),
+			// so EffectiveJobSchema() resolves to an existing schema when the
+			// integration-flavored Execute tests run against a live MySQL.
+			Database: getEnv("TEST_DEST_DB", "sakila_archive"),
 		},
 		Processing: config.ProcessingConfig{
 			BatchSize:       1000,
@@ -1097,7 +1100,8 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
-	resumeMgr, _ := NewResumeManager(archDB, log)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
 
 	o := &ArchiveOrchestrator{
 		jobName:         "job1",
@@ -1112,8 +1116,8 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	archMock.ExpectBegin()
-	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusCompleted, "job1", "1").
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCompleted, "1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectCommit()
 
@@ -1144,7 +1148,8 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
-	resumeMgr, _ := NewResumeManager(archDB, log)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
 
 	o := &ArchiveOrchestrator{
 		jobName:         "job1",
@@ -1156,25 +1161,25 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	result := &ArchiveResult{}
 
 	// arch DB: status fetches first (copied, then pending)
-	archMock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name = \\? AND log_status = \\?").
-		WithArgs("job1", LogStatusCopied).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusCopied).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10"))
-	archMock.ExpectQuery("SELECT root_pk_id FROM archiver_job_log WHERE job_name = \\? AND log_status = \\?").
-		WithArgs("job1", LogStatusPending).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
 	// Phase A (copied=10): CompleteBatch only.
 	archMock.ExpectBegin()
-	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusCompleted, "job1", "10").
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCompleted, "10").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectCommit()
 	// Phase B (pending=20): MarkBatchCopied, then CompleteBatch.
-	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusCopied, "job1", "20").
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCopied, "20").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectBegin()
-	archMock.ExpectExec("UPDATE archiver_job_log SET log_status").
-		WithArgs(LogStatusCompleted, "job1", "20").
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCompleted, "20").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectCommit()
 

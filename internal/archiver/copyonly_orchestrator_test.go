@@ -129,17 +129,11 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: CREATE + column checks + alters
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// InitializeTables: legacy probe (fresh) + CREATE archiver_job only.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
+		WithArgs(cfg.Destination.EffectiveJobSchema()).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Root-table lock acquired for the startup critical section.
 	mock.ExpectQuery("SELECT GET_LOCK").
@@ -191,17 +185,11 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: CREATE + column checks + alters (same as happy path).
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS archiver_job_log").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT DATA_TYPE FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"data_type"}).AddRow("varchar"))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// InitializeTables: legacy probe (fresh) + CREATE archiver_job only.
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
+		WithArgs(cfg.Destination.EffectiveJobSchema()).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Root-table lock + heartbeat staleness + same-root concurrency check (all clean).
 	mock.ExpectQuery("SELECT GET_LOCK").
@@ -221,21 +209,24 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
 		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(202)))
 
-	// GetOrCreateJobWithType — return existing job row.
-	mock.ExpectQuery("SELECT job_name, root_table, job_type, last_processed_root_pk_id, job_status, created_at, updated_at FROM archiver_job").
+	// GetOrCreateJobWithType — return existing job row (now includes leading id),
+	// then ensure the per-job log table.
+	mock.ExpectQuery("SELECT id, job_name, root_table, job_type, last_processed_root_pk_id, job_status, created_at, updated_at FROM .*archiver_job`").
 		WithArgs("test_job").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"job_name", "root_table", "job_type", "last_processed_root_pk_id",
+			"id", "job_name", "root_table", "job_type", "last_processed_root_pk_id",
 			"job_status", "created_at", "updated_at",
-		}).AddRow("test_job", "users", JobTypeCopyOnly, "", JobStatusIdle, time.Now(), time.Now()))
+		}).AddRow(int64(5), "test_job", "users", JobTypeCopyOnly, "", JobStatusIdle, time.Now(), time.Now()))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job_log_\\d+").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// UpdateJobStatus(Running).
-	mock.ExpectExec("UPDATE archiver_job SET job_status").
+	mock.ExpectExec("UPDATE .*archiver_job` SET job_status").
 		WithArgs(JobStatusRunning, "test_job").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// Heartbeat seed.
-	mock.ExpectExec("UPDATE archiver_job SET last_heartbeat_at").
+	mock.ExpectExec("UPDATE .*archiver_job` SET last_heartbeat_at").
 		WithArgs("test_job").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -251,7 +242,7 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 			AddRow("varchar", "varchar(36)"))
 
 	// Cleanup must write JobStatusFailed (not Idle) because Execute returned an error.
-	mock.ExpectExec("UPDATE archiver_job SET job_status").
+	mock.ExpectExec("UPDATE .*archiver_job` SET job_status").
 		WithArgs(JobStatusFailed, "test_job").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

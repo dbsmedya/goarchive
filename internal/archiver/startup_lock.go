@@ -68,6 +68,7 @@ func beginJobStartup(
 	jobType string,
 	commandName string,
 	force bool,
+	jobSchema string,
 ) (*jobStartup, error) {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	startup := &jobStartup{
@@ -75,7 +76,7 @@ func beginJobStartup(
 		cancelRun: cancelRun,
 	}
 
-	resumeMgr, err := NewResumeManager(destDB, log)
+	resumeMgr, err := NewResumeManager(destDB, log, jobSchema)
 	if err != nil {
 		cancelRun()
 		return nil, fmt.Errorf("failed to create resume manager: %w", err)
@@ -108,7 +109,7 @@ func beginJobStartup(
 		return nil, fmt.Errorf("failed to determine heartbeat staleness for job %q: %w", jobName, err)
 	}
 
-	if err := CheckSameRootConcurrency(ctx, destDB, rootTable, jobName, commandName); err != nil {
+	if err := CheckSameRootConcurrency(ctx, destDB, jobSchema, rootTable, jobName, commandName); err != nil {
 		cancelRun()
 		return nil, err
 	}

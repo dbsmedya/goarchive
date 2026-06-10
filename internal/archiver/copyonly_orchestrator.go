@@ -134,7 +134,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		return result, err
 	}
 
-	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeCopyOnly, "copy-only", force)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeCopyOnly, "copy-only", force, o.config.Destination.EffectiveJobSchema())
 	if err != nil {
 		return fail("%w", err)
 	}

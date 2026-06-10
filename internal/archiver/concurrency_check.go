@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/dbsmedya/goarchive/internal/sqlutil"
 	mysql "github.com/go-sql-driver/mysql"
 )
 
@@ -13,17 +14,18 @@ const concurrencyStaleThresholdSeconds = 60
 const mysqlErrTableNotFound = 1146
 
 // CheckSameRootConcurrency blocks when another Running job exists on the same root table.
-func CheckSameRootConcurrency(ctx context.Context, db *sql.DB, rootTable, currentJob, commandName string) error {
+func CheckSameRootConcurrency(ctx context.Context, db *sql.DB, jobSchema, rootTable, currentJob, commandName string) error {
 	if db == nil {
 		return fmt.Errorf("destination database is nil")
 	}
-	const query = `
+	jobTable := sqlutil.QuoteIdentifier(jobSchema) + "." + sqlutil.QuoteIdentifier("archiver_job")
+	query := fmt.Sprintf(`
 		SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW())
-		FROM archiver_job
+		FROM %s
 		WHERE root_table = ?
 		  AND job_status = ?
 		  AND job_name != ?
-	`
+	`, jobTable)
 	rows, err := db.QueryContext(ctx, query, rootTable, JobStatusRunning, currentJob)
 	if err != nil {
 		var mysqlErr *mysql.MySQLError
@@ -85,7 +87,7 @@ func CheckSameRootConcurrency(ctx context.Context, db *sql.DB, rootTable, curren
 	return fmt.Errorf(
 		"cannot run %s on root_table %q: stale running job(s) detected: %v. "+
 			"This indicates a prior crashed run. Manually inspect and clear with:\n"+
-			"  UPDATE archiver_job SET job_status = 0 WHERE job_name = '<name>';\n"+
+			"  UPDATE %s SET job_status = 0 WHERE job_name = '<name>';\n"+
 			"(0 = JobStatusIdle. See JobStatus constants in internal/archiver/resume.go.)",
-		commandName, rootTable, names)
+		commandName, rootTable, names, jobTable)
 }

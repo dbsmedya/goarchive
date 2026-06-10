@@ -94,7 +94,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		Success:   false,
 	}
 
-	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypePurge, "purge", o.force)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypePurge, "purge", o.force, o.config.Destination.EffectiveJobSchema())
 	if err != nil {
 		return nil, err
 	}

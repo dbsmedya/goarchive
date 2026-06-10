@@ -255,7 +255,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		o.logger.Warn(skipVerificationBanner)
 	}
 
-	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeArchive, "archive", o.force)
+	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeArchive, "archive", o.force, o.config.Destination.EffectiveJobSchema())
 	if err != nil {
 		return fail("%w", err)
 	}
@@ -582,10 +582,10 @@ func (o *ArchiveOrchestrator) resumePending(
 				"To recover, choose one:\n"+
 				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
 				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the entries:\n"+
-				"       UPDATE archiver_job_log SET log_status='completed' WHERE job_name='%s' AND log_status IN ('copied','pending');\n"+
+				"       UPDATE %s SET log_status=2 WHERE log_status IN (0,1);\n"+
 				"     and re-run.\n\n"+
 				"PKs (first 10): %v",
-			o.jobName, total, o.jobName, preview)
+			o.jobName, total, resumeMgr.LogTableName(), preview)
 	}
 
 	// Phase A: finish copied batches (already verified; delete-only).
