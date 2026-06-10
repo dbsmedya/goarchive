@@ -26,6 +26,7 @@ func TestValidConfig(t *testing.T) {
 			"test_job": {
 				RootTable:  "orders",
 				PrimaryKey: "id",
+				Where:      "1=1",
 			},
 		},
 		Processing: ProcessingConfig{
@@ -37,6 +38,47 @@ func TestValidConfig(t *testing.T) {
 
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("expected no validation errors, got: %v", err)
+	}
+}
+
+func TestWhereIsRequired(t *testing.T) {
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Password: "pass",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3307,
+			User:     "root",
+			Password: "pass",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {RootTable: "orders", PrimaryKey: "id"},
+		},
+		Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+		Verification: VerificationConfig{Method: "count"},
+	}
+	job := cfg.Jobs["test_job"]
+	job.Where = "   "
+	cfg.Jobs["test_job"] = job
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for empty where, got nil")
+	}
+	if !strings.Contains(err.Error(), "jobs.test_job.where") {
+		t.Fatalf("expected jobs.test_job.where in error, got: %v", err)
+	}
+
+	job.Where = "1=1" // explicit full-table opt-in must be allowed
+	cfg.Jobs["test_job"] = job
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("where=1=1 must be allowed, got: %v", err)
 	}
 }
 
@@ -58,7 +100,7 @@ func TestFileOnlyRequiresFileOutput(t *testing.T) {
 				Database: "archivedb",
 			},
 			Jobs: map[string]JobConfig{
-				"test_job": {RootTable: "orders", PrimaryKey: "id"},
+				"test_job": {RootTable: "orders", PrimaryKey: "id", Where: "1=1"},
 			},
 			Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
 			Verification: VerificationConfig{Method: "count"},
@@ -316,6 +358,7 @@ func TestJobLevelEmptyVerificationMethodInheritsGlobal(t *testing.T) {
 			"test_job": {
 				RootTable:  "orders",
 				PrimaryKey: "id",
+				Where:      "1=1",
 				Verification: &VerificationConfig{
 					Method:           "",
 					SkipVerification: true,
@@ -642,7 +685,7 @@ func TestValidate_RelationAtMaxDepth(t *testing.T) {
 	}
 
 	cfg.Jobs = map[string]JobConfig{
-		"deep": {RootTable: "root", PrimaryKey: "id", Relations: []Relation{deepest}},
+		"deep": {RootTable: "root", PrimaryKey: "id", Where: "1=1", Relations: []Relation{deepest}},
 	}
 
 	err := cfg.Validate()
@@ -661,7 +704,7 @@ func TestJobLoggingValidation(t *testing.T) {
 				Host: "localhost", Port: 3307, User: "root", Password: "p", Database: "archivedb",
 			},
 			Jobs: map[string]JobConfig{
-				"test_job": {RootTable: "orders", PrimaryKey: "id"},
+				"test_job": {RootTable: "orders", PrimaryKey: "id", Where: "1=1"},
 			},
 			Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
 			Verification: VerificationConfig{Method: "count"},

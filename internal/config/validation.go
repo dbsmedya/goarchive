@@ -190,6 +190,13 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 		})
 	}
 
+	if strings.TrimSpace(job.Where) == "" {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".where",
+			Message: `where is required; use where: "1=1" explicitly to process the entire table`,
+		})
+	}
+
 	// Validate relations recursively
 	for i, rel := range job.Relations {
 		relPrefix := fmt.Sprintf("%s.relations[%d]", prefix, i)
