@@ -206,13 +206,15 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 	}
 
 	if job.Processing != nil {
-		if err := c.validateProcessingConfig(prefix+".processing", job.Processing); err != nil {
+		merged := job.GetJobProcessing(c.Processing)
+		if err := c.validateProcessingConfig(prefix+".processing", &merged); err != nil {
 			errors = append(errors, err...)
 		}
 	}
 
 	if job.Verification != nil {
-		if err := c.validateVerificationConfig(prefix+".verification", job.Verification, false); err != nil {
+		merged := job.GetJobVerification(c.Verification)
+		if err := c.validateVerificationConfig(prefix+".verification", &merged, false); err != nil {
 			errors = append(errors, err...)
 		}
 	}

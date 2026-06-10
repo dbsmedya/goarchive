@@ -150,14 +150,15 @@ func TestConfigJobsMap(t *testing.T) {
 }
 
 func TestGetJobVerification_JobOverridesGlobalSkipVerification(t *testing.T) {
+	off := false
 	global := VerificationConfig{
 		Method:           "count",
 		SkipVerification: true,
 	}
 	job := JobConfig{
-		Verification: &VerificationConfig{
+		Verification: &VerificationOverrides{
 			Method:           "sha256",
-			SkipVerification: false,
+			SkipVerification: &off,
 		},
 	}
 
@@ -168,6 +169,41 @@ func TestGetJobVerification_JobOverridesGlobalSkipVerification(t *testing.T) {
 	}
 	if result.SkipVerification {
 		t.Error("expected job-level skip_verification=false to override global true")
+	}
+}
+
+func TestGetJobProcessing_ExplicitZeroSleepOverridesGlobal(t *testing.T) {
+	zero := 0.0
+	global := ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500, SleepSeconds: 5}
+	jc := &JobConfig{Processing: &ProcessingOverrides{SleepSeconds: &zero}}
+	merged := jc.GetJobProcessing(global)
+	if merged.SleepSeconds != 0 {
+		t.Fatalf("explicit sleep_seconds: 0 must override global, got %v", merged.SleepSeconds)
+	}
+	if merged.BatchSize != 1000 || merged.BatchDeleteSize != 500 {
+		t.Fatalf("unset fields must inherit global, got %+v", merged)
+	}
+}
+
+func TestGetJobVerification_JobCanReenableVerification(t *testing.T) {
+	off := false
+	global := VerificationConfig{Method: "count", SkipVerification: true}
+	jc := &JobConfig{Verification: &VerificationOverrides{SkipVerification: &off}}
+	merged := jc.GetJobVerification(global)
+	if merged.SkipVerification {
+		t.Fatal("explicit skip_verification: false must override global true")
+	}
+}
+
+func TestGetJobVerification_UnsetSkipInherits(t *testing.T) {
+	global := VerificationConfig{Method: "count", SkipVerification: true}
+	jc := &JobConfig{Verification: &VerificationOverrides{Method: "sha256"}}
+	merged := jc.GetJobVerification(global)
+	if !merged.SkipVerification {
+		t.Fatal("unset skip_verification must inherit global true")
+	}
+	if merged.Method != "sha256" {
+		t.Fatalf("method = %q, want sha256", merged.Method)
 	}
 }
 

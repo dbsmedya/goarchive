@@ -40,13 +40,30 @@ type ReplicaConfig struct {
 
 // JobConfig represents an archive job configuration.
 type JobConfig struct {
-	RootTable    string              `yaml:"root_table" mapstructure:"root_table"`
-	PrimaryKey   string              `yaml:"primary_key" mapstructure:"primary_key"`
-	Where        string              `yaml:"where" mapstructure:"where"`
-	Relations    []Relation          `yaml:"relations" mapstructure:"relations"`
-	Processing   *ProcessingConfig   `yaml:"processing,omitempty" mapstructure:"processing"`
-	Verification *VerificationConfig `yaml:"verification,omitempty" mapstructure:"verification"`
-	Logging      *LoggingConfig      `yaml:"logging,omitempty" mapstructure:"logging"`
+	RootTable    string                 `yaml:"root_table" mapstructure:"root_table"`
+	PrimaryKey   string                 `yaml:"primary_key" mapstructure:"primary_key"`
+	Where        string                 `yaml:"where" mapstructure:"where"`
+	Relations    []Relation             `yaml:"relations" mapstructure:"relations"`
+	Processing   *ProcessingOverrides   `yaml:"processing,omitempty" mapstructure:"processing"`
+	Verification *VerificationOverrides `yaml:"verification,omitempty" mapstructure:"verification"`
+	Logging      *LoggingConfig         `yaml:"logging,omitempty" mapstructure:"logging"`
+}
+
+// ProcessingOverrides is the per-job processing block. Pointer fields
+// distinguish "not set — inherit global" (nil) from an explicit value, so a
+// job can set sleep_seconds: 0 to disable a global sleep.
+type ProcessingOverrides struct {
+	BatchSize          *int     `yaml:"batch_size,omitempty" mapstructure:"batch_size"`
+	BatchDeleteSize    *int     `yaml:"batch_delete_size,omitempty" mapstructure:"batch_delete_size"`
+	SleepSeconds       *float64 `yaml:"sleep_seconds,omitempty" mapstructure:"sleep_seconds"`
+	DeleteSleepSeconds *float64 `yaml:"delete_sleep_seconds,omitempty" mapstructure:"delete_sleep_seconds"`
+	SentinelFile       *string  `yaml:"sentinel_file,omitempty" mapstructure:"sentinel_file"`
+}
+
+// VerificationOverrides is the per-job verification block.
+type VerificationOverrides struct {
+	Method           string `yaml:"method,omitempty" mapstructure:"method"`
+	SkipVerification *bool  `yaml:"skip_verification,omitempty" mapstructure:"skip_verification"`
 }
 
 // Relation represents a table relationship for dependency resolution.
@@ -161,28 +178,27 @@ func (c *Config) GetJobVerification(jobName string) VerificationConfig {
 	return job.GetJobVerification(c.Verification)
 }
 
-// GetJobProcessing returns the processing config for a job, falling back to global if not set.
+// GetJobProcessing merges the job's overrides over the global config.
+// nil pointer = inherit; explicit value (including zero) wins.
 func (jc *JobConfig) GetJobProcessing(global ProcessingConfig) ProcessingConfig {
 	if jc.Processing == nil {
 		return global
 	}
-
-	// Merge job-specific with global defaults
 	result := global
-	if jc.Processing.BatchSize > 0 {
-		result.BatchSize = jc.Processing.BatchSize
+	if jc.Processing.BatchSize != nil {
+		result.BatchSize = *jc.Processing.BatchSize
 	}
-	if jc.Processing.BatchDeleteSize > 0 {
-		result.BatchDeleteSize = jc.Processing.BatchDeleteSize
+	if jc.Processing.BatchDeleteSize != nil {
+		result.BatchDeleteSize = *jc.Processing.BatchDeleteSize
 	}
-	if jc.Processing.SleepSeconds > 0 {
-		result.SleepSeconds = jc.Processing.SleepSeconds
+	if jc.Processing.SleepSeconds != nil {
+		result.SleepSeconds = *jc.Processing.SleepSeconds
 	}
-	if jc.Processing.DeleteSleepSeconds > 0 {
-		result.DeleteSleepSeconds = jc.Processing.DeleteSleepSeconds
+	if jc.Processing.DeleteSleepSeconds != nil {
+		result.DeleteSleepSeconds = *jc.Processing.DeleteSleepSeconds
 	}
-	if jc.Processing.SentinelFile != "" {
-		result.SentinelFile = jc.Processing.SentinelFile
+	if jc.Processing.SentinelFile != nil {
+		result.SentinelFile = *jc.Processing.SentinelFile
 	}
 	return result
 }
@@ -217,17 +233,17 @@ func (jc *JobConfig) GetJobLogging(global LoggingConfig) LoggingConfig {
 	return result
 }
 
-// GetJobVerification returns the verification config for a job, falling back to global if not set.
+// GetJobVerification merges the job's overrides over the global config.
 func (jc *JobConfig) GetJobVerification(global VerificationConfig) VerificationConfig {
 	if jc.Verification == nil {
 		return global
 	}
-
-	// Merge job-specific with global defaults
 	result := global
 	if jc.Verification.Method != "" {
 		result.Method = jc.Verification.Method
 	}
-	result.SkipVerification = jc.Verification.SkipVerification
+	if jc.Verification.SkipVerification != nil {
+		result.SkipVerification = *jc.Verification.SkipVerification
+	}
 	return result
 }

@@ -739,7 +739,9 @@ func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
 	seedTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	jobCfg.Processing = &config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000}
+	batchSize := 1000
+	batchDeleteSize := 1000
+	jobCfg.Processing = &config.ProcessingOverrides{BatchSize: &batchSize, BatchDeleteSize: &batchDeleteSize}
 
 	dbManager := setupRealDBManager(t, setup)
 	cfg := dbManager.GetConfig()

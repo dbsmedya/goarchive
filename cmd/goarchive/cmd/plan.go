@@ -153,17 +153,17 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	printSection("Configuration")
 	fmt.Printf("  Batch Size:          %d", jobProcessing.BatchSize)
-	if job.Processing != nil && job.Processing.BatchSize > 0 {
+	if job.Processing != nil && job.Processing.BatchSize != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	fmt.Printf("  Batch Delete Size:   %d", jobProcessing.BatchDeleteSize)
-	if job.Processing != nil && job.Processing.BatchDeleteSize > 0 {
+	if job.Processing != nil && job.Processing.BatchDeleteSize != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	fmt.Printf("  Sleep Between Batches: %.1fs", jobProcessing.SleepSeconds)
-	if job.Processing != nil && job.Processing.SleepSeconds > 0 {
+	if job.Processing != nil && job.Processing.SleepSeconds != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()

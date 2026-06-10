@@ -14,7 +14,8 @@ func TestGetJobProcessing_DeleteSleepSecondsOverride(t *testing.T) {
 		DeleteSleepSeconds: 0,
 	}
 
-	jc := &JobConfig{Processing: &ProcessingConfig{DeleteSleepSeconds: 2.5}}
+	deleteSleep := 2.5
+	jc := &JobConfig{Processing: &ProcessingOverrides{DeleteSleepSeconds: &deleteSleep}}
 	got := jc.GetJobProcessing(global)
 	if got.DeleteSleepSeconds != 2.5 {
 		t.Errorf("expected job delete_sleep_seconds 2.5, got %v", got.DeleteSleepSeconds)

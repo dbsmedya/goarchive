@@ -81,16 +81,18 @@ func runListJobs(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Job-specific processing config
+		// Job-specific processing config (effective merged values)
 		if job.Processing != nil {
+			merged := job.GetJobProcessing(cfg.Processing)
 			cmd.Printf("   Processing:    Custom (batch_size=%d, batch_delete_size=%d)\n",
-				job.Processing.BatchSize, job.Processing.BatchDeleteSize)
+				merged.BatchSize, merged.BatchDeleteSize)
 		}
 
-		// Job-specific verification config
+		// Job-specific verification config (effective merged values)
 		if job.Verification != nil {
+			merged := job.GetJobVerification(cfg.Verification)
 			cmd.Printf("   Verification:  Custom (method=%s, skip=%v)\n",
-				job.Verification.Method, job.Verification.SkipVerification)
+				merged.Method, merged.SkipVerification)
 		}
 
 		// Add spacing between jobs

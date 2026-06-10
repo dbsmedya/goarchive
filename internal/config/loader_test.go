@@ -208,6 +208,20 @@ func TestApplyOverrides_LoggingAndSkipVerifyOnly(t *testing.T) {
 	}
 }
 
+func TestApplyOverrides_SkipVerifyBeatsJobBlocks(t *testing.T) {
+	off := false
+	cfg := DefaultConfig()
+	cfg.Jobs = map[string]JobConfig{
+		"j1": {Verification: &VerificationOverrides{SkipVerification: &off}},
+	}
+	cfg.ApplyOverrides("", "", true)
+	job := cfg.Jobs["j1"]
+	merged := job.GetJobVerification(cfg.Verification)
+	if !merged.SkipVerification {
+		t.Fatal("--skip-verify must win over an explicit job skip_verification: false")
+	}
+}
+
 func TestApplyOverridesZeroValues(t *testing.T) {
 	// Start with a custom config
 	cfg := &Config{

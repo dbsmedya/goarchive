@@ -341,6 +341,7 @@ func TestTopLevelEmptyVerificationMethodInvalid(t *testing.T) {
 }
 
 func TestJobLevelEmptyVerificationMethodInheritsGlobal(t *testing.T) {
+	skip := true
 	cfg := &Config{
 		Source: DatabaseConfig{
 			Host:     "localhost",
@@ -359,9 +360,9 @@ func TestJobLevelEmptyVerificationMethodInheritsGlobal(t *testing.T) {
 				RootTable:  "orders",
 				PrimaryKey: "id",
 				Where:      "1=1",
-				Verification: &VerificationConfig{
+				Verification: &VerificationOverrides{
 					Method:           "",
-					SkipVerification: true,
+					SkipVerification: &skip,
 				},
 			},
 		},
@@ -558,6 +559,8 @@ func TestMultipleErrors(t *testing.T) {
 }
 
 func TestJobLevelProcessingAndVerificationValidation(t *testing.T) {
+	badBatchSize := -5
+	batchDeleteSize := 100
 	cfg := &Config{
 		Source: DatabaseConfig{
 			Host:     "localhost",
@@ -575,11 +578,11 @@ func TestJobLevelProcessingAndVerificationValidation(t *testing.T) {
 			"test_job": {
 				RootTable:  "orders",
 				PrimaryKey: "id",
-				Processing: &ProcessingConfig{
-					BatchSize:       -5,
-					BatchDeleteSize: 100,
+				Processing: &ProcessingOverrides{
+					BatchSize:       &badBatchSize,
+					BatchDeleteSize: &batchDeleteSize,
 				},
-				Verification: &VerificationConfig{
+				Verification: &VerificationOverrides{
 					Method: "bad_method",
 				},
 			},
@@ -596,6 +599,38 @@ func TestJobLevelProcessingAndVerificationValidation(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "jobs.test_job.verification.method") {
 		t.Errorf("expected error about job verification method, got: %v", err)
+	}
+}
+
+func TestJobPartialProcessingBlockValidatesMerged(t *testing.T) {
+	two := 2.0
+	cfg := &Config{
+		Source: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "testdb",
+		},
+		Destination: DatabaseConfig{
+			Host:     "localhost",
+			Port:     3306,
+			User:     "root",
+			Database: "archivedb",
+		},
+		Jobs: map[string]JobConfig{
+			"test_job": {
+				RootTable:  "orders",
+				PrimaryKey: "id",
+				Where:      "1=1",
+				Processing: &ProcessingOverrides{SleepSeconds: &two},
+			},
+		},
+		Processing:   ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+		Verification: VerificationConfig{Method: "count"},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("partial per-job processing block must validate against merged config, got: %v", err)
 	}
 }
 

@@ -192,28 +192,28 @@ func (e *Estimator) DisplayExecutionPlan(result *EstimateResult) {
 	// Config summary (show job-specific or global)
 	fmt.Printf("Configuration Summary:\n")
 	fmt.Printf("  Batch size: %d", e.processing.BatchSize)
-	if e.jobCfg.Processing != nil && e.jobCfg.Processing.BatchSize > 0 {
+	if e.jobCfg.Processing != nil && e.jobCfg.Processing.BatchSize != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	fmt.Printf("  Batch delete size: %d", e.processing.BatchDeleteSize)
-	if e.jobCfg.Processing != nil && e.jobCfg.Processing.BatchDeleteSize > 0 {
+	if e.jobCfg.Processing != nil && e.jobCfg.Processing.BatchDeleteSize != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	fmt.Printf("  Sleep between batches: %.1fs", e.processing.SleepSeconds)
-	if e.jobCfg.Processing != nil && e.jobCfg.Processing.SleepSeconds > 0 {
+	if e.jobCfg.Processing != nil && e.jobCfg.Processing.SleepSeconds != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	fmt.Printf("  Sleep between delete chunks: %.1fs", e.processing.DeleteSleepSeconds)
-	if e.jobCfg.Processing != nil && e.jobCfg.Processing.DeleteSleepSeconds > 0 {
+	if e.jobCfg.Processing != nil && e.jobCfg.Processing.DeleteSleepSeconds != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()
 	if e.processing.SentinelFile != "" {
 		fmt.Printf("  Sentinel pause file: %s", e.processing.SentinelFile)
-		if e.jobCfg.Processing != nil && e.jobCfg.Processing.SentinelFile != "" {
+		if e.jobCfg.Processing != nil && e.jobCfg.Processing.SentinelFile != nil {
 			fmt.Print(" (job-specific)")
 		}
 		fmt.Println()
@@ -224,7 +224,7 @@ func (e *Estimator) DisplayExecutionPlan(result *EstimateResult) {
 	}
 	fmt.Println()
 	fmt.Printf("  Skip verification: %v", e.verification.SkipVerification)
-	if e.jobCfg.Verification != nil {
+	if e.jobCfg.Verification != nil && e.jobCfg.Verification.SkipVerification != nil {
 		fmt.Print(" (job-specific)")
 	}
 	fmt.Println()

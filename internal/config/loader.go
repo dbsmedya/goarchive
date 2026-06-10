@@ -73,5 +73,13 @@ func (c *Config) ApplyOverrides(logLevel, logFormat string, skipVerify bool) {
 	}
 	if skipVerify {
 		c.Verification.SkipVerification = true
+		// CLI > job > global: a job's explicit skip_verification: false must
+		// not undo an operator's --skip-verify for this run.
+		for name, job := range c.Jobs {
+			if job.Verification != nil {
+				job.Verification.SkipVerification = nil
+				c.Jobs[name] = job
+			}
+		}
 	}
 }
