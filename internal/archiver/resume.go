@@ -74,9 +74,9 @@ type JobState struct {
 // ResumeManager handles job state persistence and crash recovery.
 //
 // Responsibilities:
-// - Initialize resume log tables (archiver_job, archiver_job_log)
+// - Initialize the archiver_job table and the per-job archiver_job_log_<id> table
 // - Track job checkpoints for resumption
-// - Log per-PK processing status (pending/completed/failed)
+// - Log per-PK processing status (pending/copied/completed/failed)
 // - Detect interrupted jobs and resume from checkpoint
 //
 // GA-P3-F4: Resume Logging System
