@@ -7,8 +7,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.3.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.3.2-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
+
+### Versioning (read before bumping the version)
+
+The version string (e.g. `1.3.2-community`, with the `-community` edition suffix)
+is duplicated in several places. A bump MUST update **all** of these — a missed
+one ships mislabeled binaries:
+
+| Location | What it controls |
+|----------|------------------|
+| `Makefile` → `RELEASE_VERSION` | Fallback version stamped into binaries when HEAD has no exact-match git tag. **The one most often missed.** |
+| `cmd/goarchive/cmd/root.go` → `Version` | Default `Version` constant (overridden by `-ldflags` at build time) |
+| `CLAUDE.md` (the **Version** line above) | This document |
+| `README.md` (the **Version** line) | User-facing docs |
+| `INSTALL.md` (the **Version** line) | User-facing docs |
+
+Do **not** change: `cmd/goarchive/cmd/version_test.go` (uses `1.2.3` as a test
+fixture, not the project version), or historical release notes under `.ayder/`.
+
+How the build resolves the version (`Makefile`):
+`VERSION := git describe --tags --exact-match || RELEASE_VERSION`. So a properly
+**tagged** release commit takes its version from the git tag; an untagged build
+falls back to `RELEASE_VERSION`. For an actual release, also create the matching
+tag: `make tag V=1.3.2-community` (this creates a `v`-prefixed tag, so a tagged
+build reports `v1.3.2-community` while the `RELEASE_VERSION` fallback reports
+`1.3.2-community` — keep `RELEASE_VERSION` in sync regardless).
+
+After bumping, verify: `go build -o /tmp/gv ./cmd/goarchive && /tmp/gv --version`
+should print the new version, and `make github-release` should stamp every
+`bin/goarchive-<version>-*` artifact with it.
 
 ## Build Commands
 
@@ -80,76 +109,83 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - Current state: `docs/project-plan/tracking/CURRENT_STATE.md`
 - Task details: `docs/project-plan/tasks/phase-{n}/GA-P{n}-F{n}-T{n}.md`
 
-## Recent Changes
+## Behavior & Gotchas
 
-### Per-Job Tracking Tables (feat/optimizations, 2026-06-10)
-- Tracking tables moved to a configurable `destination.job_schema` (default =
-  destination database). `archiver_job` gains an integer `id` PK (job_name now
-  UNIQUE); the shared `archiver_job_log` is replaced by per-job
-  `archiver_job_log_<id>` tables (TINYINT status 0/1/2/3, no job_name, no
-  timestamps). Advisory lock + heartbeat unchanged.
-- Legacy old-shape tables are detected at startup and rejected with upgrade
-  guidance (no auto-migration). New `JOB_SCHEMA_PERMISSION_CHECK` preflight
-  requires CREATE+SELECT/INSERT/UPDATE on the tracking schema.
+Non-obvious current behavior and the rationale behind it. (Chronological "what
+changed when" lives in git/GitHub; this section is present-tense current state.)
 
-### Validation Hardening (chore/validation, 2026-06-10)
-- Schema compatibility now compares column charset: mismatch is fatal under
-  count verification (silent transliteration risk) or when verification is
-  skipped, warning-only under sha256 that actually runs;
-  collation-only mismatch always warns
-- Write-permission preflight matches the connected account (CURRENT_USER() +
-  active roles) across USER_/SCHEMA_/TABLE_PRIVILEGES — global grants no longer
-  false-fail; new SOURCE_DELETE_PERMISSION_CHECK for archive/purge
-- `where` is required on every job (`"1=1"` = explicit full-table opt-in)
-- dry-run runs the non-destructive preflight profile, prints the WHERE clause,
-  and child-table estimates are filtered through the relation chain
-- Removed `--batch-size`/`--batch-delete-size`/`--sleep` CLI flags; processing
-  is config-only. Per-job processing/verification blocks use pointer fields
-  (`ProcessingOverrides`/`VerificationOverrides`): nil inherits, explicit
-  values — including zero — win, and `--skip-verify` beats job blocks
+### Schema compatibility (`DEST_SCHEMA_COMPATIBILITY_CHECK`)
 
-### Relaxed Destination Schema Check (chore/validation, 2026-06-10)
-- `DEST_SCHEMA_COMPATIBILITY_CHECK` is now direction-aware instead of demanding
-  byte-identical column metadata: the destination may drop secondary indexes
-  (`MUL`/`UNI`), `auto_increment`, and column defaults (`DEFAULT_GENERATED`,
-  `ON UPDATE`), and may relax `NOT NULL` — dropping destination secondary
-  indexes is a supported write-performance optimization
-- Still rejected (destination stricter than source): missing/different primary
-  key (required for `INSERT IGNORE` idempotency during crash recovery),
-  destination-only unique indexes (INSERT IGNORE would silently skip rows),
-  destination-only `NOT NULL`, destination generated columns (copy inserts explicit values), and any
-  name/type/count/order difference (`columnIncompatibility` in
-  `internal/archiver/preflight.go`)
+Implemented in `internal/archiver/preflight.go` (`columnIncompatibility`).
+Direction-aware, not byte-identical — the destination may be *looser* than the
+source but never *stricter*:
 
-### Logging Production Audit (fix/varios, 2026-06-09)
-- `RecordDiscovery` now receives the orchestrator logger via `SetLogger` (was silently using a default stdout logger in all three orchestrators)
-- `newJobLogger` tags every entry with `job=<name>` (`WithJob`), so all cmd/preflight/orchestrator/phase logs are attributable
-- archive/purge/copy-only log a structured completion summary (`Infow`) in addition to the console `fmt` output, so file logs capture run results
-- No rotation built in: files open in append mode; example config documents logrotate `copytruncate`
-- Audited clean: no credentials/DSNs logged; defer ordering flushes logger last; second-signal handler syncs before exit; zap loggers are goroutine-safe
+- **Allowed (destination looser):** drop secondary indexes (`MUL`/`UNI`),
+  `auto_increment`, column defaults (`DEFAULT_GENERATED`, `ON UPDATE`), and relax
+  `NOT NULL`. Dropping destination secondary indexes is a supported
+  write-performance optimization.
+- **Still fatal (destination stricter):** missing/different primary key (needed
+  for `INSERT IGNORE` crash-recovery idempotency), destination-only unique
+  indexes (INSERT IGNORE would silently skip rows), destination-only `NOT NULL`,
+  destination generated columns (copy inserts explicit values), and any
+  name/type/count/order difference.
+- **Column charset mismatch:** fatal under count verification or when
+  verification is skipped (silent transliteration risk), warning-only under a
+  sha256 verification that actually runs; collation-only mismatch always warns.
+- **Integer display width is normalized away** (`normalizeColumnType`):
+  `bigint(20)` and `bigint` compare equal, since the width is cosmetic and MySQL
+  8.0.17+ no longer reports it (a schema dumped from an older server would
+  otherwise false-fail). `unsigned`/`zerofill` are preserved — they change the
+  value range.
 
-### Per-Job Logging (fix/varios, 2026-06-09)
-- Jobs can carry their own `logging:` block (level/format/output/file_only); unset fields inherit from the global `logging:` block, and CLI `--log-level`/`--log-format` flags override both (`effectiveJobLogging` in `cmd/goarchive/cmd/root.go`)
-- archive/purge/copy-only/dry-run build their logger from the job-effective config; orchestrators now expose `SetLogger` and receive the cmd logger (previously they always logged to a default stdout logger)
-- Validation checks each job's merged logging config and reports errors as `jobs.<name>.logging.<field>`
+### Preflight & permissions
 
-### Logging Fixes (fix/varios, 2026-06-09)
-- Stdout/stderr zap syncers are now no-op on `Sync()` — kills the spurious `warning: failed to sync logger: sync /dev/stdout: invalid argument` on Linux (fsync on tty/pipe returns EINVAL)
-- File output (`logging.output: <path>`) writes plain text (no ANSI color codes); the stdout tee keeps colored output
-- New `logging.file_only: true` suppresses the stdout tee; validation rejects it when output is stdout/stderr
-- Reminder: config is loaded from exactly one file (`--config`, default `./archiver.yaml`) — there is no merging or fallback between multiple yaml files
+- Write-permission preflight matches the *connected* account (`CURRENT_USER()` +
+  active roles) across `USER_`/`SCHEMA_`/`TABLE_PRIVILEGES`, so global grants
+  don't false-fail. `SOURCE_DELETE_PERMISSION_CHECK` covers archive/purge.
+- `JOB_SCHEMA_PERMISSION_CHECK` requires `CREATE` + `SELECT`/`INSERT`/`UPDATE` on
+  the tracking schema (`destination.job_schema`).
+- Legacy old-shape tracking tables are detected at startup and rejected with
+  upgrade guidance — there is no auto-migration.
+- `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
+  bypasses it (DANGEROUS).
 
-### Batched Archive Pipeline (fix/batch_size, 2026-06-08)
-- `batch_size` is now the real copy chunk unit: root and every child table are fetched and inserted `batch_size` rows at a time (previously only root fetch was chunked)
-- `archiver_job_log` gains a `copied` status as a durable "copy+verify succeeded, safe to delete" marker; crash recovery is now status-aware (`pending` → full replay, `copied` → delete-only, no re-verify)
-- `dry-run` validates that `batch_size` fits MySQL's 65,535-placeholder limit and `max_allowed_packet` via a rolled-back destination transaction (placeholder check exact; packet check measured, approximate for child tables)
-- `delete_sleep_seconds` (default 0) throttles the delete phase by pausing between `batch_delete_size` delete chunks to limit binlog/replication lag — independent of `sleep_seconds`, which paces whole batches for source/archive load
-- `sentinel_file` (default empty) is an operator pause switch honored by archive/purge/copy-only: while the file exists, processing pauses before each batch (re-check every 1s, context-interruptible) and resumes when removed
+### Processing & verification config
 
-### CLI Improvements (GA-P4-F8, 2026-02-06)
-1. **Removed pterm dependency** - Plan command uses plain text output
-2. **Mermaid-ascii integration** - Table relationships shown as ASCII diagrams
-3. **Job-specific configs** - Processing and verification settings can be set per-job
+- **Config-only**: there are no `--batch-size`/`--batch-delete-size`/`--sleep`
+  CLI flags. Per-job `processing`/`verification` blocks are pointer fields — nil
+  inherits the global block, explicit values *including zero* win, and
+  `--skip-verify` beats job blocks.
+- `where` is required on every job; `"1=1"` is the explicit full-table opt-in.
+- `batch_size` is the real copy chunk unit: root and every child table fetch and
+  insert `batch_size` rows at a time.
+- Crash recovery is status-aware via the per-job log TINYINT status: `pending` →
+  full replay, `copied` (copy+verify succeeded, safe to delete) → delete-only, no
+  re-verify.
+- `delete_sleep_seconds` (default 0) pauses between `batch_delete_size` delete
+  chunks to limit binlog/replication lag — independent of `sleep_seconds`, which
+  paces whole batches.
+- `sentinel_file` (default empty): while the file exists, archive/purge/copy-only
+  pause before each batch (re-checked every 1s, context-interruptible).
+- `dry-run` runs the non-destructive preflight profile, prints the WHERE clause,
+  filters child-table estimates through the relation chain, and validates
+  `batch_size` against MySQL's 65,535-placeholder limit and `max_allowed_packet`
+  via a rolled-back destination transaction (placeholder check exact; packet
+  check approximate for child tables).
+
+### Logging
+
+- Config is loaded from exactly one file (`--config`, default `./archiver.yaml`)
+  — no merging or fallback across multiple yaml files.
+- Per-job `logging:` block (level/format/output/file_only); unset fields inherit
+  the global `logging:` block; CLI `--log-level`/`--log-format` override both
+  (`effectiveJobLogging` in `cmd/goarchive/cmd/root.go`). Every entry is tagged
+  `job=<name>`.
+- File output (`logging.output: <path>`) is plain text (no ANSI); the stdout tee
+  stays colored. `logging.file_only: true` suppresses the stdout tee and is
+  rejected when output is stdout/stderr.
+- No log rotation: files open in append mode — use logrotate `copytruncate` (see
+  example config). Logs never contain credentials or DSNs.
 
 ## Key Algorithms
 

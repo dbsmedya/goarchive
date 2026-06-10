@@ -750,7 +750,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.3.0-community` (stable for the scope below)
+- **Version**: `1.3.2-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
 

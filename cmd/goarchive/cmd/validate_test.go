@@ -63,11 +63,14 @@ func TestValidateCommandPreflight(t *testing.T) {
 	assert.Contains(t, doc, "preflight checks")
 }
 
-func TestValidateCommandNoJobFlag(t *testing.T) {
-	// Validate command operates on all jobs, not a specific one
+func TestValidateCommandOptionalJobFlag(t *testing.T) {
+	// Validate accepts an optional --job/-j flag; when omitted it validates
+	// all jobs, so the flag must not be marked required.
 	flags := validateCmd.Flags()
 	jobFlag := flags.Lookup("job")
-	assert.Nil(t, jobFlag, "validate command should not have a job flag")
+	assert.NotNil(t, jobFlag, "validate command should have an optional job flag")
+	assert.Equal(t, "j", jobFlag.Shorthand, "job flag should have -j shorthand")
+	assert.Equal(t, "", jobFlag.DefValue, "job flag should default to empty (all jobs)")
 }
 
 // ============================================================================

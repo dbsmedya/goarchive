@@ -1044,6 +1044,34 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 			wantErr: true,
 		},
 		{
+			// MySQL < 8.0.17 reports bigint(20); 8.0.17+ reports bigint. The
+			// display width is cosmetic, so these must compare equal.
+			name: "integer display width difference is allowed",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint(20)", "NO", "PRI", "auto_increment", "", ""},
+				{2, "qty", "int(11)", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
+				{2, "qty", "int", "YES", "", "", "", ""},
+			},
+			wantErr: false,
+		},
+		{
+			// unsigned changes the value range, so width normalization must not
+			// erase it: int(10) unsigned vs int must still mismatch.
+			name: "unsigned difference is still rejected despite width",
+			sourceCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "qty", "int(10) unsigned", "YES", "", "", "", ""},
+			},
+			destCols: [][]driverValue{
+				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+				{2, "qty", "int", "YES", "", "", "", ""},
+			},
+			wantErr: true,
+		},
+		{
 			name: "charset mismatch is rejected under count verification",
 			sourceCols: [][]driverValue{
 				{1, "id", "bigint", "NO", "PRI", "", "", ""},

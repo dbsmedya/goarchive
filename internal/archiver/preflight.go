@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -852,7 +853,7 @@ func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
 	if s.ColumnName != d.ColumnName {
 		return "column name mismatch"
 	}
-	if s.ColumnType != d.ColumnType {
+	if normalizeColumnType(s.ColumnType) != normalizeColumnType(d.ColumnType) {
 		return "column type mismatch"
 	}
 	if s.IsNullable == "YES" && d.IsNullable == "NO" {
@@ -876,6 +877,22 @@ func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
 
 func isGeneratedColumn(extra string) bool {
 	return strings.Contains(extra, "VIRTUAL GENERATED") || strings.Contains(extra, "STORED GENERATED")
+}
+
+// intDisplayWidthRe matches the deprecated integer display width — the
+// parenthesized digit count following an integer type keyword, e.g. the "(20)"
+// in "bigint(20)" or "int(10) unsigned". Anchored at the start so it never
+// touches the genuinely-semantic precision of varchar(255), decimal(10,2), etc.
+var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|integer|bigint)\(\d+\)`)
+
+// normalizeColumnType strips the integer display width so columns differing only
+// by it compare equal — "bigint(20)" and "bigint" are the same type. The width
+// has always been cosmetic (it never affected storage or value range) and MySQL
+// 8.0.17+ no longer reports it, so a schema dumped from an older server would
+// otherwise false-fail against an identical 8.0.17+ destination. unsigned and
+// zerofill are preserved because they do change the value range.
+func normalizeColumnType(t string) string {
+	return intDisplayWidthRe.ReplaceAllString(strings.TrimSpace(t), "$1")
 }
 
 // ValidateDestinationSchemaCompatibility ensures destination tables can receive

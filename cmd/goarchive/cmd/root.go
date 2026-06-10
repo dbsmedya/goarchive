@@ -11,7 +11,7 @@ import (
 
 // Version information (set via ldflags at build time)
 var (
-	Version = "1.3.0-community"
+	Version = "1.3.2-community"
 	Commit  = "unknown"
 )
 
@@ -41,6 +41,9 @@ Features:
   - Replication lag monitoring
   - Data verification (count and SHA256)`,
 	Version: Version,
+	// Errors from RunE are already reported with command-specific context;
+	// Cobra's usage block would only add noise after the error.
+	SilenceUsage: true,
 }
 
 // Execute runs the root command
