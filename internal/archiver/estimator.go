@@ -75,13 +75,11 @@ func (e *Estimator) Estimate(ctx context.Context) (*EstimateResult, error) {
 		if table == e.jobCfg.RootTable {
 			continue // Already counted
 		}
-		count, err := e.estimateTableCount(ctx, table)
+		count, err := e.estimateChildCount(ctx, table)
 		if err != nil {
-			e.logger.Warnf("Failed to estimate count for %s: %v", table, err)
-			result.ChildCounts[table] = 0
-		} else {
-			result.ChildCounts[table] = count
+			return nil, fmt.Errorf("failed to estimate filtered count for %s: %w", table, err)
 		}
+		result.ChildCounts[table] = count
 	}
 
 	// GA-P4-F4-T3: Calculate batch count
@@ -109,16 +107,47 @@ func (e *Estimator) estimateRootCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// estimateTableCount estimates total rows in a child table.
-// For simplicity, returns total count without filtering (actual archiving will discover exact subset).
-func (e *Estimator) estimateTableCount(ctx context.Context, table string) (int64, error) {
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", sqlutil.QuoteIdentifier(table))
+// estimateChildCount counts the child rows the job would actually process by
+// chaining IN-subqueries along the relation path from the root, applying the
+// job's WHERE at the innermost level. FK_INDEX_CHECK guarantees the FK columns
+// are indexed, so these subqueries stay cheap.
+func (e *Estimator) estimateChildCount(ctx context.Context, table string) (int64, error) {
+	type hop struct{ parent, fk, ref string }
+	var hops []hop
+	for cur := table; cur != e.graph.Root; {
+		parents := e.graph.GetParents(cur)
+		if len(parents) != 1 {
+			return 0, fmt.Errorf("table %s has %d parents; cannot build filtered estimate", cur, len(parents))
+		}
+		meta := e.graph.GetEdgeMeta(parents[0], cur)
+		if meta == nil {
+			return 0, fmt.Errorf("missing edge metadata for %s -> %s", parents[0], cur)
+		}
+		hops = append(hops, hop{parent: parents[0], fk: meta.ForeignKey, ref: meta.ReferenceKey})
+		cur = parents[0]
+	}
+
+	// hops runs child→root; hops[len-1].parent is the root. Build inside-out.
+	where := e.jobCfg.Where
+	if where == "" {
+		where = "1=1"
+	}
+	sub := fmt.Sprintf("SELECT %s FROM %s WHERE (%s)",
+		sqlutil.QuoteIdentifier(hops[len(hops)-1].ref),
+		sqlutil.QuoteIdentifier(e.graph.Root), where)
+	for i := len(hops) - 2; i >= 0; i-- {
+		sub = fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)",
+			sqlutil.QuoteIdentifier(hops[i].ref),
+			sqlutil.QuoteIdentifier(hops[i].parent),
+			sqlutil.QuoteIdentifier(hops[i+1].fk), sub)
+	}
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IN (%s)",
+		sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(hops[0].fk), sub)
 
 	var count int64
 	if err := e.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
 		return 0, err
 	}
-
 	return count, nil
 }
 

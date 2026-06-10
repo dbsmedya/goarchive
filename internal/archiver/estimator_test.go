@@ -208,17 +208,15 @@ func TestEstimator_Estimate_ChildCountError(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers`").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(10))
 
-	// Mock child count error (should log warning but not fail)
+	// Mock child count error (dry-run must not print a number it can't stand behind)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `orders`").WillReturnError(assert.AnError)
 
 	ctx := context.Background()
 	result, err := estimator.Estimate(ctx)
 
-	// Should succeed even if child count fails (logs warning)
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	assert.Equal(t, int64(10), result.RootCount)
-	assert.Equal(t, int64(0), result.ChildCounts["orders"]) // Defaults to 0 on error
+	assert.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "failed to estimate filtered count for orders")
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -306,6 +304,45 @@ func TestEstimator_Estimate_BatchCalculation(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedBatches, result.EstimatedBatches)
 		})
+	}
+}
+
+func TestEstimateChildCountFiltersThroughRelationChain(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	cfg := &config.Config{Processing: config.ProcessingConfig{BatchSize: 100, BatchDeleteSize: 50}}
+	jobCfg := &config.JobConfig{RootTable: "customers", PrimaryKey: "id", Where: "id <= 3"}
+	g := graph.NewGraph("customers", "id")
+	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "customer_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.AddEdgeWithMeta("customers", "orders", "customer_id", "id", "1-N")
+	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.AddEdgeWithMeta("orders", "order_items", "order_id", "id", "1-N")
+	g.SetPK("orders", "id")
+	g.SetPK("order_items", "id")
+
+	e := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
+
+	// Depth 1: orders filtered by root WHERE through customer_id IN (...)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `orders` WHERE `customer_id` IN \\(SELECT `id` FROM `customers` WHERE \\(id <= 3\\)\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(7))
+	count, err := e.estimateChildCount(context.Background(), "orders")
+	if err != nil {
+		t.Fatalf("estimateChildCount(orders): %v", err)
+	}
+	if count != 7 {
+		t.Fatalf("orders count = %d, want 7", count)
+	}
+
+	// Depth 2: order_items chained through orders through customers
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `order_items` WHERE `order_id` IN \\(SELECT `id` FROM `orders` WHERE `customer_id` IN \\(SELECT `id` FROM `customers` WHERE \\(id <= 3\\)\\)\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(21))
+	count, err = e.estimateChildCount(context.Background(), "order_items")
+	if err != nil {
+		t.Fatalf("estimateChildCount(order_items): %v", err)
+	}
+	if count != 21 {
+		t.Fatalf("order_items count = %d, want 21", count)
 	}
 }
 
