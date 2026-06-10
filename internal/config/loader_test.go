@@ -193,42 +193,18 @@ func TestLoadNonExistentFile(t *testing.T) {
 	}
 }
 
-func TestApplyOverrides(t *testing.T) {
-	// Start with a default config
+func TestApplyOverrides_LoggingAndSkipVerifyOnly(t *testing.T) {
 	cfg := DefaultConfig()
-
-	// Verify defaults
-	if cfg.Logging.Level != "info" {
-		t.Errorf("expected default log level 'info', got %s", cfg.Logging.Level)
+	cfg.Processing.BatchSize = 1000
+	cfg.ApplyOverrides("debug", "json", true)
+	if cfg.Logging.Level != "debug" || cfg.Logging.Format != "json" {
+		t.Fatalf("logging overrides not applied: %+v", cfg.Logging)
+	}
+	if !cfg.Verification.SkipVerification {
+		t.Fatal("skip verification override not applied")
 	}
 	if cfg.Processing.BatchSize != 1000 {
-		t.Errorf("expected default batch size 1000, got %d", cfg.Processing.BatchSize)
-	}
-	if cfg.Verification.SkipVerification != false {
-		t.Error("expected default skip_verify to be false")
-	}
-
-	// Apply some overrides
-	cfg.ApplyOverrides("debug", "text", 500, 250, 2.5, true)
-
-	// Verify overrides were applied
-	if cfg.Logging.Level != "debug" {
-		t.Errorf("expected log level 'debug' after override, got %s", cfg.Logging.Level)
-	}
-	if cfg.Logging.Format != "text" {
-		t.Errorf("expected log format 'text' after override, got %s", cfg.Logging.Format)
-	}
-	if cfg.Processing.BatchSize != 500 {
-		t.Errorf("expected batch size 500 after override, got %d", cfg.Processing.BatchSize)
-	}
-	if cfg.Processing.BatchDeleteSize != 250 {
-		t.Errorf("expected batch delete size 250 after override, got %d", cfg.Processing.BatchDeleteSize)
-	}
-	if cfg.Processing.SleepSeconds != 2.5 {
-		t.Errorf("expected sleep seconds 2.5 after override, got %f", cfg.Processing.SleepSeconds)
-	}
-	if cfg.Verification.SkipVerification != true {
-		t.Error("expected skip_verify to be true after override")
+		t.Fatal("processing config must not be touched by CLI overrides")
 	}
 }
 
@@ -250,7 +226,7 @@ func TestApplyOverridesZeroValues(t *testing.T) {
 	}
 
 	// Apply zero values (should NOT override)
-	cfg.ApplyOverrides("", "", 0, 0, 0, false)
+	cfg.ApplyOverrides("", "", false)
 
 	// Verify original values are preserved
 	if cfg.Logging.Level != "warn" {
@@ -278,7 +254,7 @@ func TestApplyOverridesPartial(t *testing.T) {
 	cfg := DefaultConfig()
 
 	// Apply only some overrides
-	cfg.ApplyOverrides("error", "", 0, 100, 0, true)
+	cfg.ApplyOverrides("error", "", true)
 
 	// Verify only specified overrides were applied
 	if cfg.Logging.Level != "error" {
@@ -286,12 +262,6 @@ func TestApplyOverridesPartial(t *testing.T) {
 	}
 	if cfg.Logging.Format != "json" { // Should keep default
 		t.Errorf("expected log format to remain 'json', got %s", cfg.Logging.Format)
-	}
-	if cfg.Processing.BatchSize != 1000 { // Should keep default (0 doesn't override)
-		t.Errorf("expected batch size to remain 1000, got %d", cfg.Processing.BatchSize)
-	}
-	if cfg.Processing.BatchDeleteSize != 100 {
-		t.Errorf("expected batch delete size 100 after override, got %d", cfg.Processing.BatchDeleteSize)
 	}
 	if cfg.Verification.SkipVerification != true {
 		t.Error("expected skip_verify to be true after override")

@@ -61,22 +61,15 @@ func (c *Config) ListJobs() []string {
 }
 
 // ApplyOverrides applies CLI flag overrides to the global configuration.
-// Only non-zero/non-empty values are applied.
-func (c *Config) ApplyOverrides(logLevel, logFormat string, batchSize, batchDeleteSize int, sleepSeconds float64, skipVerify bool) {
+// Processing settings (batch sizes, sleeps) are config-file-only: one
+// archiver.yaml holds many jobs and a single CLI value cannot be correct for
+// all of them.
+func (c *Config) ApplyOverrides(logLevel, logFormat string, skipVerify bool) {
 	if logLevel != "" {
 		c.Logging.Level = logLevel
 	}
 	if logFormat != "" {
 		c.Logging.Format = logFormat
-	}
-	if batchSize > 0 {
-		c.Processing.BatchSize = batchSize
-	}
-	if batchDeleteSize > 0 {
-		c.Processing.BatchDeleteSize = batchDeleteSize
-	}
-	if sleepSeconds > 0 {
-		c.Processing.SleepSeconds = sleepSeconds
 	}
 	if skipVerify {
 		c.Verification.SkipVerification = true

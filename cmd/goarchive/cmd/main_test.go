@@ -31,13 +31,6 @@ func TestCLIFlagsVariables(t *testing.T) {
 	assert.Equal(t, "", logLevel)
 	assert.Equal(t, "", logFormat)
 
-	// Int flags should default to 0
-	assert.Equal(t, 0, batchSize)
-	assert.Equal(t, 0, batchDeleteSize)
-
-	// Float flags should default to 0
-	assert.Equal(t, float64(0), sleepSeconds)
-
 	// Bool flags should default to false
 	assert.Equal(t, false, skipVerify)
 }
@@ -45,19 +38,13 @@ func TestCLIFlagsVariables(t *testing.T) {
 func TestCLIOverrideStruct(t *testing.T) {
 	// Test CLIOverrides struct creation
 	overrides := CLIOverrides{
-		LogLevel:        "debug",
-		LogFormat:       "json",
-		BatchSize:       100,
-		BatchDeleteSize: 50,
-		SleepSeconds:    1.5,
-		SkipVerify:      true,
+		LogLevel:   "debug",
+		LogFormat:  "json",
+		SkipVerify: true,
 	}
 
 	assert.Equal(t, "debug", overrides.LogLevel)
 	assert.Equal(t, "json", overrides.LogFormat)
-	assert.Equal(t, 100, overrides.BatchSize)
-	assert.Equal(t, 50, overrides.BatchDeleteSize)
-	assert.Equal(t, 1.5, overrides.SleepSeconds)
 	assert.True(t, overrides.SkipVerify)
 }
 

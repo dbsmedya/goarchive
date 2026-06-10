@@ -43,10 +43,6 @@ func init() {
 }
 
 func runCopyOnly(cmd *cobra.Command, args []string) error {
-	if cmd.Flags().Changed("batch-delete-size") {
-		return fmt.Errorf("--batch-delete-size flag is not allowed for copy-only command")
-	}
-
 	cfg, err := config.Load(GetConfigFile())
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -59,9 +55,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 	jobCfg := &jobCfgValue
 
 	overrides := GetCLIOverrides()
-	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
-		overrides.BatchSize, overrides.BatchDeleteSize,
-		overrides.SleepSeconds, overrides.SkipVerify)
+	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}

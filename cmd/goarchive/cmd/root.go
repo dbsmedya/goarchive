@@ -17,13 +17,10 @@ var (
 
 // CLI flags that override config file values
 var (
-	cfgFile         string
-	logLevel        string
-	logFormat       string
-	batchSize       int
-	batchDeleteSize int
-	sleepSeconds    float64
-	skipVerify      bool
+	cfgFile    string
+	logLevel   string
+	logFormat  string
+	skipVerify bool
 )
 
 var rootCmd = &cobra.Command{
@@ -54,8 +51,6 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentPreRunE = validateCLIOverrides
-
 	// Config file flag
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "archiver.yaml",
 		"Path to configuration file")
@@ -66,30 +61,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "",
 		"Override log format (json, text)")
 
-	// Processing overrides
-	rootCmd.PersistentFlags().IntVar(&batchSize, "batch-size", 0,
-		"Override batch size (number of root IDs per batch)")
-	rootCmd.PersistentFlags().IntVar(&batchDeleteSize, "batch-delete-size", 0,
-		"Override batch delete size (rows per DELETE statement)")
-	rootCmd.PersistentFlags().Float64Var(&sleepSeconds, "sleep", 0,
-		"Override sleep seconds between batches")
-
 	// Safety overrides
 	rootCmd.PersistentFlags().BoolVar(&skipVerify, "skip-verify", false,
 		"Skip data verification after copy")
-}
-
-func validateCLIOverrides(_ *cobra.Command, _ []string) error {
-	if batchSize < 0 {
-		return fmt.Errorf("--batch-size must be >= 0")
-	}
-	if batchDeleteSize < 0 {
-		return fmt.Errorf("--batch-delete-size must be >= 0")
-	}
-	if sleepSeconds < 0 {
-		return fmt.Errorf("--sleep must be >= 0")
-	}
-	return nil
 }
 
 // effectiveJobLogging resolves the logging config for a job run with
@@ -136,22 +110,16 @@ func GetConfigFile() string {
 
 // CLIOverrides contains flag values that override config file settings
 type CLIOverrides struct {
-	LogLevel        string
-	LogFormat       string
-	BatchSize       int
-	BatchDeleteSize int
-	SleepSeconds    float64
-	SkipVerify      bool
+	LogLevel   string
+	LogFormat  string
+	SkipVerify bool
 }
 
 // GetCLIOverrides returns the CLI flag override values
 func GetCLIOverrides() CLIOverrides {
 	return CLIOverrides{
-		LogLevel:        logLevel,
-		LogFormat:       logFormat,
-		BatchSize:       batchSize,
-		BatchDeleteSize: batchDeleteSize,
-		SleepSeconds:    sleepSeconds,
-		SkipVerify:      skipVerify,
+		LogLevel:   logLevel,
+		LogFormat:  logFormat,
+		SkipVerify: skipVerify,
 	}
 }

@@ -69,9 +69,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 
 	// Apply CLI overrides
 	overrides := GetCLIOverrides()
-	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat,
-		overrides.BatchSize, overrides.BatchDeleteSize,
-		overrides.SleepSeconds, overrides.SkipVerify)
+	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
