@@ -52,7 +52,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (06, 07, 08)
+SAKILA=false            # Working Sakila E2E tests (06, 07, 08, 09, 10)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01-05)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -129,7 +129,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08, 09)"
+            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08, 09, 10)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-05)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -419,7 +419,7 @@ ensure_destination_schema() {
 }
 
 # Run specific Sakila test. First argument is the test number.
-# Tests 06-08 are expected to succeed (archive runs to completion).
+# Tests 06-10 are expected to succeed (archive runs to completion).
 # Tests 01-05 are expected to FAIL preflight with a documented error category
 # and are only run when --sakila-examples is set.
 run_sakila_test() {
@@ -504,8 +504,15 @@ run_sakila_test() {
             tables="payment"
             mode="working"
             ;;
+        10)
+            test_name="Test10_IsolatedJobSchema"
+            test_desc="Isolated job_schema (goarchive_meta) separate from archive DB"
+            config_file="test10_isolated_job_schema.yaml"
+            tables="film inventory film_actor film_category rental payment"
+            mode="working"
+            ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-9)"
+            log_error "Invalid test number: $test_num (expected 1-10)"
             return 1
             ;;
     esac
@@ -552,6 +559,26 @@ run_sakila_test() {
     if [[ "$mode" == "working" ]]; then
         # Working tests expect archive to complete successfully. Destination
         # schema must mirror source, so load it before running.
+
+        # Test 10 requires the isolated job schema to exist on the archive server.
+        # Drop and recreate it each run so prior tracking rows (archiver_job,
+        # archiver_job_log_<id>) do not persist and cause the job to see all root
+        # PKs as already completed, archiving zero rows on subsequent runs.
+        if [[ "$test_num" == "10" ]]; then
+            log_info "[STEP 3-pre] Resetting isolated job schema goarchive_meta (clean slate)..."
+            if ! mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" --user="$ARCHIVE_USER" \
+                --password="$MYSQL_PASS" --sql \
+                -e "DROP DATABASE IF EXISTS goarchive_meta; CREATE DATABASE goarchive_meta;" >> "$log_file" 2>&1; then
+                log_error "Failed to reset goarchive_meta schema"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (goarchive_meta reset)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+        fi
+
         log_info "[STEP 3a] Ensuring destination schema..."
         if ! ensure_destination_schema >> "$log_file" 2>&1; then
             log_error "Destination schema setup failed"
@@ -571,6 +598,45 @@ run_sakila_test() {
             echo "Result: FAIL" >> "$log_file"
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
+        fi
+
+        # Test 10 post-run: assert that tracking tables landed in goarchive_meta.
+        if [[ "$test_num" == "10" ]]; then
+            log_info "[STEP 3c] Asserting goarchive_meta.archiver_job exists..."
+            local job_table_count
+            job_table_count=$(mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" \
+                --user="$ARCHIVE_USER" --password="$MYSQL_PASS" --sql \
+                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='goarchive_meta' AND table_name='archiver_job';" \
+                2>/dev/null | tail -1)
+            if [[ "${job_table_count:-0}" -lt 1 ]]; then
+                log_error "goarchive_meta.archiver_job not found after archive run"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (goarchive_meta.archiver_job missing)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            log_info "  goarchive_meta.archiver_job confirmed present"
+            echo "  goarchive_meta.archiver_job: present (count=$job_table_count)" >> "$log_file"
+
+            log_info "[STEP 3d] Asserting goarchive_meta.archiver_job_log_<id> exists..."
+            local job_log_table_count
+            job_log_table_count=$(mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" \
+                --user="$ARCHIVE_USER" --password="$MYSQL_PASS" --sql \
+                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='goarchive_meta' AND table_name LIKE 'archiver_job_log_%';" \
+                2>/dev/null | tail -1)
+            if [[ "${job_log_table_count:-0}" -lt 1 ]]; then
+                log_error "FAIL: goarchive_meta.archiver_job_log_<id> not found after archive run"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (goarchive_meta.archiver_job_log_<id> missing)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            log_info "  goarchive_meta.archiver_job_log_<id> confirmed present"
+            echo "  goarchive_meta.archiver_job_log_<id>: present (count=$job_log_table_count)" >> "$log_file"
         fi
     else
         # Example tests expect `validate` to fail with a specific error category.
@@ -756,9 +822,9 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite (tests 06, 07, 08, 09)
+    # Run the working Sakila E2E suite (tests 06, 07, 08, 09, 10)
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "6 7 8 9" "working"
+        run_sakila_tests "6 7 8 9 10" "working"
         exit 0
     fi
 

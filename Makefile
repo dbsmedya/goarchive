@@ -214,7 +214,7 @@ test-status:
 	@echo "Test database status:"
 	@cd tests && docker compose ps
 
-# Run the working Sakila end-to-end suite (tests 06/07/08).
+# Run the working Sakila end-to-end suite (working tests 06-10).
 # Assumes Docker test DBs are already up (`make test-up`). Use `make e2e-setup`
 # for a fresh-environment run that also resets source + destination from Sakila.
 .PHONY: e2e
@@ -260,7 +260,7 @@ help:
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
-	@echo "  make e2e                - Sakila E2E (working tests 06/07/08) — assumes DBs up"
+	@echo "  make e2e                - Sakila E2E (working tests 06-10) — assumes DBs up"
 	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
 	@echo "  make e2e-examples       - Sakila validation demonstration tests (01-05)"
 	@echo "  make help               - Show this help"

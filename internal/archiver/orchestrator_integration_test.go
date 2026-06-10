@@ -785,3 +785,52 @@ func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
 		t.Fatalf("expected 0 pending log entries, got %d", pending)
 	}
 }
+
+// TestInitializeTables_RejectsLegacySchema_Integration seeds an old-shape
+// archiver_job table (job_name PRIMARY KEY, no id column) and asserts that
+// InitializeTables returns an error containing "legacy GoArchive tracking tables".
+func TestInitializeTables_RejectsLegacySchema_Integration(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	defer setup.Close()
+
+	destDB, ok := setup.GetDB("destination")
+	if !ok {
+		t.Fatal("destination database not found in integration setup")
+	}
+
+	// Resolve the destination DB name from the harness config.
+	var destDBName string
+	for _, dbCfg := range setup.Config.Databases {
+		if dbCfg.Name == "destination" {
+			destDBName = dbCfg.Database
+		}
+	}
+	if destDBName == "" {
+		t.Fatal("could not resolve destination DB name")
+	}
+
+	// Defensive pre-cleanup of prior-test residue. Note: InitializeTables errors
+	// in checkLegacySchema before any log table is created, so no
+	// archiver_job_log_<id> cleanup is needed here.
+	_, _ = destDB.ExecContext(ctx, "DROP TABLE IF EXISTS archiver_job_log")
+	_, _ = destDB.ExecContext(ctx, "DROP TABLE IF EXISTS archiver_job")
+
+	// Seed the OLD-shape table: job_name is the PRIMARY KEY; no id column.
+	if _, err := destDB.ExecContext(ctx,
+		"CREATE TABLE archiver_job (job_name VARCHAR(255) PRIMARY KEY, root_table VARCHAR(255))"); err != nil {
+		t.Fatalf("seed legacy table: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = destDB.ExecContext(context.Background(), "DROP TABLE IF EXISTS archiver_job")
+	})
+
+	rm, err := NewResumeManager(destDB, nil, destDBName)
+	if err != nil {
+		t.Fatalf("NewResumeManager: %v", err)
+	}
+
+	err = rm.InitializeTables(ctx)
+	if err == nil || !strings.Contains(err.Error(), "legacy GoArchive tracking tables") {
+		t.Fatalf("expected legacy-detection error containing 'legacy GoArchive tracking tables', got: %v", err)
+	}
+}

@@ -5,12 +5,15 @@ package archiver
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // ============================================================================
@@ -206,5 +209,96 @@ func TestIntegrationSchemaCompatibility_CharsetMismatch(t *testing.T) {
 	checker.SetVerification(config.VerificationConfig{Method: "sha256"})
 	if err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable}); err != nil {
 		t.Fatalf("expected charset mismatch to pass under sha256 verification, got: %v", err)
+	}
+}
+
+// TestIntegrationJobSchemaPermissions_MissingCreate verifies that
+// ValidateJobSchemaPermissions returns a *PreflightError with
+// Check == "JOB_SCHEMA_PERMISSION_CHECK" when the connected account lacks
+// CREATE on the tracking schema.
+func TestIntegrationJobSchemaPermissions_MissingCreate(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	defer setup.Close()
+
+	// Get root connection and destination config.
+	rootDB, ok := setup.GetDB("destination")
+	if !ok {
+		t.Fatal("destination database not found in integration setup")
+	}
+
+	var destCfg DatabaseConfig
+	for _, dbCfg := range setup.Config.Databases {
+		if dbCfg.Name == "destination" {
+			destCfg = dbCfg
+		}
+	}
+	destDBName := destCfg.Database
+
+	// Pre-create the isolated schema for the restricted user grants.
+	// goarchive_meta is also used by the E2E test (test10), so only ensure it
+	// exists — don't drop it.
+	_, _ = rootDB.ExecContext(ctx, "CREATE DATABASE IF NOT EXISTS goarchive_meta")
+
+	// Create a restricted user with only SELECT,INSERT,UPDATE (no CREATE) on the
+	// isolated tracking schema. Use '%' so the user can connect from any host
+	// (Docker bridge IPs vary between environments).
+	restrictedUser := "goarchive_priv_test@'%'"
+	restrictedPass := "privtest123!"
+	_, _ = rootDB.ExecContext(ctx, fmt.Sprintf("DROP USER IF EXISTS %s", restrictedUser))
+	if _, err := rootDB.ExecContext(ctx,
+		fmt.Sprintf("CREATE USER %s IDENTIFIED BY '%s'", restrictedUser, restrictedPass)); err != nil {
+		t.Fatalf("CREATE USER: %v", err)
+	}
+	if _, err := rootDB.ExecContext(ctx,
+		fmt.Sprintf("GRANT SELECT, INSERT, UPDATE ON goarchive_meta.* TO %s", restrictedUser)); err != nil {
+		t.Fatalf("GRANT: %v", err)
+	}
+	if _, err := rootDB.ExecContext(ctx, "FLUSH PRIVILEGES"); err != nil {
+		t.Fatalf("FLUSH PRIVILEGES: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = rootDB.ExecContext(context.Background(),
+			fmt.Sprintf("DROP USER IF EXISTS %s", restrictedUser))
+	})
+
+	// Open a connection as the restricted user on the destination server.
+	// Use goarchive_meta (the only schema this user can access) as the initial
+	// database; destDBName is passed separately to ConfigureDestination.
+	restrictedDSN := fmt.Sprintf("goarchive_priv_test:%s@tcp(%s:%d)/goarchive_meta?timeout=10s",
+		restrictedPass, destCfg.Host, destCfg.Port)
+	restrictedDB, err := sql.Open("mysql", restrictedDSN)
+	if err != nil {
+		t.Fatalf("sql.Open restricted: %v", err)
+	}
+	defer func() { _ = restrictedDB.Close() }()
+
+	if err := restrictedDB.PingContext(ctx); err != nil {
+		t.Fatalf("ping restricted user: %v", err)
+	}
+
+	// Build a PreflightChecker and configure destination with the restricted connection.
+	g := graph.NewGraph("dummy_table", "id")
+	checker, err := NewPreflightChecker(rootDB, destDBName, g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+	// signature: ConfigureDestination(db *sql.DB, destinationDBName, jobSchema string)
+	if err := checker.ConfigureDestination(restrictedDB, destDBName, "goarchive_meta"); err != nil {
+		t.Fatalf("ConfigureDestination: %v", err)
+	}
+
+	// ValidateJobSchemaPermissions must fail with JOB_SCHEMA_PERMISSION_CHECK
+	// because the restricted user lacks CREATE.
+	jobSchemaErr := checker.ValidateJobSchemaPermissions(ctx)
+	if jobSchemaErr == nil {
+		t.Fatal("expected JOB_SCHEMA_PERMISSION_CHECK error, got nil")
+	}
+	var pe *PreflightError
+	if !errors.As(jobSchemaErr, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", jobSchemaErr, jobSchemaErr)
+	}
+	if pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
+		t.Fatalf("expected Check == JOB_SCHEMA_PERMISSION_CHECK, got %q: %v", pe.Check, pe)
 	}
 }
