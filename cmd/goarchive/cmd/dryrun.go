@@ -19,10 +19,14 @@ var dryrunCmd = &cobra.Command{
 	Long: `Dry-run simulates the archive process and reports what would happen
 without making any actual changes to the databases.
 
-The dry-run shows:
-  - Estimated row counts for root and child tables
-  - Number of batches that would be processed
-  - Configuration summary
+The dry-run:
+  - Runs non-destructive preflight checks (schema, charset, grants)
+  - Shows the job WHERE clause and estimated row counts (root and children,
+    filtered through the relation chain)
+  - Shows the number of batches that would be processed
+  - Validates batch_size against destination payload limits (rolled back)
+
+Recommended operator workflow: validate -> dry-run -> archive.
 
 Example:
   goarchive dry-run --config archiver.yaml --job archive_old_orders`,
@@ -100,6 +104,15 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	// Validate no cycles
 	if g.HasCycle() {
 		return fmt.Errorf("dependency cycle detected in graph")
+	}
+
+	// Dry-run is the operator's go/no-go step: run the non-destructive
+	// preflight profile so schema/charset/grants problems surface here,
+	// not at archive time. Workflow: validate -> dry-run -> archive.
+	verification := jobCfg.GetJobVerification(cfg.Verification)
+	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "dry-run",
+		verification, archiver.PreflightProfileNonDestructive, false, false); err != nil {
+		return err
 	}
 
 	// Create estimator

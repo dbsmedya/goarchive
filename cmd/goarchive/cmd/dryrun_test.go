@@ -89,7 +89,9 @@ func TestDryrunCommandFeatures(t *testing.T) {
 	doc := dryrunCmd.Long
 	assert.Contains(t, doc, "row counts")
 	assert.Contains(t, doc, "batches")
-	assert.Contains(t, doc, "Configuration summary")
+	assert.Contains(t, doc, "preflight checks")
+	assert.Contains(t, doc, "WHERE clause")
+	assert.Contains(t, doc, "validate -> dry-run -> archive")
 }
 
 func TestDryrunCommandNoChanges(t *testing.T) {
