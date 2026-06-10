@@ -294,3 +294,18 @@ func TestConfigGetJobLogging_UnknownJobUsesGlobal(t *testing.T) {
 		t.Errorf("expected global logging for unknown job, got %+v", result)
 	}
 }
+
+func TestDatabaseConfig_EffectiveJobSchema(t *testing.T) {
+	t.Run("defaults to Database when JobSchema empty", func(t *testing.T) {
+		c := DatabaseConfig{Database: "archive_db"}
+		if got := c.EffectiveJobSchema(); got != "archive_db" {
+			t.Fatalf("got %q, want archive_db", got)
+		}
+	})
+	t.Run("uses JobSchema when set", func(t *testing.T) {
+		c := DatabaseConfig{Database: "archive_db", JobSchema: "goarchive"}
+		if got := c.EffectiveJobSchema(); got != "goarchive" {
+			t.Fatalf("got %q, want goarchive", got)
+		}
+	})
+}

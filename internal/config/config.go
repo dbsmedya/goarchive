@@ -15,11 +15,15 @@ type Config struct {
 
 // DatabaseConfig represents a MySQL database connection configuration.
 type DatabaseConfig struct {
-	Host               string `yaml:"host" mapstructure:"host"`
-	Port               int    `yaml:"port" mapstructure:"port"`
-	User               string `yaml:"user" mapstructure:"user"`
-	Password           string `yaml:"password" mapstructure:"password"`
-	Database           string `yaml:"database" mapstructure:"database"`
+	Host     string `yaml:"host" mapstructure:"host"`
+	Port     int    `yaml:"port" mapstructure:"port"`
+	User     string `yaml:"user" mapstructure:"user"`
+	Password string `yaml:"password" mapstructure:"password"`
+	Database string `yaml:"database" mapstructure:"database"`
+	// JobSchema is the schema holding GoArchive's tracking tables
+	// (archiver_job, archiver_job_log_<id>). Empty (default) resolves to
+	// Database. A DBA must pre-create this schema and grant CREATE + CRUD.
+	JobSchema          string `yaml:"job_schema" mapstructure:"job_schema"`
 	TLS                string `yaml:"tls" mapstructure:"tls"` // disable, preferred, skip-verify, required
 	MaxConnections     int    `yaml:"max_connections" mapstructure:"max_connections"`
 	MaxIdleConnections int    `yaml:"max_idle_connections" mapstructure:"max_idle_connections"`
@@ -109,6 +113,17 @@ func (v VerificationConfig) EffectiveMethod() string {
 		return "count"
 	}
 	return v.Method
+}
+
+// EffectiveJobSchema returns the schema for tracking tables, defaulting to the
+// connection's Database when job_schema is unset. It is intended for use with
+// a validated destination config where Database is guaranteed non-empty; on an
+// unconfigured (zero-value) DatabaseConfig it returns "".
+func (d DatabaseConfig) EffectiveJobSchema() string {
+	if d.JobSchema != "" {
+		return d.JobSchema
+	}
+	return d.Database
 }
 
 // LoggingConfig represents logging settings.

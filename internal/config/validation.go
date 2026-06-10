@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/dbsmedya/goarchive/internal/sqlutil"
 )
 
 // ValidationError represents a configuration validation error.
@@ -139,6 +141,14 @@ func (c *Config) validateDatabase(prefix string, db *DatabaseConfig) ValidationE
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".max_idle_connections",
 			Message: "max_idle_connections cannot be negative",
+		})
+	}
+
+	// job_schema is destination-only; source ignores it.
+	if prefix == "destination" && db.JobSchema != "" && !sqlutil.IsValidIdentifier(db.JobSchema) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".job_schema",
+			Message: "must contain only alphanumeric characters and underscores",
 		})
 	}
 

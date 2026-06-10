@@ -729,6 +729,36 @@ func TestValidate_RelationAtMaxDepth(t *testing.T) {
 	}
 }
 
+func TestValidate_JobSchemaInvalidIdentifier(t *testing.T) {
+	t.Run("destination job_schema with invalid identifier is rejected", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+		cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+		cfg.Jobs = map[string]JobConfig{
+			"test_job": {RootTable: "orders", PrimaryKey: "id", Where: "1=1"},
+		}
+		cfg.Destination.JobSchema = "bad-schema!" // hyphen/punctuation invalid
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "destination.job_schema") {
+			t.Fatalf("expected destination.job_schema validation error, got %v", err)
+		}
+	})
+
+	t.Run("source job_schema not validated", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+		cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+		cfg.Jobs = map[string]JobConfig{
+			"test_job": {RootTable: "orders", PrimaryKey: "id", Where: "1=1"},
+		}
+		cfg.Source.JobSchema = "bad-schema!" // invalid identifier, but source is not validated
+		err := cfg.Validate()
+		if err != nil && strings.Contains(err.Error(), "source.job_schema") {
+			t.Fatalf("source.job_schema must not be validated, got error: %v", err)
+		}
+	})
+}
+
 func TestJobLoggingValidation(t *testing.T) {
 	base := func() *Config {
 		return &Config{
