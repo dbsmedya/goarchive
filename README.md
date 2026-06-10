@@ -269,13 +269,16 @@ enabled **and not skipped** (`verification.method: sha256` with
 | Server | Privileges | Used for |
 |--------|-----------|----------|
 | Source | `SELECT`, `DELETE` | reading and deleting archived rows |
-| Destination | `SELECT`, `INSERT`, `CREATE`, `UPDATE` | copying rows; creating and maintaining the `archiver_job`/`archiver_job_log` state tables (`ALTER` additionally needed once when upgrading state tables created by pre-1.1 versions) |
+| Destination (data tables) | `SELECT`, `INSERT` | copying rows into archive tables |
+| Tracking schema (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | creating and maintaining `archiver_job` and per-job `archiver_job_log_<id>` tables; `CREATE` is required at runtime because per-job log tables are created on the fly; `DELETE`/`DROP` are optional for DBA cleanup (`DROP` additionally needed for `TRUNCATE`) |
 | Replica (optional) | `REPLICATION CLIENT` | lag monitoring (`SHOW REPLICA STATUS`) |
 
 Preflight verifies destination `INSERT` and source `DELETE` up front (the two
-that would otherwise fail mid-run, after copy has committed); the rest fail
-fast at startup. The privilege checks themselves need no extra grants — MySQL
-always exposes the current account's own privileges in `information_schema`.
+that would otherwise fail mid-run, after copy has committed); the new
+`JOB_SCHEMA_PERMISSION_CHECK` verifies `CREATE/SELECT/INSERT/UPDATE` on the
+tracking schema at startup. The privilege checks themselves need no extra grants
+— MySQL always exposes the current account's own privileges in
+`information_schema`.
 
 ## Architecture
 
@@ -441,8 +444,9 @@ Notes:
 If interrupted, GoArchive can resume from the last checkpoint:
 
 ```sql
--- Check job status
-SELECT * FROM archiver_job WHERE name = 'archive_old_orders';
+-- Check job status (tracking tables live in job_schema, default = destination database)
+SELECT id, job_name, job_status, last_processed_root_pk_id
+FROM archiver_job WHERE job_name = 'archive_old_orders';
 
 -- Resume with same command
 goarchive archive -c archiver.yaml --job archive_old_orders
@@ -463,17 +467,26 @@ the full privilege matrix. In summary:
 -- On source database
 GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
 
--- On archive/destination database
-GRANT SELECT, INSERT, CREATE, UPDATE ON archive.* TO 'archiver'@'%';
--- add ALTER once if upgrading state tables created by pre-1.1 versions
+-- On archive/destination database (data tables)
+GRANT SELECT, INSERT ON archive.* TO 'archiver'@'%';
+
+-- On the tracking schema (job_schema; defaults to the destination database).
+-- DBA must CREATE DATABASE if using an isolated schema:
+--   CREATE DATABASE goarchive;
+-- Then grant:
+GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO 'archiver'@'%';
+-- DELETE/DROP are optional for DBA cleanup; DROP is also needed for TRUNCATE.
+-- If job_schema is the same as destination.database, a single combined grant works:
+--   GRANT SELECT, INSERT, CREATE, UPDATE ON archive.* TO 'archiver'@'%';
 
 -- On replica (optional, for replication lag monitoring)
 GRANT REPLICATION CLIENT ON *.* TO 'archiver'@'%';
 ```
 
-Preflight checks source `DELETE` and destination `INSERT` up front. The privilege
-introspection itself requires no extra grants — GoArchive reads the connected
-account's own rows in `information_schema`.
+Preflight checks source `DELETE` and destination `INSERT` up front; a new
+`JOB_SCHEMA_PERMISSION_CHECK` verifies `CREATE/SELECT/INSERT/UPDATE` on the
+tracking schema. The privilege introspection itself requires no extra grants —
+GoArchive reads the connected account's own rows in `information_schema`.
 
 ## Testing
 
@@ -620,6 +633,22 @@ See [tests/README.md](tests/README.md) for detailed testing documentation includ
 | `max_connections` | Max open connections | 10 |
 | `max_idle_connections` | Max idle connections | 5 |
 
+#### Destination-only options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `job_schema` | Schema holding GoArchive's tracking tables (`archiver_job`, `archiver_job_log_<id>`). A DBA must pre-create this schema and grant `CREATE, SELECT, INSERT, UPDATE` on it. The tool does **not** create schemas automatically. | Same as `database` |
+
+The tracking tables stored in `job_schema`:
+- **`archiver_job`** — one row per configured job; `id` is an integer `PRIMARY KEY`; `job_name` is a `UNIQUE KEY`. Checkpoint and heartbeat data live here.
+- **`archiver_job_log_<id>`** — one per-job table, named by the job's integer `id`. Tracks per-root-PK status as a `TINYINT` (0=pending, 1=copied, 2=completed, 3=failed). No `job_name` column; no timestamps. Completed and failed rows are kept as evidence — they are not deleted automatically.
+
+To look up which log table belongs to a job:
+```sql
+SELECT id, job_name FROM <job_schema>.archiver_job;
+-- per-job log table: archiver_job_log_<id>
+```
+
 ### Job Configuration
 
 | Option | Description | Required |
@@ -678,6 +707,34 @@ DROP TABLE IF EXISTS archiver_job;
 No action is needed on the destination — archive and copy-only already wrote
 there, and purge's existing job rows remain on source (harmless once dropped).
 
+### Tracking table reshape (per-job log tables, integer id PK)
+
+This release replaces the single shared `archiver_job_log` table with per-job
+`archiver_job_log_<id>` tables and promotes `archiver_job.id` from a simple
+column to the integer `PRIMARY KEY` (with `job_name` now a `UNIQUE KEY`).
+
+**Not state-compatible with prior versions.** A startup probe detects old-shape
+tables and exits with upgrade guidance. No auto-migration is performed.
+
+**Before upgrading:**
+
+1. Drain all in-flight jobs to completion.
+2. Have a DBA drop the old tracking tables on the destination (or on your
+   `job_schema` if you have configured a separate schema):
+
+   ```sql
+   DROP TABLE IF EXISTS archiver_job_log;
+   DROP TABLE IF EXISTS archiver_job;
+   ```
+
+3. The new tables are created automatically on the next run.
+4. If using an isolated `job_schema`, a DBA must `CREATE DATABASE <schema>` and
+   grant `CREATE, SELECT, INSERT, UPDATE` on it before running the upgraded binary.
+
+Per-job log tables (`archiver_job_log_<id>`) are not deleted automatically —
+completed and failed rows are kept as evidence. A DBA may `DROP` or `TRUNCATE`
+them for housekeeping as needed.
+
 ### FOREIGN_KEY_CHECKS handling hardened
 
 `safety.disable_foreign_key_checks` now runs on a dedicated destination
@@ -713,7 +770,7 @@ should be aware of the following known limits before pointing it at real data:
   tables while later tables are still streaming. Avoid running this against a
   shared destination that other workloads are reading.
 - **No built-in metrics or telemetry.** Operators monitor progress through
-  the structured log output and by querying `archiver_job_log` directly.
+  the structured log output and by querying the per-job `archiver_job_log_<id>` table directly (look up `id` from `archiver_job` by `job_name`).
 - **Sequential by design.** One root PK at a time, one job at a time per
   destination. Advisory locks plus heartbeat-aware same-root checks prevent
   concurrent runs of the same job name or root table.
@@ -764,6 +821,23 @@ should be aware of the following known limits before pointing it at real data:
   passes validate but has the wrong `WHERE` clause can delete the wrong rows
   from source. Always run `goarchive dry-run` and review the estimated row
   counts before executing `archive`.
+- **Upgrade caveat: not state-compatible with prior versions.** This release
+  reshapes tracking tables (`archiver_job` now has an integer `id` PRIMARY KEY;
+  the shared `archiver_job_log` table is replaced by per-job
+  `archiver_job_log_<id>` tables). A startup probe detects old-shape tables and
+  rejects them with upgrade guidance — no auto-migration is performed.
+  **Before upgrading:** drain all in-flight jobs to completion, then have a DBA
+  drop the old tables on the destination (or on `job_schema` if isolated):
+  ```sql
+  DROP TABLE IF EXISTS archiver_job_log;
+  DROP TABLE IF EXISTS archiver_job;
+  ```
+  They are recreated automatically on the next run. If you use an isolated
+  `job_schema`, a DBA must pre-create that schema and grant
+  `CREATE, SELECT, INSERT, UPDATE` before running the upgraded binary. Per-job
+  log tables (`archiver_job_log_<id>`) accumulate over time as jobs are created;
+  a DBA may `DROP` or `TRUNCATE` them for housekeeping (evidence rows are not
+  deleted automatically).
 
 ### What's Included in Community
 
@@ -772,7 +846,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - Preflight checks: storage engine, FK indexes, FK coverage (external + internal),
   destination schema compatibility, destination write permissions, DELETE
   triggers, INSERT triggers on destination, CASCADE warnings
-- Crash recovery via `archiver_job` + `archiver_job_log` on destination
+- Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
 - Advisory locks serialize job-name execution across all three commands
 - Replication lag monitor (pauses batches when replica lag exceeds threshold)
 - Verification by row count or SHA256

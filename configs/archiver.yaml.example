@@ -22,6 +22,11 @@ destination:
   tls: skip-verify  # disable, preferred, skip-verify, required
   max_connections: 10
   max_idle_connections: 5
+  # job_schema: goarchive   # optional; defaults to `database` above. Use this
+  #                         # to isolate GoArchive tracking tables in their own
+  #                         # schema. A DBA must CREATE DATABASE and grant:
+  #                         #   GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO <user>;
+  #                         # The tool does NOT create schemas automatically.
 
 # Replica database (optional - for replication lag monitoring)
 replica:

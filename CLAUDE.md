@@ -63,8 +63,8 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 
 ### Key Data Structures
 
-- **archiver_job**: Tracks job state and last processed PK (checkpoint)
-- **archiver_job_log**: Per-root-PK status (pending/completed/failed) for crash recovery
+- **archiver_job**: Tracks job state and last processed PK (checkpoint); integer `id` PK, `job_name` UNIQUE. Lives in `destination.job_schema` (default = destination database).
+- **archiver_job_log_<id>**: Per-job table (named by the job's `id`) holding per-root-PK status as TINYINT (0=pending/1=copied/2=completed/3=failed) for crash recovery. Replaces the former shared `archiver_job_log` table.
 
 ## Tech Stack
 
@@ -81,6 +81,16 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 - Task details: `docs/project-plan/tasks/phase-{n}/GA-P{n}-F{n}-T{n}.md`
 
 ## Recent Changes
+
+### Per-Job Tracking Tables (feat/optimizations, 2026-06-10)
+- Tracking tables moved to a configurable `destination.job_schema` (default =
+  destination database). `archiver_job` gains an integer `id` PK (job_name now
+  UNIQUE); the shared `archiver_job_log` is replaced by per-job
+  `archiver_job_log_<id>` tables (TINYINT status 0/1/2/3, no job_name, no
+  timestamps). Advisory lock + heartbeat unchanged.
+- Legacy old-shape tables are detected at startup and rejected with upgrade
+  guidance (no auto-migration). New `JOB_SCHEMA_PERMISSION_CHECK` preflight
+  requires CREATE+SELECT/INSERT/UPDATE on the tracking schema.
 
 ### Validation Hardening (chore/validation, 2026-06-10)
 - Schema compatibility now compares column charset: mismatch is fatal under
@@ -177,9 +187,11 @@ Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
 just working test 7; `--sakila-examples -t 1` runs just demo 1.
 
 Safety-fix notes:
-- New orchestrator integration tests should clean `archiver_job` and
-  `archiver_job_log` state for their job names before/after execution so
-  heartbeat and lock state cannot leak across tests.
+- New orchestrator integration tests should clean `archiver_job` and the
+  per-job `archiver_job_log_<id>` table for their job names before/after
+  execution so heartbeat and lock state cannot leak across tests. Use
+  `testsupport.CleanupArchiverState` (resolves the id and drops the per-job
+  table) rather than deleting from a shared log table.
 - Destructive CLI tests that intentionally use broken-schema fixtures must pass
   `--skip-validate-preflight`; normal `archive`, `purge`, and `copy-only`
   commands now run preflight at startup.
