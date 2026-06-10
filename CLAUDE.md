@@ -208,10 +208,24 @@ Then the standard matrix, fastest to slowest:
 | Layer | Command | What it covers |
 |-------|---------|----------------|
 | Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
-| Integration | `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/...` | Real MySQL (3305/3307), smaller fixture |
-| E2E (working) | `make e2e` | Sakila tests 06/07/08 — full archive runs |
+| Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | Real MySQL (3305/3307); reseeds the DBs, then runs all `-tags=integration` tests |
+| E2E (working) | `make e2e` | Sakila tests 06–10 — full archive runs |
 | E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
 | E2E (validation demos) | `make e2e-examples` | Sakila tests 01–05 |
+
+**Integration tests need a freshly-emptied destination — this is the #1 source
+of false failures.** The real-DB tests (`internal/archiver/*_integration_test.go`,
+build tag `integration`) archive Sakila into `sakila_archive`, and several rely
+on it starting empty. A prior archive/E2E run leaves rows behind, so they abort
+with `destination already contains a row … Duplicate entry`. That is leftover
+state, **not** a regression. Always reseed first:
+- One step: `bash tests/scripts/run-tests.sh --setup --integration-only`
+  (reseeds source + destination, then runs the tagged suite).
+- Direct `go test`: reseed once with `bash tests/scripts/run-tests.sh --setup`,
+  then `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
+
+The real-DB tests also DELETE from source Sakila as they run, so they are
+run-once against a fresh `--setup` — re-running without reseeding can fail.
 
 **About the validation demos (`make e2e-examples`, tests 01–05):** these are
 designed to FAIL preflight with specific error categories
@@ -220,7 +234,9 @@ designed to FAIL preflight with specific error categories
 `EXPECTED FAILURE matched` line as a regression.
 
 Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
-just working test 7; `--sakila-examples -t 1` runs just demo 1.
+just working test 7; `--sakila-examples -t 1` runs just demo 1. Working tests
+are 06–10 (06 nested hierarchy, 07/08 simple 1-N, 09 high-volume multi-batch,
+10 isolated `job_schema`); demos are 01–05.
 
 Safety-fix notes:
 - New orchestrator integration tests should clean `archiver_job` and the

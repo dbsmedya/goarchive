@@ -795,12 +795,17 @@ run_integration_tests() {
     if [[ -n "$VERBOSE" ]]; then
         go_test_opts="-v"
     fi
-    
+
     if [ -z "$GO_TEST_ARGS" ]; then
-        GO_TEST_ARGS="./internal/archiver"
+        GO_TEST_ARGS="./internal/archiver/..."
     fi
-    
-    go test $go_test_opts -run 'Integration|_Integration|Real' $GO_TEST_ARGS 2>&1
+
+    # Real-DB tests live behind the `integration` build tag and several are not
+    # named *Integration*/*Real* (e.g. TestExecute_*, TestOrchestrator_FullWorkflow),
+    # so the build tag — not a -run name filter — is what selects them.
+    # INTEGRATION_FORCE=true opts the gated tests in. Reseed first (`--setup`)
+    # so the destination starts empty; see tests/README.md.
+    INTEGRATION_FORCE=true go test $go_test_opts -tags=integration -count=1 $GO_TEST_ARGS 2>&1
 }
 
 # Main execution

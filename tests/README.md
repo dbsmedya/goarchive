@@ -9,15 +9,23 @@ The test suite includes:
 | Test Type | Description | Command |
 |-----------|-------------|---------|
 | **Unit Tests** | Fast in-memory tests | `go test ./... -count=1` |
-| **Integration Tests** | Tests with real databases | `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/...` |
-| **Sakila E2E (working)** | Archive 06/07/08 run to completion | `make e2e` |
+| **Integration Tests** | Real-DB tests (build tag `integration`); reseed first | `./scripts/run-tests.sh --setup --integration-only` |
+| **Sakila E2E (working)** | Archive 06–10 run to completion | `make e2e` |
 | **Sakila E2E (demos)** | Tests 01-05 intentionally fail preflight | `make e2e-examples` |
+
+> **Integration tests require a freshly-emptied destination.** They archive
+> Sakila into `sakila_archive` and several rely on it starting empty, so a prior
+> archive/E2E run makes them abort with `destination already contains a row …
+> Duplicate entry` (leftover state, not a regression). The `--setup` flag
+> reseeds source + destination first. To run via `go test` directly, reseed once
+> with `./scripts/run-tests.sh --setup`, then
+> `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
 
 ### ⚠️ Test Configuration Status
 
 | Test IDs | Status | Use Case | Runner |
 |----------|--------|----------|--------|
-| **Test 06, 07, 08** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
+| **Test 06–10** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
 | **Test 01-05** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
 
 **For validation demos:** the runner inverts pass/fail semantics. "Passed" means
@@ -27,7 +35,7 @@ the expected preflight error category was produced. An unexpected *success* of
 **Quick Start:** Run the working E2E suite:
 ```bash
 make test-up     # if containers aren't running yet
-make e2e         # runs tests 06, 07, 08
+make e2e         # runs tests 06–10
 ```
 
 ### Sakila E2E Test Cases
@@ -41,6 +49,8 @@ The Sakila tests verify GoArchive's behavior with different relationship pattern
 | **Test 06** | Complex Nested | 4-level: `film→inventory→rental→payment` | ✅ Working (needs `--force-triggers`) |
 | **Test 07** | 1-N Simple | Simple: `actor → film_actor` | ✅ Working |
 | **Test 08** | 1-N Simple | Simple: `category → film_category` | ✅ Working |
+| **Test 09** | High-volume | Multi-batch payment archive (`batch_size=100`) | ✅ Working |
+| **Test 10** | Isolated meta | Tracking tables in a separate `job_schema` (`goarchive_meta`) | ✅ Working |
 
 #### Validation Examples (Demonstrate Error Detection)
 
@@ -106,14 +116,17 @@ This will:
 
 ### Run Integration Tests
 
+Real-DB tests live behind the `integration` build tag. Reseed first (`--setup`)
+so the destination starts empty — see the note under [Overview](#overview):
+
 ```bash
-./scripts/run-tests.sh --integration-only
+./scripts/run-tests.sh --setup --integration-only
 ```
 
 ### Run Sakila E2E Tests
 
 ```bash
-# Working tests (06, 07, 08) — archive runs to completion
+# Working tests (06–10) — archive runs to completion
 make e2e                                                # short form
 ./scripts/run-tests.sh --sakila --skip-docker           # explicit
 
@@ -213,7 +226,7 @@ This performs the actual archive operation:
 - Copies data from source to archive
 - Verifies data integrity (if configured)
 - Deletes archived rows from source (if delete is enabled)
-- Logs progress to archiver_job and archiver_job_log tables
+- Logs progress to `archiver_job` and the per-job `archiver_job_log_<id>` tables
 
 ### Complete Manual Test Example (Using Working Test 07)
 

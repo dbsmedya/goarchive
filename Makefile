@@ -180,7 +180,7 @@ integration-config:
 	@echo "  export MYSQL_ROOT_PASSWORD=your_password"
 	@echo ""
 	@echo "Then run integration tests:"
-	@echo "  INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/..."
+	@echo "  INTEGRATION_FORCE=true go test -tags=integration -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/..."
 
 # Run integration tests
 .PHONY: test-integration
@@ -191,7 +191,8 @@ test-integration: integration-config
 		echo "Set it with: export MYSQL_ROOT_PASSWORD=your_password"; \
 		echo ""; \
 	fi
-	INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+	@echo "NOTE: reseed first so the destination is empty: bash tests/scripts/run-tests.sh --setup"
+	INTEGRATION_FORCE=true go test -tags=integration -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
 
 # Start test databases (Docker)
 .PHONY: test-up
