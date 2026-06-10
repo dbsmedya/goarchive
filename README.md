@@ -269,7 +269,7 @@ enabled **and not skipped** (`verification.method: sha256` with
 | Server | Privileges | Used for |
 |--------|-----------|----------|
 | Source | `SELECT`, `DELETE` | reading and deleting archived rows |
-| Destination | `SELECT`, `INSERT`, `CREATE`, `UPDATE`, `DELETE` | copying rows; creating and maintaining the `archiver_job`/`archiver_job_log` state tables |
+| Destination | `SELECT`, `INSERT`, `CREATE`, `UPDATE` | copying rows; creating and maintaining the `archiver_job`/`archiver_job_log` state tables (`ALTER` additionally needed once when upgrading state tables created by pre-1.1 versions) |
 | Replica (optional) | `REPLICATION CLIENT` | lag monitoring (`SHOW REPLICA STATUS`) |
 
 Preflight verifies destination `INSERT` and source `DELETE` up front (the two
@@ -464,7 +464,8 @@ the full privilege matrix. In summary:
 GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
 
 -- On archive/destination database
-GRANT SELECT, INSERT, CREATE, UPDATE, DELETE ON archive.* TO 'archiver'@'%';
+GRANT SELECT, INSERT, CREATE, UPDATE ON archive.* TO 'archiver'@'%';
+-- add ALTER once if upgrading state tables created by pre-1.1 versions
 
 -- On replica (optional, for replication lag monitoring)
 GRANT REPLICATION CLIENT ON *.* TO 'archiver'@'%';

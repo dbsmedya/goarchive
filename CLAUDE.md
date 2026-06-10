@@ -84,7 +84,8 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 
 ### Validation Hardening (chore/validation, 2026-06-10)
 - Schema compatibility now compares column charset: mismatch is fatal under
-  count verification (silent transliteration risk), warning-only under sha256;
+  count verification (silent transliteration risk) or when verification is
+  skipped, warning-only under sha256 that actually runs;
   collation-only mismatch always warns
 - Write-permission preflight matches the connected account (CURRENT_USER() +
   active roles) across USER_/SCHEMA_/TABLE_PRIVILEGES — global grants no longer
