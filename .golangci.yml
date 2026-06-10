@@ -1,0 +1,23 @@
+# golangci-lint v2 configuration.
+# Pinned in CI via golangci-lint-action@v7 (version: v2.11.4).
+#
+# Policy: keep the standard linter set at full strength on PRODUCTION code.
+# Two known-benign patterns are excluded ONLY in test files:
+#   - SA5011 (staticcheck): nil-check-after/around-deref in tests where the value
+#     is never nil after a successful constructor + t.Fatal on error.
+#   - errcheck on deferred *.Close() in tests (teardown best-effort).
+# Production (.go non-test) code is fully linted.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"
+      - path: _test\.go
+        linters:
+          - errcheck
+        text: "Close` is not checked"
