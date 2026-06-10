@@ -2,6 +2,9 @@ package archiver
 
 import (
 	"context"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -304,6 +307,33 @@ func TestEstimator_Estimate_BatchCalculation(t *testing.T) {
 			assert.Equal(t, tt.expectedBatches, result.EstimatedBatches)
 		})
 	}
+}
+
+func TestDisplayExecutionPlanShowsWhere(t *testing.T) {
+	cfg := &config.Config{Processing: config.ProcessingConfig{BatchSize: 100, BatchDeleteSize: 50}}
+	jobCfg := &config.JobConfig{RootTable: "orders", PrimaryKey: "id", Where: "created_at < '2024-01-01'"}
+	g := graph.NewGraph("orders", "id")
+	e := NewEstimator(nil, cfg, jobCfg, g, logger.NewDefault())
+	result := &EstimateResult{RootTable: "orders", RootCount: 10, ChildCounts: map[string]int64{},
+		BatchSize: 100, Config: cfg, JobConfig: jobCfg}
+
+	out := captureStdout(t, func() { e.DisplayExecutionPlan(result) })
+	if !strings.Contains(out, "WHERE: created_at < '2024-01-01'") {
+		t.Fatalf("execution plan must show the WHERE clause, got:\n%s", out)
+	}
+}
+
+// captureStdout redirects os.Stdout for the duration of fn.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	data, _ := io.ReadAll(r)
+	return string(data)
 }
 
 func TestEstimator_DisplayExecutionPlan(t *testing.T) {

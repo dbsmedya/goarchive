@@ -131,6 +131,7 @@ func (e *Estimator) DisplayExecutionPlan(result *EstimateResult) {
 
 	// Root table estimate
 	fmt.Printf("Root Table: %s\n", result.RootTable)
+	fmt.Printf("  WHERE: %s\n", result.JobConfig.Where)
 	fmt.Printf("  Matching rows: %d\n", result.RootCount)
 	fmt.Printf("  Batch size: %d\n", result.BatchSize)
 	fmt.Printf("  Estimated batches: %d\n\n", result.EstimatedBatches)
