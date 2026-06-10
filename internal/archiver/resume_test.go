@@ -689,10 +689,10 @@ func TestRequireLogTableGuard(t *testing.T) {
 	})
 
 	t.Run("CompleteBatch", func(t *testing.T) {
+		// Non-empty rootPKs forces past CompleteBatch's early-return (which
+		// fires only when both rootPKs and checkpointPK are empty/nil) so the
+		// requireLogTable guard is reached.
 		err := rm.CompleteBatch(ctx, "job", []interface{}{1}, nil)
-		// CompleteBatch returns nil when both rootPKs and checkpointPK are empty/nil,
-		// so pass a non-empty rootPKs slice to force it past the early-return.
-		err = rm.CompleteBatch(ctx, "job", []interface{}{1}, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "per-job log table not resolved")
 	})

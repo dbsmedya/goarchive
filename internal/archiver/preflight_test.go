@@ -1858,7 +1858,7 @@ func TestValidateJobSchemaPermissions_AllMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
 
@@ -1896,7 +1896,7 @@ func TestValidateJobSchemaPermissions_GlobalGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
 
@@ -1924,7 +1924,7 @@ func TestValidateJobSchemaPermissions_SchemaGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
 
@@ -1963,7 +1963,7 @@ func TestValidateJobSchemaPermissions_OnlyCreateMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
 

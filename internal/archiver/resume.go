@@ -206,7 +206,7 @@ func (r *ResumeManager) checkLegacySchema(ctx context.Context) error {
 				"Drain in-flight jobs, then drop the old tables:\n"+
 				"  DROP TABLE IF EXISTS `%s`.archiver_job_log;\n"+
 				"  DROP TABLE IF EXISTS `%s`.archiver_job;\n"+
-				"They are recreated automatically on next run.",
+				"new tables are recreated automatically on next run",
 			r.jobSchema, r.jobSchema, r.jobSchema)
 	}
 	return nil
