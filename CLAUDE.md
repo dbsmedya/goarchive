@@ -82,6 +82,21 @@ Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
 
 ## Recent Changes
 
+### Validation Hardening (chore/validation, 2026-06-10)
+- Schema compatibility now compares column charset: mismatch is fatal under
+  count verification (silent transliteration risk), warning-only under sha256;
+  collation-only mismatch always warns
+- Write-permission preflight matches the connected account (CURRENT_USER() +
+  active roles) across USER_/SCHEMA_/TABLE_PRIVILEGES — global grants no longer
+  false-fail; new SOURCE_DELETE_PERMISSION_CHECK for archive/purge
+- `where` is required on every job (`"1=1"` = explicit full-table opt-in)
+- dry-run runs the non-destructive preflight profile, prints the WHERE clause,
+  and child-table estimates are filtered through the relation chain
+- Removed `--batch-size`/`--batch-delete-size`/`--sleep` CLI flags; processing
+  is config-only. Per-job processing/verification blocks use pointer fields
+  (`ProcessingOverrides`/`VerificationOverrides`): nil inherits, explicit
+  values — including zero — win, and `--skip-verify` beats job blocks
+
 ### Relaxed Destination Schema Check (chore/validation, 2026-06-10)
 - `DEST_SCHEMA_COMPATIBILITY_CHECK` is now direction-aware instead of demanding
   byte-identical column metadata: the destination may drop secondary indexes

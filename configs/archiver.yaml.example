@@ -41,6 +41,8 @@ jobs:
     primary_key: id
     # Archive orders older than 2 years
     where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
+    # where is REQUIRED. To intentionally process the entire table, state it
+    # explicitly:  where: "1=1"
 
     # Related tables (children discovered via BFS)
     relations:
@@ -71,7 +73,9 @@ jobs:
     #   output: /var/log/goarchive/archive_old_orders.log
     #   file_only: true        # don't tee this job's logs to stdout
 
-# Processing settings
+# Processing settings (config-file only — there are no CLI overrides for these;
+# each job may override any field in its own processing: block, and explicitly
+# set fields win even when zero, e.g. sleep_seconds: 0 disables a global sleep)
 processing:
   batch_size: 1000           # Root IDs per batch
   batch_delete_size: 500     # Rows per DELETE statement

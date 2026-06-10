@@ -242,14 +242,40 @@ goarchive purge -c archiver.yaml --job archive_old_orders
   -c, --config string       Path to configuration file (default "archiver.yaml")
       --log-level string    Override log level (debug, info, warn, error)
       --log-format string   Override log format (json, text)
-      --batch-size int      Override batch size for root IDs
-      --batch-delete-size int  Override rows per DELETE statement
-      --sleep float         Override seconds between batches
       --skip-verify         Skip data verification after copy
 ```
 
 > [!NOTE]
-> `--batch-delete-size` is not supported by `copy-only` and will return an error if provided.
+> Processing settings (`batch_size`, `batch_delete_size`, `sleep_seconds`, etc.) are
+> config-file-only — there are no CLI flag overrides. Set them in the global
+> `processing:` block or per-job `processing:` override block.
+
+### Recommended operator workflow
+
+1. `goarchive validate -c archiver.yaml` — config + full preflight for every job
+2. `goarchive dry-run -c archiver.yaml -j <job>` — runs non-destructive preflight,
+   shows the WHERE clause and the filtered row counts the run would actually
+   touch, and validates payload limits against the destination (rolled back)
+3. `goarchive archive -c archiver.yaml -j <job>`
+
+`where` is required on every job; use `where: "1=1"` to deliberately process a
+whole table. Destination tables may drop secondary indexes for write speed, but
+source/destination **character sets must match** unless sha256 verification is
+enabled **and not skipped** (`verification.method: sha256` with
+`skip_verification: false`).
+
+### Required privileges
+
+| Server | Privileges | Used for |
+|--------|-----------|----------|
+| Source | `SELECT`, `DELETE` | reading and deleting archived rows |
+| Destination | `SELECT`, `INSERT`, `CREATE`, `UPDATE`, `DELETE` | copying rows; creating and maintaining the `archiver_job`/`archiver_job_log` state tables |
+| Replica (optional) | `REPLICATION CLIENT` | lag monitoring (`SHOW REPLICA STATUS`) |
+
+Preflight verifies destination `INSERT` and source `DELETE` up front (the two
+that would otherwise fail mid-run, after copy has committed); the rest fail
+fast at startup. The privilege checks themselves need no extra grants — MySQL
+always exposes the current account's own privileges in `information_schema`.
 
 ## Architecture
 
@@ -348,8 +374,9 @@ There are two independent pacing knobs, addressing two different pressures:
   not fall behind. Defaults to `0` (no delete throttle). Pair a small
   `batch_delete_size` with `delete_sleep_seconds` when replication lag — not
   source load — is your bottleneck. The pause applies between chunks *within* a
-  table (the high-frequency case); like the other processing knobs, a job-level
-  value only overrides the global when it is greater than `0`.
+  table (the high-frequency case). Per-job `processing:` blocks use pointer
+  semantics: any explicitly set field — including `0` — overrides the global;
+  unset fields inherit.
 
 **Always validate batch_size before a real run — follow this three-step flow:**
 
@@ -357,8 +384,10 @@ There are two independent pacing knobs, addressing two different pressures:
    database connectivity, InnoDB engine, FK indexes, trigger warnings, and other
    preflight checks for all configured jobs.
 
-2. **`goarchive dry-run -c archiver.yaml --job archive_old_orders`** — estimates
-   row counts AND validates that `batch_size` fits the destination's limits:
+2. **`goarchive dry-run -c archiver.yaml --job archive_old_orders`** — runs the
+   non-destructive preflight profile, prints the job's WHERE clause, estimates
+   row counts filtered through the actual relation chain (not full-table counts),
+   and validates that `batch_size` fits the destination's limits:
    - **Placeholder check (exact):** `batch_size × column_count` must be less than
      65,535 (MySQL's prepared-statement placeholder limit). This check runs even
      for empty tables — a wide table is caught before you have data.
@@ -427,19 +456,23 @@ goarchive archive -c archiver.yaml --job archive_old_orders
 
 ## Database Permissions
 
-The MySQL user requires these permissions:
+See the [Required privileges](#required-privileges) table in the Commands section for
+the full privilege matrix. In summary:
 
 ```sql
 -- On source database
 GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
+
+-- On archive/destination database
+GRANT SELECT, INSERT, CREATE, UPDATE, DELETE ON archive.* TO 'archiver'@'%';
+
+-- On replica (optional, for replication lag monitoring)
+GRANT REPLICATION CLIENT ON *.* TO 'archiver'@'%';
 ```
 
--- On archive database
-GRANT INSERT, CREATE, SELECT ON archive.* TO 'archiver'@'%';
-
--- For advisory locks
-GRANT EXECUTE ON FUNCTION sys.exec_stmt TO 'archiver'@'%';
-Advisory Locks is to prevent two archiver instances from clashing on the same job.
+Preflight checks source `DELETE` and destination `INSERT` up front. The privilege
+introspection itself requires no extra grants — GoArchive reads the connected
+account's own rows in `information_schema`.
 
 ## Testing
 
