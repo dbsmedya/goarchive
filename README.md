@@ -610,21 +610,19 @@ make test-down
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
 | `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
 
-### E2E Tests with Sakila
+### End-to-End (Sakila) Tests
 
-For comprehensive end-to-end testing with the Sakila sample database:
+E2E tests archive the Sakila sample database through the real CLI.
 
 ```bash
-cd tests
-./scripts/run-tests.sh --setup --sakila
+make e2e-setup   # bootstrap docker + DBs, then run the working Sakila E2E suite
 ```
 
-### Test Documentation
-
-See [tests/README.md](tests/README.md) for detailed testing documentation including:
-- Sakila E2E test cases
-- Manual testing workflow
-- Troubleshooting guide
+📖 **[tests/README.md](tests/README.md) is the source of truth for all E2E and
+integration testing** — environment setup, the full test matrix, the Sakila E2E
+suite (working archives + validation-failure demos and their expected error
+categories), single-test targeting, troubleshooting, and how to add a test.
+Refer to it rather than duplicating those details here.
 
 ## Configuration Reference
 
@@ -760,7 +758,7 @@ constraints.
 - **Edition**: Community
 - **Version**: `1.3.2-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
-- **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
+- **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
 ### Known Limits & Caution ⚠️
 

@@ -203,46 +203,24 @@ it before running any integration or E2E command:
 set -a; source tests/.env; set +a
 ```
 
-Then the standard matrix, fastest to slowest:
+Quick layers:
 
-| Layer | Command | What it covers |
-|-------|---------|----------------|
-| Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
-| Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | Real MySQL (3305/3307); reseeds the DBs, then runs all `-tags=integration` tests |
-| E2E (working) | `make e2e` | Sakila tests 03 (payment archive) + 04 (rental→payment) — full archive runs |
-| E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
-| E2E (validation demos) | `make e2e-examples` | Sakila tests 01–02 — expected preflight failures |
+- **Unit** (no DB): `go test ./... -count=1`
+- **Integration** (real MySQL, build tag `integration`): `bash tests/scripts/run-tests.sh --setup --integration-only`
+- **E2E** (Sakila): `make e2e` (working archives) · `make e2e-examples` (validation-failure demos) · `make e2e-setup` (bootstrap + run)
 
-**Integration tests need a freshly-emptied destination — this is the #1 source
-of false failures.** The real-DB tests (`internal/archiver/*_integration_test.go`,
-build tag `integration`) archive Sakila into `sakila_archive`, and several rely
-on it starting empty. A prior archive/E2E run leaves rows behind, so they abort
-with `destination already contains a row … Duplicate entry`. That is leftover
-state, **not** a regression. Always reseed first:
-- One step: `bash tests/scripts/run-tests.sh --setup --integration-only`
-  (reseeds source + destination, then runs the tagged suite).
-- Direct `go test`: reseed once with `bash tests/scripts/run-tests.sh --setup`,
-  then `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
+**Integration + E2E need a freshly-reseeded destination — the #1 source of false
+failures.** The real-DB tests archive Sakila into `sakila_archive` and several
+rely on it starting empty; a prior run leaves rows behind and aborts with
+`destination already contains a row … Duplicate entry` — that is leftover state,
+**not** a regression. The `--setup` flag reseeds first. The real-DB tests also
+DELETE from source Sakila, so they are run-once against a fresh `--setup`.
 
-The real-DB tests also DELETE from source Sakila as they run, so they are
-run-once against a fresh `--setup` — re-running without reseeding can fail.
-
-**About the validation demos (`make e2e-examples`, tests 01–02):** these are
-designed to FAIL preflight with specific error categories — `01` =
-`COMPOSITE_PK_CHECK` (its config includes Sakila's composite-PK association
-tables `film_actor`/`film_category`), `02` = `FK_INDEX_CHECK`. The runner
-inverts the semantics — "pass" means the failure matched the documented
-expectation. Do not treat an `EXPECTED FAILURE matched` line as a regression.
-
-Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 3` runs the
-working payment archive; `--sakila-examples -t 1` runs just the composite-PK
-demo. The Sakila E2E suite: `01` (COMPOSITE_PK_CHECK demo), `02` (FK_INDEX_CHECK
-demo), `03` (working high-volume payment archive, single-column PK), and `04`
-(working `rental → payment` 2-level archive — a non-diamond GDPR-shaped subgraph;
-`customer`-rooted archives are unsupported because `payment` references both
-`customer` and `rental`, a diamond). The earlier film-hierarchy/association tests
-were removed because they archived composite-PK tables and are now rejected by
-preflight.
+> **`tests/README.md` is the source of truth for all integration + E2E testing.**
+> Read it before running or adding integration/E2E tests — it owns the full
+> command matrix, the Sakila E2E suite (working archives + validation demos and
+> their expected error categories), single-test targeting, reseed/run steps, env
+> vars, and how to add a test. Do not duplicate that detail here.
 
 Safety-fix notes:
 - New orchestrator integration tests should clean `archiver_job` and the
