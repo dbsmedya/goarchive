@@ -445,12 +445,12 @@ run_sakila_test() {
             expected_error="COMPOSITE_PK_CHECK"
             ;;
         2)
-            test_name="Test02_MissingFKIndex"
-            test_desc="FK-index rejection: 1-N (language → film) without an index on the FK [validation demo]"
+            test_name="Test02_UncoveredFKCoverage"
+            test_desc="FK-coverage rejection: archiving 'film' leaves out-of-graph tables (inventory/film_actor/film_category) referencing it [validation demo]"
             config_file="test02_one_to_many.yaml"
             tables="language film"
             mode="example"
-            expected_error="FK_INDEX_CHECK"
+            expected_error="FK_COVERAGE_CHECK"
             ;;
         3)
             test_name="Test03_PaymentBatch"
@@ -790,7 +790,7 @@ main() {
     fi
 
     # Run the validation demonstration tests — expected to fail preflight with
-    # documented error categories: 01 = COMPOSITE_PK_CHECK, 02 = FK_INDEX_CHECK.
+    # documented error categories: 01 = COMPOSITE_PK_CHECK, 02 = FK_COVERAGE_CHECK.
     if [ "$SAKILA_EXAMPLES" = true ]; then
         run_sakila_tests "1 2" "validation demos"
         exit 0

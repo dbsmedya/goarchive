@@ -435,8 +435,21 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 		return fmt.Errorf("failed to get foreign keys: %w", err)
 	}
 
+	// FK index checks apply only to child tables in the graph. getForeignKeys
+	// only computes fk.Indexed for in-graph children (out-of-graph children keep
+	// the zero value false), so flagging out-of-graph children here would be a
+	// false positive — and would shadow FK_COVERAGE_CHECK, which is the real,
+	// more actionable error for an out-of-graph table referencing the graph.
+	graphTableSet := make(map[string]bool)
+	for _, t := range p.graph.AllNodes() {
+		graphTableSet[t] = true
+	}
+
 	var unindexedFKs []string
 	for _, fk := range fks {
+		if !graphTableSet[fk.Table] {
+			continue
+		}
 		if !fk.Indexed {
 			unindexedFKs = append(unindexedFKs, fmt.Sprintf("%s.%s", fk.Table, fk.Column))
 		}

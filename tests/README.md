@@ -44,7 +44,7 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 | Test | Config | Expected error | Why |
 |------|--------|----------------|-----|
 | **01** | `test01_one_to_one.yaml` | `COMPOSITE_PK_CHECK` | Config includes Sakila's composite-PK tables `film_actor` (`actor_id, film_id`) / `film_category` (`film_id, category_id`); GoArchive identifies/deletes by a single PK column, so a multi-column PK is rejected up front. |
-| **02** | `test02_one_to_many.yaml` | `FK_INDEX_CHECK` | `language → film` where the in-graph FK column is not indexed (unindexed FKs make child-table deletes table-scan). |
+| **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the graph, but `film` is also referenced by out-of-graph `inventory`/`film_actor`/`film_category`; deleting archived films would violate those FKs, so every referencing table must be covered. |
 
 > **Why no `customer → rental → payment` (GDPR) test?** `payment` references
 > **both** `customer` and `rental`, and `rental` references `customer` — a diamond.
@@ -216,15 +216,17 @@ left uncovered.
 | Check | Purpose | Fails when |
 |-------|---------|-----------|
 | `FK_COVERAGE_CHECK` | Don't leave dangling references into the archived set | An out-of-graph table has an FK pointing at an in-graph table (its rows would block/orphan the parent delete) |
-| `FK_INDEX_CHECK` | Keep deletes efficient | An FK column is not indexed |
+| `FK_INDEX_CHECK` | Keep deletes efficient | An **in-graph** FK column is not indexed |
 
-> **Known limitation (not yet fixed):** `FK_COVERAGE_CHECK` is currently
-> **shadowed** by `FK_INDEX_CHECK`. The FK-index check runs first and, for an
-> out-of-graph table referencing the graph, reports that table's FK column as
-> "unindexed" (it never computes the index status for tables outside the graph),
-> aborting before coverage is reached. So a genuinely-uncovered config tends to
-> surface as `FK_INDEX_CHECK` rather than `FK_COVERAGE_CHECK`. There is therefore
-> no dedicated `FK_COVERAGE_CHECK` demo. See `.ayder/002-FK_COVERAGE_CHECK_BUG.md`.
+> **History:** `FK_COVERAGE_CHECK` was previously **shadowed** by a false-positive
+> `FK_INDEX_CHECK` — the index check ran first and flagged out-of-graph
+> referencing tables as "unindexed" (it never computes index status for tables
+> outside the graph), aborting before coverage was reached. Fixed in the
+> `harden/data-safety-p0-p1` branch: `ValidateForeignKeyIndexes` now only checks
+> in-graph children, so a genuinely-uncovered config correctly surfaces
+> `FK_COVERAGE_CHECK` (test 02 demonstrates this). Because the Sakila schema has
+> every FK column indexed, there is no E2E `FK_INDEX_CHECK` demo — that check is
+> covered by unit tests only. See `.ayder/002-FK_COVERAGE_CHECK_BUG.md`.
 
 ## Test Output
 
@@ -306,7 +308,7 @@ rm -rf docker_files/db_data
 2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
    - `mode="working"` → archive runs end-to-end; set `tables="..."`.
    - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
-     the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_INDEX_CHECK`, `INTERNAL_FK_COVERAGE`).
+     the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
 3. Wire the number into the dispatch lists in `main()`:
    - Working → `run_sakila_tests "3 4 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.

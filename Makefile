@@ -232,7 +232,7 @@ e2e-setup:
 # Run the validation-demonstration tests (01-02). These are EXPECTED to fail
 # preflight with documented error categories — success here means the failures
 # still match the documented expectations: 01 = COMPOSITE_PK_CHECK,
-# 02 = FK_INDEX_CHECK.
+# 02 = FK_COVERAGE_CHECK.
 .PHONY: e2e-examples
 e2e-examples:
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
@@ -263,9 +263,9 @@ help:
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
-	@echo "  make e2e                - Sakila E2E (working tests 06-10) — assumes DBs up"
+	@echo "  make e2e                - Sakila E2E (working tests 03-04) — assumes DBs up"
 	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
-	@echo "  make e2e-examples       - Sakila validation demonstration tests (01-05)"
+	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"

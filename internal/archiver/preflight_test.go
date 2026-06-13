@@ -540,6 +540,42 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	}
 }
 
+// TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild guards the .ayder/002
+// fix: an FK whose child table is OUTSIDE the graph must not trip
+// FK_INDEX_CHECK, even though getForeignKeys leaves its Indexed at the zero
+// value (false). Flagging it would be a false positive and would shadow the
+// real FK_COVERAGE_CHECK error.
+func TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph() // graph = {users, orders, order_items}
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	ctx := context.Background()
+
+	// FK query returns one out-of-graph child (audit_log) referencing an
+	// in-graph parent (orders). getForeignKeys does NOT index-check it, so its
+	// Indexed stays false.
+	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"DELETE_RULE", "UPDATE_RULE"},
+		).AddRow("audit_log", "fk_audit_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+
+	// No isColumnIndexed query is expected: audit_log is out of graph, so
+	// getForeignKeys skips the index lookup entirely.
+
+	if err := checker.ValidateForeignKeyIndexes(ctx); err != nil {
+		t.Fatalf("expected no FK_INDEX_CHECK error for out-of-graph child, got: %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // ============================================================================
 // ValidateTriggers Tests
 // ============================================================================
