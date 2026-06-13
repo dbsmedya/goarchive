@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.3.2-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.4.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
 
-The version string (e.g. `1.3.2-community`, with the `-community` edition suffix)
+The version string (e.g. `1.4.0-community`, with the `-community` edition suffix)
 is duplicated in several places. A bump MUST update **all** of these — a missed
 one ships mislabeled binaries:
 
@@ -31,9 +31,9 @@ How the build resolves the version (`Makefile`):
 `VERSION := git describe --tags --exact-match || RELEASE_VERSION`. So a properly
 **tagged** release commit takes its version from the git tag; an untagged build
 falls back to `RELEASE_VERSION`. For an actual release, also create the matching
-tag: `make tag V=1.3.2-community` (this creates a `v`-prefixed tag, so a tagged
-build reports `v1.3.2-community` while the `RELEASE_VERSION` fallback reports
-`1.3.2-community` — keep `RELEASE_VERSION` in sync regardless).
+tag: `make tag V=1.4.0-community` (this creates a `v`-prefixed tag, so a tagged
+build reports `v1.4.0-community` while the `RELEASE_VERSION` fallback reports
+`1.4.0-community` — keep `RELEASE_VERSION` in sync regardless).
 
 After bumping, verify: `go build -o /tmp/gv ./cmd/goarchive && /tmp/gv --version`
 should print the new version, and `make github-release` should stamp every
