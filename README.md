@@ -73,6 +73,14 @@ GoArchive intentionally treats configuration files as **operator-controlled and 
 * Connections intentionally use `multiStatements=true` for operational compatibility.
 * Do not expose config editing to untrusted users or untrusted automation pipelines.
 
+### 6. Single-Column Primary Keys Only
+
+GoArchive identifies, copies, verifies, and **deletes** rows by a single primary-key column (`WHERE pk IN (...)`).
+
+* **Composite (multi-column) primary keys are not supported.** Any participating table whose `PRIMARY KEY` spans more than one column is rejected by preflight (`COMPOSITE_PK_CHECK`). A composite PK would cause the single-column filter to over-match and could delete rows that were never part of the archived set.
+* **Root tables must additionally use an integer single-column PK** (TINYINT–BIGINT, signed or unsigned). Child tables may use any single-column PK type.
+* If your schema uses composite keys, GoArchive Community edition cannot safely archive those tables.
+
 ---
 
 > [!WARNING]
@@ -779,10 +787,14 @@ should be aware of the following known limits before pointing it at real data:
   `wait_timeout` should be higher than the longest expected job duration; very
   low timeout or flaky network settings can correctly fail a job instead of
   letting it delete without a lock.
-- **Root tables must use integer primary keys.** Community edition supports
-  TINYINT through BIGINT root PKs, signed or unsigned. UUID, VARCHAR, DECIMAL,
-  FLOAT, datetime, and other non-integer root PKs are rejected by preflight.
-  Child tables may use any PK type.
+- **Primary keys must be single-column; root PKs must also be integer.**
+  Composite (multi-column) primary keys on any participating table are rejected
+  by preflight (`COMPOSITE_PK_CHECK`) because rows are identified and deleted by
+  one PK column — a composite PK would over-match and risk deleting rows outside
+  the archived set. Root tables additionally require an integer single-column PK
+  (TINYINT through BIGINT, signed or unsigned); UUID, VARCHAR, DECIMAL, FLOAT,
+  datetime, and other non-integer root PKs are rejected. Child tables may use any
+  single-column PK type.
 - **Runtime preflight is automatic.** `archive`, `purge`, and `copy-only` run
   preflight at startup before any `archiver_job` state is written. `validate`
   remains useful for inspecting issues before an operational run. Use
