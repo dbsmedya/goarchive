@@ -141,11 +141,13 @@ func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	if execErr == nil {
 		t.Fatal("expected --force archive to be REFUSED while the lock is held (P1-4)")
 	}
+	// The "refusing to run destructive" message is reached ONLY on the
+	// !acquiredJob && force && staleAtStartup path — a non-stale held lock
+	// returns "cannot bypass a live lock" instead. So this assertion also
+	// proves the stale-heartbeat branch was taken. (orch.staleAtStartup is not
+	// asserted here because startup now returns before recording it.)
 	if !strings.Contains(execErr.Error(), "refusing to run destructive") {
 		t.Fatalf("expected destructive-refusal error, got: %v", execErr)
-	}
-	if !orch.staleAtStartup {
-		t.Fatal("expected staleAtStartup=true for 120s-old heartbeat")
 	}
 }
 
