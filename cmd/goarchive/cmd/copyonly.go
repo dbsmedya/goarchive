@@ -69,12 +69,17 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 
 	log.Info("Source data will NOT be deleted")
 
-	ctx := database.SetupSignalHandlerWithSecondSignal(
-		func(_ os.Signal) { log.Warn("Received shutdown signal - finishing current unit of work...") },
+	// Two-phase graceful shutdown: first Ctrl-C finishes the in-flight batch and
+	// stops at the boundary (no pending rows); second Ctrl-C cancels the work
+	// context, unwinding cleanly so the advisory lock is released. A third Ctrl-C
+	// hard-terminates.
+	ctx, stopCh := database.SetupGracefulShutdown(
 		func(_ os.Signal) {
-			log.Error("Received second shutdown signal - forcing immediate exit")
+			log.Warn("Received shutdown signal - finishing current batch, then stopping (Ctrl-C again to abort now)...")
+		},
+		func(_ os.Signal) {
+			log.Error("Received second shutdown signal - aborting in-flight work")
 			syncLogger(log)
-			os.Exit(130)
 		},
 	)
 
@@ -103,6 +108,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 	if err := orch.Initialize(); err != nil {
 		return fmt.Errorf("copy-only orchestrator initialization failed: %w", err)
 	}
+	orch.SetStopChannel(stopCh)
 
 	result, err := orch.Execute(ctx, copyOnlyForce)
 	if err != nil {

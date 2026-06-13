@@ -7,12 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.3.2-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.4.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
 
-The version string (e.g. `1.3.2-community`, with the `-community` edition suffix)
+The version string (e.g. `1.4.0-community`, with the `-community` edition suffix)
 is duplicated in several places. A bump MUST update **all** of these — a missed
 one ships mislabeled binaries:
 
@@ -31,9 +31,9 @@ How the build resolves the version (`Makefile`):
 `VERSION := git describe --tags --exact-match || RELEASE_VERSION`. So a properly
 **tagged** release commit takes its version from the git tag; an untagged build
 falls back to `RELEASE_VERSION`. For an actual release, also create the matching
-tag: `make tag V=1.3.2-community` (this creates a `v`-prefixed tag, so a tagged
-build reports `v1.3.2-community` while the `RELEASE_VERSION` fallback reports
-`1.3.2-community` — keep `RELEASE_VERSION` in sync regardless).
+tag: `make tag V=1.4.0-community` (this creates a `v`-prefixed tag, so a tagged
+build reports `v1.4.0-community` while the `RELEASE_VERSION` fallback reports
+`1.4.0-community` — keep `RELEASE_VERSION` in sync regardless).
 
 After bumping, verify: `go build -o /tmp/gv ./cmd/goarchive && /tmp/gv --version`
 should print the new version, and `make github-release` should stamp every
@@ -162,6 +162,12 @@ source but never *stricter*:
 - Crash recovery is status-aware via the per-job log TINYINT status: `pending` →
   full replay, `copied` (copy+verify succeeded, safe to delete) → delete-only, no
   re-verify.
+- **Strict-insert jobs refuse to auto-resume `pending` rows.** When strict INSERT
+  is forced (`verification.method: count`, `--skip-verify`, or a destination
+  secondary unique index) a `pending` row's destination copy may already be
+  committed, so re-copying it would abort on duplicate. Resume therefore *refuses*
+  with recovery guidance instead of self-blocking; `copied` rows still resume
+  delete-only. Applies to archive and copy-only (see `.ayder/003`).
 - `delete_sleep_seconds` (default 0) pauses between `batch_delete_size` delete
   chunks to limit binlog/replication lag — independent of `sleep_seconds`, which
   paces whole batches.
@@ -203,40 +209,24 @@ it before running any integration or E2E command:
 set -a; source tests/.env; set +a
 ```
 
-Then the standard matrix, fastest to slowest:
+Quick layers:
 
-| Layer | Command | What it covers |
-|-------|---------|----------------|
-| Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
-| Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | Real MySQL (3305/3307); reseeds the DBs, then runs all `-tags=integration` tests |
-| E2E (working) | `make e2e` | Sakila tests 06–10 — full archive runs |
-| E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
-| E2E (validation demos) | `make e2e-examples` | Sakila tests 01–05 |
+- **Unit** (no DB): `go test ./... -count=1`
+- **Integration** (real MySQL, build tag `integration`): `bash tests/scripts/run-tests.sh --setup --integration-only`
+- **E2E** (Sakila): `make e2e` (working archives) · `make e2e-examples` (validation-failure demos) · `make e2e-setup` (bootstrap + run)
 
-**Integration tests need a freshly-emptied destination — this is the #1 source
-of false failures.** The real-DB tests (`internal/archiver/*_integration_test.go`,
-build tag `integration`) archive Sakila into `sakila_archive`, and several rely
-on it starting empty. A prior archive/E2E run leaves rows behind, so they abort
-with `destination already contains a row … Duplicate entry`. That is leftover
-state, **not** a regression. Always reseed first:
-- One step: `bash tests/scripts/run-tests.sh --setup --integration-only`
-  (reseeds source + destination, then runs the tagged suite).
-- Direct `go test`: reseed once with `bash tests/scripts/run-tests.sh --setup`,
-  then `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
+**Integration + E2E need a freshly-reseeded destination — the #1 source of false
+failures.** The real-DB tests archive Sakila into `sakila_archive` and several
+rely on it starting empty; a prior run leaves rows behind and aborts with
+`destination already contains a row … Duplicate entry` — that is leftover state,
+**not** a regression. The `--setup` flag reseeds first. The real-DB tests also
+DELETE from source Sakila, so they are run-once against a fresh `--setup`.
 
-The real-DB tests also DELETE from source Sakila as they run, so they are
-run-once against a fresh `--setup` — re-running without reseeding can fail.
-
-**About the validation demos (`make e2e-examples`, tests 01–05):** these are
-designed to FAIL preflight with specific error categories
-(`INTERNAL_FK_COVERAGE`, `FK_INDEX_CHECK`, …). The runner inverts the semantics
-— "pass" means the failure matched the documented expectation. Do not treat an
-`EXPECTED FAILURE matched` line as a regression.
-
-Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
-just working test 7; `--sakila-examples -t 1` runs just demo 1. Working tests
-are 06–10 (06 nested hierarchy, 07/08 simple 1-N, 09 high-volume multi-batch,
-10 isolated `job_schema`); demos are 01–05.
+> **`tests/README.md` is the source of truth for all integration + E2E testing.**
+> Read it before running or adding integration/E2E tests — it owns the full
+> command matrix, the Sakila E2E suite (working archives + validation demos and
+> their expected error categories), single-test targeting, reseed/run steps, env
+> vars, and how to add a test. Do not duplicate that detail here.
 
 Safety-fix notes:
 - New orchestrator integration tests should clean `archiver_job` and the
@@ -251,6 +241,10 @@ Safety-fix notes:
   contains DELETE triggers.
 - Root primary keys must be integer types (TINYINT through BIGINT, signed or
   unsigned). Preflight rejects non-integer root PKs.
+- Every participating table must have a **single-column PRIMARY KEY equal to its
+  configured `primary_key`**. Preflight rejects composite PKs (`COMPOSITE_PK_CHECK`),
+  no-PK tables, and a `primary_key` that is not the table's actual PRIMARY KEY
+  (`PRIMARY_KEY_CHECK`) — all would over-match on delete-by-PK (review `.ayder/003`).
 - The job advisory lock is held on a dedicated MySQL connection. Keepalive now
   verifies `IS_USED_LOCK()` against that connection id and aborts if ownership
   is lost; document/assume MySQL `wait_timeout` is higher than expected job

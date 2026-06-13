@@ -1,6 +1,17 @@
-# Test 01: 1-1 Relationship
-# Tests archiving a simple one-to-one relationship between film and film_text
-# Both tables share the same primary key (film_id)
+# Test 01: Composite-PK rejection (validation demo — EXPECTED TO FAIL)
+#
+# This config roots at `film` and nests film's children. Two of those children —
+# film_actor and film_category — have 2-column PRIMARY KEYs, which GoArchive does
+# not support (it identifies and deletes rows by a single PK column; a multi-column
+# PK would over-match). Preflight therefore aborts with COMPOSITE_PK_CHECK before
+# any data is touched. See README 'Known Limits & Caution' and .ayder/001.
+#
+# COMPOSITE_PK_CHECK runs before the FK checks, so it is the reported category even
+# though film is also referenced by out-of-graph tables (which would otherwise trip
+# FK_COVERAGE_CHECK — see test02).
+#
+# Copy this file to test01_one_to_one.yaml and substitute the password
+# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
 
 source:
   host: 127.0.0.1
@@ -28,3 +39,25 @@ jobs:
         primary_key: film_id
         foreign_key: film_id
         dependency_type: "1-1"
+      # film_actor / film_category have COMPOSITE primary keys -> COMPOSITE_PK_CHECK
+      - table: film_actor
+        primary_key: actor_id
+        foreign_key: film_id
+        dependency_type: "1-N"
+      - table: film_category
+        primary_key: category_id
+        foreign_key: film_id
+        dependency_type: "1-N"
+      - table: inventory
+        primary_key: inventory_id
+        foreign_key: film_id
+        dependency_type: "1-N"
+      # Deep hierarchy: inventory -> rental -> payment
+      - table: rental
+        primary_key: rental_id
+        foreign_key: inventory_id
+        dependency_type: "1-N"
+      - table: payment
+        primary_key: payment_id
+        foreign_key: rental_id
+        dependency_type: "1-N"

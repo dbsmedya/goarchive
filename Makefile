@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT RELEASE_VERSION below when releasing
 # Or override per-build with: make build VERSION=1.2.3
-RELEASE_VERSION := 1.3.2-community
+RELEASE_VERSION := 1.4.0-community
 # Use the exact git tag when building from a tagged release commit, otherwise
 # fall back to the pinned RELEASE_VERSION above.
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || echo "$(RELEASE_VERSION)")
@@ -215,9 +215,10 @@ test-status:
 	@echo "Test database status:"
 	@cd tests && docker compose ps
 
-# Run the working Sakila end-to-end suite (working tests 06-10).
-# Assumes Docker test DBs are already up (`make test-up`). Use `make e2e-setup`
-# for a fresh-environment run that also resets source + destination from Sakila.
+# Run the working Sakila end-to-end suite (test 03 payment single-column-PK
+# archive, test 04 rental->payment 2-level archive). Assumes Docker test DBs are
+# already up (`make test-up`). Use `make e2e-setup` for a fresh-environment run
+# that also resets the databases.
 .PHONY: e2e
 e2e:
 	@bash tests/scripts/run-tests.sh --sakila --skip-docker
@@ -228,9 +229,10 @@ e2e:
 e2e-setup:
 	@bash tests/scripts/run-tests.sh --setup --sakila
 
-# Run the validation-demonstration tests (01-05). These are EXPECTED to fail
+# Run the validation-demonstration tests (01-02). These are EXPECTED to fail
 # preflight with documented error categories — success here means the failures
-# still match the documented expectations.
+# still match the documented expectations: 01 = COMPOSITE_PK_CHECK,
+# 02 = FK_COVERAGE_CHECK.
 .PHONY: e2e-examples
 e2e-examples:
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
@@ -261,9 +263,9 @@ help:
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
-	@echo "  make e2e                - Sakila E2E (working tests 06-10) — assumes DBs up"
+	@echo "  make e2e                - Sakila E2E (working tests 03-04) — assumes DBs up"
 	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
-	@echo "  make e2e-examples       - Sakila validation demonstration tests (01-05)"
+	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"

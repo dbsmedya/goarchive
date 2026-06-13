@@ -1,0 +1,45 @@
+# Test 04: rental -> payment (working 2-level archive)
+# A GDPR-shaped subgraph that IS expressible as a tree: payment is archived as a
+# child of rental via payment.rental_id -> rental. payment also references
+# customer and staff, but those stay OUT of the graph as upstream parents (an
+# in-graph table referencing an out-of-graph table is allowed), so there is no
+# diamond and no coverage violation.
+#
+# NOTE: a customer-rooted archive (customer -> rental -> payment) is NOT
+# expressible — payment references both customer and rental, and rental
+# references customer, forming a diamond that the tree model + INTERNAL_FK_COVERAGE
+# reject. See .ayder/001 / the README Limitations section. This rental-rooted
+# shape is the closest working multi-level archive.
+#
+# Copy this file to test04_rental_payment.yaml and substitute the password
+# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+jobs:
+  archive-rental-payments:
+    root_table: rental
+    primary_key: rental_id
+    # Archive the first 200 rentals and their payments.
+    where: "rental_id <= 200"
+    relations:
+      # 1-N: a rental has many payments (payment.rental_id -> rental)
+      - table: payment
+        primary_key: payment_id
+        foreign_key: rental_id
+        dependency_type: "1-N"

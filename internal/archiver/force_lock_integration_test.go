@@ -76,7 +76,13 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	}
 }
 
-func TestArchiveForceAllowedOnStaleHeartbeat(t *testing.T) {
+// TestArchiveForceRefusedWhenLockHeldEvenIfStale proves the review P1-4 hardening:
+// a destructive archive run refuses to proceed when the advisory GET_LOCK is
+// still held by another connection, EVEN with --force and a stale heartbeat.
+// A held lock cannot be safely stolen, so running would risk a concurrent
+// double-delete. --force may only bypass a stale heartbeat for non-destructive
+// copy-only (see TestCopyOnlyForceProceedsOnStaleHeartbeat-style coverage).
+func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -132,15 +138,16 @@ func TestArchiveForceAllowedOnStaleHeartbeat(t *testing.T) {
 	execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	_, execErr := orch.Execute(execCtx, nil)
-	if execErr != nil {
-		msg := execErr.Error()
-		if strings.Contains(msg, "cannot bypass") || strings.Contains(msg, "live instance") {
-			t.Fatalf("--force should proceed past stale heartbeat, got: %v", execErr)
-		}
-		t.Logf("Execute returned downstream error after stale-lock bypass: %v", execErr)
+	if execErr == nil {
+		t.Fatal("expected --force archive to be REFUSED while the lock is held (P1-4)")
 	}
-	if !orch.staleAtStartup {
-		t.Fatal("expected staleAtStartup=true for 120s-old heartbeat")
+	// The "refusing to run destructive" message is reached ONLY on the
+	// !acquiredJob && force && staleAtStartup path — a non-stale held lock
+	// returns "cannot bypass a live lock" instead. So this assertion also
+	// proves the stale-heartbeat branch was taken. (orch.staleAtStartup is not
+	// asserted here because startup now returns before recording it.)
+	if !strings.Contains(execErr.Error(), "refusing to run destructive") {
+		t.Fatalf("expected destructive-refusal error, got: %v", execErr)
 	}
 }
 

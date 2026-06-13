@@ -73,6 +73,14 @@ GoArchive intentionally treats configuration files as **operator-controlled and 
 * Connections intentionally use `multiStatements=true` for operational compatibility.
 * Do not expose config editing to untrusted users or untrusted automation pipelines.
 
+### 6. Single-Column Primary Keys Only
+
+GoArchive identifies, copies, verifies, and **deletes** rows by a single primary-key column (`WHERE pk IN (...)`).
+
+* **Composite (multi-column) primary keys are not supported.** Any participating table whose `PRIMARY KEY` spans more than one column is rejected by preflight (`COMPOSITE_PK_CHECK`). A composite PK would cause the single-column filter to over-match and could delete rows that were never part of the archived set.
+* **Root tables must additionally use an integer single-column PK** (TINYINT–BIGINT, signed or unsigned). Child tables may use any single-column PK type.
+* If your schema uses composite keys, GoArchive Community edition cannot safely archive those tables.
+
 ---
 
 > [!WARNING]
@@ -602,21 +610,19 @@ make test-down
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
 | `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
 
-### E2E Tests with Sakila
+### End-to-End (Sakila) Tests
 
-For comprehensive end-to-end testing with the Sakila sample database:
+E2E tests archive the Sakila sample database through the real CLI.
 
 ```bash
-cd tests
-./scripts/run-tests.sh --setup --sakila
+make e2e-setup   # bootstrap docker + DBs, then run the working Sakila E2E suite
 ```
 
-### Test Documentation
-
-See [tests/README.md](tests/README.md) for detailed testing documentation including:
-- Sakila E2E test cases
-- Manual testing workflow
-- Troubleshooting guide
+📖 **[tests/README.md](tests/README.md) is the source of truth for all E2E and
+integration testing** — environment setup, the full test matrix, the Sakila E2E
+suite (working archives + validation-failure demos and their expected error
+categories), single-test targeting, troubleshooting, and how to add a test.
+Refer to it rather than duplicating those details here.
 
 ## Configuration Reference
 
@@ -750,9 +756,9 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.3.2-community` (stable for the scope below)
+- **Version**: `1.4.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
-- **Test coverage**: 835 unit tests, 24 integration tests against real MySQL, 3 working Sakila E2E tests, 5 preflight-validation demonstration tests
+- **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
 ### Known Limits & Caution ⚠️
 
@@ -779,10 +785,14 @@ should be aware of the following known limits before pointing it at real data:
   `wait_timeout` should be higher than the longest expected job duration; very
   low timeout or flaky network settings can correctly fail a job instead of
   letting it delete without a lock.
-- **Root tables must use integer primary keys.** Community edition supports
-  TINYINT through BIGINT root PKs, signed or unsigned. UUID, VARCHAR, DECIMAL,
-  FLOAT, datetime, and other non-integer root PKs are rejected by preflight.
-  Child tables may use any PK type.
+- **Primary keys must be single-column; root PKs must also be integer.**
+  Composite (multi-column) primary keys on any participating table are rejected
+  by preflight (`COMPOSITE_PK_CHECK`) because rows are identified and deleted by
+  one PK column — a composite PK would over-match and risk deleting rows outside
+  the archived set. Root tables additionally require an integer single-column PK
+  (TINYINT through BIGINT, signed or unsigned); UUID, VARCHAR, DECIMAL, FLOAT,
+  datetime, and other non-integer root PKs are rejected. Child tables may use any
+  single-column PK type.
 - **Runtime preflight is automatic.** `archive`, `purge`, and `copy-only` run
   preflight at startup before any `archiver_job` state is written. `validate`
   remains useful for inspecting issues before an operational run. Use

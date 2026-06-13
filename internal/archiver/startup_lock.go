@@ -121,6 +121,13 @@ func beginJobStartup(
 		return nil, fmt.Errorf("job-name lock errored: %w", err)
 	}
 	jobLockHeld := false
+	// Destructive commands (archive, purge) delete from the source. They MUST
+	// hold the advisory lock for the whole run — otherwise a second process that
+	// acquires the freed lock could delete the same rows concurrently. A held
+	// GET_LOCK cannot be safely stolen, so --force may NOT bypass it for these
+	// commands; it only bypasses a stale heartbeat for non-destructive copy-only
+	// (review P1-4).
+	requireLock := jobType == JobTypeArchive || jobType == JobTypePurge
 	if !acquiredJob {
 		if !force {
 			cancelRun()
@@ -130,8 +137,12 @@ func beginJobStartup(
 			cancelRun()
 			return nil, fmt.Errorf("job %q lock is held by a live instance (heartbeat fresh). --force cannot bypass a live lock", jobName)
 		}
+		if requireLock {
+			cancelRun()
+			return nil, fmt.Errorf("job %q advisory lock is held by another connection and could not be acquired; refusing to run destructive %q without the lock. A stale heartbeat does not release GET_LOCK — verify the previous process is dead AND its MySQL session has closed (the lock auto-releases on session close), then retry", jobName, commandName)
+		}
 		log.Warn(forceLockBypassBanner)
-		log.Warnw("--force proceeding past stale lock (authorized bypass)", "job", jobName)
+		log.Warnw("--force proceeding past stale lock (authorized bypass; non-destructive command)", "job", jobName)
 	} else {
 		jobLockHeld = true
 	}

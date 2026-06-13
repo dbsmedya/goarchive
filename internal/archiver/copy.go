@@ -104,6 +104,14 @@ func (cp *CopyPhase) SetStrictInsert(strict bool) {
 	cp.strictInsert = strict
 }
 
+// StrictInsert reports whether the copy phase uses plain (strict) INSERT rather
+// than INSERT IGNORE. Strict mode aborts on any duplicate, which means a pending
+// batch whose destination copy already committed cannot be safely re-copied on
+// resume — callers use this to gate crash-recovery replay.
+func (cp *CopyPhase) StrictInsert() bool {
+	return cp.strictInsert
+}
+
 // SetBatchSize sets the fetch+insert chunk size for the copy phase. Values <= 0
 // are ignored. When never set, defaultCopyBatchSize is used.
 func (cp *CopyPhase) SetBatchSize(n int) {

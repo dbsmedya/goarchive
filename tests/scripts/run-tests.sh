@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run Sakila integration tests (1-5)
-#   -t, --test NUM      Run only specific Sakila test (1-5, requires --sakila)
+#   --sakila            Run the working Sakila E2E tests (03, 04)
+#   -t, --test NUM      Run only specific Sakila test (1-4)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -52,8 +52,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (06, 07, 08, 09, 10)
-SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01-05)
+SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment)
+SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
@@ -129,8 +129,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (06, 07, 08, 09, 10)"
-            echo "  --sakila-examples   Run the validation-demonstration tests (01-05)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
             echo "  -t, --test NUM      Run only the specified test number (works with"
@@ -143,8 +143,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 --setup                    # Full setup: docker + databases"
             echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
-            echo "  $0 --sakila -t 7              # Run only working test 07"
-            echo "  $0 --sakila-examples          # Run validation demos (01-05)"
+            echo "  $0 --sakila-examples -t 1     # Run only the composite-PK demo (test 01)"
+            echo "  $0 --sakila-examples          # Run validation demos (01-02)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -437,82 +437,37 @@ run_sakila_test() {
 
     case $test_num in
         1)
-            test_name="Test01_OneToOne"
-            test_desc="1-1 Relationship (film → film_text) [validation demo]"
+            test_name="Test01_CompositePKRejected"
+            test_desc="Composite-PK rejection: config includes film_actor/film_category (composite PKs) [validation demo]"
             config_file="test01_one_to_one.yaml"
-            tables="film film_text"
+            tables="film film_text film_actor film_category"
             mode="example"
-            expected_error="INTERNAL_FK_COVERAGE"
+            expected_error="COMPOSITE_PK_CHECK"
             ;;
         2)
-            test_name="Test02_OneToMany"
-            test_desc="1-N Relationship (language → film) [validation demo]"
+            test_name="Test02_UncoveredFKCoverage"
+            test_desc="FK-coverage rejection: archiving 'film' leaves out-of-graph tables (inventory/film_actor/film_category) referencing it [validation demo]"
             config_file="test02_one_to_many.yaml"
             tables="language film"
             mode="example"
-            expected_error="FK_INDEX_CHECK"
+            expected_error="FK_COVERAGE_CHECK"
             ;;
         3)
-            test_name="Test03_OneToManyMultiple"
-            test_desc="1-N Multiple Children [validation demo]"
-            config_file="test03_one_to_many_multiple.yaml"
-            tables="film inventory film_actor film_category"
-            mode="example"
-            expected_error="FK_INDEX_CHECK"
-            ;;
-        4)
-            test_name="Test04_OneToManyTwoNested"
-            test_desc="1-N Two Nested (country → city → address) [validation demo]"
-            config_file="test04_one_to_many_two_nested.yaml"
-            tables="country city address"
-            mode="example"
-            expected_error="FK_INDEX_CHECK"
-            ;;
-        5)
-            test_name="Test05_OneToManyThreeNestedWithOneToOne"
-            test_desc="1-N Three Nested with 1-1 [validation demo]"
-            config_file="test05_one_to_many_three_nested.yaml"
-            tables="country city address customer film film_text"
-            mode="example"
-            expected_error="FK_INDEX_CHECK"
-            ;;
-        6)
-            test_name="Test06_CompleteFilmHierarchy"
-            test_desc="4-level nested (film → inventory → rental → payment)"
-            config_file="test06_complete_film_hierarchy.yaml"
-            tables="film inventory rental payment"
-            mode="working"
-            ;;
-        7)
-            test_name="Test07_ActorFilmActor"
-            test_desc="Simple 1-N (actor → film_actor)"
-            config_file="test07_actor_film_actor.yaml"
-            tables="actor film_actor"
-            mode="working"
-            ;;
-        8)
-            test_name="Test08_CategoryFilmCategory"
-            test_desc="Simple 1-N (category → film_category)"
-            config_file="test08_category_film_category.yaml"
-            tables="category film_category"
-            mode="working"
-            ;;
-        9)
-            test_name="Test09_PaymentBatch"
-            test_desc="High-volume payment archive (batch_size=100, multi-batch)"
-            config_file="test09_payment_batch.yaml"
+            test_name="Test03_PaymentBatch"
+            test_desc="Working archive: high-volume payment (single-column PK, multi-batch)"
+            config_file="test03_payment_batch.yaml"
             tables="payment"
             mode="working"
             ;;
-        10)
-            test_name="Test10_IsolatedJobSchema"
-            test_desc="Isolated job_schema (goarchive_meta) separate from archive DB"
-            config_file="test10_isolated_job_schema.yaml"
-            tables="film inventory film_actor film_category rental payment"
+        4)
+            test_name="Test04_RentalPayment"
+            test_desc="Working archive: rental -> payment (2-level tree, non-diamond GDPR-shaped subgraph)"
+            config_file="test04_rental_payment.yaml"
+            tables="rental payment"
             mode="working"
             ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-10)"
+            log_error "Invalid test number: $test_num (expected 1-4)"
             return 1
             ;;
     esac
@@ -827,16 +782,17 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite (tests 06, 07, 08, 09, 10)
+    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK) and
+    # test 04 (rental -> payment, 2-level tree) perform real archives end-to-end.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "6 7 8 9 10" "working"
+        run_sakila_tests "3 4" "working"
         exit 0
     fi
 
-    # Run the validation demonstration tests (01-05) — these are expected to
-    # fail preflight with documented error categories.
+    # Run the validation demonstration tests — expected to fail preflight with
+    # documented error categories: 01 = COMPOSITE_PK_CHECK, 02 = FK_COVERAGE_CHECK.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_sakila_tests "1 2 3 4 5" "validation demos"
+        run_sakila_tests "1 2" "validation demos"
         exit 0
     fi
     

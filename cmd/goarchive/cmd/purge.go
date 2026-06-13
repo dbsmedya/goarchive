@@ -42,7 +42,7 @@ func init() {
 	_ = purgeCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	purgeCmd.Flags().BoolVar(&purgeForce, "force", false,
-		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Cannot bypass a live, heartbeating job. Cannot bypass: same-root concurrency check or preflight checks.")
+		"Refresh a stale heartbeat takeover only. Because purge is destructive, --force CANNOT proceed while the advisory GET_LOCK is still held by another connection (a held lock cannot be safely stolen): verify the prior process is dead and its MySQL session has closed, then retry. Cannot bypass: a live heartbeating job, the same-root concurrency check, or preflight checks.")
 	purgeCmd.Flags().BoolVar(&purgeSkipValidatePreflight, "skip-validate-preflight", false,
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	purgeCmd.Flags().BoolVar(&purgeForceTriggers, "force-triggers", false,
@@ -89,15 +89,17 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	// Create database manager
 	dbManager := database.NewManager(cfg)
 
-	// Setup context with signal handling
-	ctx := database.SetupSignalHandlerWithSecondSignal(
+	// Setup context with two-phase graceful shutdown. First Ctrl-C finishes the
+	// in-flight batch and stops at the boundary (no pending rows); second Ctrl-C
+	// cancels the work context, unwinding cleanly so the advisory lock is released
+	// (replay recovers whatever is left). A third Ctrl-C hard-terminates.
+	ctx, stopCh := database.SetupGracefulShutdown(
 		func(_ os.Signal) {
-			log.Warn("Received shutdown signal - completing current batch...")
+			log.Warn("Received shutdown signal - finishing current batch, then stopping (Ctrl-C again to abort now)...")
 		},
 		func(_ os.Signal) {
-			log.Error("Received second shutdown signal - forcing immediate exit")
+			log.Error("Received second shutdown signal - aborting in-flight work")
 			syncLogger(log)
-			os.Exit(130)
 		},
 	)
 
@@ -129,6 +131,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("purge orchestrator initialization failed: %w", err)
 	}
 	orch.SetForce(purgeForce)
+	orch.SetStopChannel(stopCh)
 	result, err := orch.Execute(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

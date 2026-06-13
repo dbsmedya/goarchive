@@ -148,6 +148,12 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		return err
 	}
 
+	// Reject composite primary keys: GoArchive identifies and DELETES rows by a
+	// single PK column, so a multi-column PK would over-match (review P1-1).
+	if err := p.ValidateSingleColumnPrimaryKey(ctx, tables); err != nil {
+		return err
+	}
+
 	rootTable := p.graph.Root
 	if err := p.ValidateRootPKNumeric(ctx, rootTable, p.graph.GetPK(rootTable)); err != nil {
 		return err
@@ -256,6 +262,94 @@ func isIntegerRootPKType(dataType string) bool {
 	default:
 		return false
 	}
+}
+
+// ValidateSingleColumnPrimaryKey rejects participating tables whose PRIMARY KEY
+// spans more than one column. GoArchive discovers, copies, verifies, and DELETES
+// rows by a single PK column (WHERE pk IN (...)); against a composite primary key
+// that filter matches every row sharing the single column value, so a delete
+// could remove rows that were never part of the archived subgraph — silent data
+// loss (review P1-1). The destination PK is required to match the source by the
+// schema-compatibility check, so inspecting the source is sufficient.
+func (p *PreflightChecker) ValidateSingleColumnPrimaryKey(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking primary key shape (single-column PRIMARY KEY matching configured PK)...")
+
+	var compositeIssues []string
+	var pkDefIssues []string
+	for _, table := range tables {
+		pkCols, err := p.primaryKeyColumns(ctx, table)
+		if err != nil {
+			return fmt.Errorf("COMPOSITE_PK_LOOKUP: failed to inspect primary key for %s: %w", table, err)
+		}
+		switch {
+		case len(pkCols) > 1:
+			// Composite PRIMARY KEY: delete-by-single-column would over-match.
+			compositeIssues = append(compositeIssues, fmt.Sprintf("%s(%d-column PRIMARY KEY)", table, len(pkCols)))
+		case len(pkCols) == 0:
+			// No PRIMARY KEY at all: the configured primary_key is then almost
+			// certainly a non-unique column, so delete-by-it would over-match (review 003).
+			pkDefIssues = append(pkDefIssues, fmt.Sprintf("%s(no PRIMARY KEY)", table))
+		case p.graph.HasPK(table) && pkCols[0] != p.graph.GetPK(table):
+			// Configured primary_key is not the table's actual PRIMARY KEY column;
+			// if it is non-unique, delete-by-it over-matches (review 003).
+			pkDefIssues = append(pkDefIssues, fmt.Sprintf("%s(configured primary_key %q is not the PRIMARY KEY column %q)", table, p.graph.GetPK(table), pkCols[0]))
+		}
+	}
+
+	// Composite PKs are the headline rejection (keeps the COMPOSITE_PK_CHECK
+	// category and its E2E demo); report them first when present.
+	if len(compositeIssues) > 0 {
+		return &PreflightError{
+			Check:   "COMPOSITE_PK_CHECK",
+			Message: "Composite primary keys are not supported. GoArchive identifies and deletes rows by a single primary-key column; a multi-column PK would over-match and risk deleting rows outside the archived set. See README 'Known Limits & Caution'",
+			Tables:  compositeIssues,
+		}
+	}
+	if len(pkDefIssues) > 0 {
+		return &PreflightError{
+			Check:   "PRIMARY_KEY_CHECK",
+			Message: "Every participating table must have a single-column PRIMARY KEY equal to the configured primary_key. GoArchive identifies and deletes rows by that column, so a missing or mismatched PRIMARY KEY can over-match and delete rows outside the archived set",
+			Tables:  pkDefIssues,
+		}
+	}
+
+	p.logger.Debugf("Primary key shape check PASSED (%d tables)", len(tables))
+	return nil
+}
+
+// primaryKeyColumns returns the PRIMARY KEY column names of a source table, in
+// key order. An empty slice means the table has no PRIMARY KEY.
+func (p *PreflightChecker) primaryKeyColumns(ctx context.Context, table string) ([]string, error) {
+	const query = `
+		SELECT COLUMN_NAME
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		  AND INDEX_NAME = 'PRIMARY'
+		ORDER BY SEQ_IN_INDEX`
+
+	rows, err := p.db.QueryContext(ctx, query, p.sourceDBName, table)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			p.logger.Warnf("Failed to close rows: %v", cerr)
+		}
+	}()
+
+	var cols []string
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			return nil, err
+		}
+		cols = append(cols, col)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return cols, nil
 }
 
 // ValidateTablesExist checks that all tables in the graph exist in the source database.
@@ -389,8 +483,21 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 		return fmt.Errorf("failed to get foreign keys: %w", err)
 	}
 
+	// FK index checks apply only to child tables in the graph. getForeignKeys
+	// only computes fk.Indexed for in-graph children (out-of-graph children keep
+	// the zero value false), so flagging out-of-graph children here would be a
+	// false positive — and would shadow FK_COVERAGE_CHECK, which is the real,
+	// more actionable error for an out-of-graph table referencing the graph.
+	graphTableSet := make(map[string]bool)
+	for _, t := range p.graph.AllNodes() {
+		graphTableSet[t] = true
+	}
+
 	var unindexedFKs []string
 	for _, fk := range fks {
+		if !graphTableSet[fk.Table] {
+			continue
+		}
 		if !fk.Indexed {
 			unindexedFKs = append(unindexedFKs, fmt.Sprintf("%s.%s", fk.Table, fk.Column))
 		}

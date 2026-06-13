@@ -1,6 +1,16 @@
-# Test 02: 1-N Relationship (Single Child)
-# Tests archiving a one-to-many relationship where one parent has multiple children
-# Language → Film: One language can have many films
+# Test 02: FK-coverage rejection (validation demo — EXPECTED TO FAIL)
+#
+# Archives language -> film (1-N). `film` is pulled into the graph, but film is
+# ALSO referenced by tables left OUT of the graph (inventory, film_actor,
+# film_category). Deleting archived film rows would violate those FK constraints,
+# so preflight aborts with FK_COVERAGE_CHECK: every table referencing an in-graph
+# table must itself be covered by a relation.
+#
+# (Before the .ayder/002 fix this scenario mis-reported FK_INDEX_CHECK because the
+# index check false-positived on out-of-graph children and ran first.)
+#
+# Copy this file to test02_one_to_many.yaml and substitute the password
+# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
 
 source:
   host: 127.0.0.1

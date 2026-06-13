@@ -67,38 +67,51 @@ func (g *sentinelGate) present() bool {
 	return false
 }
 
-// sleep waits for d or until ctx is cancelled, returning ctx.Err() on cancel.
-func (g *sentinelGate) sleep(ctx context.Context, d time.Duration) error {
+// sleep waits for d or until ctx is cancelled or a cooperative stop is requested.
+// It returns ctx.Err() on cancel and nil on either timeout or stop; the caller's
+// wait loop distinguishes the two via stopRequested.
+func (g *sentinelGate) sleep(ctx context.Context, stop <-chan struct{}, d time.Duration) error {
 	if g.sleepFn != nil {
 		return g.sleepFn(ctx, d)
 	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-stop:
+		return nil
 	case <-time.After(d):
 		return nil
 	}
 }
 
 // wait blocks while the sentinel file is present, re-checking every
-// sentinelPollInterval, until it is absent or ctx is cancelled. It returns nil
-// immediately when no sentinel is configured or the file is absent. On ctx
-// cancellation it returns the context error; the current batch is left
+// sentinelPollInterval, until it is absent, ctx is cancelled, or a cooperative
+// stop is requested (stop closed). It returns nil immediately when no sentinel is
+// configured or the file is absent. On ctx cancellation it returns the context
+// error; on a cooperative stop it returns nil and the caller's boundary
+// stopRequested check exits the loop. Either way the current batch is left
 // unprocessed and remains recoverable on the next run.
-func (g *sentinelGate) wait(ctx context.Context) error {
+func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 	if g == nil || g.path == "" {
 		return nil
 	}
 	if !g.present() {
 		return nil
 	}
+	if stopRequested(stop) {
+		return nil
+	}
 
 	g.logger.Warnf("Paused: sentinel file %q is present; remove it to resume", g.path)
 	waited := 0
 	for {
-		if err := g.sleep(ctx, sentinelPollInterval); err != nil {
+		if err := g.sleep(ctx, stop, sentinelPollInterval); err != nil {
 			g.logger.Warnf("Sentinel pause interrupted: %v", err)
 			return err
+		}
+		if stopRequested(stop) {
+			g.logger.Warnf("Sentinel pause ended by graceful stop request")
+			return nil
 		}
 		if !g.present() {
 			g.logger.Infof("Resumed: sentinel file %q removed", g.path)

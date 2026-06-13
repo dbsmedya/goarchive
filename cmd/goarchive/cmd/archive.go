@@ -42,7 +42,7 @@ func init() {
 	_ = archiveCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	archiveCmd.Flags().BoolVar(&archiveForce, "force", false,
-		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Cannot bypass a live, heartbeating job. Cannot bypass: same-root concurrency check or preflight checks.")
+		"Refresh a stale heartbeat takeover only. Because archive is destructive, --force CANNOT proceed while the advisory GET_LOCK is still held by another connection (a held lock cannot be safely stolen): verify the prior process is dead and its MySQL session has closed, then retry. Cannot bypass: a live heartbeating job, the same-root concurrency check, or preflight checks.")
 	archiveCmd.Flags().BoolVar(&archiveSkipValidatePreflight, "skip-validate-preflight", false,
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	archiveCmd.Flags().BoolVar(&archiveForceTriggers, "force-triggers", false,
@@ -90,15 +90,18 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	// Create database manager
 	dbManager := database.NewManager(cfg)
 
-	// Setup context with signal handling
-	ctx := database.SetupSignalHandlerWithSecondSignal(
+	// Setup context with two-phase graceful shutdown. First Ctrl-C finishes the
+	// in-flight batch (no torn copy→verify→delete, no pending rows) and stops at
+	// the boundary; second Ctrl-C cancels the work context, aborting in-flight
+	// work but unwinding cleanly so the advisory lock is released (replay recovers
+	// whatever state is left). A third Ctrl-C hard-terminates.
+	ctx, stopCh := database.SetupGracefulShutdown(
 		func(_ os.Signal) {
-			log.Warn("Received shutdown signal - completing current batch...")
+			log.Warn("Received shutdown signal - finishing current batch, then stopping (Ctrl-C again to abort now)...")
 		},
 		func(_ os.Signal) {
-			log.Error("Received second shutdown signal - forcing immediate exit")
+			log.Error("Received second shutdown signal - aborting in-flight work")
 			syncLogger(log)
-			os.Exit(130)
 		},
 	)
 
@@ -133,6 +136,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("orchestrator initialization failed: %w", err)
 	}
 	orch.SetForce(archiveForce)
+	orch.SetStopChannel(stopCh)
 
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)

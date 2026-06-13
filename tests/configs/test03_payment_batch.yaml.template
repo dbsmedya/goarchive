@@ -1,4 +1,4 @@
-# Test 09: High-volume payment archive (batch_size throughput)
+# Test 03: High-volume payment archive (batch_size throughput)
 # Archives a large slice of the payment table (a leaf in the Sakila graph)
 # directly as the root, with batch_size=100, to exercise the batched pipeline
 # over many batches (multi-batch copy + delete chunking).
@@ -8,7 +8,7 @@
 # archive). payment is a leaf (no table references it), so it needs no child
 # relations; FK checks are disabled for the copy into the archive destination.
 #
-# Copy this file to test09_payment_batch.yaml and substitute the password
+# Copy this file to test03_payment_batch.yaml and substitute the password
 # (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
 
 source:

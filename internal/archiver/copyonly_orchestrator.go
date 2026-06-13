@@ -49,6 +49,7 @@ type CopyOnlyOrchestrator struct {
 	verificationCfg config.VerificationConfig
 	promptReader    io.Reader
 	staleAtStartup  bool
+	stopCh          <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
 }
 
 // NewCopyOnlyOrchestrator creates a new copy-only orchestrator.
@@ -83,6 +84,13 @@ func NewCopyOnlyOrchestrator(cfg *config.Config, jobName string, jobCfg *config.
 // Initialize/Execute so all phases inherit it.
 func (o *CopyOnlyOrchestrator) SetLogger(log *logger.Logger) {
 	o.logger = log
+}
+
+// SetStopChannel wires the cooperative graceful-stop signal. When the channel
+// closes (first Ctrl-C), the loop finishes the in-flight batch and stops at the
+// next boundary. A nil channel disables cooperative stop.
+func (o *CopyOnlyOrchestrator) SetStopChannel(stop <-chan struct{}) {
+	o.stopCh = stop
 }
 
 // Initialize builds dependency graph and computes copy order.
@@ -195,6 +203,29 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		return fail("failed to create copy phase: %w", err)
 	}
 
+	// Decide whether INSERT IGNORE is safe, mirroring the archive orchestrator
+	// (review P0-1/P1-2/#1). copy-only never deletes source, but a silently-skipped
+	// INSERT IGNORE still produces an INCOMPLETE copy the operator believes is
+	// faithful — and a later archive/purge of those source rows would then delete
+	// data that was never truly copied. Force strict INSERT (abort on duplicate)
+	// when the post-copy safety net is weak: count verification, verification
+	// skipped, or a destination secondary UNIQUE index.
+	effectiveMethod := o.verificationCfg.EffectiveMethod()
+	destUniqueIdx, err := destinationSecondaryUniqueIndexes(ctx, o.dbManager.Destination,
+		o.config.Destination.Database, o.graph.AllNodes())
+	if err != nil {
+		return fail("failed to inspect destination unique indexes: %w", err)
+	}
+	strictInsert := shouldUseStrictInsert(effectiveMethod, o.verificationCfg.SkipVerification, len(destUniqueIdx) > 0)
+	if strictInsert && effectiveMethod != "count" {
+		reason := "verification skipped (a silently-skipped row would leave an incomplete copy)"
+		if len(destUniqueIdx) > 0 {
+			reason = "destination secondary unique index present: " + strings.Join(destUniqueIdx, ", ")
+		}
+		o.logger.Warnw("Forcing strict INSERT (INSERT IGNORE disabled): a silently-skipped duplicate would leave an incomplete copy", "reason", reason)
+	}
+	copyPhase.SetStrictInsert(strictInsert)
+
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
 		o.dbManager.Destination,
@@ -219,6 +250,13 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		default:
 		}
 
+		// Cooperative graceful stop: the previous batch's roots are all 'completed'
+		// before we reach here, so stopping at this boundary leaves no pending rows.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
+		}
+
 		rootIDs, err := fetcher.FetchNextBatch(ctx)
 		if err != nil {
 			return fail("failed to fetch root IDs: %w", err)
@@ -229,8 +267,12 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 
 		// Operator pause switch: block before processing this batch while the
 		// sentinel file exists.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return fail("%w", err)
+		}
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
 		}
 
 		if err := resumeMgr.LogBatchPending(ctx, o.jobName, rootIDs); err != nil {
@@ -247,10 +289,8 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
-			select {
-			case <-ctx.Done():
-				return fail("%w", ctx.Err())
-			case <-time.After(sleepDuration):
+			if err := interruptibleSleep(ctx, o.stopCh, sleepDuration); err != nil {
+				return fail("%w", err)
 			}
 		}
 	}
@@ -271,17 +311,40 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 	if len(pending) == 0 {
 		return nil
 	}
-	if o.verificationCfg.EffectiveMethod() == "count" {
+	// Strict INSERT (forced by count verification, --skip-verify, or a destination
+	// secondary unique index — review P0-1/P1-2/003) cannot re-copy 'pending' rows:
+	// their destination copy may already be committed, so a strict re-INSERT aborts
+	// on duplicate and the job would self-block on every resume. Refuse with
+	// recovery guidance rather than loop forever.
+	if copyPhase.StrictInsert() {
 		preview := pending
 		if len(preview) > 10 {
 			preview = preview[:10]
 		}
-		return fmt.Errorf("job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count. Switch this job to verification.method: sha256 and re-run. Pending PKs (first 10): %v", o.jobName, len(pending), preview)
+		return fmt.Errorf("job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
+			"(forced by verification.method: count, --skip-verify, or a destination secondary unique index), so they "+
+			"cannot be safely re-copied (their destination rows may already be committed, and a strict INSERT aborts "+
+			"on duplicate).\n\n"+
+			"To recover, choose one:\n"+
+			"  1. Delete the destination rows already written for these pending PKs, then re-run.\n"+
+			"  2. If using --skip-verify, drop it (and use verification.method: sha256) so replay uses idempotent "+
+			"INSERT IGNORE, then re-run.\n\n"+
+			"Pending PKs (first 10): %v", o.jobName, len(pending), preview)
 	}
 	for _, rawPK := range pending {
+		// Cooperative graceful stop: each replayed root reaches 'completed' before
+		// we loop, so stopping here leaves the remainder in 'pending' to resume.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
+			return nil
+		}
 		// Operator pause switch also applies during resume/recovery.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return err
+		}
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
+			return nil
 		}
 		dataType, unsigned, ok := o.graph.GetRootPKMeta()
 		if !ok {
@@ -303,18 +366,18 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 func (o *CopyOnlyOrchestrator) processCopyOnlyRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, resumeMgr *ResumeManager, result *CopyOnlyResult) (int64, error) {
 	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
 	if err != nil {
-		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
 		return 0, fmt.Errorf("discovery failed: %w", err)
 	}
 	copyStats, err := copyPhase.Copy(ctx, convertRecordSet(discovered))
 	if err != nil {
-		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
 		return 0, fmt.Errorf("copy failed: %w", err)
 	}
 	if !o.verificationCfg.SkipVerification {
 		verifyStats, err := dataVerifier.Verify(ctx, discovered)
 		if err != nil {
-			_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+			markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
 			return 0, fmt.Errorf("verification failed: %w", err)
 		}
 		if verifyStats != nil {

@@ -13,7 +13,7 @@ import (
 
 func TestSentinelGate_DisabledWhenEmptyPath(t *testing.T) {
 	g := newSentinelGate("", logger.NewDefault())
-	if err := g.wait(context.Background()); err != nil {
+	if err := g.wait(context.Background(), nil); err != nil {
 		t.Fatalf("expected nil for empty path, got %v", err)
 	}
 }
@@ -24,7 +24,7 @@ func TestSentinelGate_NoPauseWhenAbsent(t *testing.T) {
 	slept := 0
 	g.sleepFn = func(context.Context, time.Duration) error { slept++; return nil }
 
-	if err := g.wait(context.Background()); err != nil {
+	if err := g.wait(context.Background(), nil); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
 	if slept != 0 {
@@ -49,7 +49,7 @@ func TestSentinelGate_PausesUntilRemoved(t *testing.T) {
 		return nil
 	}
 
-	if err := g.wait(context.Background()); err != nil {
+	if err := g.wait(context.Background(), nil); err != nil {
 		t.Fatalf("wait: %v", err)
 	}
 	// 1 initial present()==true, then sleep+recheck until the 4th check is false:
@@ -64,9 +64,42 @@ func TestSentinelGate_ContextCancelDuringPause(t *testing.T) {
 	g.presentFn = func(string) bool { return true } // never removed
 	g.sleepFn = func(context.Context, time.Duration) error { return context.Canceled }
 
-	err := g.wait(context.Background())
+	err := g.wait(context.Background(), nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled from interrupted pause, got %v", err)
+	}
+}
+
+func TestSentinelGate_StopRequestedBeforePause(t *testing.T) {
+	g := newSentinelGate("/sentinel", logger.NewDefault())
+	g.presentFn = func(string) bool { return true } // would pause forever
+	sleeps := 0
+	g.sleepFn = func(context.Context, time.Duration) error { sleeps++; return nil }
+
+	stop := make(chan struct{})
+	close(stop) // cooperative stop already requested
+
+	if err := g.wait(context.Background(), stop); err != nil {
+		t.Fatalf("expected nil when stop already requested, got %v", err)
+	}
+	if sleeps != 0 {
+		t.Fatalf("expected no poll sleeps when stop precedes the pause, got %d", sleeps)
+	}
+}
+
+func TestSentinelGate_StopRequestedDuringPause(t *testing.T) {
+	g := newSentinelGate("/sentinel", logger.NewDefault())
+	g.presentFn = func(string) bool { return true } // never removed
+	stop := make(chan struct{})
+	// First poll: close the stop channel and return nil (as the real sleep does on
+	// stop). The wait loop's post-sleep stopRequested check must then exit with nil.
+	g.sleepFn = func(context.Context, time.Duration) error {
+		close(stop)
+		return nil
+	}
+
+	if err := g.wait(context.Background(), stop); err != nil {
+		t.Fatalf("expected nil when stop requested mid-pause, got %v", err)
 	}
 }
 
@@ -78,7 +111,7 @@ func TestSentinelGate_RealFilePresence(t *testing.T) {
 
 	// Absent -> returns immediately.
 	g := newSentinelGate(path, logger.NewDefault())
-	if err := g.wait(context.Background()); err != nil {
+	if err := g.wait(context.Background(), nil); err != nil {
 		t.Fatalf("wait (absent): %v", err)
 	}
 
@@ -92,7 +125,7 @@ func TestSentinelGate_RealFilePresence(t *testing.T) {
 		_ = os.Remove(path)
 		return nil
 	}
-	if err := g2.wait(context.Background()); err != nil {
+	if err := g2.wait(context.Background(), nil); err != nil {
 		t.Fatalf("wait (present then removed): %v", err)
 	}
 }
