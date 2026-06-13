@@ -1,88 +1,77 @@
 # GoArchive Test Suite
 
-This directory contains the complete test suite for GoArchive, including unit tests, integration tests, and real database tests using the Sakila sample database.
+This directory is the **source of truth** for running GoArchive's unit,
+integration, and Sakila end-to-end (E2E) tests.
 
 ## Overview
 
-The test suite includes:
-
 | Test Type | Description | Command |
 |-----------|-------------|---------|
-| **Unit Tests** | Fast in-memory tests | `go test ./... -count=1` |
-| **Integration Tests** | Real-DB tests (build tag `integration`); reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive tests 03-04 run to completion | `make e2e` |
-| **Sakila E2E (demos)** | Tests 01-02 intentionally fail preflight | `make e2e-examples` |
+| **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
+| **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
+| **Sakila E2E (working)** | Archives that run to completion (tests 03–04) | `make e2e` |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
-> **Integration tests require a freshly-emptied destination.** They archive
-> Sakila into `sakila_archive` and several rely on it starting empty, so a prior
-> archive/E2E run makes them abort with `destination already contains a row …
-> Duplicate entry` (leftover state, not a regression). The `--setup` flag
-> reseeds source + destination first. To run via `go test` directly, reseed once
-> with `./scripts/run-tests.sh --setup`, then
+> **Integration + E2E need a freshly-reseeded destination — the #1 source of
+> false failures.** The real-DB tests archive Sakila into `sakila_archive` and
+> several rely on it starting empty; a prior run leaves rows behind and aborts
+> with `destination already contains a row … Duplicate entry` (leftover state,
+> **not** a regression). The `--setup` flag reseeds source + destination first.
+> The real-DB tests also DELETE from source, so they are run-once against a fresh
+> `--setup`. To run integration tests via `go test` directly:
+> `./scripts/run-tests.sh --setup` once, then
 > `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
 
-### ⚠️ Test Configuration Status
+## Sakila E2E Test Suite
 
-| Test IDs | Status | Use Case | Runner |
-|----------|--------|----------|--------|
-| **Test 03-04** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
-| **Test 01-02** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
+Four focused tests: two working archives and two preflight-guardrail
+demonstrations. Configs live in `tests/configs/` (`.yaml` is rendered locally
+from the tracked `.yaml.template`; only `.template` files are committed).
 
-**For validation demos:** the runner inverts pass/fail semantics. "Passed" means
-the expected preflight error category was produced. An unexpected *success* of
-`validate` in tests 01-02 is treated as a regression.
+### Working configurations — archive runs to completion
 
-**Quick Start:** Run the working E2E suite:
-```bash
-make test-up     # if containers aren't running yet
-make e2e         # runs working tests 03-04
-```
+| Test | Config | Shape | What it exercises |
+|------|--------|-------|-------------------|
+| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`) |
+| **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
 
-### Sakila E2E Test Cases
+### Validation demos — preflight MUST fail
 
-The Sakila suite is four focused tests: two working archives plus two preflight
-guardrail demonstrations.
+The runner **inverts** pass/fail for demos: a demo "passes" when `validate` fails
+with the *expected* error category. An unexpected `validate` **success** is the
+regression. (`EXPECTED FAILURE matched` in the log = good.)
 
-#### Working Configurations (Use These for Testing)
+| Test | Config | Expected error | Why |
+|------|--------|----------------|-----|
+| **01** | `test01_one_to_one.yaml` | `COMPOSITE_PK_CHECK` | Config includes Sakila's composite-PK tables `film_actor` (`actor_id, film_id`) / `film_category` (`film_id, category_id`); GoArchive identifies/deletes by a single PK column, so a multi-column PK is rejected up front. |
+| **02** | `test02_one_to_many.yaml` | `FK_INDEX_CHECK` | `language → film` where the in-graph FK column is not indexed (unindexed FKs make child-table deletes table-scan). |
 
-| Test | Relationship Pattern | Description | Status |
-|------|---------------------|-------------|--------|
-| **Test 03** | High-volume | Multi-batch payment archive (`batch_size=100`, single-column PK) | ✅ Working |
-| **Test 04** | 2-level tree | `rental → payment` (non-diamond GDPR-shaped subgraph) | ✅ Working |
-
-#### Validation Examples (Demonstrate Error Detection)
-
-| Test | Relationship Pattern | Description | Expected Result |
-|------|---------------------|-------------|-----------------|
-| **Test 01** | Composite PK | Config includes Sakila's composite-PK tables `film_actor`/`film_category` | ❌ COMPOSITE_PK_CHECK fails |
-| **Test 02** | 1-N | Single one-to-many: `language → film` (FK not indexed) | ❌ FK_INDEX_CHECK fails |
-
-> **Note on `customer`-rooted archives:** a full `customer → rental → payment`
-> archive is **not** expressible — `payment` references both `customer` and
-> `rental` (and `rental` references `customer`), forming a diamond the tree model
-> rejects via `INTERNAL_FK_COVERAGE`. Test 04 uses the closest working shape
-> (`rental → payment`, with `customer`/`staff` left out-of-graph as upstream
-> parents). The earlier film-hierarchy/association tests (old 04–10) were removed:
-> several archived composite-PK tables by a single non-key column (over-delete,
-> now blocked by `COMPOSITE_PK_CHECK`), the rest were redundant.
+> **Why no `customer → rental → payment` (GDPR) test?** `payment` references
+> **both** `customer` and `rental`, and `rental` references `customer` — a diamond.
+> GoArchive's graph is a strict tree, and `INTERNAL_FK_COVERAGE` requires every
+> in-graph FK edge to be a represented parent→child relation, so any rooting
+> leaves one edge uncovered. Test 04 (`rental → payment`) is the closest working
+> multi-level shape (`customer`/`staff` stay out-of-graph as upstream parents).
+> The earlier tests 04–10 (film hierarchy / actor / category / isolated
+> job_schema) were removed: several archived composite-PK association tables by a
+> single non-key column (over-delete, now blocked by `COMPOSITE_PK_CHECK`); the
+> rest were redundant.
 
 ## Prerequisites
 
-### 1. Environment Configuration
-
-Copy the template environment file:
+### 1. Environment configuration
 
 ```bash
 cp tests/dot.env tests/.env
 # Edit tests/.env and verify the settings
 ```
 
-Default configuration:
+Default topology:
 - **Source** (db1): `127.0.0.1:3305/sakila`
 - **Archive** (db2): `127.0.0.1:3307/sakila_archive`
-- **Replica** (db3): `127.0.0.1:3308` (optional)
+- **Replica** (db3): `127.0.0.1:3308` (optional, replication-lag tests)
 
-### 2. Build the Binary
+### 2. Build the binary
 
 ```bash
 go build -o bin/goarchive ./cmd/goarchive
@@ -90,181 +79,91 @@ go build -o bin/goarchive ./cmd/goarchive
 
 ## Running Tests
 
-### Quick Start - Full Setup and All Tests
+### Setup the environment
 
 ```bash
-# Setup environment and run Sakila E2E tests
-cd tests
-./scripts/run-tests.sh --setup --sakila
-```
-
-### Setup Test Environment Only
-
-```bash
-# Start Docker containers, load Sakila, dump and load schemas
+# Start Docker containers (db1/db2/db3), load Sakila into source, dump its
+# schema, and load that schema into the archive destination.
 ./scripts/run-tests.sh --setup
 ```
 
-This will:
-1. Start Docker Compose containers (db1, db2, db3)
-2. Wait for databases to be ready
-3. Load Sakila database into source
-4. Dump schema from source
-5. Load schema into archive
-
-### Run Unit Tests
+### Unit tests
 
 ```bash
-./scripts/run-tests.sh --unit-only
+./scripts/run-tests.sh --unit-only          # or: go test ./... -count=1
 ```
 
-### Run Integration Tests
+### Integration tests
 
-Real-DB tests live behind the `integration` build tag. Reseed first (`--setup`)
-so the destination starts empty — see the note under [Overview](#overview):
+Real-DB tests behind the `integration` build tag. `--setup` reseeds first so the
+destination starts empty (see the Overview note):
 
 ```bash
 ./scripts/run-tests.sh --setup --integration-only
 ```
 
-### Run Sakila E2E Tests
+### Sakila E2E tests
 
 ```bash
-# Working test (03) — archive runs to completion
+# Working tests (03–04) — archives run to completion
 make e2e                                                # short form
 ./scripts/run-tests.sh --sakila --skip-docker           # explicit
 
-# Full bootstrap (docker + database seed + working test)
+# Full bootstrap (docker + DB seed + working tests)
 make e2e-setup                                          # short form
 ./scripts/run-tests.sh --setup --sakila                 # explicit
 
-# Validation demonstrations (01-02) — preflight MUST fail
+# Validation demos (01–02) — preflight MUST fail
 make e2e-examples                                       # short form
 ./scripts/run-tests.sh --sakila-examples --skip-docker  # explicit
 
-# Target a specific test
-./scripts/run-tests.sh --sakila -t 3                    # working payment archive
+# Target a single test
+./scripts/run-tests.sh --sakila -t 4                    # working rental→payment
 ./scripts/run-tests.sh --sakila-examples -t 1           # composite-PK demo
 ```
 
-> ⚠️ **E2E tests must run sequentially** (not concurrently with integration
-> tests or other E2E suites). Each E2E test resets the source database by
-> dropping and recreating `sakila`. Active MySQL connections from concurrently
-> running integration tests can block `DROP DATABASE`, causing the reset to
-> fail with "Failed to reset source database". Run unit and integration tests
-> first, then run E2E working tests, then E2E demo tests.
+> ⚠️ **Run E2E sequentially**, not concurrently with integration tests or other
+> E2E suites. Each E2E test resets the source by dropping/recreating `sakila`;
+> active connections from a concurrent run can block `DROP DATABASE` ("Failed to
+> reset source database"). Order: unit → integration → E2E working → E2E demos.
 
-### Verbose Output
-
-Add `-v` to any command for verbose output:
-
-```bash
-./scripts/run-tests.sh --unit-only -v
-```
+Add `-v` to any command for verbose output.
 
 ## Manual Testing Workflow
 
-For interactive testing and debugging, use the `goarchive` CLI commands in sequence. **Use Test 03 (working configuration) for these examples:**
-
-### 1. List Available Jobs
-
-```bash
-./bin/goarchive list-jobs --config tests/configs/test03_payment_batch.yaml
-```
-
-This displays all jobs defined in the configuration file.
-
-### 2. Plan a Job
+For interactive debugging, drive the CLI directly. These use working **Test 03**
+(`archive-payment-rows`); substitute test 04 (`archive-rental-payments`) the same way.
 
 ```bash
-./bin/goarchive plan --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml
+./scripts/run-tests.sh --setup        # fresh databases first
+CFG=tests/configs/test03_payment_batch.yaml
+
+# 1. List jobs defined in the config
+./bin/goarchive list-jobs --config "$CFG"
+
+# 2. Plan: shows tables, copy order (parents first), delete order (children
+#    first), and estimated row counts
+./bin/goarchive plan --job archive-payment-rows --config "$CFG"
+
+# 3. Validate (fails fast on a bad config): connectivity, table existence,
+#    single-column/integer PK, FK index + coverage, cycle detection, triggers.
+#    Add --force-triggers when the schema has DELETE triggers (Sakila does).
+./bin/goarchive validate --config "$CFG" --force-triggers
+
+# 4. Dry-run: discovers affected rows and reports what would be copied/deleted;
+#    changes nothing.
+./bin/goarchive dry-run --job archive-payment-rows --config "$CFG"
+
+# 5. Archive: copy → verify → delete. Logs progress to archiver_job and the
+#    per-job archiver_job_log_<id> table.
+./bin/goarchive archive --job archive-payment-rows --config "$CFG" --skip-verify
+
+# Verify the destination received the rows
+mysqlsh --uri "root:$MYSQL_ROOT_PASSWORD@127.0.0.1:3307/sakila_archive" --sql \
+  -e "SELECT COUNT(*) FROM payment WHERE payment_id <= 2000;"
 ```
 
-This shows the execution plan including:
-- Tables involved
-- Copy order (dependency order)
-- Delete order (reverse dependency order)
-- Estimated row counts
-
-### 3. Validate a Job ⭐ IMPORTANT
-
-```bash
-./bin/goarchive validate --config tests/configs/test03_payment_batch.yaml
-```
-
-This performs pre-flight checks and **fails fast** if configuration is invalid:
-- Database connectivity
-- Table existence
-- Primary key validation
-- Foreign key constraint checks
-- **FK_COVERAGE_CHECK**: Detects missing relations that would cause delete failures
-- Graph cycle detection
-- DELETE trigger detection
-
-**Note:** Use `--force-triggers` if the database has DELETE triggers (like Sakila's `del_payment` trigger):
-```bash
-./bin/goarchive validate --config tests/configs/test03_payment_batch.yaml --force-triggers
-```
-
-### 4. Dry-Run a Job ⭐ IMPORTANT
-
-```bash
-./bin/goarchive dry-run --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml
-```
-
-This simulates the archive operation without making changes:
-- Discovers affected rows
-- Shows copy and delete operations
-- Reports estimated rows to be archived
-- No data is actually modified
-
-### 5. Execute Archive
-
-Only proceed to archive after validation passes:
-
-```bash
-./bin/goarchive archive --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml --skip-verify
-```
-
-This performs the actual archive operation:
-- Copies data from source to archive
-- Verifies data integrity (if configured)
-- Deletes archived rows from source (if delete is enabled)
-- Logs progress to `archiver_job` and the per-job `archiver_job_log_<id>` tables
-
-### Complete Manual Test Example (Using Working Test 03)
-
-```bash
-# Setup environment
-./scripts/run-tests.sh --setup
-
-# Test with Test 03 configuration (working example)
-cd tests
-
-# 1. List jobs
-../bin/goarchive list-jobs --config configs/test03_payment_batch.yaml
-
-# 2. Plan the job
-../bin/goarchive plan --config configs/test03_payment_batch.yaml
-
-# 3. Validate the job (should PASS for Test 03)
-../bin/goarchive validate --config configs/test03_payment_batch.yaml
-
-# 4. Dry-run the job
-../bin/goarchive dry-run --job archive-payment-rows --config configs/test03_payment_batch.yaml
-
-# 5. Execute the archive
-../bin/goarchive archive --job archive-payment-rows --config configs/test03_payment_batch.yaml --skip-verify
-
-# Verify results
-mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT COUNT(*) FROM payment WHERE payment_id <= 2000;"
-```
-
-### Example: Composite-PK rejection (Test 01)
-
-**Test 01 (Fails Validation):** its config includes Sakila's composite-PK
-association tables `film_actor` (`PRIMARY KEY (actor_id, film_id)`) and
-`film_category` (`PRIMARY KEY (film_id, category_id)`).
+### Example: a demo that fails preflight (Test 01)
 
 ```bash
 $ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force-triggers
@@ -274,188 +173,78 @@ $ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force
    (tables: [film_actor(2-column PRIMARY KEY) film_category(2-column PRIMARY KEY)])
 ```
 
-GoArchive discovers, copies, verifies, and **deletes** rows by a single PK
-column (`WHERE pk IN (...)`). A composite primary key makes that filter
-over-match — deleting rows that were never part of the archived subgraph — so it
-is rejected up front. See the README "Limitations" section. This is why the
-former film-hierarchy/association E2E tests were retired: they archived these
-tables by a single non-key column and silently over-deleted.
-
-> **Related preflight guardrails** (not currently exercised by a dedicated demo
-> config): `FK_COVERAGE_CHECK` flags a referenced table missing from the graph
-> entirely, and `INTERNAL_FK_COVERAGE` flags FK edges between in-graph tables
-> that aren't represented as parent→child relations.
-
-vs Test 01 - Incorrect: Missing child tables
-```yaml
-# Test 01 - Incorrect: Only includes film_text, missing inventory/rental/payment
-relations:
-  - table: film_text    # Only this - missing inventory chain!
-    ...
-```
-
-**Key Point:** The `ValidateInternalFKCoverage` check ensures all foreign key relationships within the graph are represented as edges, preventing delete-phase failures.
-
-## Test Details
-
-The Sakila E2E suite is four tests. Configs live in `tests/configs/`.
-
-### Test 01 — Composite-PK rejection (validation demo)
-
-**Config:** `test01_one_to_one.yaml` · **Expected:** `COMPOSITE_PK_CHECK` (preflight fails)
-
-The config includes Sakila's composite-PK association tables `film_actor`
-(`PRIMARY KEY (actor_id, film_id)`) and `film_category`
-(`PRIMARY KEY (film_id, category_id)`). GoArchive identifies and deletes rows by
-a single PK column (`WHERE pk IN (...)`), so a multi-column PK would over-match
-and is rejected up front.
-
-### Test 02 — Missing FK index (validation demo)
-
-**Config:** `test02_one_to_many.yaml` · **Expected:** `FK_INDEX_CHECK` (preflight fails)
-
-A 1-N relationship (`language → film`) whose foreign-key column is not indexed.
-Unindexed FK columns make child-table deletes table-scan, so preflight rejects
-the configuration with guidance to add the index.
-
-### Test 03 — Payment archive (working)
-
-**Config:** `test03_payment_batch.yaml` · **Job:** `archive-payment-rows` · **Expected:** PASS
-
-Archives `payment` rows (`payment_id <= 2000`, single-column PK) with
-`batch_size=100` to exercise the multi-batch copy→verify→delete pipeline end to
-end.
-
-### Test 04 — `rental → payment` (working, 2-level)
-
-**Config:** `test04_rental_payment.yaml` · **Job:** `archive-rental-payments` · **Expected:** PASS
-
-Archives `rental` rows (`rental_id <= 200`) and their child `payment` rows
-(`payment.rental_id → rental`). A genuine parent→child tree: `payment` also
-references `customer` and `staff`, but those stay out-of-graph as upstream
-parents (allowed), so there is no diamond.
-
-> **Why not `customer → rental → payment`?** `payment` references both `customer`
-> and `rental`, and `rental` references `customer` — a diamond the tree model
-> rejects via `INTERNAL_FK_COVERAGE`. So a full customer-rooted GDPR archive is
-> not expressible in community edition; `rental → payment` is the closest working
-> multi-level shape. The earlier tests 04–10 (film hierarchy, actor/category
-> associations, isolated job_schema) were removed: several archived composite-PK
-> tables by a single non-key column and over-deleted (now blocked by
-> `COMPOSITE_PK_CHECK`), and the rest were redundant.
+The runner treats this as a **pass** because the failure matches the expected
+category (`COMPOSITE_PK_CHECK`).
 
 ## Preflight Checks
 
-GoArchive performs comprehensive preflight checks before executing any archive operation:
+`validate` (and the startup preflight of `archive`/`purge`/`copy-only`) runs a
+fail-fast battery before any data moves:
 
-| Check | Description | Severity |
-|-------|-------------|----------|
-| **Table Existence** | Verifies all tables in graph exist in source database | Error |
-| **Storage Engine** | Ensures tables use InnoDB (required for transactions) | Error |
-| **FK Index Check** | Validates foreign key columns are indexed | Error |
-| **FK_COVERAGE_CHECK** | Detects FK constraints not covered by relations | Error |
-| **DELETE Trigger** | Warns about DELETE triggers that will fire | Warning |
-| **CASCADE Rules** | Warns about ON DELETE CASCADE rules | Warning |
+| Check | Category tag | Severity | Detects |
+|-------|--------------|----------|---------|
+| Table existence | `TABLE_EXISTENCE_CHECK` | Error | A graph table missing from the source |
+| Storage engine | `STORAGE_ENGINE_CHECK` | Error | Non-InnoDB table (no transactional copy) |
+| Single-column PK | `COMPOSITE_PK_CHECK` | Error | A composite (multi-column) PRIMARY KEY |
+| Root PK type | `ROOT_PK_TYPE_UNSUPPORTED` | Error | Non-integer root primary key |
+| FK index | `FK_INDEX_CHECK` | Error | An FK column without an index (slow deletes) |
+| FK coverage | `FK_COVERAGE_CHECK` | Error | A table **outside** the graph with an FK **into** the graph |
+| Internal FK coverage | `INTERNAL_FK_COVERAGE` | Error | An FK **between two in-graph tables** not represented as a relation edge |
+| DELETE triggers | `DELETE_TRIGGER_CHECK` | Error* | DELETE triggers on source tables (`--force-triggers` to proceed) |
+| CASCADE rules | — | Warning | `ON DELETE CASCADE` FKs (may delete more than expected) |
 
-### FK_COVERAGE_CHECK Details
+\* fatal unless `--force-triggers` is passed.
 
-The `ValidateInternalFKCoverage` check is the most important validation for preventing runtime failures. It ensures that **all foreign key relationships between tables in your graph are represented as edges** (parent-child relations).
+### `INTERNAL_FK_COVERAGE` — the relation-completeness check
 
-**The Algorithm:**
+This is the check that most often blocks a multi-table config. It requires that
+**every FK constraint between two tables that are both in the graph** is
+represented as a parent→child relation edge. Missing an edge would cause a
+delete-phase FK violation, so it is caught at validation time.
 
-```go
-1. Collect all tables in the dependency graph
-2. Query information_schema for all FK constraints where:
-   - Referenced table (parent) is in the graph
-   - Referencing table (child) is also in the graph
-3. For each such FK constraint:
-   - Verify the child table is configured as a relation of the parent
-   - If not, report as uncovered FK
-4. Fail if any uncovered FKs are found
+```
+INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+  - payment.customer_id -> customer.customer_id (constraint: fk_payment_customer) [no graph edge]
 ```
 
-**What it detects:**
+It is what makes the `customer → rental → payment` diamond unrepresentable (see
+the suite note above): `payment` has two in-graph parents, so one edge is always
+left uncovered.
 
-| Scenario | Example | Detected? |
-|----------|---------|-----------|
-| Missing child table | `film` in graph, `inventory` references `film` but not in config | ✅ Yes |
-| Missing nested relation | `inventory` and `rental` in graph, but `rental` not nested under `inventory` | ✅ Yes |
-| External reference | `film_actor` references `film`, but `film_actor` not in graph | ❌ No (external FKs are OK) |
-| Self-referencing FK | `staff.reports_to` → `staff.staff_id` | ❌ No (handled separately) |
+### `FK_COVERAGE_CHECK` vs `FK_INDEX_CHECK`
 
-**Example error:**
-```
-FK_COVERAGE_CHECK: Foreign key constraints not covered by relations:
-  - film is referenced by: [film_actor, film_category, inventory]
-  - inventory is referenced by: [rental]
-```
+| Check | Purpose | Fails when |
+|-------|---------|-----------|
+| `FK_COVERAGE_CHECK` | Don't leave dangling references into the archived set | An out-of-graph table has an FK pointing at an in-graph table (its rows would block/orphan the parent delete) |
+| `FK_INDEX_CHECK` | Keep deletes efficient | An FK column is not indexed |
 
-**Why this matters:**
-
-Without this check, the archive would fail during the delete phase:
-
-```sql
--- During delete phase:
-DELETE FROM film WHERE film_id = 1;
--- ERROR 1451: Cannot delete or update a parent row: 
--- a foreign key constraint fails (`sakila`.`inventory`, 
--- CONSTRAINT `fk_inventory_film` FOREIGN KEY (`film_id`) ...)
-```
-
-The FK_COVERAGE_CHECK catches this at validation time, **before any data is modified**.
-
-**Comparison with FK Index Check:**
-
-| Check | Purpose | Fails When |
-|-------|---------|------------|
-| `FK_COVERAGE_CHECK` | Ensure complete relation graph | FK exists between graph tables but no edge configured |
-| `FK_INDEX_CHECK` | Ensure query performance | FK column not indexed (required for efficient archive queries) |
-
-## Sakila E2E Test Execution Flow
+> **Known limitation (not yet fixed):** `FK_COVERAGE_CHECK` is currently
+> **shadowed** by `FK_INDEX_CHECK`. The FK-index check runs first and, for an
+> out-of-graph table referencing the graph, reports that table's FK column as
+> "unindexed" (it never computes the index status for tables outside the graph),
+> aborting before coverage is reached. So a genuinely-uncovered config tends to
+> surface as `FK_INDEX_CHECK` rather than `FK_COVERAGE_CHECK`. There is therefore
+> no dedicated `FK_COVERAGE_CHECK` demo. See `.ayder/002-FK_COVERAGE_CHECK_BUG.md`.
 
 ## Test Output
 
-### Console Output
+Each Sakila test prints a header and a verdict; per-test logs are written to
+`results/test_<n>.log`.
 
-During test execution, you'll see:
+- **Working test** → runs `validate → dry-run → archive` and ends with
+  `Result: PASS` (plus `records_copied` / `records_deleted`).
+- **Demo test** → `validate` fails; the runner prints
+  `EXPECTED FAILURE matched` and `Result: PASS` when the category matches, or
+  `Result: FAIL (wrong error category)` otherwise.
 
-```
-========================================
-Sakila Integration Test Suite
-========================================
-
-========================================
-Running Test 1: 1-1 Relationship (film → film_text)
-========================================
-[INFO] [STEP 1] Resetting source database...
-[INFO] [STEP 2] Counting rows before archiving...
-  film: Source=1000
-  film_text: Source=1000
-[INFO] [STEP 3] Running archive job...
-[INFO] Test 1 completed successfully (Duration: 2s)
-```
-
-### Summary Report
-
-After all tests complete, a summary is generated:
-
-```
-================================================================================
-SAKILA INTEGRATION TEST SUMMARY
-================================================================================
-Generated: 2026-02-09T12:00:00+03:00
-
-See individual test logs in: /Users/sinanalyuruk/Vscode/goarchive/tests/results/
-================================================================================
-```
-
-Individual test logs are saved to `results/test_*.log`.
+A summary (`SAKILA INTEGRATION TEST SUMMARY`) is generated at the end with a
+`Passed: N / Failed: N` line.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MYSQL_ROOT_PASSWORD` | (required) | MySQL root password (fallback for *_PASSWORD vars) |
+| `MYSQL_ROOT_PASSWORD` | (required) | MySQL root password (fallback for `*_PASSWORD` vars) |
 | `TEST_SOURCE_HOST` | 127.0.0.1 | Source MySQL host |
 | `TEST_SOURCE_PORT` | 3305 | Source MySQL port |
 | `TEST_SOURCE_USER` | root | Source MySQL user |
@@ -473,79 +262,52 @@ Individual test logs are saved to `results/test_*.log`.
 
 ## Troubleshooting
 
-### Test Fails with "connection refused"
+**"connection refused"** — databases aren't up:
+```bash
+cd tests && ./scripts/check-servers.sh && docker compose up -d
+```
 
-Ensure databases are running:
+**"table doesn't exist"** — Sakila not loaded; run `./scripts/run-tests.sh --setup`.
+
+**`destination already contains a row … Duplicate entry`** — leftover state, not a
+regression. Reseed: `./scripts/run-tests.sh --setup`.
+
+**Clean slate:**
 ```bash
 cd tests
-./scripts/check-servers.sh
-docker compose ps
-docker compose up -d
-```
-
-### Test Fails with "table doesn't exist"
-
-Check if sakila schema is loaded:
-```bash
-mysqlsh --uri 'root:qazokm@127.0.0.1:3305' --sql -e "SHOW TABLES FROM sakila;"
-```
-
-If missing, run setup:
-```bash
-./scripts/run-tests.sh --setup
-```
-
-### Clean Slate
-
-Reset everything and start fresh:
-
-```bash
-cd tests
-
-# Stop containers
 docker compose down
-
-# Remove data volumes
 rm -rf docker_files/db_data
-
-# Start fresh
 ./scripts/run-tests.sh --setup
 ```
 
-### Permission Denied on Scripts
-
-Make scripts executable:
-```bash
-chmod +x scripts/*.sh
-```
+**Permission denied on scripts:** `chmod +x scripts/*.sh`.
 
 ## File Structure
 
 | File/Directory | Description |
 |----------------|-------------|
-| `scripts/run-tests.sh` | Main test runner (unified) |
+| `scripts/run-tests.sh` | Main test runner (unit / integration / Sakila E2E) |
 | `scripts/check-servers.sh` | Database connectivity checker |
-| `scripts/get_sakila_db.sh` | Downloads Sakila database |
+| `scripts/get_sakila_db.sh` | Downloads the Sakila database |
 | `scripts/dump_master.js` | MySQL Shell script for schema dump |
 | `scripts/create_archive.js` | MySQL Shell script for loading schema |
 | `scripts/reset_source.js` | MySQL Shell script for resetting source |
-| `configs/*.yaml` | Test configuration files |
-| `results/` | Test output and logs |
+| `configs/*.yaml.template` | Tracked test configs (local `*.yaml` rendered from these) |
+| `results/` | Per-test logs (`test_<n>.log`) and summary |
 | `sakila-db/` | Sakila database files (downloaded) |
 | `docker_files/` | Docker volume data |
 | `compose.yml` | Docker Compose configuration |
 
 ## Adding New Tests
 
-To add a new Sakila test:
-
-1. Create a new config file in `configs/testNN_description.yaml`.
-2. Add a case entry to `run-tests.sh`'s `run_sakila_test()` function.
-3. Set the fields appropriate to the test's purpose:
-   - `mode="working"` → archive runs end-to-end; set `tables="..."` to count.
-   - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"`
-     to the exact error tag (e.g. `FK_INDEX_CHECK`, `INTERNAL_FK_COVERAGE`).
-4. Wire the number into the list passed to `run_sakila_tests`:
-   - Working tests → `run_sakila_tests "6 7 8 N" "working"` in `main()`.
-   - Demo tests → `run_sakila_tests "1 2 3 4 5 N" "validation demos"`.
-5. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
+1. Create `configs/testNN_description.yaml.template` (and render the local
+   `.yaml` from it). Destination loaded from a DDL-only dump needs
+   `safety.disable_foreign_key_checks: true`.
+2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
+   - `mode="working"` → archive runs end-to-end; set `tables="..."`.
+   - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
+     the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_INDEX_CHECK`, `INTERNAL_FK_COVERAGE`).
+3. Wire the number into the dispatch lists in `main()`:
+   - Working → `run_sakila_tests "3 4 NN" "working"`.
+   - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
+4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
