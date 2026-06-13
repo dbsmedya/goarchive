@@ -209,9 +209,9 @@ Then the standard matrix, fastest to slowest:
 |-------|---------|----------------|
 | Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
 | Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | Real MySQL (3305/3307); reseeds the DBs, then runs all `-tags=integration` tests |
-| E2E (working) | `make e2e` | Sakila tests 06–10 — full archive runs |
+| E2E (working) | `make e2e` | Sakila test 03 (payment archive) — full archive run |
 | E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
-| E2E (validation demos) | `make e2e-examples` | Sakila tests 01–05 |
+| E2E (validation demos) | `make e2e-examples` | Sakila tests 01–02 — expected preflight failures |
 
 **Integration tests need a freshly-emptied destination — this is the #1 source
 of false failures.** The real-DB tests (`internal/archiver/*_integration_test.go`,
@@ -227,16 +227,19 @@ state, **not** a regression. Always reseed first:
 The real-DB tests also DELETE from source Sakila as they run, so they are
 run-once against a fresh `--setup` — re-running without reseeding can fail.
 
-**About the validation demos (`make e2e-examples`, tests 01–05):** these are
-designed to FAIL preflight with specific error categories
-(`INTERNAL_FK_COVERAGE`, `FK_INDEX_CHECK`, …). The runner inverts the semantics
-— "pass" means the failure matched the documented expectation. Do not treat an
-`EXPECTED FAILURE matched` line as a regression.
+**About the validation demos (`make e2e-examples`, tests 01–02):** these are
+designed to FAIL preflight with specific error categories — `01` =
+`COMPOSITE_PK_CHECK` (its config includes Sakila's composite-PK association
+tables `film_actor`/`film_category`), `02` = `FK_INDEX_CHECK`. The runner
+inverts the semantics — "pass" means the failure matched the documented
+expectation. Do not treat an `EXPECTED FAILURE matched` line as a regression.
 
-Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 7` runs
-just working test 7; `--sakila-examples -t 1` runs just demo 1. Working tests
-are 06–10 (06 nested hierarchy, 07/08 simple 1-N, 09 high-volume multi-batch,
-10 isolated `job_schema`); demos are 01–05.
+Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 3` runs the
+working payment archive; `--sakila-examples -t 1` runs just the composite-PK
+demo. The Sakila E2E suite is now three tests: `01` (COMPOSITE_PK_CHECK demo),
+`02` (FK_INDEX_CHECK demo), and `03` (working high-volume payment archive,
+single-column PK). The earlier film-hierarchy/association tests were removed
+because they archived composite-PK tables and are now rejected by preflight.
 
 Safety-fix notes:
 - New orchestrator integration tests should clean `archiver_job` and the

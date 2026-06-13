@@ -10,8 +10,8 @@ The test suite includes:
 |-----------|-------------|---------|
 | **Unit Tests** | Fast in-memory tests | `go test ./... -count=1` |
 | **Integration Tests** | Real-DB tests (build tag `integration`); reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive 06–10 run to completion | `make e2e` |
-| **Sakila E2E (demos)** | Tests 01-05 intentionally fail preflight | `make e2e-examples` |
+| **Sakila E2E (working)** | Archive test 03 runs to completion | `make e2e` |
+| **Sakila E2E (demos)** | Tests 01-02 intentionally fail preflight | `make e2e-examples` |
 
 > **Integration tests require a freshly-emptied destination.** They archive
 > Sakila into `sakila_archive` and several rely on it starting empty, so a prior
@@ -25,42 +25,42 @@ The test suite includes:
 
 | Test IDs | Status | Use Case | Runner |
 |----------|--------|----------|--------|
-| **Test 06–10** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
-| **Test 01-05** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
+| **Test 03** | ✅ **Working** | Valid configuration; archive runs to completion | `make e2e` / `--sakila` |
+| **Test 01-02** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
 
 **For validation demos:** the runner inverts pass/fail semantics. "Passed" means
 the expected preflight error category was produced. An unexpected *success* of
-`validate` in tests 01-05 is treated as a regression.
+`validate` in tests 01-02 is treated as a regression.
 
 **Quick Start:** Run the working E2E suite:
 ```bash
 make test-up     # if containers aren't running yet
-make e2e         # runs tests 06–10
+make e2e         # runs working test 03
 ```
 
 ### Sakila E2E Test Cases
 
-The Sakila tests verify GoArchive's behavior with different relationship patterns:
+The Sakila suite is three focused tests: one working archive plus two preflight
+guardrail demonstrations.
 
-#### Working Configurations (Use These for Testing)
+#### Working Configuration (Use This for Testing)
 
 | Test | Relationship Pattern | Description | Status |
 |------|---------------------|-------------|--------|
-| **Test 06** | Complex Nested | 4-level: `film→inventory→rental→payment` | ✅ Working (needs `--force-triggers`) |
-| **Test 07** | 1-N Simple | Simple: `actor → film_actor` | ✅ Working |
-| **Test 08** | 1-N Simple | Simple: `category → film_category` | ✅ Working |
-| **Test 09** | High-volume | Multi-batch payment archive (`batch_size=100`) | ✅ Working |
-| **Test 10** | Isolated meta | Tracking tables in a separate `job_schema` (`goarchive_meta`) | ✅ Working |
+| **Test 03** | High-volume | Multi-batch payment archive (`batch_size=100`, single-column PK) | ✅ Working |
 
 #### Validation Examples (Demonstrate Error Detection)
 
 | Test | Relationship Pattern | Description | Expected Result |
 |------|---------------------|-------------|-----------------|
-| **Test 01** | 1-1 | Simple one-to-one: `film → film_text` | ❌ FK_COVERAGE_CHECK fails |
-| **Test 02** | 1-N | Single one-to-many: `language → film` | ❌ FK_INDEX_CHECK fails |
-| **Test 03** | 1-N Multiple | Multiple children: `film → inventory + film_actor + film_category` | ❌ FK_INDEX_CHECK fails |
-| **Test 04** | 1-N Two Nested | Two-level nesting: `country → city → address` | ❌ FK_INDEX_CHECK fails |
-| **Test 05** | 1-N Three Nested + 1-1 | Complex: `country→city→address→customer` + `film→film_text` | ❌ FK_INDEX_CHECK fails |
+| **Test 01** | Composite PK | Config includes Sakila's composite-PK tables `film_actor`/`film_category` | ❌ COMPOSITE_PK_CHECK fails |
+| **Test 02** | 1-N | Single one-to-many: `language → film` (FK not indexed) | ❌ FK_INDEX_CHECK fails |
+
+> **Note:** Earlier tests 04–10 (film hierarchy / actor / category / isolated
+> job_schema) were removed. Several archived composite-PK association tables
+> (`film_actor`, `film_category`) by a single non-key column, which over-deletes
+> and is now rejected by `COMPOSITE_PK_CHECK`; the rest were redundant with the
+> three retained tests.
 
 ## Prerequisites
 
@@ -126,21 +126,21 @@ so the destination starts empty — see the note under [Overview](#overview):
 ### Run Sakila E2E Tests
 
 ```bash
-# Working tests (06–10) — archive runs to completion
+# Working test (03) — archive runs to completion
 make e2e                                                # short form
 ./scripts/run-tests.sh --sakila --skip-docker           # explicit
 
-# Full bootstrap (docker + database seed + working tests)
+# Full bootstrap (docker + database seed + working test)
 make e2e-setup                                          # short form
 ./scripts/run-tests.sh --setup --sakila                 # explicit
 
-# Validation demonstrations (01-05) — preflight MUST fail
+# Validation demonstrations (01-02) — preflight MUST fail
 make e2e-examples                                       # short form
 ./scripts/run-tests.sh --sakila-examples --skip-docker  # explicit
 
 # Target a specific test
-./scripts/run-tests.sh --sakila -t 7                    # working test 7
-./scripts/run-tests.sh --sakila-examples -t 1           # demo test 1
+./scripts/run-tests.sh --sakila -t 3                    # working payment archive
+./scripts/run-tests.sh --sakila-examples -t 1           # composite-PK demo
 ```
 
 > ⚠️ **E2E tests must run sequentially** (not concurrently with integration
@@ -160,12 +160,12 @@ Add `-v` to any command for verbose output:
 
 ## Manual Testing Workflow
 
-For interactive testing and debugging, use the `goarchive` CLI commands in sequence. **Use Test 07 (working configuration) for these examples:**
+For interactive testing and debugging, use the `goarchive` CLI commands in sequence. **Use Test 03 (working configuration) for these examples:**
 
 ### 1. List Available Jobs
 
 ```bash
-./bin/goarchive list-jobs --config tests/configs/test07_actor_film_actor.yaml
+./bin/goarchive list-jobs --config tests/configs/test03_payment_batch.yaml
 ```
 
 This displays all jobs defined in the configuration file.
@@ -173,7 +173,7 @@ This displays all jobs defined in the configuration file.
 ### 2. Plan a Job
 
 ```bash
-./bin/goarchive plan --job archive-actor-with-film-roles --config tests/configs/test07_actor_film_actor.yaml
+./bin/goarchive plan --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml
 ```
 
 This shows the execution plan including:
@@ -185,7 +185,7 @@ This shows the execution plan including:
 ### 3. Validate a Job ⭐ IMPORTANT
 
 ```bash
-./bin/goarchive validate --config tests/configs/test07_actor_film_actor.yaml
+./bin/goarchive validate --config tests/configs/test03_payment_batch.yaml
 ```
 
 This performs pre-flight checks and **fails fast** if configuration is invalid:
@@ -197,15 +197,15 @@ This performs pre-flight checks and **fails fast** if configuration is invalid:
 - Graph cycle detection
 - DELETE trigger detection
 
-**Note:** Use `--force-triggers` if the database has DELETE triggers (like Sakila's `del_film` trigger):
+**Note:** Use `--force-triggers` if the database has DELETE triggers (like Sakila's `del_payment` trigger):
 ```bash
-./bin/goarchive validate --config tests/configs/test06_complete_film_hierarchy.yaml --force-triggers
+./bin/goarchive validate --config tests/configs/test03_payment_batch.yaml --force-triggers
 ```
 
 ### 4. Dry-Run a Job ⭐ IMPORTANT
 
 ```bash
-./bin/goarchive dry-run --job archive-actor-with-film-roles --config tests/configs/test07_actor_film_actor.yaml
+./bin/goarchive dry-run --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml
 ```
 
 This simulates the archive operation without making changes:
@@ -219,7 +219,7 @@ This simulates the archive operation without making changes:
 Only proceed to archive after validation passes:
 
 ```bash
-./bin/goarchive archive --job archive-actor-with-film-roles --config tests/configs/test07_actor_film_actor.yaml --skip-verify
+./bin/goarchive archive --job archive-payment-rows --config tests/configs/test03_payment_batch.yaml --skip-verify
 ```
 
 This performs the actual archive operation:
@@ -228,74 +228,59 @@ This performs the actual archive operation:
 - Deletes archived rows from source (if delete is enabled)
 - Logs progress to `archiver_job` and the per-job `archiver_job_log_<id>` tables
 
-### Complete Manual Test Example (Using Working Test 07)
+### Complete Manual Test Example (Using Working Test 03)
 
 ```bash
 # Setup environment
 ./scripts/run-tests.sh --setup
 
-# Test with Test 07 configuration (working example)
+# Test with Test 03 configuration (working example)
 cd tests
 
 # 1. List jobs
-../bin/goarchive list-jobs --config configs/test07_actor_film_actor.yaml
+../bin/goarchive list-jobs --config configs/test03_payment_batch.yaml
 
 # 2. Plan the job
-../bin/goarchive plan --config configs/test07_actor_film_actor.yaml
+../bin/goarchive plan --config configs/test03_payment_batch.yaml
 
-# 3. Validate the job (should PASS for Test 07)
-../bin/goarchive validate --config configs/test07_actor_film_actor.yaml
+# 3. Validate the job (should PASS for Test 03)
+../bin/goarchive validate --config configs/test03_payment_batch.yaml
 
 # 4. Dry-run the job
-../bin/goarchive dry-run --job archive-actor-with-film-roles --config configs/test07_actor_film_actor.yaml
+../bin/goarchive dry-run --job archive-payment-rows --config configs/test03_payment_batch.yaml
 
 # 5. Execute the archive
-../bin/goarchive archive --job archive-actor-with-film-roles --config configs/test07_actor_film_actor.yaml --skip-verify
+../bin/goarchive archive --job archive-payment-rows --config configs/test03_payment_batch.yaml --skip-verify
 
 # Verify results
-mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT * FROM film_actor WHERE actor_id <= 5;"
+mysqlsh --uri 'root:qazokm@127.0.0.1:3307/sakila_archive' --sql -e "SELECT COUNT(*) FROM payment WHERE payment_id <= 2000;"
 ```
 
-### Example: Detecting Missing Relations (Test 01 vs Test 06)
+### Example: Composite-PK rejection (Test 01)
 
-**Test 01 (Fails Validation):** FK edges between in-graph tables not represented as nested relations
+**Test 01 (Fails Validation):** its config includes Sakila's composite-PK
+association tables `film_actor` (`PRIMARY KEY (actor_id, film_id)`) and
+`film_category` (`PRIMARY KEY (film_id, category_id)`).
 
 ```bash
 $ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force-triggers
-❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
-  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
-  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
+❌ Preflight checks failed: COMPOSITE_PK_CHECK: Composite primary keys are not supported.
+   GoArchive identifies and deletes rows by a single primary-key column; a multi-column
+   PK would over-match and risk deleting rows outside the archived set.
+   (tables: [film_actor(2-column PRIMARY KEY) film_category(2-column PRIMARY KEY)])
 ```
 
-Test 01 *does* include `inventory`, `rental`, and `payment` — but as **siblings** of `film_text`, not as nested children of their actual parents. The `ValidateInternalFKCoverage` check walks the real FK graph from `information_schema` and flags any FK between two graph tables that isn't represented as a parent→child edge in the configuration.
+GoArchive discovers, copies, verifies, and **deletes** rows by a single PK
+column (`WHERE pk IN (...)`). A composite primary key makes that filter
+over-match — deleting rows that were never part of the archived subgraph — so it
+is rejected up front. See the README "Limitations" section. This is why the
+former film-hierarchy/association E2E tests were retired: they archived these
+tables by a single non-key column and silently over-deleted.
 
-Two categories of the same class of bug:
-- `FK_COVERAGE_CHECK`: a referenced table is **missing** from the graph entirely (e.g. archiving `film` but not including `inventory` at all).
-- `INTERNAL_FK_COVERAGE`: all tables are in the graph but **edges are wrong** (e.g. siblings that should be nested).
-
-**Test 06 (Passes Validation):** Complete nested hierarchy
-
-```bash
-$ ./bin/goarchive validate --config tests/configs/test06_complete_film_hierarchy.yaml --force-triggers
-✅ All preflight checks PASSED
-```
-
-The difference is Test 06 properly nests all relations:
-```yaml
-# Test 06 - Correct: Full hierarchy with nested relations
-relations:
-  - table: inventory
-    primary_key: inventory_id
-    foreign_key: film_id
-    relations:                      # NESTED under inventory
-      - table: rental
-        primary_key: rental_id
-        foreign_key: inventory_id
-        relations:                  # NESTED under rental
-          - table: payment
-            primary_key: payment_id
-            foreign_key: rental_id
-```
+> **Related preflight guardrails** (not currently exercised by a dedicated demo
+> config): `FK_COVERAGE_CHECK` flags a referenced table missing from the graph
+> entirely, and `INTERNAL_FK_COVERAGE` flags FK edges between in-graph tables
+> that aren't represented as parent→child relations.
 
 vs Test 01 - Incorrect: Missing child tables
 ```yaml
@@ -309,347 +294,38 @@ relations:
 
 ## Test Details
 
-### Working Test Configurations (Use These)
+The Sakila E2E suite is three tests. Configs live in `tests/configs/`.
 
-These configurations pass all preflight checks including `ValidateInternalFKCoverage`.
+### Test 01 — Composite-PK rejection (validation demo)
 
----
+**Config:** `test01_one_to_one.yaml` · **Expected:** `COMPOSITE_PK_CHECK` (preflight fails)
 
-### Test 06: Complete Film Hierarchy (Complex)
+The config includes Sakila's composite-PK association tables `film_actor`
+(`PRIMARY KEY (actor_id, film_id)`) and `film_category`
+(`PRIMARY KEY (film_id, category_id)`). GoArchive identifies and deletes rows by
+a single PK column (`WHERE pk IN (...)`), so a multi-column PK would over-match
+and is rejected up front.
 
-**Configuration:** `configs/test06_complete_film_hierarchy.yaml`
+### Test 02 — Missing FK index (validation demo)
 
-**Status:** ✅ **Working** (requires `--force-triggers`)
+**Config:** `test02_one_to_many.yaml` · **Expected:** `FK_INDEX_CHECK` (preflight fails)
 
-Tests a complete 4-level nested hierarchy with proper FK coverage.
+A 1-N relationship (`language → film`) whose foreign-key column is not indexed.
+Unindexed FK columns make child-table deletes table-scan, so preflight rejects
+the configuration with guidance to add the index.
 
-```
-Root: film (film_id)
-  └── inventory (film_id) [1-N]
-        └── rental (inventory_id) [1-N]
-              └── payment (rental_id) [1-N]
-```
+### Test 03 — Payment archive (working)
 
-**Why it works:** All foreign key relationships are covered by nested relations. The graph includes:
-- `film` → referenced by `inventory`
-- `inventory` → referenced by `rental` 
-- `rental` → referenced by `payment`
+**Config:** `test03_payment_batch.yaml` · **Job:** `archive-payment-rows` · **Expected:** PASS
 
-Each referencing table is included as a nested relation, satisfying `ValidateInternalFKCoverage`.
+Archives `payment` rows (`payment_id <= 2000`, single-column PK) with
+`batch_size=100` to exercise the multi-batch copy→verify→delete pipeline end to
+end. This is the suite's real archive run.
 
-**Usage:**
-```bash
-./bin/goarchive validate --config tests/configs/test06_complete_film_hierarchy.yaml --force-triggers
-./bin/goarchive archive --config tests/configs/test06_complete_film_hierarchy.yaml --force-triggers --skip-verify
-```
-
----
-
-### Test 07: Actor → Film Actor (Simple)
-
-**Configuration:** `configs/test07_actor_film_actor.yaml`
-
-**Status:** ✅ **Working**
-
-Simple 2-level hierarchy with no external FK references or DELETE triggers.
-
-```
-Root: actor (actor_id)
-  └── film_actor (actor_id) [1-N]
-```
-
-**Why it works:** 
-- No other tables reference `actor` or `film_actor` in Sakila
-- No DELETE triggers on these tables
-- Simple parent-child relationship with complete coverage
-
-**Usage:**
-```bash
-./bin/goarchive validate --config tests/configs/test07_actor_film_actor.yaml
-./bin/goarchive archive --config tests/configs/test07_actor_film_actor.yaml --skip-verify
-```
-
----
-
-### Test 08: Category → Film Category (Simple)
-
-**Configuration:** `configs/test08_category_film_category.yaml`
-
-**Status:** ✅ **Working**
-
-Simple 2-level hierarchy similar to Test 07.
-
-```
-Root: category (category_id)
-  └── film_category (category_id) [1-N]
-```
-
-**Why it works:** Same pattern as Test 07 - no external references, no triggers.
-
-**Usage:**
-```bash
-./bin/goarchive validate --config tests/configs/test08_category_film_category.yaml
-./bin/goarchive archive --config tests/configs/test08_category_film_category.yaml --skip-verify
-```
-
----
-
-### Validation Example Configurations (Demonstrate Errors)
-
-These configurations intentionally fail preflight checks and serve as examples of common configuration errors detected by `ValidateInternalFKCoverage` and other checks.
-
----
-
-### Test 01: One-to-One Relationship (INTERNAL_FK_COVERAGE Example)
-
-**Configuration:** `configs/test01_one_to_one.yaml`
-
-**Status:** ❌ **Fails Validation** - INTERNAL_FK_COVERAGE
-
-Includes `inventory`, `rental`, and `payment` in the graph, but as **siblings**
-under `film` rather than nested under their actual parents. The graph therefore
-misses the `inventory→rental` and `rental→payment` edges.
-
-```
-Root: film (film_id)
-  ├── film_text (film_id) [1-1]
-  ├── inventory (film_id) [1-N]
-  ├── ❌ rental      — listed as sibling of inventory, should be nested under it
-  └── ❌ payment     — listed as sibling of rental, should be nested under it
-```
-
-**Expected Behavior:**
-- `ValidateInternalFKCoverage` walks real FK constraints in `information_schema`
-- Detects `rental.inventory_id → inventory.inventory_id` has no graph edge
-- Detects `payment.rental_id → rental.rental_id` has no graph edge
-- Validation fails with `INTERNAL_FK_COVERAGE`
-
-**Error Message:**
-```
-❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
-  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
-  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
-```
-
-**Lesson:** Every FK constraint between graph tables must be represented as a parent→child edge. Siblings that share a real FK relationship will be flagged.
-
----
-
-### Test 02: One-to-Many Relationship (FK_INDEX_CHECK Example)
-
-**Configuration:** `configs/test02_one_to_many.yaml`
-
-**Status:** ❌ **Fails Validation** - FK_INDEX_CHECK
-
-Tests archiving `language → film` but fails because `film.language_id` lacks an index.
-
-```
-Root: language (language_id)
-  └── film (language_id) [1-N]
-       ^^^ language_id is NOT INDEXED!
-```
-
-**Expected Behavior:**
-- `ValidateFKIndex` detects that `film.language_id` foreign key column is not indexed
-- Validation fails with: `FK_INDEX_CHECK: foreign key columns must be indexed`
-
-**Error Message:**
-```
-❌ Preflight checks failed: FK_INDEX_CHECK: 
-Table `film` column `language_id` (referenced by `fk_film_language`) 
-must have an index for efficient WHERE clause filtering
-```
-
-**Lesson:** Foreign key columns used in archive operations should be indexed for performance and validation requirements.
-
----
-
-### Test 03: One-to-Many Multiple Children (FK_INDEX_CHECK Example)
-
-**Configuration:** `configs/test03_one_to_many_multiple.yaml`
-
-**Status:** ❌ **Fails Validation** - FK_INDEX_CHECK
-
-Similar to Test 02 - attempts to archive multiple children but fails on unindexed FKs.
-
-```
-Root: film (film_id)
-  ├── inventory (film_id) [1-N]
-  ├── film_actor (film_id) [1-N]
-  └── film_category (film_id) [1-N]
-```
-
-**Expected Behavior:**
-- Fails FK_INDEX_CHECK due to unindexed FK columns in child tables
-
----
-
-### Test 04: One-to-Many Two Nested Levels (FK_INDEX_CHECK Example)
-
-**Configuration:** `configs/test04_one_to_many_two_nested.yaml`
-
-**Status:** ❌ **Fails Validation** - FK_INDEX_CHECK
-
-Tests a two-level nested hierarchy.
-
-```
-Root: country (country_id)
-  └── city (country_id) [1-N]
-        └── address (city_id) [1-N]
-```
-
-**Expected Behavior:**
-- Fails FK_INDEX_CHECK on FK columns
-
----
-
-### Test 05: One-to-Many Three Nested with 1-1 (FK_INDEX_CHECK Example)
-
-**Configuration:** `configs/test05_one_to_many_three_nested.yaml`
-
-**Status:** ❌ **Fails Validation** - FK_INDEX_CHECK
-
-Tests the most complex scenario with deep nesting.
-
-```
-Job 1 - Geographic Hierarchy:
-Root: country (country_id)
-  └── city (country_id) [1-N]
-        └── address (city_id) [1-N]
-              └── customer (address_id) [1-N]
-
-Job 2 - Film Extension:
-Root: film (film_id)
-  └── film_text (film_id) [1-1]
-```
-
-**Expected Behavior:**
-- Fails FK_INDEX_CHECK on FK columns
-
-## Test Strategy: Fail-Fast with Validation
-
-GoArchive tests follow a **fail-fast strategy** that detects configuration errors early, before any data is modified.
-
-### The Problem: Incomplete Relation Configurations
-
-Sakila database has complex foreign key relationships. An invalid configuration that doesn't include all necessary relations will fail during the delete phase with errors like:
-
-```
-Error 1451 (23000): Cannot delete or update a parent row: 
-a foreign key constraint fails (`sakila`.`rental`, 
-CONSTRAINT `fk_rental_inventory` FOREIGN KEY ...)
-```
-
-### The Solution: Early Validation
-
-The test runner performs **three steps** before executing any archive:
-
-```
-1. Reset Source Database
-   └── Re-create sakila schema and load data
-
-2. Validate Configuration ⭐ NEW
-   ├── Run 'goarchive validate' to check configuration
-   ├── Detect missing FK relations (FK_COVERAGE_CHECK)
-   ├── Warn about DELETE triggers
-   └── Fail fast if configuration is invalid
-
-3. Dry-Run ⭐ NEW
-   ├── Run 'goarchive dry-run' to simulate execution
-   ├── Show estimated row counts
-   └── Detect potential issues without modifying data
-
-4. Execute Archive Job (only if validation passes)
-   ├── Load configuration
-   ├── Create orchestrator
-   ├── Run archive operation
-   └── Verify data integrity
-
-5. Count After Archiving
-   ├── Count rows in source tables (should decrease)
-   ├── Count rows in archive tables (should increase)
-   └── Calculate archived row counts
-
-6. Generate Summary
-   └── Write results to results/test_summary.txt
-```
-
-### FK_COVERAGE_CHECK and INTERNAL_FK_COVERAGE
-
-Two complementary preflight checks cover FK-related misconfigurations:
-
-- **`FK_COVERAGE_CHECK`** — a table outside the graph has an FK pointing to a
-  table inside the graph. Fix: add the outside table to the graph.
-- **`INTERNAL_FK_COVERAGE`** — all involved tables are already in the graph but
-  an FK between two of them is not represented as a parent→child edge. Fix:
-  nest the child table under its real parent instead of as a sibling.
-
-```bash
-$ goarchive validate --config test01_one_to_one.yaml
-❌ Preflight checks failed: INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
-  - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
-  - rental.inventory_id -> inventory.inventory_id (constraint: fk_rental_inventory) [no graph edge]
-```
-
-### Fixing Configuration Issues
-
-When validation fails with FK_COVERAGE_CHECK or INTERNAL_FK_COVERAGE:
-
-1. **Identify missing tables** from the error message
-2. **Add them as NESTED relations** (not siblings) in the config file
-3. **Re-run validation** until it passes
-4. **Then execute the archive**
-
-#### Example: Fixing Test 01 (Incorrect vs Correct)
-
-**Incorrect Fix (Test 01 structure):**
-```yaml
-# This STILL fails - tables are siblings, not nested!
-relations:
-  - table: inventory
-    primary_key: inventory_id
-    foreign_key: film_id
-  - table: rental      # Sibling - wrong!
-    primary_key: rental_id
-    foreign_key: inventory_id
-  - table: payment     # Sibling - wrong!
-    primary_key: payment_id
-    foreign_key: rental_id
-```
-
-**Why it fails:** The `ValidateInternalFKCoverage` check looks for FKs between tables in the graph. With siblings, `rental.inventory_id → inventory.inventory_id` and `payment.rental_id → rental.rental_id` are not represented as edges in the graph.
-
-**Correct Fix (Test 06 structure):**
-```yaml
-# This PASSES - proper nesting represents FK edges
-relations:
-  - table: inventory
-    primary_key: inventory_id
-    foreign_key: film_id
-    relations:                      # NESTED under inventory
-      - table: rental
-        primary_key: rental_id
-        foreign_key: inventory_id   # FK to parent (inventory)
-        relations:                  # NESTED under rental
-          - table: payment
-            primary_key: payment_id
-            foreign_key: rental_id  # FK to parent (rental)
-```
-
-**Why it works:** The nested structure represents the actual foreign key relationships:
-- `inventory` references `film` (root) via `film_id`
-- `rental` references `inventory` (parent) via `inventory_id`
-- `payment` references `rental` (parent) via `rental_id`
-
-The `ValidateInternalFKCoverage` check verifies that every FK between tables in the graph has a matching edge (parent-child relation).
-
-#### Using Test 06 Instead
-
-Rather than fixing Test 01, use **Test 06** which already has the correct structure:
-```bash
-./bin/goarchive validate --config tests/configs/test06_complete_film_hierarchy.yaml --force-triggers
-# ✅ All preflight checks PASSED
-```
+> The earlier tests 04–10 (film hierarchy, actor/category associations, isolated
+> job_schema) were removed: several archived composite-PK association tables by a
+> single non-key column and over-deleted (now blocked by `COMPOSITE_PK_CHECK`),
+> and the rest were redundant with the three tests above.
 
 ## Preflight Checks
 
