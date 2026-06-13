@@ -90,15 +90,18 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	// Create database manager
 	dbManager := database.NewManager(cfg)
 
-	// Setup context with signal handling
-	ctx := database.SetupSignalHandlerWithSecondSignal(
+	// Setup context with two-phase graceful shutdown. First Ctrl-C finishes the
+	// in-flight batch (no torn copy→verify→delete, no pending rows) and stops at
+	// the boundary; second Ctrl-C cancels the work context, aborting in-flight
+	// work but unwinding cleanly so the advisory lock is released (replay recovers
+	// whatever state is left). A third Ctrl-C hard-terminates.
+	ctx, stopCh := database.SetupGracefulShutdown(
 		func(_ os.Signal) {
-			log.Warn("Received shutdown signal - completing current batch...")
+			log.Warn("Received shutdown signal - finishing current batch, then stopping (Ctrl-C again to abort now)...")
 		},
 		func(_ os.Signal) {
-			log.Error("Received second shutdown signal - forcing immediate exit")
+			log.Error("Received second shutdown signal - aborting in-flight work")
 			syncLogger(log)
-			os.Exit(130)
 		},
 	)
 
@@ -133,6 +136,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("orchestrator initialization failed: %w", err)
 	}
 	orch.SetForce(archiveForce)
+	orch.SetStopChannel(stopCh)
 
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)

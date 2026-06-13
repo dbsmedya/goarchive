@@ -83,6 +83,7 @@ type ArchiveOrchestrator struct {
 	lagFactory      lagMonitorFactory
 	force           bool
 	staleAtStartup  bool
+	stopCh          <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
 }
 
 // NewOrchestrator creates a new archive orchestrator with the given configuration
@@ -397,6 +398,14 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		default:
 		}
 
+		// Cooperative graceful stop (first Ctrl-C): the previous batch has already
+		// completed (copy+verify+delete+CompleteBatch) before we reach here, so we
+		// stop at this boundary leaving NO non-terminal rows behind.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
+		}
+
 		// Fetch next batch of root IDs
 		rootIDs, err := fetcher.FetchNextBatch(ctx)
 		if err != nil {
@@ -414,8 +423,14 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		// we reach here the previous batch has fully completed (copy+verify+delete+
 		// CompleteBatch). A finished job exits via the empty-fetch check above
 		// rather than pausing forever.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return fail("%w", err)
+		}
+		// A Ctrl-C during the sentinel pause ends the pause (wait returns nil);
+		// honor it here before starting the next batch.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
 		}
 
 		batchNum++
@@ -445,14 +460,13 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		result.RecordsVerified += batchStats.RecordsVerified
 		totalProcessed += int64(batchStats.RootsProcessed)
 
-		// Sleep between batches
+		// Sleep between batches (skipped early on a cooperative stop; the loop-top
+		// stopRequested check then breaks).
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
-			select {
-			case <-ctx.Done():
+			if err := interruptibleSleep(ctx, o.stopCh, sleepDuration); err != nil {
 				o.logger.Warn("Context cancelled during batch sleep")
-				return fail("%w", ctx.Err())
-			case <-time.After(sleepDuration):
+				return fail("%w", err)
 			}
 		}
 	}
@@ -654,6 +668,13 @@ func (o *ArchiveOrchestrator) recoverChunks(
 		batchSize = 1
 	}
 	for start := 0; start < len(rawPKs); start += batchSize {
+		// Cooperative graceful stop: each started recovery chunk runs to completion
+		// (processBatch is terminal), so stopping at this boundary leaves earlier
+		// chunks recovered and the rest in their prior-run status — safe to resume.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping recovery at chunk boundary (run again to resume)")
+			return nil
+		}
 		end := start + batchSize
 		if end > len(rawPKs) {
 			end = len(rawPKs)
@@ -670,8 +691,12 @@ func (o *ArchiveOrchestrator) recoverChunks(
 		// each started chunk runs to completion first. Rows from earlier chunks not
 		// yet recovered remain in their prior-run status during the pause — that is
 		// pre-existing state, not created by the pause.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return err
+		}
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping recovery at chunk boundary (run again to resume)")
+			return nil
 		}
 		if lagMonitor != nil {
 			if err := lagMonitor.WaitForLag(ctx); err != nil {
@@ -708,6 +733,13 @@ func sortPendingPKsNumeric(pending []string, unsigned bool) {
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *ArchiveOrchestrator) SetForce(force bool) {
 	o.force = force
+}
+
+// SetStopChannel wires the cooperative graceful-stop signal. When the channel
+// closes (first Ctrl-C), the batch loop finishes the in-flight batch and stops at
+// the next boundary. A nil channel disables cooperative stop.
+func (o *ArchiveOrchestrator) SetStopChannel(stop <-chan struct{}) {
+	o.stopCh = stop
 }
 
 // SetLogger sets a custom logger for the orchestrator. Call before

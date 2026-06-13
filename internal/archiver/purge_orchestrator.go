@@ -35,6 +35,7 @@ type PurgeOrchestrator struct {
 	processingCfg  config.ProcessingConfig
 	force          bool
 	staleAtStartup bool
+	stopCh         <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
 }
 
 // NewPurgeOrchestrator creates a new purge orchestrator.
@@ -152,6 +153,13 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		default:
 		}
 
+		// Cooperative graceful stop: the previous batch's roots are all 'completed'
+		// before we reach here, so stopping at this boundary leaves no pending rows.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
+		}
+
 		rootIDs, err := fetcher.FetchNextBatch(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch root IDs: %w", err)
@@ -162,8 +170,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 
 		// Operator pause switch: block before processing this batch while the
 		// sentinel file exists.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return nil, err
+		}
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping at batch boundary (run again to resume)")
+			break
 		}
 
 		result.BatchesProcessed++
@@ -181,10 +193,8 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
-			select {
-			case <-ctx.Done():
-				return result, ctx.Err()
-			case <-time.After(sleepDuration):
+			if err := interruptibleSleep(ctx, o.stopCh, sleepDuration); err != nil {
+				return result, err
 			}
 		}
 	}
@@ -201,9 +211,19 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 		return err
 	}
 	for _, rawPK := range pending {
+		// Cooperative graceful stop: each replayed root reaches 'completed' before
+		// we loop, so stopping here leaves the remainder in 'pending' to resume.
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
+			return nil
+		}
 		// Operator pause switch also applies during resume/recovery.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
 			return err
+		}
+		if stopRequested(o.stopCh) {
+			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
+			return nil
 		}
 		dataType, unsigned, ok := o.graph.GetRootPKMeta()
 		if !ok {
@@ -223,12 +243,12 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher, resumeMgr *ResumeManager) (int64, error) {
 	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
 	if err != nil {
-		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
 		return 0, fmt.Errorf("discovery failed: %w", err)
 	}
 	deleteStats, err := deletePhase.Delete(ctx, convertRecordSet(discovered))
 	if err != nil {
-		_ = resumeMgr.MarkFailed(ctx, o.jobName, rootID, err.Error())
+		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
 		return 0, fmt.Errorf("delete failed: %w", err)
 	}
 	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
@@ -244,6 +264,13 @@ func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interfa
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *PurgeOrchestrator) SetForce(force bool) {
 	o.force = force
+}
+
+// SetStopChannel wires the cooperative graceful-stop signal. When the channel
+// closes (first Ctrl-C), the loop finishes the in-flight batch and stops at the
+// next boundary. A nil channel disables cooperative stop.
+func (o *PurgeOrchestrator) SetStopChannel(stop <-chan struct{}) {
+	o.stopCh = stop
 }
 
 // SetLogger sets a custom logger for the orchestrator. Call before
