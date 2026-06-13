@@ -10,7 +10,7 @@ The test suite includes:
 |-----------|-------------|---------|
 | **Unit Tests** | Fast in-memory tests | `go test ./... -count=1` |
 | **Integration Tests** | Real-DB tests (build tag `integration`); reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive test 03 runs to completion | `make e2e` |
+| **Sakila E2E (working)** | Archive tests 03-04 run to completion | `make e2e` |
 | **Sakila E2E (demos)** | Tests 01-02 intentionally fail preflight | `make e2e-examples` |
 
 > **Integration tests require a freshly-emptied destination.** They archive
@@ -25,7 +25,7 @@ The test suite includes:
 
 | Test IDs | Status | Use Case | Runner |
 |----------|--------|----------|--------|
-| **Test 03** | ✅ **Working** | Valid configuration; archive runs to completion | `make e2e` / `--sakila` |
+| **Test 03-04** | ✅ **Working** | Valid configurations; archive runs to completion | `make e2e` / `--sakila` |
 | **Test 01-02** | ❌ **Validation demos** | Preflight MUST fail with a documented error category | `make e2e-examples` / `--sakila-examples` |
 
 **For validation demos:** the runner inverts pass/fail semantics. "Passed" means
@@ -35,19 +35,20 @@ the expected preflight error category was produced. An unexpected *success* of
 **Quick Start:** Run the working E2E suite:
 ```bash
 make test-up     # if containers aren't running yet
-make e2e         # runs working test 03
+make e2e         # runs working tests 03-04
 ```
 
 ### Sakila E2E Test Cases
 
-The Sakila suite is three focused tests: one working archive plus two preflight
+The Sakila suite is four focused tests: two working archives plus two preflight
 guardrail demonstrations.
 
-#### Working Configuration (Use This for Testing)
+#### Working Configurations (Use These for Testing)
 
 | Test | Relationship Pattern | Description | Status |
 |------|---------------------|-------------|--------|
 | **Test 03** | High-volume | Multi-batch payment archive (`batch_size=100`, single-column PK) | ✅ Working |
+| **Test 04** | 2-level tree | `rental → payment` (non-diamond GDPR-shaped subgraph) | ✅ Working |
 
 #### Validation Examples (Demonstrate Error Detection)
 
@@ -56,11 +57,14 @@ guardrail demonstrations.
 | **Test 01** | Composite PK | Config includes Sakila's composite-PK tables `film_actor`/`film_category` | ❌ COMPOSITE_PK_CHECK fails |
 | **Test 02** | 1-N | Single one-to-many: `language → film` (FK not indexed) | ❌ FK_INDEX_CHECK fails |
 
-> **Note:** Earlier tests 04–10 (film hierarchy / actor / category / isolated
-> job_schema) were removed. Several archived composite-PK association tables
-> (`film_actor`, `film_category`) by a single non-key column, which over-deletes
-> and is now rejected by `COMPOSITE_PK_CHECK`; the rest were redundant with the
-> three retained tests.
+> **Note on `customer`-rooted archives:** a full `customer → rental → payment`
+> archive is **not** expressible — `payment` references both `customer` and
+> `rental` (and `rental` references `customer`), forming a diamond the tree model
+> rejects via `INTERNAL_FK_COVERAGE`. Test 04 uses the closest working shape
+> (`rental → payment`, with `customer`/`staff` left out-of-graph as upstream
+> parents). The earlier film-hierarchy/association tests (old 04–10) were removed:
+> several archived composite-PK tables by a single non-key column (over-delete,
+> now blocked by `COMPOSITE_PK_CHECK`), the rest were redundant.
 
 ## Prerequisites
 
@@ -294,7 +298,7 @@ relations:
 
 ## Test Details
 
-The Sakila E2E suite is three tests. Configs live in `tests/configs/`.
+The Sakila E2E suite is four tests. Configs live in `tests/configs/`.
 
 ### Test 01 — Composite-PK rejection (validation demo)
 
@@ -320,12 +324,25 @@ the configuration with guidance to add the index.
 
 Archives `payment` rows (`payment_id <= 2000`, single-column PK) with
 `batch_size=100` to exercise the multi-batch copy→verify→delete pipeline end to
-end. This is the suite's real archive run.
+end.
 
-> The earlier tests 04–10 (film hierarchy, actor/category associations, isolated
-> job_schema) were removed: several archived composite-PK association tables by a
-> single non-key column and over-deleted (now blocked by `COMPOSITE_PK_CHECK`),
-> and the rest were redundant with the three tests above.
+### Test 04 — `rental → payment` (working, 2-level)
+
+**Config:** `test04_rental_payment.yaml` · **Job:** `archive-rental-payments` · **Expected:** PASS
+
+Archives `rental` rows (`rental_id <= 200`) and their child `payment` rows
+(`payment.rental_id → rental`). A genuine parent→child tree: `payment` also
+references `customer` and `staff`, but those stay out-of-graph as upstream
+parents (allowed), so there is no diamond.
+
+> **Why not `customer → rental → payment`?** `payment` references both `customer`
+> and `rental`, and `rental` references `customer` — a diamond the tree model
+> rejects via `INTERNAL_FK_COVERAGE`. So a full customer-rooted GDPR archive is
+> not expressible in community edition; `rental → payment` is the closest working
+> multi-level shape. The earlier tests 04–10 (film hierarchy, actor/category
+> associations, isolated job_schema) were removed: several archived composite-PK
+> tables by a single non-key column and over-deleted (now blocked by
+> `COMPOSITE_PK_CHECK`), and the rest were redundant.
 
 ## Preflight Checks
 

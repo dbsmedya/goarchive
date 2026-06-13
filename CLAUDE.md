@@ -209,7 +209,7 @@ Then the standard matrix, fastest to slowest:
 |-------|---------|----------------|
 | Unit | `go test ./... -count=1` | Pure-Go, sqlmock, no DB required |
 | Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | Real MySQL (3305/3307); reseeds the DBs, then runs all `-tags=integration` tests |
-| E2E (working) | `make e2e` | Sakila test 03 (payment archive) — full archive run |
+| E2E (working) | `make e2e` | Sakila tests 03 (payment archive) + 04 (rental→payment) — full archive runs |
 | E2E (setup + run) | `make e2e-setup` | Same as above but bootstraps docker + DBs from scratch |
 | E2E (validation demos) | `make e2e-examples` | Sakila tests 01–02 — expected preflight failures |
 
@@ -236,10 +236,13 @@ expectation. Do not treat an `EXPECTED FAILURE matched` line as a regression.
 
 Single-test targeting: `bash tests/scripts/run-tests.sh --sakila -t 3` runs the
 working payment archive; `--sakila-examples -t 1` runs just the composite-PK
-demo. The Sakila E2E suite is now three tests: `01` (COMPOSITE_PK_CHECK demo),
-`02` (FK_INDEX_CHECK demo), and `03` (working high-volume payment archive,
-single-column PK). The earlier film-hierarchy/association tests were removed
-because they archived composite-PK tables and are now rejected by preflight.
+demo. The Sakila E2E suite: `01` (COMPOSITE_PK_CHECK demo), `02` (FK_INDEX_CHECK
+demo), `03` (working high-volume payment archive, single-column PK), and `04`
+(working `rental → payment` 2-level archive — a non-diamond GDPR-shaped subgraph;
+`customer`-rooted archives are unsupported because `payment` references both
+`customer` and `rental`, a diamond). The earlier film-hierarchy/association tests
+were removed because they archived composite-PK tables and are now rejected by
+preflight.
 
 Safety-fix notes:
 - New orchestrator integration tests should clean `archiver_job` and the

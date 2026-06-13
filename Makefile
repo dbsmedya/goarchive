@@ -215,9 +215,10 @@ test-status:
 	@echo "Test database status:"
 	@cd tests && docker compose ps
 
-# Run the working Sakila end-to-end suite (test 03 — the payment single-column-PK
-# archive). Assumes Docker test DBs are already up (`make test-up`). Use
-# `make e2e-setup` for a fresh-environment run that also resets the databases.
+# Run the working Sakila end-to-end suite (test 03 payment single-column-PK
+# archive, test 04 rental->payment 2-level archive). Assumes Docker test DBs are
+# already up (`make test-up`). Use `make e2e-setup` for a fresh-environment run
+# that also resets the databases.
 .PHONY: e2e
 e2e:
 	@bash tests/scripts/run-tests.sh --sakila --skip-docker

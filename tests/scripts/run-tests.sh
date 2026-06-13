@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E test (03)
-#   -t, --test NUM      Run only specific Sakila test (1-3)
+#   --sakila            Run the working Sakila E2E tests (03, 04)
+#   -t, --test NUM      Run only specific Sakila test (1-4)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -52,8 +52,8 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (06, 07, 08, 09, 10)
-SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01-05)
+SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment)
+SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
@@ -129,7 +129,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E test (03 — payment, single-column PK archive)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -459,8 +459,15 @@ run_sakila_test() {
             tables="payment"
             mode="working"
             ;;
+        4)
+            test_name="Test04_RentalPayment"
+            test_desc="Working archive: rental -> payment (2-level tree, non-diamond GDPR-shaped subgraph)"
+            config_file="test04_rental_payment.yaml"
+            tables="rental payment"
+            mode="working"
+            ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-3)"
+            log_error "Invalid test number: $test_num (expected 1-4)"
             return 1
             ;;
     esac
@@ -775,10 +782,10 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK)
-    # performs a real archive end-to-end.
+    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK) and
+    # test 04 (rental -> payment, 2-level tree) perform real archives end-to-end.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3" "working"
+        run_sakila_tests "3 4" "working"
         exit 0
     fi
 
