@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -328,7 +329,27 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		return fail("failed to create copy phase: %w", err)
 	}
 	effectiveVerificationMethod := o.verificationCfg.EffectiveMethod()
-	copyPhase.SetStrictInsert(effectiveVerificationMethod == "count")
+	// Decide whether INSERT IGNORE is safe. INSERT IGNORE silently skips a row
+	// whose key already exists on the destination; if that skip went undetected
+	// the source row could then be deleted without a faithful copy. We force a
+	// plain (strict) INSERT — which aborts the copy on any duplicate — whenever
+	// the post-copy safety net is weak: count verification, verification skipped
+	// (review P0-1), or a destination secondary UNIQUE index (review P1-2).
+	destUniqueIdx, err := destinationSecondaryUniqueIndexes(ctx, o.dbManager.Destination,
+		o.config.Destination.Database, o.graph.AllNodes())
+	if err != nil {
+		return fail("failed to inspect destination unique indexes: %w", err)
+	}
+	strictInsert := shouldUseStrictInsert(effectiveVerificationMethod, o.verificationCfg.SkipVerification, len(destUniqueIdx) > 0)
+	if strictInsert && effectiveVerificationMethod != "count" {
+		reason := "verification skipped (no post-copy check before delete)"
+		if len(destUniqueIdx) > 0 {
+			reason = "destination secondary unique index present: " + strings.Join(destUniqueIdx, ", ")
+		}
+		o.logger.Warnw("Forcing strict INSERT (INSERT IGNORE disabled): a silently-skipped duplicate could be deleted from source without a faithful copy",
+			"reason", reason)
+	}
+	copyPhase.SetStrictInsert(strictInsert)
 	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
 
 	dataVerifier, err := verifier.NewVerifier(

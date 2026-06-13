@@ -203,6 +203,12 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			WithArgs("testdb", sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
 	}
+	// Composite primary key checks (review P1-1) - all single-column PKs
+	for i := 0; i < 3; i++ {
+		mock.ExpectQuery("information_schema.STATISTICS").
+			WithArgs("testdb", sqlmock.AnyArg()).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	}
 	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
 		WithArgs("users", "id").
 		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))

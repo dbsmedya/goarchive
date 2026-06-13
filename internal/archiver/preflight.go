@@ -148,6 +148,12 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		return err
 	}
 
+	// Reject composite primary keys: GoArchive identifies and DELETES rows by a
+	// single PK column, so a multi-column PK would over-match (review P1-1).
+	if err := p.ValidateSingleColumnPrimaryKey(ctx, tables); err != nil {
+		return err
+	}
+
 	rootTable := p.graph.Root
 	if err := p.ValidateRootPKNumeric(ctx, rootTable, p.graph.GetPK(rootTable)); err != nil {
 		return err
@@ -256,6 +262,46 @@ func isIntegerRootPKType(dataType string) bool {
 	default:
 		return false
 	}
+}
+
+// ValidateSingleColumnPrimaryKey rejects participating tables whose PRIMARY KEY
+// spans more than one column. GoArchive discovers, copies, verifies, and DELETES
+// rows by a single PK column (WHERE pk IN (...)); against a composite primary key
+// that filter matches every row sharing the single column value, so a delete
+// could remove rows that were never part of the archived subgraph — silent data
+// loss (review P1-1). The destination PK is required to match the source by the
+// schema-compatibility check, so inspecting the source is sufficient.
+func (p *PreflightChecker) ValidateSingleColumnPrimaryKey(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking for composite primary keys...")
+
+	const query = `
+		SELECT COUNT(*)
+		FROM information_schema.STATISTICS
+		WHERE TABLE_SCHEMA = ?
+		  AND TABLE_NAME = ?
+		  AND INDEX_NAME = 'PRIMARY'`
+
+	var issues []string
+	for _, table := range tables {
+		var pkColumns int
+		if err := p.db.QueryRowContext(ctx, query, p.sourceDBName, table).Scan(&pkColumns); err != nil {
+			return fmt.Errorf("COMPOSITE_PK_LOOKUP: failed to inspect primary key for %s: %w", table, err)
+		}
+		if pkColumns > 1 {
+			issues = append(issues, fmt.Sprintf("%s(%d-column PRIMARY KEY)", table, pkColumns))
+		}
+	}
+
+	if len(issues) > 0 {
+		return &PreflightError{
+			Check:   "COMPOSITE_PK_CHECK",
+			Message: "Composite primary keys are not supported. GoArchive identifies and deletes rows by a single primary-key column; a multi-column PK would over-match and risk deleting rows outside the archived set. See README 'Known Limits & Caution'",
+			Tables:  issues,
+		}
+	}
+
+	p.logger.Debugf("Composite primary key check PASSED (%d tables)", len(tables))
+	return nil
 }
 
 // ValidateTablesExist checks that all tables in the graph exist in the source database.

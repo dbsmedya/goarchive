@@ -42,7 +42,7 @@ func init() {
 	_ = purgeCmd.MarkFlagRequired("job") // Config-time error, cannot fail
 
 	purgeCmd.Flags().BoolVar(&purgeForce, "force", false,
-		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Cannot bypass a live, heartbeating job. Cannot bypass: same-root concurrency check or preflight checks.")
+		"Refresh a stale heartbeat takeover only. Because purge is destructive, --force CANNOT proceed while the advisory GET_LOCK is still held by another connection (a held lock cannot be safely stolen): verify the prior process is dead and its MySQL session has closed, then retry. Cannot bypass: a live heartbeating job, the same-root concurrency check, or preflight checks.")
 	purgeCmd.Flags().BoolVar(&purgeSkipValidatePreflight, "skip-validate-preflight", false,
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	purgeCmd.Flags().BoolVar(&purgeForceTriggers, "force-triggers", false,
