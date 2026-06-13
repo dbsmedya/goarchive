@@ -203,11 +203,12 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			WithArgs("testdb", sqlmock.AnyArg(), sqlmock.AnyArg()).
 			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
 	}
-	// Composite primary key checks (review P1-1) - all single-column PKs
+	// PK shape checks (review P1-1 / 003): each table returns its single PRIMARY
+	// KEY column, which matches the graph's configured PK ("id").
 	for i := 0; i < 3; i++ {
 		mock.ExpectQuery("information_schema.STATISTICS").
 			WithArgs("testdb", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
 	}
 	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
 		WithArgs("users", "id").

@@ -623,6 +623,34 @@ func (o *ArchiveOrchestrator) resumePending(
 			o.jobName, total, resumeMgr.LogTableName(), preview)
 	}
 
+	// Strict INSERT (forced by --skip-verify or a destination secondary unique
+	// index — review P0-1/P1-2/003) cannot re-copy 'pending' rows: a crash between
+	// the copy commit and MarkBatchCopied leaves those rows already committed on
+	// the destination, so a strict re-INSERT aborts on duplicate and the job would
+	// self-block on every resume. 'copied' rows are safe (delete-only, no re-copy),
+	// so we refuse only when there are pending rows and let a copied-only resume
+	// proceed on the next run once the operator clears the pending entries.
+	if copyPhase.StrictInsert() && len(pending) > 0 {
+		preview := pending
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return fmt.Errorf(
+			"job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
+				"(forced by --skip-verify or a destination secondary unique index), so they cannot be "+
+				"safely re-copied (their destination rows may already be committed, and a strict INSERT "+
+				"aborts on duplicate).\n\n"+
+				"To recover, choose one:\n"+
+				"  1. Delete the destination rows already written for these pending PKs, then re-run "+
+				"(the strict re-copy then inserts cleanly).\n"+
+				"  2. If you have confirmed the destination rows match source, mark them copied so they "+
+				"resume as delete-only:\n"+
+				"       UPDATE %s SET log_status=1 WHERE log_status=0;\n"+
+				"     and re-run.\n\n"+
+				"Pending PKs (first 10): %v",
+			o.jobName, len(pending), resumeMgr.LogTableName(), preview)
+	}
+
 	// Phase A: finish copied batches (already verified; delete-only).
 	if err := o.recoverChunks(ctx, copied, batchDeleteOnly, resumeMgr,
 		discovery, copyPhase, dataVerifier, deletePhase, fetcher, lagMonitor, checkpoint, result); err != nil {

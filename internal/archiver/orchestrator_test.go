@@ -3,6 +3,7 @@ package archiver
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -774,4 +775,58 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	require.NoError(t, archMock.ExpectationsWereMet())
 	require.NoError(t, sourceMock.ExpectationsWereMet())
 	require.NoError(t, destMock.ExpectationsWereMet())
+}
+
+// TestResumePendingRefusesStrictInsertWithPending guards review-003 Claim 1: when
+// strict INSERT is forced (here via skip-verify) and a prior run left 'pending'
+// rows, resume must REFUSE rather than re-copy them under a strict INSERT that
+// would abort on the already-committed destination rows (self-block on every run).
+func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, _, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph()
+	g.SetRootPKMeta("bigint", false)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	copyPhase.SetStrictInsert(true) // forced by --skip-verify or a dest unique index
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
+
+	o := &ArchiveOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	}
+	result := &ArchiveResult{}
+
+	// Only the two status fetches run; the strict-insert guard then refuses, so
+	// NO copy/verify/delete is attempted (no source/dest expectations).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusPending).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
+
+	err := o.resumePending(context.Background(), resumeMgr,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	if err == nil {
+		t.Fatal("expected refusal when strict insert + pending rows, got nil")
+	}
+	if !strings.Contains(err.Error(), "strict INSERT") {
+		t.Fatalf("expected strict-insert refusal message, got: %v", err)
+	}
+	require.NoError(t, archMock.ExpectationsWereMet())
 }

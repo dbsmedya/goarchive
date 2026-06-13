@@ -7,8 +7,60 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/verifier"
 )
+
+// TestCopyOnlyReplayRefusesStrictInsertWithPending guards review-003 Claim 1 for
+// copy-only: once copy-only forces strict INSERT (review #1), its resume path must
+// refuse to re-copy 'pending' rows rather than self-block on duplicate INSERTs.
+func TestCopyOnlyReplayRefusesStrictInsertWithPending(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, _, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph()
+	g.SetRootPKMeta("bigint", false)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	copyPhase.SetStrictInsert(true)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
+
+	o := &CopyOnlyOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000},
+		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	}
+	result := &CopyOnlyResult{}
+
+	// GetPendingPKs runs; the strict-insert guard then refuses (no copy attempted).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusPending).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
+
+	err := o.replayPendingPKs(context.Background(), resumeMgr, discovery, copyPhase, dataVerifier, fetcher, result)
+	if err == nil {
+		t.Fatal("expected copy-only replay to refuse under strict insert + pending, got nil")
+	}
+	if !strings.Contains(err.Error(), "strict INSERT") {
+		t.Fatalf("expected strict-insert refusal, got: %v", err)
+	}
+	if err := archMock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
 
 func TestNewCopyOnlyOrchestrator_Success(t *testing.T) {
 	cfg := createTestConfig()

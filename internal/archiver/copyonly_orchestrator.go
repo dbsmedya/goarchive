@@ -203,6 +203,29 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		return fail("failed to create copy phase: %w", err)
 	}
 
+	// Decide whether INSERT IGNORE is safe, mirroring the archive orchestrator
+	// (review P0-1/P1-2/#1). copy-only never deletes source, but a silently-skipped
+	// INSERT IGNORE still produces an INCOMPLETE copy the operator believes is
+	// faithful — and a later archive/purge of those source rows would then delete
+	// data that was never truly copied. Force strict INSERT (abort on duplicate)
+	// when the post-copy safety net is weak: count verification, verification
+	// skipped, or a destination secondary UNIQUE index.
+	effectiveMethod := o.verificationCfg.EffectiveMethod()
+	destUniqueIdx, err := destinationSecondaryUniqueIndexes(ctx, o.dbManager.Destination,
+		o.config.Destination.Database, o.graph.AllNodes())
+	if err != nil {
+		return fail("failed to inspect destination unique indexes: %w", err)
+	}
+	strictInsert := shouldUseStrictInsert(effectiveMethod, o.verificationCfg.SkipVerification, len(destUniqueIdx) > 0)
+	if strictInsert && effectiveMethod != "count" {
+		reason := "verification skipped (a silently-skipped row would leave an incomplete copy)"
+		if len(destUniqueIdx) > 0 {
+			reason = "destination secondary unique index present: " + strings.Join(destUniqueIdx, ", ")
+		}
+		o.logger.Warnw("Forcing strict INSERT (INSERT IGNORE disabled): a silently-skipped duplicate would leave an incomplete copy", "reason", reason)
+	}
+	copyPhase.SetStrictInsert(strictInsert)
+
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
 		o.dbManager.Destination,
@@ -288,12 +311,25 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 	if len(pending) == 0 {
 		return nil
 	}
-	if o.verificationCfg.EffectiveMethod() == "count" {
+	// Strict INSERT (forced by count verification, --skip-verify, or a destination
+	// secondary unique index — review P0-1/P1-2/003) cannot re-copy 'pending' rows:
+	// their destination copy may already be committed, so a strict re-INSERT aborts
+	// on duplicate and the job would self-block on every resume. Refuse with
+	// recovery guidance rather than loop forever.
+	if copyPhase.StrictInsert() {
 		preview := pending
 		if len(preview) > 10 {
 			preview = preview[:10]
 		}
-		return fmt.Errorf("job %q has %d pending root PKs from a prior interrupted run, and is configured with verification.method: count. Switch this job to verification.method: sha256 and re-run. Pending PKs (first 10): %v", o.jobName, len(pending), preview)
+		return fmt.Errorf("job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
+			"(forced by verification.method: count, --skip-verify, or a destination secondary unique index), so they "+
+			"cannot be safely re-copied (their destination rows may already be committed, and a strict INSERT aborts "+
+			"on duplicate).\n\n"+
+			"To recover, choose one:\n"+
+			"  1. Delete the destination rows already written for these pending PKs, then re-run.\n"+
+			"  2. If using --skip-verify, drop it (and use verification.method: sha256) so replay uses idempotent "+
+			"INSERT IGNORE, then re-run.\n\n"+
+			"Pending PKs (first 10): %v", o.jobName, len(pending), preview)
 	}
 	for _, rawPK := range pending {
 		// Cooperative graceful stop: each replayed root reaches 'completed' before

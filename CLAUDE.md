@@ -162,6 +162,12 @@ source but never *stricter*:
 - Crash recovery is status-aware via the per-job log TINYINT status: `pending` →
   full replay, `copied` (copy+verify succeeded, safe to delete) → delete-only, no
   re-verify.
+- **Strict-insert jobs refuse to auto-resume `pending` rows.** When strict INSERT
+  is forced (`verification.method: count`, `--skip-verify`, or a destination
+  secondary unique index) a `pending` row's destination copy may already be
+  committed, so re-copying it would abort on duplicate. Resume therefore *refuses*
+  with recovery guidance instead of self-blocking; `copied` rows still resume
+  delete-only. Applies to archive and copy-only (see `.ayder/003`).
 - `delete_sleep_seconds` (default 0) pauses between `batch_delete_size` delete
   chunks to limit binlog/replication lag — independent of `sleep_seconds`, which
   paces whole batches.
@@ -235,6 +241,10 @@ Safety-fix notes:
   contains DELETE triggers.
 - Root primary keys must be integer types (TINYINT through BIGINT, signed or
   unsigned). Preflight rejects non-integer root PKs.
+- Every participating table must have a **single-column PRIMARY KEY equal to its
+  configured `primary_key`**. Preflight rejects composite PKs (`COMPOSITE_PK_CHECK`),
+  no-PK tables, and a `primary_key` that is not the table's actual PRIMARY KEY
+  (`PRIMARY_KEY_CHECK`) — all would over-match on delete-by-PK (review `.ayder/003`).
 - The job advisory lock is held on a dedicated MySQL connection. Keepalive now
   verifies `IS_USED_LOCK()` against that connection id and aborts if ownership
   is lost; document/assume MySQL `wait_timeout` is higher than expected job
