@@ -759,6 +759,129 @@ func TestValidate_JobSchemaInvalidIdentifier(t *testing.T) {
 	})
 }
 
+func TestValidate_JobIdentifiersInvalid(t *testing.T) {
+	invalidNames := []string{"a\x00b", "a`b", "a-b", "a$b", "a b", "db.tbl"}
+
+	t.Run("root_table", func(t *testing.T) {
+		for _, name := range invalidNames {
+			cfg := DefaultConfig()
+			cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+			cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+			cfg.Jobs = map[string]JobConfig{
+				"test_job": {RootTable: name, PrimaryKey: "id", Where: "1=1"},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "jobs.test_job.root_table") {
+				t.Errorf("root_table=%q: expected jobs.test_job.root_table validation error, got %v", name, err)
+			}
+		}
+	})
+
+	t.Run("primary_key", func(t *testing.T) {
+		for _, name := range invalidNames {
+			cfg := DefaultConfig()
+			cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+			cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+			cfg.Jobs = map[string]JobConfig{
+				"test_job": {RootTable: "orders", PrimaryKey: name, Where: "1=1"},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "jobs.test_job.primary_key") {
+				t.Errorf("primary_key=%q: expected jobs.test_job.primary_key validation error, got %v", name, err)
+			}
+		}
+	})
+
+	t.Run("relation table", func(t *testing.T) {
+		for _, name := range invalidNames {
+			cfg := DefaultConfig()
+			cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+			cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+			cfg.Jobs = map[string]JobConfig{
+				"test_job": {
+					RootTable:  "orders",
+					PrimaryKey: "id",
+					Where:      "1=1",
+					Relations: []Relation{
+						{Table: name, ForeignKey: "order_id", PrimaryKey: "id", DependencyType: "1-N"},
+					},
+				},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "relations[0].table") {
+				t.Errorf("relation table=%q: expected relations[0].table validation error, got %v", name, err)
+			}
+		}
+	})
+
+	t.Run("relation foreign_key", func(t *testing.T) {
+		for _, name := range invalidNames {
+			cfg := DefaultConfig()
+			cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+			cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+			cfg.Jobs = map[string]JobConfig{
+				"test_job": {
+					RootTable:  "orders",
+					PrimaryKey: "id",
+					Where:      "1=1",
+					Relations: []Relation{
+						{Table: "order_items", ForeignKey: name, PrimaryKey: "id", DependencyType: "1-N"},
+					},
+				},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "relations[0].foreign_key") {
+				t.Errorf("relation foreign_key=%q: expected relations[0].foreign_key validation error, got %v", name, err)
+			}
+		}
+	})
+
+	t.Run("relation primary_key", func(t *testing.T) {
+		for _, name := range invalidNames {
+			cfg := DefaultConfig()
+			cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+			cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+			cfg.Jobs = map[string]JobConfig{
+				"test_job": {
+					RootTable:  "orders",
+					PrimaryKey: "id",
+					Where:      "1=1",
+					Relations: []Relation{
+						{Table: "order_items", ForeignKey: "order_id", PrimaryKey: name, DependencyType: "1-N"},
+					},
+				},
+			}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "relations[0].primary_key") {
+				t.Errorf("relation primary_key=%q: expected relations[0].primary_key validation error, got %v", name, err)
+			}
+		}
+	})
+}
+
+func TestValidate_JobIdentifiersValid(t *testing.T) {
+	validNames := []string{"customer", "customer_id", "_x9"}
+
+	for _, name := range validNames {
+		cfg := DefaultConfig()
+		cfg.Source = DatabaseConfig{Host: "localhost", Port: 3306, User: "root", Password: "pass", Database: "testdb"}
+		cfg.Destination = DatabaseConfig{Host: "localhost", Port: 3307, User: "root", Password: "pass", Database: "archivedb"}
+		cfg.Jobs = map[string]JobConfig{
+			"test_job": {
+				RootTable:  name,
+				PrimaryKey: name,
+				Where:      "1=1",
+				Relations: []Relation{
+					{Table: name, ForeignKey: name, PrimaryKey: name, DependencyType: "1-N"},
+				},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("identifier %q: expected no validation error, got %v", name, err)
+		}
+	}
+}
+
 func TestJobLoggingValidation(t *testing.T) {
 	base := func() *Config {
 		return &Config{

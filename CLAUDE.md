@@ -145,6 +145,9 @@ source but never *stricter*:
   don't false-fail. `SOURCE_DELETE_PERMISSION_CHECK` covers archive/purge.
 - `JOB_SCHEMA_PERMISSION_CHECK` requires `CREATE` + `SELECT`/`INSERT`/`UPDATE` on
   the tracking schema (`destination.job_schema`).
+- Config identifiers (`root_table`, `primary_key`, relation `table`/`foreign_key`/
+  `primary_key`, and `job_schema`) must match `[A-Za-z0-9_]+`; names using `$`,
+  dots, or other characters are rejected at config load (`IsValidIdentifier`).
 - Legacy old-shape tracking tables are detected at startup and rejected with
   upgrade guidance — there is no auto-migration.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
