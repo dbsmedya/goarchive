@@ -3,9 +3,13 @@ package archiver
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"fmt"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	mysql "github.com/go-sql-driver/mysql"
+
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -603,6 +607,174 @@ func TestBuildInsertIgnoreQuery_QuotesColumnNames(t *testing.T) {
 
 	expected := "INSERT IGNORE INTO `orders` (`id`, `order`, `group`) VALUES (?, ?, ?)"
 	assert.Equal(t, expected, query)
+}
+
+// TestMaxRowsPerInsert covers the pure placeholder-clamp arithmetic:
+// maxRowsPerInsert(columnCount) must always keep columnCount*rows <= 65535
+// while returning at least 1 row.
+func TestMaxRowsPerInsert(t *testing.T) {
+	tests := []struct {
+		columnCount int
+		want        int
+	}{
+		{columnCount: 3, want: 21845}, // 65535 / 3
+		{columnCount: 2, want: 32767}, // 65535 / 2
+		{columnCount: 1, want: 65535}, // 65535 / 1
+		{columnCount: 65535, want: 1}, // exactly one column's worth of rows
+		{columnCount: 70000, want: 1}, // wider than the limit itself
+		{columnCount: 0, want: 1},     // degenerate: never divide by zero
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("columnCount=%d", tt.columnCount), func(t *testing.T) {
+			got := maxRowsPerInsert(tt.columnCount)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// anyArgValues returns n sqlmock.AnyArg() driver values, used to assert an
+// exact per-exec argument count without pinning individual values.
+func anyArgValues(n int) []driver.Value {
+	args := make([]driver.Value, n)
+	for i := range args {
+		args[i] = sqlmock.AnyArg()
+	}
+	return args
+}
+
+// wideRowsSource builds a sqlmock.Rows with numCols synthetic columns and
+// numRows synthetic rows, used by the placeholder-clamp split tests below.
+func wideRowsSource(numCols, numRows int) *sqlmock.Rows {
+	columns := make([]string, numCols)
+	for i := range columns {
+		columns[i] = fmt.Sprintf("col%d", i)
+	}
+	rows := sqlmock.NewRows(columns)
+	for r := 0; r < numRows; r++ {
+		rowVals := make([]driver.Value, numCols)
+		for c := 0; c < numCols; c++ {
+			rowVals[c] = int64(r*numCols + c)
+		}
+		rows.AddRow(rowVals...)
+	}
+	return rows
+}
+
+// TestCopyChunk_SplitsOversizedBatchIntoSubInserts proves that a chunk whose
+// combined placeholder count (columns * rows) exceeds MySQL's 65,535 limit is
+// split into multiple INSERTs instead of aborting. 1000 columns x 66 rows =
+// 66,000 placeholders > 65,535; maxRowsPerInsert(1000) = 65, so the split
+// must be a 65-row exec followed by a 1-row exec.
+func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph() // table "customers", PK "id"
+	log := logger.NewDefault()
+	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+
+	const numCols = 1000
+	const numRows = 66
+
+	pks := make([]interface{}, numRows)
+	for i := range pks {
+		pks[i] = int64(i + 1)
+	}
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{int64(1)},
+		Records: map[string][]interface{}{
+			"customers": pks,
+		},
+	}
+
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+		WillReturnRows(wideRowsSource(numCols, numRows))
+
+	// First sub-batch: 65 rows x 1000 columns = 65000 args.
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
+		WithArgs(anyArgValues(65 * numCols)...).
+		WillReturnResult(sqlmock.NewResult(0, 65))
+
+	// Second sub-batch: remaining 1 row x 1000 columns = 1000 args.
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
+		WithArgs(anyArgValues(1 * numCols)...).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	destMock.ExpectCommit()
+
+	stats, err := cp.Copy(context.Background(), recordSet)
+
+	require.NoError(t, err)
+	require.NotNil(t, stats)
+	assert.Equal(t, int64(numRows), stats.RowsCopied)
+	assert.NoError(t, sourceMock.ExpectationsWereMet())
+	assert.NoError(t, destMock.ExpectationsWereMet())
+}
+
+// TestCopyChunk_StrictDuplicateOnLaterSubBatch proves that duplicate-error
+// mapping to *ErrDestinationDuplicate applies per sub-batch exec, not just
+// the first one: the second (later) INSERT in the split is the one that
+// fails here.
+func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+
+	g := createSimpleGraph() // table "customers", PK "id"
+	log := logger.NewDefault()
+	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	cp.SetStrictInsert(true)
+
+	const numCols = 1000
+	const numRows = 66
+
+	pks := make([]interface{}, numRows)
+	for i := range pks {
+		pks[i] = int64(i + 1)
+	}
+	recordSet := &RecordSet{
+		RootPKs: []interface{}{int64(1)},
+		Records: map[string][]interface{}{
+			"customers": pks,
+		},
+	}
+
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+		WillReturnRows(wideRowsSource(numCols, numRows))
+
+	// First sub-batch succeeds.
+	destMock.ExpectExec("INSERT INTO `customers`").
+		WithArgs(anyArgValues(65 * numCols)...).
+		WillReturnResult(sqlmock.NewResult(0, 65))
+
+	// Second sub-batch hits a MySQL duplicate-key error.
+	destMock.ExpectExec("INSERT INTO `customers`").
+		WithArgs(anyArgValues(1 * numCols)...).
+		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry '42' for key 'PRIMARY'"})
+
+	destMock.ExpectRollback()
+
+	stats, err := cp.Copy(context.Background(), recordSet)
+
+	require.Error(t, err)
+	assert.Nil(t, stats)
+
+	var dupErr *ErrDestinationDuplicate
+	require.ErrorAs(t, err, &dupErr)
+	assert.Equal(t, "customers", dupErr.Table)
+	assert.Equal(t, "42", dupErr.ConflictingPK)
+
+	assert.NoError(t, sourceMock.ExpectationsWereMet())
+	assert.NoError(t, destMock.ExpectationsWereMet())
 }
 
 // Helper functions
