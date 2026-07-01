@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.4.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.5.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
