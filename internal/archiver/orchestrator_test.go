@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -14,6 +15,19 @@ import (
 	"github.com/dbsmedya/goarchive/internal/verifier"
 	"github.com/stretchr/testify/require"
 )
+
+// stubLagWaiter is a test fake for the lagWaiter interface, letting tests
+// assert both that the pre-delete re-check ran (calls) and gate the delete
+// on a returned lag error.
+type stubLagWaiter struct {
+	calls int
+	err   error
+}
+
+func (s *stubLagWaiter) WaitForLag(context.Context) error {
+	s.calls++
+	return s.err
+}
 
 // ============================================================================
 // Test Helpers
@@ -690,10 +704,121 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectCommit()
 
+	stub := &stubLagWaiter{}
 	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
 		batchDeleteOnly, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
 	require.NoError(t, err)
+	require.Equal(t, 1, stub.calls)
+
+	require.NoError(t, destMock.ExpectationsWereMet())
+	require.NoError(t, sourceMock.ExpectationsWereMet())
+	require.NoError(t, archMock.ExpectationsWereMet())
+}
+
+// TestProcessBatchDeleteOnlyLagErrorGatesDelete proves the pre-delete lag
+// re-check (issue #2) gates the delete phase in batchDeleteOnly mode: when
+// WaitForLag errors, neither the source DELETE nor the T3 CompleteBatch
+// bookkeeping should fire.
+func TestProcessBatchDeleteOnlyLagErrorGatesDelete(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New() // MUST remain untouched
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph() // root "customers", PK "id", leaf (no children)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
+
+	o := &ArchiveOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		verificationCfg: config.VerificationConfig{},
+	}
+
+	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
+	// expectations: the lag error must gate the delete before either fires.
+	stub := &stubLagWaiter{err: errors.New("lag too high")}
+	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, false, nil,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "lag")
+	require.Equal(t, 1, stub.calls)
+
+	require.NoError(t, destMock.ExpectationsWereMet())
+	require.NoError(t, sourceMock.ExpectationsWereMet())
+	require.NoError(t, archMock.ExpectationsWereMet())
+}
+
+// TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied proves the pre-delete
+// lag re-check (issue #2) also fires in batchFull mode, and specifically that
+// it sits AFTER copy+verify+MarkBatchCopied have durably succeeded but BEFORE
+// the delete: copy and MarkBatchCopied expectations must fire, while the
+// source DELETE and T3 CompleteBatch must not. Modeled on the "pending=20"
+// phase of TestResumePendingRecoversCopiedBeforePending.
+func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
+	sourceDB, sourceMock, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+	archDB, archMock, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph()
+	g.SetRootPKMeta("bigint", false)
+	log := logger.NewDefault()
+
+	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+	resumeMgr.setJobID(7)
+
+	o := &ArchiveOrchestrator{
+		jobName:         "job1",
+		logger:          log,
+		graph:           g,
+		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	}
+
+	// Copy phase: must fire (proves the re-check runs AFTER copy/verify).
+	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(20)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(20, "p"))
+	destMock.ExpectBegin()
+	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
+	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	destMock.ExpectCommit()
+
+	// MarkBatchCopied: must fire (proves the re-check runs AFTER it).
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCopied, "20").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
+	// expectations: the lag error must gate the delete before either fires.
+	stub := &stubLagWaiter{err: errors.New("lag too high")}
+	_, err := o.processBatch(context.Background(), []interface{}{int64(20)},
+		batchFull, false, nil,
+		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "lag")
+	require.Equal(t, 1, stub.calls)
 
 	require.NoError(t, destMock.ExpectationsWereMet())
 	require.NoError(t, sourceMock.ExpectationsWereMet())
