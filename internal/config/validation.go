@@ -191,12 +191,22 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 			Field:   prefix + ".root_table",
 			Message: "root_table is required",
 		})
+	} else if !sqlutil.IsValidIdentifier(job.RootTable) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".root_table",
+			Message: "must contain only alphanumeric characters and underscores",
+		})
 	}
 
 	if job.PrimaryKey == "" {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".primary_key",
 			Message: "primary_key is required",
+		})
+	} else if !sqlutil.IsValidIdentifier(job.PrimaryKey) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".primary_key",
+			Message: "must contain only alphanumeric characters and underscores",
 		})
 	}
 
@@ -250,6 +260,11 @@ func (c *Config) validateRelation(prefix string, rel *Relation, depth int) Valid
 			Field:   prefix + ".table",
 			Message: "table name is required",
 		})
+	} else if !sqlutil.IsValidIdentifier(rel.Table) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".table",
+			Message: "must contain only alphanumeric characters and underscores",
+		})
 	}
 
 	if rel.ForeignKey == "" {
@@ -257,12 +272,22 @@ func (c *Config) validateRelation(prefix string, rel *Relation, depth int) Valid
 			Field:   prefix + ".foreign_key",
 			Message: "foreign_key is required",
 		})
+	} else if !sqlutil.IsValidIdentifier(rel.ForeignKey) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".foreign_key",
+			Message: "must contain only alphanumeric characters and underscores",
+		})
 	}
 
 	if rel.PrimaryKey == "" {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".primary_key",
 			Message: "primary_key is required",
+		})
+	} else if !sqlutil.IsValidIdentifier(rel.PrimaryKey) {
+		errors = append(errors, ValidationError{
+			Field:   prefix + ".primary_key",
+			Message: "must contain only alphanumeric characters and underscores",
 		})
 	}
 

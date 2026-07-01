@@ -38,9 +38,9 @@ func ToInt64(v interface{}) (int64, error) {
 	case uint8:
 		return int64(i), nil
 	case float64:
-		return int64(i), nil
+		return float64ToInt64(i)
 	case float32:
-		return int64(i), nil
+		return float64ToInt64(float64(i))
 	case []byte:
 		return parseInt64String(string(i))
 	case string:
@@ -50,6 +50,28 @@ func ToInt64(v interface{}) (int64, error) {
 	default:
 		return 0, fmt.Errorf("unsupported type for int64 conversion: %T", v)
 	}
+}
+
+// float64ToInt64 converts f to int64, rejecting values that cannot be
+// represented exactly: NaN, ±Inf, non-integral (fractional) values, and
+// values outside the int64 range. This prevents a silently wrong integer
+// (e.g. a truncated or overflowed PK) from feeding a delete-by-PK path.
+func float64ToInt64(f float64) (int64, error) {
+	if math.IsNaN(f) {
+		return 0, fmt.Errorf("cannot convert NaN to int64")
+	}
+	if math.IsInf(f, 0) {
+		return 0, fmt.Errorf("cannot convert %v to int64", f)
+	}
+	if f != math.Trunc(f) {
+		return 0, fmt.Errorf("cannot convert non-integral float %v to int64", f)
+	}
+	// math.MaxInt64 is not exactly representable as float64; 2^63 is the first
+	// float64 above the int64 range. math.MinInt64 (-2^63) is exactly representable.
+	if f < math.MinInt64 || f >= 9223372036854775808.0 {
+		return 0, fmt.Errorf("float value overflows int64: %v", f)
+	}
+	return int64(f), nil
 }
 
 func parseInt64String(s string) (int64, error) {

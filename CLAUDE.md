@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.4.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.5.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
@@ -145,6 +145,9 @@ source but never *stricter*:
   don't false-fail. `SOURCE_DELETE_PERMISSION_CHECK` covers archive/purge.
 - `JOB_SCHEMA_PERMISSION_CHECK` requires `CREATE` + `SELECT`/`INSERT`/`UPDATE` on
   the tracking schema (`destination.job_schema`).
+- Config identifiers (`root_table`, `primary_key`, relation `table`/`foreign_key`/
+  `primary_key`, and `job_schema`) must match `[A-Za-z0-9_]+`; names using `$`,
+  dots, or other characters are rejected at config load (`IsValidIdentifier`).
 - Legacy old-shape tracking tables are detected at startup and rejected with
   upgrade guidance — there is no auto-migration.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`

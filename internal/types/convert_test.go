@@ -115,19 +115,9 @@ func TestToInt64_FloatTypes(t *testing.T) {
 			expected: 42,
 		},
 		{
-			name:     "float64 with decimals truncates",
-			input:    float64(42.9),
-			expected: 42,
-		},
-		{
 			name:     "float32 integer value",
 			input:    float32(100.0),
 			expected: 100,
-		},
-		{
-			name:     "float32 with decimals truncates",
-			input:    float32(99.7),
-			expected: 99,
 		},
 		{
 			name:     "float64 large value",
@@ -141,6 +131,48 @@ func TestToInt64_FloatTypes(t *testing.T) {
 			result, err := ToInt64(tt.input)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestToInt64_FloatTypes_Fractional(t *testing.T) {
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{
+			name:  "float64 with decimals rejected",
+			input: float64(42.9),
+		},
+		{
+			name:  "float32 with decimals rejected",
+			input: float32(99.7),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ToInt64(tt.input)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestToInt64_FloatTypes_Rejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{name: "NaN", input: math.NaN()},
+		{name: "positive infinity", input: math.Inf(1)},
+		{name: "negative infinity", input: math.Inf(-1)},
+		{name: "out of range", input: float64(1e19)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ToInt64(tt.input)
+			assert.Error(t, err)
 		})
 	}
 }
@@ -167,8 +199,8 @@ func TestToInt64_NegativeValues(t *testing.T) {
 			expected: -128,
 		},
 		{
-			name:     "Negative float64",
-			input:    float64(-50.5),
+			name:     "Negative integer-valued float64",
+			input:    float64(-50.0),
 			expected: -50,
 		},
 	}
@@ -180,6 +212,11 @@ func TestToInt64_NegativeValues(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestToInt64_NegativeFractionalFloat_Rejected(t *testing.T) {
+	_, err := ToInt64(float64(-50.5))
+	assert.Error(t, err)
 }
 
 func TestToInt64_ZeroValues(t *testing.T) {

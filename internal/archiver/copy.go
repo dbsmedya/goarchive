@@ -50,6 +50,7 @@ type CopyPhase struct {
 
 const defaultCopyBatchSize = 200
 const mysqlErrDuplicateEntry = 1062
+const maxPlaceholders = 65535
 
 // ErrDestinationDuplicate is returned when strict INSERT sees a destination duplicate.
 type ErrDestinationDuplicate struct {
@@ -301,7 +302,9 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 }
 
 // copyChunk fetches one chunk of rows from source and inserts them into dest
-// within tx as a single INSERT statement.
+// within tx. Rows are inserted via one or more INSERTs — split into
+// sub-batches of at most maxRowsPerInsert(len(columns)) rows so no single
+// statement exceeds MySQL's 65,535-placeholder limit.
 func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
 	pkColumn := cp.graph.GetPK(table)
 
@@ -352,11 +355,52 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 		return 0, nil
 	}
 
-	insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowsInBatch)
-	if cp.strictInsert {
-		insertQuery = cp.buildInsertBatchQuery(table, columns, rowsInBatch)
+	// MySQL hard-limits a single prepared statement to 65,535 placeholders.
+	// A chunk whose columns*rowsInBatch would exceed that is split into
+	// multiple INSERTs, each within the clamp, so wide tables never abort a
+	// run that could otherwise succeed with smaller INSERTs.
+	maxRows := maxRowsPerInsert(len(columns))
+	var rowsCopied int64
+	for off := 0; off < rowsInBatch; off += maxRows {
+		n := rowsInBatch - off
+		if n > maxRows {
+			n = maxRows
+		}
+		vals := batchValues[off*len(columns) : (off+n)*len(columns)]
+		affected, err := cp.execInsertBatch(ctx, tx, table, columns, n, vals)
+		if err != nil {
+			return rowsCopied, err
+		}
+		rowsCopied += affected
 	}
-	result, err := tx.ExecContext(ctx, insertQuery, batchValues...)
+	return rowsCopied, nil
+}
+
+// maxRowsPerInsert returns the largest number of rows whose combined
+// placeholders (rows × columnCount) stay within MySQL's 65,535-placeholder
+// limit for a single prepared statement. Always returns at least 1 so a
+// single row can still be inserted even for an (impossibly) wide table.
+func maxRowsPerInsert(columnCount int) int {
+	if columnCount <= 0 {
+		return 1
+	}
+	n := maxPlaceholders / columnCount
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// execInsertBatch inserts rowCount rows (values already flattened in
+// row-major order, len == rowCount*len(columns)) into table within tx, using
+// INSERT IGNORE or strict INSERT per cp.strictInsert, and maps a strict-mode
+// duplicate to *ErrDestinationDuplicate. Returns RowsAffected.
+func (cp *CopyPhase) execInsertBatch(ctx context.Context, tx *sql.Tx, table string, columns []string, rowCount int, values []interface{}) (int64, error) {
+	insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowCount)
+	if cp.strictInsert {
+		insertQuery = cp.buildInsertBatchQuery(table, columns, rowCount)
+	}
+	result, err := tx.ExecContext(ctx, insertQuery, values...)
 	if err != nil {
 		if cp.strictInsert {
 			var mysqlErr *mysql.MySQLError

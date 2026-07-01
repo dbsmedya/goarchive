@@ -756,7 +756,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.4.0-community` (stable for the scope below)
+- **Version**: `1.5.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
@@ -848,6 +848,13 @@ should be aware of the following known limits before pointing it at real data:
   log tables (`archiver_job_log_<id>`) accumulate over time as jobs are created;
   a DBA may `DROP` or `TRUNCATE` them for housekeeping (evidence rows are not
   deleted automatically).
+- **Upgrade caveat: config identifiers are now restricted to `[A-Za-z0-9_]+`.**
+  `root_table`, `primary_key`, relation `table`/`foreign_key`/`primary_key`, and
+  `job_schema` are validated against this pattern at config load. Identifiers
+  using `$`, dots (e.g. a dotted `schema.table` name), or other characters that
+  are legal in MySQL but fall outside this pattern previously loaded and will
+  now fail with a hard config-load error — rename the identifier before
+  upgrading.
 
 ### What's Included in Community
 

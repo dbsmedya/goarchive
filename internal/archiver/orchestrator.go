@@ -450,7 +450,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			}
 		}
 		batchStats, err := o.processBatch(ctx, rootIDs, batchFull, true /* advanceCheckpoint */, checkpoint,
-			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, lagMonitor)
 		if err != nil {
 			return fail("processBatch failed: %w", err)
 		}
@@ -511,6 +511,7 @@ func (o *ArchiveOrchestrator) processBatch(
 	deletePhase *DeletePhase,
 	fetcher *RootIDFetcher,
 	resumeMgr *ResumeManager,
+	lagMonitor lagWaiter,
 ) (*BatchStats, error) {
 	stats := &BatchStats{}
 	if len(rootIDs) == 0 {
@@ -544,6 +545,16 @@ func (o *ArchiveOrchestrator) processBatch(
 		// T1.5: durable "copy+verify succeeded, safe to delete" marker.
 		if err := resumeMgr.MarkBatchCopied(ctx, o.jobName, rootIDs); err != nil {
 			return stats, fmt.Errorf("mark batch copied failed: %w", err)
+		}
+	}
+
+	// Re-check replication lag immediately before the binlog-heavy delete phase
+	// (issue #2). The pre-batch check above can be stale by now: copy+verify may
+	// have taken many seconds, during which lag can climb back above threshold.
+	// Fires in BOTH batchFull and batchDeleteOnly (delete-only replay) modes.
+	if lagMonitor != nil {
+		if err := lagMonitor.WaitForLag(ctx); err != nil {
+			return stats, fmt.Errorf("lag monitor error before delete: %w", err)
 		}
 	}
 
@@ -732,7 +743,7 @@ func (o *ArchiveOrchestrator) recoverChunks(
 			}
 		}
 		batchStats, err := o.processBatch(ctx, typed, mode, false /* advanceCheckpoint */, checkpoint,
-			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr)
+			discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, lagMonitor)
 		if err != nil {
 			return fmt.Errorf("recovery processBatch failed: %w", err)
 		}
