@@ -11,7 +11,7 @@ import (
 
 // Version information (set via ldflags at build time)
 var (
-	Version = "1.5.0-community"
+	Version = "1.5.1-community"
 	Commit  = "unknown"
 )
 

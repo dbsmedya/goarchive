@@ -237,6 +237,10 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		return fail("failed to create verifier: %w", err)
 	}
 
+	// Honor processing.batch_size for copy/verify/resume chunking, not just the
+	// root fetch (issue #8, Problem 2). Must run before replay and the batch loop.
+	o.applyChunkSizing(copyPhase, dataVerifier, resumeMgr)
+
 	if shouldResume {
 		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, copyPhase, dataVerifier, fetcher, result); err != nil {
 			return fail("pending replay failed: %w", err)
@@ -361,6 +365,17 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 		result.RecordsCopied += copied
 	}
 	return nil
+}
+
+// applyChunkSizing wires the effective processing.batch_size into copy-only's
+// copy, verify, and resume-bookkeeping chunk sizes, mirroring the archive
+// orchestrator (orchestrator.go). Without it copy-only silently pins copy chunks
+// at defaultCopyBatchSize (200) and verify/resume chunks at 1000, ignoring the
+// operator's batch_size (issue #8, Problem 2).
+func (o *CopyOnlyOrchestrator) applyChunkSizing(copyPhase *CopyPhase, dataVerifier *verifier.Verifier, resumeMgr *ResumeManager) {
+	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
+	dataVerifier.SetChunkSize(o.processingCfg.BatchSize)
+	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
 }
 
 func (o *CopyOnlyOrchestrator) processCopyOnlyRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, resumeMgr *ResumeManager, result *CopyOnlyResult) (int64, error) {

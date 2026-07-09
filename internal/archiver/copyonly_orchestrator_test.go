@@ -346,3 +346,49 @@ func TestCopyOnlyOrchestrator_DisplayInfoOrPrompt_ForceAccepted(t *testing.T) {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
+
+// TestCopyOnlyOrchestrator_WiresBatchSizeIntoChunking guards issue #8 Problem 2:
+// copy-only must feed processing.batch_size into its copy, verify, and
+// resume-bookkeeping chunk sizes (as the archive orchestrator does). Without the
+// wiring, copy chunks stay pinned at defaultCopyBatchSize (200) and verify/resume
+// chunks at 1000, so tuning batch_size for a copy-only job silently changes only
+// the root fetch.
+func TestCopyOnlyOrchestrator_WiresBatchSizeIntoChunking(t *testing.T) {
+	sourceDB, _, _ := sqlmock.New()
+	defer func() { _ = sourceDB.Close() }()
+	destDB, _, _ := sqlmock.New()
+	defer func() { _ = destDB.Close() }()
+	archDB, _, _ := sqlmock.New()
+	defer func() { _ = archDB.Close() }()
+
+	g := createSimpleGraph()
+	log := logger.NewDefault()
+
+	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
+
+	const batchSize = 37
+	o := &CopyOnlyOrchestrator{
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: batchSize},
+	}
+
+	// Precondition: the phases sit at their built-in defaults, proving batch_size
+	// is otherwise ignored.
+	if copyPhase.effectiveBatchSize() == batchSize {
+		t.Fatal("precondition failed: copy phase already at batch_size before wiring")
+	}
+
+	o.applyChunkSizing(copyPhase, dataVerifier, resumeMgr)
+
+	if got := copyPhase.effectiveBatchSize(); got != batchSize {
+		t.Errorf("copy chunk size = %d, want %d (batch_size ignored)", got, batchSize)
+	}
+	if got := dataVerifier.GetChunkSize(); got != batchSize {
+		t.Errorf("verify chunk size = %d, want %d (batch_size ignored)", got, batchSize)
+	}
+	if got := resumeMgr.effectiveChunkSize(); got != batchSize {
+		t.Errorf("resume chunk size = %d, want %d (batch_size ignored)", got, batchSize)
+	}
+}

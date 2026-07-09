@@ -197,11 +197,12 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			AddRow("orders").
 			AddRow("order_items"))
 
-	// Primary key column existence checks
+	// Primary key column existence checks: each configured PK ("id") exists with
+	// the exact same case, so the lookup returns the matching column name.
 	for i := 0; i < 3; i++ {
-		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
-			WithArgs("testdb", sqlmock.AnyArg(), sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+		mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
+			WithArgs("testdb", sqlmock.AnyArg(), "id").
+			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
 	}
 	// PK shape checks (review P1-1 / 003): each table returns its single PRIMARY
 	// KEY column, which matches the graph's configured PK ("id").
@@ -246,12 +247,13 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
 		WithArgs("testdb", "users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
+	// orders has no "id" column at all: the lookup returns no rows.
+	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
 		WithArgs("testdb", "orders", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
 
 	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"users", "orders"})
 	if err == nil {
@@ -287,6 +289,53 @@ func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
 	}
 	if preflightErr.Check != "PK_COLUMN_CHECK" {
 		t.Fatalf("Expected PK_COLUMN_CHECK, got %s", preflightErr.Check)
+	}
+}
+
+// TestValidatePrimaryKeyColumns_CaseMismatch verifies that a configured
+// primary_key that matches the real column only case-insensitively (e.g.
+// "LOG_ID" vs the actual "log_id") is rejected with a dedicated, clear
+// case-mismatch error — NOT allowed to pass as "exists" and NOT reported via
+// the data-loss-flavored PRIMARY_KEY_CHECK. Column names are case-sensitive.
+func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := graph.NewGraph("events", "LOG_ID")
+	log := logger.NewDefault()
+	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	ctx := context.Background()
+
+	// MySQL's information_schema.COLUMNS collates case-insensitively, so a lookup
+	// for "LOG_ID" returns the real column name "log_id".
+	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
+		WithArgs("testdb", "events", "LOG_ID").
+		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("log_id"))
+
+	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"events"})
+	if err == nil {
+		t.Fatal("expected case-mismatch validation error, got nil")
+	}
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("Expected PreflightError, got %T: %v", err, err)
+	}
+	if preflightErr.Check != "PK_COLUMN_CASE_CHECK" {
+		t.Fatalf("Expected PK_COLUMN_CASE_CHECK, got %s", preflightErr.Check)
+	}
+	// The message must name both the configured and the actual column so the
+	// operator sees it is only a letter-case difference, and must call out
+	// case-sensitivity rather than data loss.
+	msg := err.Error()
+	if !strings.Contains(msg, "LOG_ID") || !strings.Contains(msg, "log_id") {
+		t.Errorf("error should name both configured and actual column, got: %s", msg)
+	}
+	if !strings.Contains(strings.ToLower(msg), "case") {
+		t.Errorf("error should mention case-sensitivity, got: %s", msg)
+	}
+	if strings.Contains(msg, "over-match") {
+		t.Errorf("case-mismatch error should not use the data-loss over-match wording, got: %s", msg)
 	}
 }
 

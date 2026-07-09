@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.5.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.5.1-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
@@ -148,6 +148,15 @@ source but never *stricter*:
 - Config identifiers (`root_table`, `primary_key`, relation `table`/`foreign_key`/
   `primary_key`, and `job_schema`) must match `[A-Za-z0-9_]+`; names using `$`,
   dots, or other characters are rejected at config load (`IsValidIdentifier`).
+- `primary_key` must match the source column's **exact case**
+  (`ValidatePrimaryKeyColumns`, `PK_COLUMN_CHECK`). MySQL's
+  `information_schema.COLUMNS.COLUMN_NAME` collates case-insensitively
+  (`utf8mb3_tolower_ci`), so the check fetches the real column name and compares
+  in Go: a name that matches only case-insensitively (`log_id` vs `LOG_ID`) is
+  rejected with a dedicated `PK_COLUMN_CASE_CHECK` (clear "fix the casing"
+  message), not the data-loss-flavored `PRIMARY_KEY_CHECK`. A configured column
+  that does not exist at all is `PK_COLUMN_CHECK`; a real column that exists but
+  is not the table's PRIMARY KEY is `PRIMARY_KEY_CHECK`.
 - Legacy old-shape tracking tables are detected at startup and rejected with
   upgrade guidance — there is no auto-migration.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
