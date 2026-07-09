@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT RELEASE_VERSION below when releasing
 # Or override per-build with: make build VERSION=1.2.3
-RELEASE_VERSION := 1.5.0-community
+RELEASE_VERSION := 1.5.1-community
 # Use the exact git tag when building from a tagged release commit, otherwise
 # fall back to the pinned RELEASE_VERSION above.
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || echo "$(RELEASE_VERSION)")
