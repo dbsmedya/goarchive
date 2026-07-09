@@ -140,6 +140,10 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 	// Throttle deletes (between batch_delete_size chunks) to limit binlog/replication lag.
 	deletePhase.SetSleepSeconds(o.processingCfg.DeleteSleepSeconds)
 
+	// Honor processing.batch_size for resume bookkeeping chunking (issue #8,
+	// Problem 2). Must run before replay and the batch loop.
+	o.applyResumeChunkSizing(resumeMgr)
+
 	if shouldResume {
 		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, deletePhase, fetcher); err != nil {
 			return nil, fmt.Errorf("pending replay failed: %w", err)
@@ -238,6 +242,16 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 		}
 	}
 	return nil
+}
+
+// applyResumeChunkSizing wires processing.batch_size into purge's
+// resume-bookkeeping chunk size. Purge has no copy/verify phase — discovery and
+// delete already receive batch_size / batch_delete_size directly — but the resume
+// bookkeeping would otherwise pin at the 1000 default, ignoring batch_size.
+// Mirrors archive/copy-only so batch_size is honored consistently (issue #8,
+// Problem 2).
+func (o *PurgeOrchestrator) applyResumeChunkSizing(resumeMgr *ResumeManager) {
+	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
 }
 
 func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher, resumeMgr *ResumeManager) (int64, error) {
