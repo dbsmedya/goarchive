@@ -2203,6 +2203,61 @@ func TestValidateJobSchemaPermissions_OnlyCreateMissing(t *testing.T) {
 	}
 }
 
+// TestValidateNoInvisibleColumns_Rejected proves a participating table with an
+// INVISIBLE column is rejected: SELECT * would silently omit it from both the
+// copy and the verification hash, so it must be caught before any archive.
+func TestValidateNoInvisibleColumns_Rejected(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	ctx := context.Background()
+
+	// The check's query filters EXTRA LIKE '%INVISIBLE%', so it only ever
+	// returns invisible columns.
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
+			AddRow("orders", "secret_payload"))
+
+	err := checker.ValidateNoInvisibleColumns(ctx, []string{"users", "orders"})
+	if err == nil {
+		t.Fatal("expected INVISIBLE_COLUMN_CHECK for a participating invisible column, got nil")
+	}
+	pfErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pfErr.Check != "INVISIBLE_COLUMN_CHECK" {
+		t.Fatalf("expected INVISIBLE_COLUMN_CHECK, got %q: %v", pfErr.Check, err)
+	}
+	if !strings.Contains(err.Error(), "orders.secret_payload") {
+		t.Fatalf("expected error to name the offending column orders.secret_payload, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestValidateNoInvisibleColumns_Success is the negative control: no invisible
+// columns among the participating tables passes.
+func TestValidateNoInvisibleColumns_Success(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	ctx := context.Background()
+
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}))
+
+	if err := checker.ValidateNoInvisibleColumns(ctx, []string{"users", "orders"}); err != nil {
+		t.Fatalf("expected no error when no invisible columns are present, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
 // ============================================================================
 // Integration Tests
 // ============================================================================

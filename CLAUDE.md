@@ -179,6 +179,16 @@ source but never *stricter*:
   is from the *visibility* check only: `copy-only` still runs `FK_COVERAGE_CHECK`,
   so a `copy-only` run by a global-privileged account is still blocked by an
   uncovered cross-schema incoming FK (`--skip-validate-preflight` bypasses it).
+- `INVISIBLE_COLUMN_CHECK` hard-fails if any participating (graph) table has an
+  `INVISIBLE` column. Rows are copied with `SELECT *`, which MySQL omits invisible
+  columns from, so their stored values would be silently dropped from the copy
+  **and** the verification hash and then deleted from the source (issue #23).
+  Detected via `information_schema.COLUMNS.EXTRA` (catches plain `INVISIBLE` and
+  `STORED GENERATED INVISIBLE`). It is a source structural check that runs for
+  every command that runs preflight — `archive`, `purge`, `copy-only`, `dry-run`,
+  and `validate`. Fix: make the column visible (`ALTER TABLE … ALTER COLUMN …
+  SET VISIBLE`) or drop the table from the archive until explicit-column support
+  exists.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
   bypasses it (DANGEROUS).
 

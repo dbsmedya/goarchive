@@ -816,6 +816,13 @@ should be aware of the following known limits before pointing it at real data:
   preflight with `--skip-validate-preflight` (at your own risk); `dry-run` and
   `validate` have no skip flag and always enforce it. (`copy-only` also accepts
   the flag but is exempt from this check regardless.)
+- **Invisible columns are not supported yet (fails preflight).** GoArchive copies
+  rows with `SELECT *`, which excludes MySQL `INVISIBLE` columns, so their values
+  would be silently dropped from both the copy and the verification hash and then
+  deleted from the source. Preflight therefore hard-fails
+  (`INVISIBLE_COLUMN_CHECK`) if any archived table has an invisible column — plain
+  or generated. Make the column visible (`ALTER TABLE … ALTER COLUMN … SET
+  VISIBLE`) or exclude the table until explicit-column support lands.
 - **Trigger override is explicit.** For schemas with DELETE triggers (e.g.
   Sakila's `del_film`), `archive` and `purge` require `--force-triggers` after
   you've reviewed what those triggers do. `copy-only` skips DELETE-trigger
