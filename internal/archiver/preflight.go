@@ -748,8 +748,9 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 	var cascadeRules []string
 	for _, fk := range fks {
 		if fk.OnDelete == "CASCADE" {
-			cascadeRules = append(cascadeRules, fmt.Sprintf("%s.%s->%s.%s",
-				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn))
+			cascadeRules = append(cascadeRules, fmt.Sprintf("%s.%s.%s->%s.%s.%s",
+				fk.TableSchema, fk.Table, fk.Column,
+				fk.ReferencedTableSchema, fk.ReferencedTable, fk.ReferencedColumn))
 		}
 	}
 
