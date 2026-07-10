@@ -51,14 +51,16 @@ type TriggerCheckResult struct {
 // GA-P4-F3-T3: FK index check
 // GA-P4-F3-T6: CASCADE rule warning
 type ForeignKeyResult struct {
-	Table            string
-	ConstraintName   string
-	Column           string
-	ReferencedTable  string
-	ReferencedColumn string
-	OnDelete         string // CASCADE, SET NULL, RESTRICT, etc.
-	OnUpdate         string
-	Indexed          bool // Whether the FK column has an index
+	TableSchema           string
+	Table                 string
+	ConstraintName        string
+	Column                string
+	ReferencedTableSchema string
+	ReferencedTable       string
+	ReferencedColumn      string
+	OnDelete              string // CASCADE, SET NULL, RESTRICT, etc.
+	OnUpdate              string
+	Indexed               bool // Whether the FK column has an index
 }
 
 // PreflightProfile selects the subset of checks needed for a command.
@@ -133,7 +135,7 @@ func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName, j
 // RunAllChecks runs all preflight checks.
 //
 // GA-P4-F3-T7: Validate command implementation
-func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool) error {
+func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool, enforceFKVisibility bool) error {
 	p.logger.Info("Running preflight checks...")
 
 	// Get all tables from graph
@@ -165,6 +167,14 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		return err
 	}
 
+	// INVISIBLE_COLUMN_CHECK: reject participating INVISIBLE columns. Rows are
+	// copied with SELECT *, which omits invisible columns, so their values would
+	// be silently dropped from the copy and the verification hash and then
+	// deleted from the source (issue #23). Runs for every profile.
+	if err := p.ValidateNoInvisibleColumns(ctx, tables); err != nil {
+		return err
+	}
+
 	// Tracking-schema privileges are needed by every command that writes
 	// archiver_job / per-job logs (archive, purge, copy-only), independent of
 	// the data-table destination checks below.
@@ -193,6 +203,15 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// GA-P4-F3-T3: FK index check
 	if err := p.ValidateForeignKeyIndexes(ctx); err != nil {
 		return err
+	}
+
+	// FK_COVERAGE_VISIBILITY_CHECK: coverage is only trustworthy if we can see
+	// constraints in every schema. Fail closed before relying on it — except for
+	// copy-only, which never deletes from source (no external cascade can fire).
+	if enforceFKVisibility {
+		if err := p.ValidateForeignKeyMetadataVisibility(ctx); err != nil {
+			return err
+		}
 	}
 
 	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
@@ -230,7 +249,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 //
 // GA-P4-F3-T7: Validate command implementation
 func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool) error {
-	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers)
+	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers, true)
 }
 
 // ValidateRootPKNumeric ensures the root table primary key is an integer type.
@@ -472,6 +491,78 @@ func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, tables []s
 	return nil
 }
 
+// ValidateNoInvisibleColumns rejects any participating (graph) table that has an
+// INVISIBLE column. GoArchive copies rows with SELECT *, which MySQL excludes
+// invisible columns from, so their stored values would be silently dropped from
+// both the destination INSERT and the SHA/count verification and then deleted
+// from the source (issue #23). Until explicit-column support exists, an
+// invisible column in a participating table is a fatal data-loss hazard.
+//
+// EXTRA carries the "INVISIBLE" token for both plain invisible columns
+// (EXTRA = "INVISIBLE") and generated invisible columns
+// (EXTRA = "STORED GENERATED INVISIBLE"), so LIKE '%INVISIBLE%' catches both.
+func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, tables []string) error {
+	p.logger.Debug("Checking for invisible columns...")
+	if len(tables) == 0 {
+		p.logger.Debug("Invisible column check skipped (no tables)")
+		return nil
+	}
+
+	const query = `
+		SELECT TABLE_NAME, COLUMN_NAME
+		FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = ?
+		AND TABLE_NAME IN (?)
+		AND EXTRA LIKE '%INVISIBLE%'`
+
+	placeholders := make([]string, len(tables))
+	args := make([]interface{}, len(tables)+1)
+	args[0] = p.sourceDBName
+	for i, table := range tables {
+		placeholders[i] = "?"
+		args[i+1] = table
+	}
+
+	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
+
+	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query invisible columns: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			p.logger.Warnf("Failed to close rows: %v", err)
+		}
+	}()
+
+	var invisibleColumns []string
+	for rows.Next() {
+		var table, column string
+		if err := rows.Scan(&table, &column); err != nil {
+			return err
+		}
+		invisibleColumns = append(invisibleColumns, fmt.Sprintf("%s.%s", table, column))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(invisibleColumns) > 0 {
+		return &PreflightError{
+			Check: "INVISIBLE_COLUMN_CHECK",
+			Message: "This version of GoArchive does not support INVISIBLE columns. Rows are copied " +
+				"with SELECT *, which omits invisible columns, so their values would be silently dropped " +
+				"from the copy and the verification hash and then deleted from the source. Make these " +
+				"columns visible (ALTER TABLE ... ALTER COLUMN ... SET VISIBLE) or remove these tables " +
+				"from the archive until explicit-column support exists",
+			Tables: invisibleColumns,
+		}
+	}
+
+	p.logger.Debug("Invisible column check PASSED (no invisible columns)")
+	return nil
+}
+
 // ValidateForeignKeyIndexes checks that all foreign key columns have indexes.
 //
 // GA-P4-F3-T3: FK index check
@@ -496,7 +587,7 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 
 	var unindexedFKs []string
 	for _, fk := range fks {
-		if !graphTableSet[fk.Table] {
+		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			continue
 		}
 		if !fk.Indexed {
@@ -516,6 +607,13 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 	return nil
 }
 
+// inGraph reports whether (schema, table) is a node in the archive graph. Graph
+// nodes always live in the source schema, so a same-named table in another
+// schema is NOT in the graph.
+func (p *PreflightChecker) inGraph(schema, table string, set map[string]bool) bool {
+	return schema == p.sourceDBName && set[table]
+}
+
 // getForeignKeys retrieves all foreign key constraints for tables in the graph.
 func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResult, error) {
 	if p.fkCacheLoaded {
@@ -530,9 +628,11 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 
 	const query = `
 		SELECT
+			kcu.TABLE_SCHEMA,
 			kcu.TABLE_NAME,
 			kcu.CONSTRAINT_NAME,
 			kcu.COLUMN_NAME,
+			kcu.REFERENCED_TABLE_SCHEMA,
 			kcu.REFERENCED_TABLE_NAME,
 			kcu.REFERENCED_COLUMN_NAME,
 			rc.DELETE_RULE,
@@ -541,20 +641,24 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 		JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
 			ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
 			AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-		WHERE kcu.TABLE_SCHEMA = ?
-		AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-		AND (kcu.TABLE_NAME IN (?) OR kcu.REFERENCED_TABLE_NAME IN (?))`
+		WHERE kcu.REFERENCED_TABLE_NAME IS NOT NULL
+		AND (
+			(kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME IN (?))
+			OR (kcu.REFERENCED_TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IN (?))
+		)`
 
 	// Build placeholders
 	placeholders := make([]string, len(tables))
-	args := make([]interface{}, 0, (len(tables)*2)+1)
-	args = append(args, p.sourceDBName)
 	for i := range tables {
 		placeholders[i] = "?"
 	}
+	// Arg order matches placeholder order: branch-1 schema+tables, branch-2 schema+tables.
+	args := make([]interface{}, 0, 2*(len(tables)+1))
+	args = append(args, p.sourceDBName)
 	for _, table := range tables {
 		args = append(args, table)
 	}
+	args = append(args, p.sourceDBName)
 	for _, table := range tables {
 		args = append(args, table)
 	}
@@ -575,12 +679,16 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 	var results []ForeignKeyResult
 	for rows.Next() {
 		var fk ForeignKeyResult
-		if err := rows.Scan(&fk.Table, &fk.ConstraintName, &fk.Column, &fk.ReferencedTable, &fk.ReferencedColumn, &fk.OnDelete, &fk.OnUpdate); err != nil {
+		if err := rows.Scan(
+			&fk.TableSchema, &fk.Table, &fk.ConstraintName, &fk.Column,
+			&fk.ReferencedTableSchema, &fk.ReferencedTable, &fk.ReferencedColumn,
+			&fk.OnDelete, &fk.OnUpdate,
+		); err != nil {
 			return nil, err
 		}
 
 		// FK index checks apply only to tables in the graph.
-		if graphTableSet[fk.Table] {
+		if p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			fk.Indexed, err = p.isColumnIndexed(ctx, fk.Table, fk.Column)
 			if err != nil {
 				return nil, fmt.Errorf("failed to check index for %s.%s: %w", fk.Table, fk.Column, err)
@@ -720,8 +828,9 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 	var cascadeRules []string
 	for _, fk := range fks {
 		if fk.OnDelete == "CASCADE" {
-			cascadeRules = append(cascadeRules, fmt.Sprintf("%s.%s->%s.%s",
-				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn))
+			cascadeRules = append(cascadeRules, fmt.Sprintf("%s.%s.%s->%s.%s.%s",
+				fk.TableSchema, fk.Table, fk.Column,
+				fk.ReferencedTableSchema, fk.ReferencedTable, fk.ReferencedColumn))
 		}
 	}
 
@@ -736,12 +845,48 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 	return nil
 }
 
+// ValidateForeignKeyMetadataVisibility fails closed when the source account
+// cannot be guaranteed to see foreign keys defined in OTHER schemas. MySQL only
+// exposes a constraint in information_schema.KEY_COLUMN_USAGE to an account with
+// some privilege on the constraint's (child) table, and a schema the account has
+// no privilege on is entirely invisible (not even listed in SCHEMATA). So a
+// global SELECT is the only privilege that guarantees FK_COVERAGE_CHECK saw every
+// incoming cross-schema foreign key.
+func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Context) error {
+	p.logger.Debug("Checking FK metadata visibility...")
+	grantees, err := p.currentGrantees(ctx, p.db)
+	if err != nil {
+		return err
+	}
+	ok, err := p.hasGlobalPrivilege(ctx, p.db, grantees, "SELECT")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &PreflightError{
+			Check: "FK_COVERAGE_VISIBILITY_CHECK",
+			Message: fmt.Sprintf("source account %s lacks a global SELECT privilege, so GoArchive cannot "+
+				"verify there are no foreign keys in other schemas referencing the archive graph (an external "+
+				"ON DELETE CASCADE/SET NULL would delete or mutate uncopied rows). Grant server-wide visibility "+
+				"(GRANT SELECT ON *.* TO <user>) or run preflight as an account that has it.", grantees[0]),
+		}
+	}
+	p.logger.Debug("FK metadata visibility check PASSED (global SELECT present)")
+	return nil
+}
+
 // ValidateForeignKeyCoverage checks that all foreign key constraints referencing
 // tables in the graph are covered by relations in the configuration.
 //
 // This prevents unsafe delete behavior when a table outside the graph has an FK
 // constraint to a table inside the graph. Any uncovered FK is treated as fatal,
 // regardless of ON DELETE rule (CASCADE/RESTRICT/NO ACTION/SET NULL).
+//
+// Precondition: coverage is only trustworthy when the connected account can see
+// constraints in every schema. Production callers reach this via RunWithProfile,
+// which runs ValidateForeignKeyMetadataVisibility (FK_COVERAGE_VISIBILITY_CHECK)
+// first for delete-capable commands. Calling this directly (as some tests do)
+// bypasses that guarantee.
 func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error {
 	p.logger.Debug("Checking foreign key coverage...")
 
@@ -766,9 +911,10 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 	}
 	var uncovered []uncoveredFK
 	for _, fk := range fks {
-		if graphTableSet[fk.ReferencedTable] && !graphTableSet[fk.Table] {
+		if p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) &&
+			!p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			uncovered = append(uncovered, uncoveredFK{
-				Table:           fk.Table,
+				Table:           fk.TableSchema + "." + fk.Table,
 				Constraint:      fk.ConstraintName,
 				Column:          fk.Column,
 				ReferencedTable: fk.ReferencedTable,
@@ -826,7 +972,8 @@ func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context) error
 	var messages []string
 	for _, fk := range fks {
 		// Only check FKs where BOTH tables are in the graph
-		if !graphTableSet[fk.Table] || !graphTableSet[fk.ReferencedTable] {
+		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) ||
+			!p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) {
 			continue
 		}
 
@@ -1271,6 +1418,25 @@ func (p *PreflightChecker) tablesMissingPrivilege(ctx context.Context, db *sql.D
 		}
 	}
 	return missing, nil
+}
+
+// hasGlobalPrivilege reports whether any grantee holds priv at global scope
+// (information_schema.USER_PRIVILEGES). GRANT ALL is expanded by MySQL into
+// individual PRIVILEGE_TYPE rows, so matching the specific type covers it.
+func (p *PreflightChecker) hasGlobalPrivilege(ctx context.Context, db *sql.DB, grantees []string, priv string) (bool, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
+	args := make([]interface{}, 0, len(grantees)+1)
+	for _, g := range grantees {
+		args = append(args, g)
+	}
+	args = append(args, priv)
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
+		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
+	var count int
+	if err := db.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("failed to check global %s privilege: %w", priv, err)
+	}
+	return count > 0, nil
 }
 
 // ValidateSourceDeletePermissions checks the source account can DELETE from

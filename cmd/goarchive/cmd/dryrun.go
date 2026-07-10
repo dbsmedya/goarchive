@@ -109,7 +109,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	// not at archive time. Workflow: validate -> dry-run -> archive.
 	verification := jobCfg.GetJobVerification(cfg.Verification)
 	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "dry-run",
-		verification, archiver.PreflightProfileNonDestructive, false, false); err != nil {
+		verification, archiver.PreflightProfileNonDestructive, false, true, false); err != nil {
 		return err
 	}
 

@@ -96,7 +96,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
 	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "copy-only", jobCfg.GetJobVerification(cfg.Verification),
-		archiver.PreflightProfileNonDestructive, false, copyOnlySkipValidatePreflight); err != nil {
+		archiver.PreflightProfileNonDestructive, false, false, copyOnlySkipValidatePreflight); err != nil {
 		return err
 	}
 

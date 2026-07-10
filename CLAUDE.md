@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.5.1-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.6.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
@@ -159,6 +159,36 @@ source but never *stricter*:
   is not the table's PRIMARY KEY is `PRIMARY_KEY_CHECK`.
 - Legacy old-shape tracking tables are detected at startup and rejected with
   upgrade guidance — there is no auto-migration.
+- `FK_COVERAGE_CHECK` inspects **incoming** foreign keys by *referenced* schema,
+  so a constraint defined in another schema that references an in-graph table is
+  detected and hard-fails for every ON DELETE rule (CASCADE/SET NULL/RESTRICT/NO
+  ACTION). Cross-schema children cannot be represented in the graph (identifiers
+  forbid `schema.table`), so any such incoming FK is fatal.
+- `FK_COVERAGE_VISIBILITY_CHECK` fails closed when the source account lacks a
+  **global SELECT** privilege. MySQL only exposes a constraint in
+  `information_schema` to an account privileged on the child table, and an
+  unprivileged schema is invisible even in `SCHEMATA`, so without global SELECT
+  the coverage check cannot prove it saw every incoming cross-schema FK. It is
+  enforced for the commands that delete from source or preview such a delete —
+  `archive`, `purge`, `dry-run`, and `validate` — and **skipped for `copy-only`**,
+  which never issues a source DELETE (no external cascade can fire). Run those
+  commands as an account with `SELECT ON *.*`. `archive` and `purge` can bypass
+  this check (and all preflight) with `--skip-validate-preflight` (DANGEROUS);
+  `dry-run` and `validate` have no skip flag and always enforce it. `copy-only`
+  also accepts the flag but is exempt from this check regardless — the exemption
+  is from the *visibility* check only: `copy-only` still runs `FK_COVERAGE_CHECK`,
+  so a `copy-only` run by a global-privileged account is still blocked by an
+  uncovered cross-schema incoming FK (`--skip-validate-preflight` bypasses it).
+- `INVISIBLE_COLUMN_CHECK` hard-fails if any participating (graph) table has an
+  `INVISIBLE` column. Rows are copied with `SELECT *`, which MySQL omits invisible
+  columns from, so their stored values would be silently dropped from the copy
+  **and** the verification hash and then deleted from the source (issue #23).
+  Detected via `information_schema.COLUMNS.EXTRA` (catches plain `INVISIBLE` and
+  `STORED GENERATED INVISIBLE`). It is a source structural check that runs for
+  every command that runs preflight — `archive`, `purge`, `copy-only`, `dry-run`,
+  and `validate`. Fix: make the column visible (`ALTER TABLE … ALTER COLUMN …
+  SET VISIBLE`) or drop the table from the archive until explicit-column support
+  exists.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
   bypasses it (DANGEROUS).
 

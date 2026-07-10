@@ -118,7 +118,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
 	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "purge", config.VerificationConfig{},
-		archiver.PreflightProfileSourceOnly, purgeForceTriggers, purgeSkipValidatePreflight); err != nil {
+		archiver.PreflightProfileSourceOnly, purgeForceTriggers, true, purgeSkipValidatePreflight); err != nil {
 		return err
 	}
 
