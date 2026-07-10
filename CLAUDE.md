@@ -159,6 +159,23 @@ source but never *stricter*:
   is not the table's PRIMARY KEY is `PRIMARY_KEY_CHECK`.
 - Legacy old-shape tracking tables are detected at startup and rejected with
   upgrade guidance — there is no auto-migration.
+- `FK_COVERAGE_CHECK` inspects **incoming** foreign keys by *referenced* schema,
+  so a constraint defined in another schema that references an in-graph table is
+  detected and hard-fails for every ON DELETE rule (CASCADE/SET NULL/RESTRICT/NO
+  ACTION). Cross-schema children cannot be represented in the graph (identifiers
+  forbid `schema.table`), so any such incoming FK is fatal.
+- `FK_COVERAGE_VISIBILITY_CHECK` fails closed when the source account lacks a
+  **global SELECT** privilege. MySQL only exposes a constraint in
+  `information_schema` to an account privileged on the child table, and an
+  unprivileged schema is invisible even in `SCHEMATA`, so without global SELECT
+  the coverage check cannot prove it saw every incoming cross-schema FK. It is
+  enforced for the commands that delete from source or preview such a delete —
+  `archive`, `purge`, `dry-run`, and `validate` — and **skipped for `copy-only`**,
+  which never issues a source DELETE (no external cascade can fire). Run those
+  commands as an account with `SELECT ON *.*`. `archive` and `purge` can bypass
+  this check (and all preflight) with `--skip-validate-preflight` (DANGEROUS);
+  `dry-run` and `validate` have no skip flag and always enforce it. `copy-only`
+  also accepts the flag but is exempt from this check regardless.
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
   bypasses it (DANGEROUS).
 

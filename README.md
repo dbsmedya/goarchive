@@ -798,6 +798,18 @@ should be aware of the following known limits before pointing it at real data:
   remains useful for inspecting issues before an operational run. Use
   `--skip-validate-preflight` only for documented recovery scenarios after
   manually verifying schema safety.
+- **Cross-schema FK coverage requires a global-SELECT preflight account.**
+  `FK_COVERAGE_CHECK` finds incoming foreign keys from other schemas via
+  `information_schema`, which MySQL only exposes to accounts privileged on the
+  referencing (child) table. Because an unprivileged schema is invisible, the
+  only way to guarantee complete detection is a global `SELECT ON *.*`. GoArchive
+  therefore hard-fails preflight (`FK_COVERAGE_VISIBILITY_CHECK`) for the
+  source-deleting commands (`archive`, `purge`, `dry-run`, `validate`) when the
+  source account lacks it. `copy-only` is exempt — it never deletes from source.
+  Grant global SELECT to the preflight account. `archive`/`purge` can bypass
+  preflight with `--skip-validate-preflight` (at your own risk); `dry-run` and
+  `validate` have no skip flag and always enforce it. (`copy-only` also accepts
+  the flag but is exempt from this check regardless.)
 - **Trigger override is explicit.** For schemas with DELETE triggers (e.g.
   Sakila's `del_film`), `archive` and `purge` require `--force-triggers` after
   you've reviewed what those triggers do. `copy-only` skips DELETE-trigger
