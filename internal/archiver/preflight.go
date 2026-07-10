@@ -51,14 +51,16 @@ type TriggerCheckResult struct {
 // GA-P4-F3-T3: FK index check
 // GA-P4-F3-T6: CASCADE rule warning
 type ForeignKeyResult struct {
-	Table            string
-	ConstraintName   string
-	Column           string
-	ReferencedTable  string
-	ReferencedColumn string
-	OnDelete         string // CASCADE, SET NULL, RESTRICT, etc.
-	OnUpdate         string
-	Indexed          bool // Whether the FK column has an index
+	TableSchema           string
+	Table                 string
+	ConstraintName        string
+	Column                string
+	ReferencedTableSchema string
+	ReferencedTable       string
+	ReferencedColumn      string
+	OnDelete              string // CASCADE, SET NULL, RESTRICT, etc.
+	OnUpdate              string
+	Indexed               bool // Whether the FK column has an index
 }
 
 // PreflightProfile selects the subset of checks needed for a command.
@@ -496,7 +498,7 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 
 	var unindexedFKs []string
 	for _, fk := range fks {
-		if !graphTableSet[fk.Table] {
+		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			continue
 		}
 		if !fk.Indexed {
@@ -516,6 +518,13 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error 
 	return nil
 }
 
+// inGraph reports whether (schema, table) is a node in the archive graph. Graph
+// nodes always live in the source schema, so a same-named table in another
+// schema is NOT in the graph.
+func (p *PreflightChecker) inGraph(schema, table string, set map[string]bool) bool {
+	return schema == p.sourceDBName && set[table]
+}
+
 // getForeignKeys retrieves all foreign key constraints for tables in the graph.
 func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResult, error) {
 	if p.fkCacheLoaded {
@@ -530,9 +539,11 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 
 	const query = `
 		SELECT
+			kcu.TABLE_SCHEMA,
 			kcu.TABLE_NAME,
 			kcu.CONSTRAINT_NAME,
 			kcu.COLUMN_NAME,
+			kcu.REFERENCED_TABLE_SCHEMA,
 			kcu.REFERENCED_TABLE_NAME,
 			kcu.REFERENCED_COLUMN_NAME,
 			rc.DELETE_RULE,
@@ -541,20 +552,24 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 		JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
 			ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
 			AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-		WHERE kcu.TABLE_SCHEMA = ?
-		AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
-		AND (kcu.TABLE_NAME IN (?) OR kcu.REFERENCED_TABLE_NAME IN (?))`
+		WHERE kcu.REFERENCED_TABLE_NAME IS NOT NULL
+		AND (
+			(kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME IN (?))
+			OR (kcu.REFERENCED_TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IN (?))
+		)`
 
 	// Build placeholders
 	placeholders := make([]string, len(tables))
-	args := make([]interface{}, 0, (len(tables)*2)+1)
-	args = append(args, p.sourceDBName)
 	for i := range tables {
 		placeholders[i] = "?"
 	}
+	// Arg order matches placeholder order: branch-1 schema+tables, branch-2 schema+tables.
+	args := make([]interface{}, 0, 2*(len(tables)+1))
+	args = append(args, p.sourceDBName)
 	for _, table := range tables {
 		args = append(args, table)
 	}
+	args = append(args, p.sourceDBName)
 	for _, table := range tables {
 		args = append(args, table)
 	}
@@ -575,12 +590,16 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 	var results []ForeignKeyResult
 	for rows.Next() {
 		var fk ForeignKeyResult
-		if err := rows.Scan(&fk.Table, &fk.ConstraintName, &fk.Column, &fk.ReferencedTable, &fk.ReferencedColumn, &fk.OnDelete, &fk.OnUpdate); err != nil {
+		if err := rows.Scan(
+			&fk.TableSchema, &fk.Table, &fk.ConstraintName, &fk.Column,
+			&fk.ReferencedTableSchema, &fk.ReferencedTable, &fk.ReferencedColumn,
+			&fk.OnDelete, &fk.OnUpdate,
+		); err != nil {
 			return nil, err
 		}
 
 		// FK index checks apply only to tables in the graph.
-		if graphTableSet[fk.Table] {
+		if p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			fk.Indexed, err = p.isColumnIndexed(ctx, fk.Table, fk.Column)
 			if err != nil {
 				return nil, fmt.Errorf("failed to check index for %s.%s: %w", fk.Table, fk.Column, err)
@@ -742,6 +761,12 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 // This prevents unsafe delete behavior when a table outside the graph has an FK
 // constraint to a table inside the graph. Any uncovered FK is treated as fatal,
 // regardless of ON DELETE rule (CASCADE/RESTRICT/NO ACTION/SET NULL).
+//
+// Precondition: coverage is only trustworthy when the connected account can see
+// constraints in every schema. Production callers reach this via RunWithProfile,
+// which runs ValidateForeignKeyMetadataVisibility (FK_COVERAGE_VISIBILITY_CHECK)
+// first for delete-capable commands. Calling this directly (as some tests do)
+// bypasses that guarantee.
 func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error {
 	p.logger.Debug("Checking foreign key coverage...")
 
@@ -766,9 +791,10 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error
 	}
 	var uncovered []uncoveredFK
 	for _, fk := range fks {
-		if graphTableSet[fk.ReferencedTable] && !graphTableSet[fk.Table] {
+		if p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) &&
+			!p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
 			uncovered = append(uncovered, uncoveredFK{
-				Table:           fk.Table,
+				Table:           fk.TableSchema + "." + fk.Table,
 				Constraint:      fk.ConstraintName,
 				Column:          fk.Column,
 				ReferencedTable: fk.ReferencedTable,
@@ -826,7 +852,8 @@ func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context) error
 	var messages []string
 	for _, fk := range fks {
 		// Only check FKs where BOTH tables are in the graph
-		if !graphTableSet[fk.Table] || !graphTableSet[fk.ReferencedTable] {
+		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) ||
+			!p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) {
 			continue
 		}
 

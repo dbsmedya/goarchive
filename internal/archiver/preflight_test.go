@@ -530,13 +530,13 @@ func TestValidateForeignKeyIndexes_Success(t *testing.T) {
 	ctx := context.Background()
 
 	// FK query
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
 	// Index checks - both columns have indexes
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
@@ -563,12 +563,12 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	ctx := context.Background()
 
 	// FK query - only one FK to simplify test
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT"))
+		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
 
 	// Index checks - user_id has no index
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
@@ -607,12 +607,12 @@ func TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild(t *testing.T) {
 	// FK query returns one out-of-graph child (audit_log) referencing an
 	// in-graph parent (orders). getForeignKeys does NOT index-check it, so its
 	// Indexed stays false.
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("audit_log", "fk_audit_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+		).AddRow("testdb", "audit_log", "fk_audit_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
 	// No isColumnIndexed query is expected: audit_log is out of graph, so
 	// getForeignKeys skips the index lookup entirely.
@@ -784,13 +784,13 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	ctx := context.Background()
 
 	// FK query with CASCADE
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "CASCADE", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "CASCADE", "RESTRICT"))
+		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "CASCADE", "RESTRICT").
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "CASCADE", "RESTRICT"))
 
 	// Index checks
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
@@ -816,13 +816,13 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 	ctx := context.Background()
 
 	// FK query without CASCADE
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
 	// Index checks
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
@@ -846,7 +846,7 @@ func TestWarnCascadeRules_QueryError(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnError(errors.New("query failed"))
 
 	err := checker.WarnCascadeRules(ctx)
@@ -1383,13 +1383,13 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("external_cascade", "fk_ext_orders_1", "order_id", "orders", "id", "CASCADE", "RESTRICT").
-			AddRow("external_restrict", "fk_ext_orders_2", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "external_cascade", "fk_ext_orders_1", "order_id", "testdb", "orders", "id", "CASCADE", "RESTRICT").
+			AddRow("testdb", "external_restrict", "fk_ext_orders_2", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
 	err := checker.ValidateForeignKeyCoverage(context.Background())
 	if err == nil {
@@ -1408,6 +1408,39 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 	}
 	if !strings.Contains(preflightErr.Error(), "ON DELETE RESTRICT") {
 		t.Fatalf("expected RESTRICT rule in error message, got: %v", preflightErr)
+	}
+}
+
+// TestValidateForeignKeyCoverage_CrossSchemaSameNameChild proves an out-of-graph
+// child in ANOTHER schema that happens to share a name with a graph table
+// (otherdb.orders vs in-graph orders) is still flagged: membership must be
+// schema-aware, not bare-name.
+func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+
+	g := createPreflightTestGraph() // graph = {users, orders, order_items} in "testdb"
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	ctx := context.Background()
+
+	// otherdb.orders (out-of-graph) references in-graph testdb.users.
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"DELETE_RULE", "UPDATE_RULE",
+		}).AddRow("otherdb", "orders", "fk_other_users", "user_id",
+			"testdb", "users", "id", "CASCADE", "RESTRICT"))
+
+	err := checker.ValidateForeignKeyCoverage(ctx)
+	if err == nil {
+		t.Fatal("expected FK_COVERAGE_CHECK for same-name cross-schema child, got nil")
+	}
+	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_CHECK" {
+		t.Fatalf("expected FK_COVERAGE_CHECK, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "otherdb") {
+		t.Fatalf("expected error to qualify the child schema, got: %v", err)
 	}
 }
 
@@ -1434,14 +1467,14 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 
 	// DB reports an FK from item_shipments.item_id -> order_items.item_id
 	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items)
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("item_shipments", "fk_ship_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "item_shipments", "fk_ship_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
 
 	// isColumnIndexed queries for each in-graph FK row
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1484,13 +1517,13 @@ func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
 
 	// isColumnIndexed for each in-graph FK row
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1516,12 +1549,12 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("payments", "fk_pay_orders", "customer_id", "orders", "order_id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
 
 	// isColumnIndexed for payments (in graph)
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1560,12 +1593,12 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("line_items", "fk_line_orders", "order_id", "orders", "id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "line_items", "fk_line_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
 	// isColumnIndexed for line_items (in graph)
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1599,12 +1632,12 @@ func TestValidateInternalFKCoverage_NoInternalFKs(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
 	// Only external FKs returned - no internal ones between graph tables
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("external_table", "fk_ext", "user_id", "users", "id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "external_table", "fk_ext", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err != nil {
@@ -1622,12 +1655,12 @@ func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
 	// Self-referencing FK: categories.parent_id -> categories.id
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("categories", "fk_cat_parent", "parent_id", "categories", "id", "SET NULL", "RESTRICT"))
+			AddRow("testdb", "categories", "fk_cat_parent", "parent_id", "testdb", "categories", "id", "SET NULL", "RESTRICT"))
 
 	// isColumnIndexed for categories (in graph)
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1657,14 +1690,14 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_NAME,").
+	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"table_name", "constraint_name", "column_name",
-			"referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
+			"table_schema", "table_name", "constraint_name", "column_name",
+			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
 		}).
-			AddRow("order_items", "fk_items_orders", "order_id", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("item_shipments", "fk_ship_items", "item_id", "order_items", "item_id", "RESTRICT", "RESTRICT").
-			AddRow("payments", "fk_pay_orders", "customer_id", "orders", "order_id", "RESTRICT", "RESTRICT"))
+			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT").
+			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
 
 	// isColumnIndexed for each in-graph FK row
 	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
@@ -1785,12 +1818,12 @@ func TestIsColumnIndexed_True(t *testing.T) {
 	ctx := context.Background()
 
 	// FK query
-	mock.ExpectQuery("SELECT kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
+			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
+			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
 			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("orders", "fk_orders_users", "user_id", "users", "id", "RESTRICT", "RESTRICT"))
+		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
 
 	// Index exists
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
