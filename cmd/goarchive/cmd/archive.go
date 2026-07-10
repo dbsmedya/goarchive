@@ -120,7 +120,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
 	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "archive", jobCfg.GetJobVerification(cfg.Verification),
-		archiver.PreflightProfileFull, archiveForceTriggers, archiveSkipValidatePreflight); err != nil {
+		archiver.PreflightProfileFull, archiveForceTriggers, true, archiveSkipValidatePreflight); err != nil {
 		return err
 	}
 

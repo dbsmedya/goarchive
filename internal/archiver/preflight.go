@@ -135,7 +135,7 @@ func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName, j
 // RunAllChecks runs all preflight checks.
 //
 // GA-P4-F3-T7: Validate command implementation
-func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool) error {
+func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool, enforceFKVisibility bool) error {
 	p.logger.Info("Running preflight checks...")
 
 	// Get all tables from graph
@@ -197,6 +197,15 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		return err
 	}
 
+	// FK_COVERAGE_VISIBILITY_CHECK: coverage is only trustworthy if we can see
+	// constraints in every schema. Fail closed before relying on it — except for
+	// copy-only, which never deletes from source (no external cascade can fire).
+	if enforceFKVisibility {
+		if err := p.ValidateForeignKeyMetadataVisibility(ctx); err != nil {
+			return err
+		}
+	}
+
 	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
 	// This MUST be checked before triggers - missing relations are a bigger problem
 	if err := p.ValidateForeignKeyCoverage(ctx); err != nil {
@@ -232,7 +241,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 //
 // GA-P4-F3-T7: Validate command implementation
 func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool) error {
-	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers)
+	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers, true)
 }
 
 // ValidateRootPKNumeric ensures the root table primary key is an integer type.
@@ -752,6 +761,36 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 		p.logger.Debug("CASCADE rule check complete (no CASCADE rules found)")
 	}
 
+	return nil
+}
+
+// ValidateForeignKeyMetadataVisibility fails closed when the source account
+// cannot be guaranteed to see foreign keys defined in OTHER schemas. MySQL only
+// exposes a constraint in information_schema.KEY_COLUMN_USAGE to an account with
+// some privilege on the constraint's (child) table, and a schema the account has
+// no privilege on is entirely invisible (not even listed in SCHEMATA). So a
+// global SELECT is the only privilege that guarantees FK_COVERAGE_CHECK saw every
+// incoming cross-schema foreign key.
+func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Context) error {
+	p.logger.Debug("Checking FK metadata visibility...")
+	grantees, err := p.currentGrantees(ctx, p.db)
+	if err != nil {
+		return err
+	}
+	ok, err := p.hasGlobalPrivilege(ctx, p.db, grantees, "SELECT")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &PreflightError{
+			Check: "FK_COVERAGE_VISIBILITY_CHECK",
+			Message: fmt.Sprintf("source account %s lacks a global SELECT privilege, so GoArchive cannot "+
+				"verify there are no foreign keys in other schemas referencing the archive graph (an external "+
+				"ON DELETE CASCADE/SET NULL would delete or mutate uncopied rows). Grant server-wide visibility "+
+				"(GRANT SELECT ON *.* TO <user>) or run preflight as an account that has it.", grantees[0]),
+		}
+	}
+	p.logger.Debug("FK metadata visibility check PASSED (global SELECT present)")
 	return nil
 }
 
@@ -1298,6 +1337,25 @@ func (p *PreflightChecker) tablesMissingPrivilege(ctx context.Context, db *sql.D
 		}
 	}
 	return missing, nil
+}
+
+// hasGlobalPrivilege reports whether any grantee holds priv at global scope
+// (information_schema.USER_PRIVILEGES). GRANT ALL is expanded by MySQL into
+// individual PRIVILEGE_TYPE rows, so matching the specific type covers it.
+func (p *PreflightChecker) hasGlobalPrivilege(ctx context.Context, db *sql.DB, grantees []string, priv string) (bool, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
+	args := make([]interface{}, 0, len(grantees)+1)
+	for _, g := range grantees {
+		args = append(args, g)
+	}
+	args = append(args, priv)
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
+		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
+	var count int
+	if err := db.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
+		return false, fmt.Errorf("failed to check global %s privilege: %w", priv, err)
+	}
+	return count > 0, nil
 }
 
 // ValidateSourceDeletePermissions checks the source account can DELETE from

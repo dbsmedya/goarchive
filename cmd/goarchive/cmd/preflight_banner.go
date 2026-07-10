@@ -38,6 +38,7 @@ func runRuntimePreflight(
 	verification config.VerificationConfig,
 	profile archiver.PreflightProfile,
 	forceTriggers bool,
+	enforceFKVisibility bool,
 	skip bool,
 ) error {
 	if skip {
@@ -64,7 +65,7 @@ func runRuntimePreflight(
 		}
 	}
 	checker.SetVerification(verification)
-	if err := checker.RunWithProfile(ctx, profile, forceTriggers); err != nil {
+	if err := checker.RunWithProfile(ctx, profile, forceTriggers, enforceFKVisibility); err != nil {
 		return fmt.Errorf("preflight checks failed (run 'goarchive validate' for full diagnostics): %w", err)
 	}
 	return nil

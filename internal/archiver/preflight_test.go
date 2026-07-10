@@ -1445,6 +1445,48 @@ func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 }
 
 // ============================================================================
+// ValidateForeignKeyMetadataVisibility Tests
+// ============================================================================
+
+func TestValidateForeignKeyMetadataVisibility_NoGlobalSelect(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+
+	mock.ExpectQuery("SELECT CURRENT_USER").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("app@%"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
+	mock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
+
+	err := checker.ValidateForeignKeyMetadataVisibility(context.Background())
+	if err == nil {
+		t.Fatal("expected FK_COVERAGE_VISIBILITY_CHECK when account lacks global SELECT, got nil")
+	}
+	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_VISIBILITY_CHECK" {
+		t.Fatalf("expected FK_COVERAGE_VISIBILITY_CHECK, got: %v", err)
+	}
+}
+
+func TestValidateForeignKeyMetadataVisibility_GlobalSelectPasses(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+
+	mock.ExpectQuery("SELECT CURRENT_USER").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("root@localhost"))
+	mock.ExpectQuery("SELECT CURRENT_ROLE").
+		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
+	mock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if err := checker.ValidateForeignKeyMetadataVisibility(context.Background()); err != nil {
+		t.Fatalf("expected pass with global SELECT, got: %v", err)
+	}
+}
+
+// ============================================================================
 // ValidateInternalFKCoverage Tests
 // ============================================================================
 
