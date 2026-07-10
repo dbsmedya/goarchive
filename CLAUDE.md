@@ -175,7 +175,10 @@ source but never *stricter*:
   commands as an account with `SELECT ON *.*`. `archive` and `purge` can bypass
   this check (and all preflight) with `--skip-validate-preflight` (DANGEROUS);
   `dry-run` and `validate` have no skip flag and always enforce it. `copy-only`
-  also accepts the flag but is exempt from this check regardless.
+  also accepts the flag but is exempt from this check regardless — the exemption
+  is from the *visibility* check only: `copy-only` still runs `FK_COVERAGE_CHECK`,
+  so a `copy-only` run by a global-privileged account is still blocked by an
+  uncovered cross-schema incoming FK (`--skip-validate-preflight` bypasses it).
 - `archive`/`purge`/`copy-only` run preflight at startup; `--skip-validate-preflight`
   bypasses it (DANGEROUS).
 

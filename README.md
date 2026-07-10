@@ -805,8 +805,14 @@ should be aware of the following known limits before pointing it at real data:
   only way to guarantee complete detection is a global `SELECT ON *.*`. GoArchive
   therefore hard-fails preflight (`FK_COVERAGE_VISIBILITY_CHECK`) for the
   source-deleting commands (`archive`, `purge`, `dry-run`, `validate`) when the
-  source account lacks it. `copy-only` is exempt — it never deletes from source.
-  Grant global SELECT to the preflight account. `archive`/`purge` can bypass
+  source account lacks it. `copy-only` is exempt from this visibility check — it
+  never deletes from source — but it still runs `FK_COVERAGE_CHECK`, so a
+  global-privileged `copy-only` run is likewise blocked by an uncovered
+  cross-schema incoming FK (bypass with `--skip-validate-preflight`). Grant global
+  SELECT to the preflight account. **Upgrade impact:** an existing least-privilege
+  source account that ran cleanly before will now fail this check on the enforcing
+  commands until granted `SELECT ON *.*` — even when there are no cross-schema FKs
+  at all. `archive`/`purge` can bypass
   preflight with `--skip-validate-preflight` (at your own risk); `dry-run` and
   `validate` have no skip flag and always enforce it. (`copy-only` also accepts
   the flag but is exempt from this check regardless.)
