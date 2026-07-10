@@ -112,6 +112,18 @@ func TestIntegrationInvisibleColumn_Rejected(t *testing.T) {
 		assertInvisibleRejected(t, ctx, checker, "doubled")
 	})
 
+	// Invisible PRIMARY KEY (the GIPK-shaped variant): MySQL marks it
+	// EXTRA='INVISIBLE' just like any other invisible column, so it is caught.
+	t.Run("invisible_primary_key", func(t *testing.T) {
+		dropInvTable(ctx, srcDB)
+		if _, err := srcDB.ExecContext(ctx,
+			"CREATE TABLE "+invTable+" (id BIGINT INVISIBLE PRIMARY KEY, "+
+				"val INT) ENGINE=InnoDB"); err != nil {
+			t.Fatalf("create table: %v", err)
+		}
+		assertInvisibleRejected(t, ctx, checker, "id")
+	})
+
 	// Negative control: only visible columns -> passes.
 	t.Run("no_invisible_columns_passes", func(t *testing.T) {
 		dropInvTable(ctx, srcDB)
@@ -124,4 +136,43 @@ func TestIntegrationInvisibleColumn_Rejected(t *testing.T) {
 			t.Fatalf("expected a table with only visible columns to pass, got: %v", err)
 		}
 	})
+}
+
+// TestIntegrationInvisibleColumn_RunWithProfile proves the check is actually
+// wired into the preflight pipeline — not just callable in isolation — so a
+// future refactor of RunWithProfile cannot silently unwire the safety property.
+// It runs the SourceOnly profile (the purge path, no destination needed); the
+// invisible check sits ahead of every profile branch, so passing here proves it
+// runs for all commands (archive/purge/copy-only/dry-run/validate) before any
+// delete.
+func TestIntegrationInvisibleColumn_RunWithProfile(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	defer setup.Close()
+
+	checker, srcDB := invMakeChecker(t, setup)
+	dropInvTable(ctx, srcDB)
+	defer dropInvTable(ctx, srcDB)
+
+	if _, err := srcDB.ExecContext(ctx,
+		"CREATE TABLE "+invTable+" (id BIGINT PRIMARY KEY, "+
+			"payload VARCHAR(255) INVISIBLE DEFAULT 'default-value') ENGINE=InnoDB"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := srcDB.ExecContext(ctx,
+		"INSERT INTO "+invTable+" (id, payload) VALUES (1, 'original-secret')"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	err := checker.RunWithProfile(ctx, PreflightProfileSourceOnly, false, false)
+	if err == nil {
+		t.Fatal("expected RunWithProfile to fail on the participating invisible column, got nil — " +
+			"the check is not wired into the preflight pipeline")
+	}
+	var pfErr *PreflightError
+	if !errors.As(err, &pfErr) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pfErr.Check != "INVISIBLE_COLUMN_CHECK" {
+		t.Fatalf("expected RunWithProfile to fail with INVISIBLE_COLUMN_CHECK, got %q: %v", pfErr.Check, err)
+	}
 }
