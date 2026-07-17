@@ -226,89 +226,6 @@ func TestCalculateInDegrees_ReturnsMapForAllNodes(t *testing.T) {
 	}
 }
 
-func TestGetZeroInDegreeNodes_Single(t *testing.T) {
-	g := NewGraph("users", "id")
-	g.AddNode("orders", &Node{Name: "orders"})
-	g.AddEdge("users", "orders")
-
-	inDegrees := g.CalculateInDegrees()
-	zeroNodes := g.GetZeroInDegreeNodes(inDegrees)
-
-	// Should return only root
-	if len(zeroNodes) != 1 || zeroNodes[0] != "users" {
-		t.Errorf("Expected [users], got %v", zeroNodes)
-	}
-}
-
-func TestGetZeroInDegreeNodes_Multiple(t *testing.T) {
-	// This is an unusual case for our tree structure but test it
-	g := NewGraph("root1", "id")
-	g.AddNode("root2", &Node{Name: "root2"})
-	g.AddNode("child", &Node{Name: "child"})
-	g.AddEdge("root1", "child")
-	g.AddEdge("root2", "child")
-
-	inDegrees := g.CalculateInDegrees()
-	zeroNodes := g.GetZeroInDegreeNodes(inDegrees)
-
-	// Should return both roots
-	if len(zeroNodes) != 2 {
-		t.Errorf("Expected 2 zero in-degree nodes, got %d: %v", len(zeroNodes), zeroNodes)
-	}
-
-	sort.Strings(zeroNodes)
-	if zeroNodes[0] != "root1" || zeroNodes[1] != "root2" {
-		t.Errorf("Expected [root1, root2], got %v", zeroNodes)
-	}
-}
-
-func TestGetZeroInDegreeNodes_None(t *testing.T) {
-	// Create a simple cycle (not possible with builder but test directly)
-	g := &Graph{
-		Nodes: map[string]*Node{
-			"a": {Name: "a"},
-			"b": {Name: "b"},
-		},
-		Children: map[string][]string{
-			"a": {"b"},
-			"b": {"a"},
-		},
-		Parents: map[string][]string{
-			"a": {"b"},
-			"b": {"a"},
-		},
-	}
-
-	inDegrees := g.CalculateInDegrees()
-	zeroNodes := g.GetZeroInDegreeNodes(inDegrees)
-
-	// Should return empty (cycle - no starting point)
-	if len(zeroNodes) != 0 {
-		t.Errorf("Expected 0 zero in-degree nodes, got %d: %v", len(zeroNodes), zeroNodes)
-	}
-}
-
-func TestGetZeroInDegreeNodes_EmptyGraph(t *testing.T) {
-	g := NewGraph("users", "id")
-	inDegrees := g.CalculateInDegrees()
-	zeroNodes := g.GetZeroInDegreeNodes(inDegrees)
-
-	// Should return root
-	if len(zeroNodes) != 1 || zeroNodes[0] != "users" {
-		t.Errorf("Expected [users], got %v", zeroNodes)
-	}
-}
-
-func TestGetZeroInDegreeNodes_EmptyMap(t *testing.T) {
-	g := NewGraph("users", "id")
-	zeroNodes := g.GetZeroInDegreeNodes(map[string]int{})
-
-	// Should return empty
-	if len(zeroNodes) != 0 {
-		t.Errorf("Expected empty result for empty map, got %v", zeroNodes)
-	}
-}
-
 func TestKahnIntegration(t *testing.T) {
 	// Integration test: typical Kahn's algorithm first step
 	// Build graph, calculate in-degrees, get starting nodes
@@ -322,14 +239,6 @@ func TestKahnIntegration(t *testing.T) {
 
 	// Step 1: Calculate in-degrees
 	inDegrees := g.CalculateInDegrees()
-
-	// Step 2: Get zero in-degree nodes
-	zeroNodes := g.GetZeroInDegreeNodes(inDegrees)
-
-	// In Kahn's algorithm, we start with nodes that have no dependencies
-	if len(zeroNodes) != 1 || zeroNodes[0] != "users" {
-		t.Errorf("Expected [users] as starting node, got %v", zeroNodes)
-	}
 
 	// Verify all in-degrees are correct for the algorithm
 	expected := map[string]int{
@@ -351,7 +260,7 @@ func TestCalculateInDegrees_DoesNotModifyGraph(t *testing.T) {
 
 	// Store original state
 	originalNodeCount := g.NodeCount()
-	originalEdgeCount := g.EdgeCount()
+	originalEdgeCount := edgeCount(g)
 
 	// Calculate in-degrees multiple times
 	_ = g.CalculateInDegrees()
@@ -361,7 +270,7 @@ func TestCalculateInDegrees_DoesNotModifyGraph(t *testing.T) {
 	if g.NodeCount() != originalNodeCount {
 		t.Error("CalculateInDegrees modified graph node count")
 	}
-	if g.EdgeCount() != originalEdgeCount {
+	if edgeCount(g) != originalEdgeCount {
 		t.Error("CalculateInDegrees modified graph edge count")
 	}
 }
@@ -396,8 +305,8 @@ func TestNewProcessingQueue(t *testing.T) {
 	if pq == nil {
 		t.Fatal("NewProcessingQueue returned nil")
 	}
-	if pq.Len() != 0 {
-		t.Errorf("Expected empty queue, got length %d", pq.Len())
+	if pq.queue.Len() != 0 {
+		t.Errorf("Expected empty queue, got length %d", pq.queue.Len())
 	}
 	if !pq.IsEmpty() {
 		t.Error("Expected IsEmpty() to return true for new queue")
@@ -407,12 +316,12 @@ func TestNewProcessingQueue(t *testing.T) {
 func TestProcessingQueue_Enqueue(t *testing.T) {
 	pq := NewProcessingQueue()
 	pq.Enqueue("node1")
-	if pq.Len() != 1 {
-		t.Errorf("Expected length 1 after enqueue, got %d", pq.Len())
+	if pq.queue.Len() != 1 {
+		t.Errorf("Expected length 1 after enqueue, got %d", pq.queue.Len())
 	}
 	pq.Enqueue("node2")
-	if pq.Len() != 2 {
-		t.Errorf("Expected length 2 after second enqueue, got %d", pq.Len())
+	if pq.queue.Len() != 2 {
+		t.Errorf("Expected length 2 after second enqueue, got %d", pq.queue.Len())
 	}
 }
 
@@ -427,8 +336,8 @@ func TestProcessingQueue_Dequeue(t *testing.T) {
 	if node != "node1" {
 		t.Errorf("Expected 'node1', got %q", node)
 	}
-	if pq.Len() != 0 {
-		t.Errorf("Expected length 0 after dequeue, got %d", pq.Len())
+	if pq.queue.Len() != 0 {
+		t.Errorf("Expected length 0 after dequeue, got %d", pq.queue.Len())
 	}
 }
 
@@ -461,31 +370,6 @@ func TestProcessingQueue_FIFOOrder(t *testing.T) {
 		}
 		if node != expected {
 			t.Errorf("FIFO order broken: expected %q, got %q", expected, node)
-		}
-	}
-}
-
-func TestProcessingQueue_Len(t *testing.T) {
-	pq := NewProcessingQueue()
-
-	// Test empty queue
-	if pq.Len() != 0 {
-		t.Errorf("Expected length 0, got %d", pq.Len())
-	}
-
-	// Add items
-	for i := 1; i <= 5; i++ {
-		pq.Enqueue("node")
-		if pq.Len() != i {
-			t.Errorf("After %d enqueues, expected length %d, got %d", i, i, pq.Len())
-		}
-	}
-
-	// Remove items
-	for i := 4; i >= 0; i-- {
-		pq.Dequeue()
-		if pq.Len() != i {
-			t.Errorf("After dequeue, expected length %d, got %d", i, pq.Len())
 		}
 	}
 }
@@ -554,8 +438,8 @@ func TestInitializeQueue(t *testing.T) {
 	}
 
 	// Should have only "users" (in-degree 0)
-	if pq.Len() != 1 {
-		t.Errorf("Expected queue length 1, got %d", pq.Len())
+	if pq.queue.Len() != 1 {
+		t.Errorf("Expected queue length 1, got %d", pq.queue.Len())
 	}
 
 	node, ok := pq.Dequeue()
@@ -578,8 +462,8 @@ func TestInitializeQueue_EmptyInDegrees(t *testing.T) {
 	}
 
 	// Should have root node
-	if pq.Len() != 1 {
-		t.Errorf("Expected queue length 1, got %d", pq.Len())
+	if pq.queue.Len() != 1 {
+		t.Errorf("Expected queue length 1, got %d", pq.queue.Len())
 	}
 
 	node, _ := pq.Dequeue()
@@ -629,8 +513,8 @@ func TestInitializeQueue_MultipleZeroInDegree(t *testing.T) {
 	inDegrees := g.CalculateInDegrees()
 	pq := g.InitializeQueue(inDegrees)
 
-	if pq.Len() != 2 {
-		t.Errorf("Expected queue length 2, got %d", pq.Len())
+	if pq.queue.Len() != 2 {
+		t.Errorf("Expected queue length 2, got %d", pq.queue.Len())
 	}
 
 	// Collect both nodes
@@ -663,8 +547,8 @@ func TestKahnSteps1And2_Integration(t *testing.T) {
 	pq := g.InitializeQueue(inDegrees)
 
 	// Verify queue state
-	if pq.Len() != 1 {
-		t.Fatalf("Expected 1 node in queue, got %d", pq.Len())
+	if pq.queue.Len() != 1 {
+		t.Fatalf("Expected 1 node in queue, got %d", pq.queue.Len())
 	}
 
 	node, _ := pq.Dequeue()

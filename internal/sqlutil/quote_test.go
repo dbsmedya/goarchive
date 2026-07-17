@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestQuoteIdentifier_Valid(t *testing.T) {
@@ -132,72 +131,4 @@ func TestIsValidIdentifier_Invalid(t *testing.T) {
 			assert.False(t, IsValidIdentifier(tt.input))
 		})
 	}
-}
-
-func TestQuoteIdentifierSafe_Valid(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "Simple name",
-			input:    "users",
-			expected: "`users`",
-		},
-		{
-			name:     "With underscore",
-			input:    "order_items",
-			expected: "`order_items`",
-		},
-		{
-			name:     "Mixed case",
-			input:    "MyTable",
-			expected: "`MyTable`",
-		},
-		{
-			name:     "Numeric",
-			input:    "table123",
-			expected: "`table123`",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := QuoteIdentifierSafe(tt.input)
-			require.NoError(t, err)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-func TestQuoteIdentifierSafe_Invalid(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{name: "Empty string", input: ""},
-		{name: "With space", input: "my table"},
-		{name: "With hyphen", input: "my-table"},
-		{name: "With backtick", input: "my`table"},
-		{name: "SQL injection", input: "users; DROP TABLE users--"},
-		{name: "With special chars", input: "table@name"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := QuoteIdentifierSafe(tt.input)
-			assert.Error(t, err)
-			assert.Empty(t, result)
-			assert.IsType(t, &InvalidIdentifierError{}, err)
-			assert.Contains(t, err.Error(), "invalid identifier")
-			assert.Contains(t, err.Error(), tt.input)
-		})
-	}
-}
-
-func TestInvalidIdentifierError_Error(t *testing.T) {
-	err := &InvalidIdentifierError{Name: "bad@table"}
-	expected := "invalid identifier: bad@table (must contain only alphanumeric characters and underscores)"
-	assert.Equal(t, expected, err.Error())
 }

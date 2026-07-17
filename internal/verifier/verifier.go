@@ -458,18 +458,3 @@ func (v *Verifier) SetChunkSize(size int) {
 		v.chunkSize = size
 	}
 }
-
-// GetChunkSize returns the current chunk size.
-func (v *Verifier) GetChunkSize() int {
-	return v.chunkSize
-}
-
-// SetLogger sets a custom logger for the verifier.
-func (v *Verifier) SetLogger(log *logger.Logger) {
-	v.logger = log
-}
-
-// GetMethod returns the configured verification method.
-func (v *Verifier) GetMethod() VerificationMethod {
-	return v.method
-}

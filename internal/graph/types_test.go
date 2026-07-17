@@ -5,6 +5,37 @@ import (
 	"testing"
 )
 
+// edgeCount, leafNodes, inDegree, and outDegree are in-package test helpers
+// preserving the bodies of the deleted Graph.EdgeCount/LeafNodes/InDegree/
+// OutDegree methods (dead-code cleanup, issue #9) for assertions in this and
+// other _test.go files in package graph.
+
+func edgeCount(g *Graph) int {
+	count := 0
+	for _, children := range g.Children {
+		count += len(children)
+	}
+	return count
+}
+
+func leafNodes(g *Graph) []string {
+	var leaves []string
+	for name := range g.Nodes {
+		if len(g.Children[name]) == 0 {
+			leaves = append(leaves, name)
+		}
+	}
+	return leaves
+}
+
+func inDegree(g *Graph, name string) int {
+	return len(g.Parents[name])
+}
+
+func outDegree(g *Graph, name string) int {
+	return len(g.Children[name])
+}
+
 func TestNewGraph(t *testing.T) {
 	g := NewGraph("orders", "id")
 
@@ -267,26 +298,6 @@ func TestNodeCount(t *testing.T) {
 	}
 }
 
-func TestEdgeCount(t *testing.T) {
-	g := NewGraph("orders", "id")
-	g.AddNode("order_items", nil)
-	g.AddNode("payments", nil)
-
-	if g.EdgeCount() != 0 {
-		t.Errorf("expected 0 edges, got %d", g.EdgeCount())
-	}
-
-	g.AddEdge("orders", "order_items")
-	if g.EdgeCount() != 1 {
-		t.Errorf("expected 1 edge, got %d", g.EdgeCount())
-	}
-
-	g.AddEdge("orders", "payments")
-	if g.EdgeCount() != 2 {
-		t.Errorf("expected 2 edges, got %d", g.EdgeCount())
-	}
-}
-
 func TestAllNodes(t *testing.T) {
 	g := NewGraph("orders", "id")
 	g.AddNode("order_items", nil)
@@ -337,83 +348,6 @@ func TestAllEdges(t *testing.T) {
 	}
 }
 
-func TestLeafNodes(t *testing.T) {
-	g := NewGraph("orders", "id")
-	g.AddNode("order_items", nil)
-	g.AddNode("payments", nil)
-	g.AddNode("shipments", nil)
-
-	// orders -> order_items
-	// orders -> payments
-	// shipments (no children)
-	g.AddEdge("orders", "order_items")
-	g.AddEdge("orders", "payments")
-
-	leaves := g.LeafNodes()
-	if len(leaves) != 3 {
-		t.Errorf("expected 3 leaf nodes (order_items, payments, shipments), got %d: %v", len(leaves), leaves)
-	}
-
-	leafSet := make(map[string]bool)
-	for _, l := range leaves {
-		leafSet[l] = true
-	}
-
-	// order_items and payments and shipments should be leaves
-	if !leafSet["order_items"] || !leafSet["payments"] || !leafSet["shipments"] {
-		t.Errorf("expected order_items, payments, shipments as leaves, got %v", leaves)
-	}
-}
-
-func TestInDegree(t *testing.T) {
-	g := NewGraph("orders", "id")
-	g.AddNode("order_items", nil)
-	g.AddNode("payments", nil)
-
-	g.AddEdge("orders", "order_items")
-	g.AddEdge("orders", "payments")
-
-	if g.InDegree("order_items") != 1 {
-		t.Errorf("expected order_items InDegree=1, got %d", g.InDegree("order_items"))
-	}
-
-	if g.InDegree("payments") != 1 {
-		t.Errorf("expected payments InDegree=1, got %d", g.InDegree("payments"))
-	}
-
-	// Root has no parents
-	if g.InDegree("orders") != 0 {
-		t.Errorf("expected orders InDegree=0, got %d", g.InDegree("orders"))
-	}
-
-	// Non-existent node
-	if g.InDegree("nonexistent") != 0 {
-		t.Errorf("expected nonexistent InDegree=0, got %d", g.InDegree("nonexistent"))
-	}
-}
-
-func TestOutDegree(t *testing.T) {
-	g := NewGraph("orders", "id")
-	g.AddNode("order_items", nil)
-	g.AddNode("payments", nil)
-
-	g.AddEdge("orders", "order_items")
-	g.AddEdge("orders", "payments")
-
-	if g.OutDegree("orders") != 2 {
-		t.Errorf("expected orders OutDegree=2, got %d", g.OutDegree("orders"))
-	}
-
-	if g.OutDegree("order_items") != 0 {
-		t.Errorf("expected order_items OutDegree=0, got %d", g.OutDegree("order_items"))
-	}
-
-	// Non-existent node
-	if g.OutDegree("nonexistent") != 0 {
-		t.Errorf("expected nonexistent OutDegree=0, got %d", g.OutDegree("nonexistent"))
-	}
-}
-
 func TestEmptyGraphOperations(t *testing.T) {
 	g := NewGraph("root", "id")
 
@@ -435,14 +369,6 @@ func TestEmptyGraphOperations(t *testing.T) {
 
 	if g.HasNode("nonexistent") {
 		t.Error("HasNode on non-existent node should return false")
-	}
-
-	if g.InDegree("nonexistent") != 0 {
-		t.Error("InDegree on non-existent node should return 0")
-	}
-
-	if g.OutDegree("nonexistent") != 0 {
-		t.Error("OutDegree on non-existent node should return 0")
 	}
 
 	edges := g.AllEdges()
@@ -472,8 +398,8 @@ func TestComplexGraph(t *testing.T) {
 		t.Errorf("expected 5 nodes, got %d", g.NodeCount())
 	}
 
-	if g.EdgeCount() != 4 {
-		t.Errorf("expected 4 edges, got %d", g.EdgeCount())
+	if edgeCount(g) != 4 {
+		t.Errorf("expected 4 edges, got %d", edgeCount(g))
 	}
 
 	// Verify orders children
@@ -483,7 +409,7 @@ func TestComplexGraph(t *testing.T) {
 	}
 
 	// Verify leaf nodes
-	leaves := g.LeafNodes()
+	leaves := leafNodes(g)
 	if len(leaves) != 3 {
 		t.Errorf("expected 3 leaves (order_item_details, payments, shipments), got %d: %v", len(leaves), leaves)
 	}

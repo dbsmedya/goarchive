@@ -298,8 +298,8 @@ func TestPlanOutput_NodeCount(t *testing.T) {
 // TestPlanOutput_EdgeCount verifies edge count is accurate for display
 func TestPlanOutput_EdgeCount(t *testing.T) {
 	g := NewGraph("users", "id")
-	if g.EdgeCount() != 0 {
-		t.Errorf("Expected 0 edges, got %d", g.EdgeCount())
+	if edgeCount(g) != 0 {
+		t.Errorf("Expected 0 edges, got %d", edgeCount(g))
 	}
 
 	g.AddNode("orders", &Node{Name: "orders"})
@@ -307,8 +307,8 @@ func TestPlanOutput_EdgeCount(t *testing.T) {
 	g.AddEdge("users", "orders")
 	g.AddEdge("users", "profiles")
 
-	if g.EdgeCount() != 2 {
-		t.Errorf("Expected 2 edges, got %d", g.EdgeCount())
+	if edgeCount(g) != 2 {
+		t.Errorf("Expected 2 edges, got %d", edgeCount(g))
 	}
 }
 
@@ -324,7 +324,7 @@ func TestPlanOutput_LeafNodes(t *testing.T) {
 	g.AddEdge("users", "profiles")
 	g.AddEdge("orders", "order_items")
 
-	leaves := g.LeafNodes()
+	leaves := leafNodes(g)
 	sort.Strings(leaves)
 
 	expected := []string{"order_items", "profiles"}
@@ -632,31 +632,31 @@ func TestPlanOutput_InDegreeAndOutDegree(t *testing.T) {
 	g.AddEdge("orders", "order_items")
 
 	// Check in-degrees
-	if g.InDegree("users") != 0 {
-		t.Errorf("users in-degree should be 0, got %d", g.InDegree("users"))
+	if inDegree(g, "users") != 0 {
+		t.Errorf("users in-degree should be 0, got %d", inDegree(g, "users"))
 	}
-	if g.InDegree("orders") != 1 {
-		t.Errorf("orders in-degree should be 1, got %d", g.InDegree("orders"))
+	if inDegree(g, "orders") != 1 {
+		t.Errorf("orders in-degree should be 1, got %d", inDegree(g, "orders"))
 	}
-	if g.InDegree("profiles") != 1 {
-		t.Errorf("profiles in-degree should be 1, got %d", g.InDegree("profiles"))
+	if inDegree(g, "profiles") != 1 {
+		t.Errorf("profiles in-degree should be 1, got %d", inDegree(g, "profiles"))
 	}
-	if g.InDegree("order_items") != 1 {
-		t.Errorf("order_items in-degree should be 1, got %d", g.InDegree("order_items"))
+	if inDegree(g, "order_items") != 1 {
+		t.Errorf("order_items in-degree should be 1, got %d", inDegree(g, "order_items"))
 	}
 
 	// Check out-degrees
-	if g.OutDegree("users") != 2 {
-		t.Errorf("users out-degree should be 2, got %d", g.OutDegree("users"))
+	if outDegree(g, "users") != 2 {
+		t.Errorf("users out-degree should be 2, got %d", outDegree(g, "users"))
 	}
-	if g.OutDegree("orders") != 1 {
-		t.Errorf("orders out-degree should be 1, got %d", g.OutDegree("orders"))
+	if outDegree(g, "orders") != 1 {
+		t.Errorf("orders out-degree should be 1, got %d", outDegree(g, "orders"))
 	}
-	if g.OutDegree("profiles") != 0 {
-		t.Errorf("profiles out-degree should be 0, got %d", g.OutDegree("profiles"))
+	if outDegree(g, "profiles") != 0 {
+		t.Errorf("profiles out-degree should be 0, got %d", outDegree(g, "profiles"))
 	}
-	if g.OutDegree("order_items") != 0 {
-		t.Errorf("order_items out-degree should be 0, got %d", g.OutDegree("order_items"))
+	if outDegree(g, "order_items") != 0 {
+		t.Errorf("order_items out-degree should be 0, got %d", outDegree(g, "order_items"))
 	}
 }
 

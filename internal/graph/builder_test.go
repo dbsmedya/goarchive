@@ -114,8 +114,8 @@ func TestBuild_MultipleRelations(t *testing.T) {
 	}
 
 	// Check edge count
-	if graph.EdgeCount() != 3 {
-		t.Errorf("Expected 3 edges, got %d", graph.EdgeCount())
+	if edgeCount(graph) != 3 {
+		t.Errorf("Expected 3 edges, got %d", edgeCount(graph))
 	}
 }
 
@@ -223,8 +223,8 @@ func TestBuild_DeepNesting(t *testing.T) {
 	if graph.NodeCount() != 4 {
 		t.Errorf("Expected 4 nodes, got %d", graph.NodeCount())
 	}
-	if graph.EdgeCount() != 3 {
-		t.Errorf("Expected 3 edges, got %d", graph.EdgeCount())
+	if edgeCount(graph) != 3 {
+		t.Errorf("Expected 3 edges, got %d", edgeCount(graph))
 	}
 
 	// Check the chain
@@ -256,8 +256,8 @@ func TestBuild_NoRelations(t *testing.T) {
 	if graph.NodeCount() != 1 {
 		t.Errorf("Expected 1 node (root only), got %d", graph.NodeCount())
 	}
-	if graph.EdgeCount() != 0 {
-		t.Errorf("Expected 0 edges, got %d", graph.EdgeCount())
+	if edgeCount(graph) != 0 {
+		t.Errorf("Expected 0 edges, got %d", edgeCount(graph))
 	}
 	if !graph.HasNode("users") {
 		t.Error("Root node 'users' not found")
@@ -608,8 +608,8 @@ func TestBuild_ComplexGraph(t *testing.T) {
 	// users -> orders, users -> profiles, users -> sessions (3)
 	// orders -> order_items, orders -> shipments (2)
 	// Total: 5 edges
-	if graph.EdgeCount() != 5 {
-		t.Errorf("Expected 5 edges, got %d", graph.EdgeCount())
+	if edgeCount(graph) != 5 {
+		t.Errorf("Expected 5 edges, got %d", edgeCount(graph))
 	}
 
 	// Verify structure
@@ -626,7 +626,7 @@ func TestBuild_ComplexGraph(t *testing.T) {
 	}
 
 	// Leaf nodes (no children)
-	leaves := graph.LeafNodes()
+	leaves := leafNodes(graph)
 	expectedLeaves := map[string]bool{
 		"order_items": true,
 		"shipments":   true,
@@ -643,25 +643,25 @@ func TestBuild_ComplexGraph(t *testing.T) {
 	}
 
 	// Verify in-degrees
-	if graph.InDegree("users") != 0 {
-		t.Errorf("Expected users in-degree 0, got %d", graph.InDegree("users"))
+	if inDegree(graph, "users") != 0 {
+		t.Errorf("Expected users in-degree 0, got %d", inDegree(graph, "users"))
 	}
-	if graph.InDegree("orders") != 1 {
-		t.Errorf("Expected orders in-degree 1, got %d", graph.InDegree("orders"))
+	if inDegree(graph, "orders") != 1 {
+		t.Errorf("Expected orders in-degree 1, got %d", inDegree(graph, "orders"))
 	}
-	if graph.InDegree("order_items") != 1 {
-		t.Errorf("Expected order_items in-degree 1, got %d", graph.InDegree("order_items"))
+	if inDegree(graph, "order_items") != 1 {
+		t.Errorf("Expected order_items in-degree 1, got %d", inDegree(graph, "order_items"))
 	}
 
 	// Verify out-degrees
-	if graph.OutDegree("users") != 3 {
-		t.Errorf("Expected users out-degree 3, got %d", graph.OutDegree("users"))
+	if outDegree(graph, "users") != 3 {
+		t.Errorf("Expected users out-degree 3, got %d", outDegree(graph, "users"))
 	}
-	if graph.OutDegree("orders") != 2 {
-		t.Errorf("Expected orders out-degree 2, got %d", graph.OutDegree("orders"))
+	if outDegree(graph, "orders") != 2 {
+		t.Errorf("Expected orders out-degree 2, got %d", outDegree(graph, "orders"))
 	}
-	if graph.OutDegree("profiles") != 0 {
-		t.Errorf("Expected profiles out-degree 0, got %d", graph.OutDegree("profiles"))
+	if outDegree(graph, "profiles") != 0 {
+		t.Errorf("Expected profiles out-degree 0, got %d", outDegree(graph, "profiles"))
 	}
 }
 

@@ -363,12 +363,19 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 	return nil
 }
 
+// verifyChunkSizer is the narrow slice of *verifier.Verifier that
+// applyChunkSizing needs. It exists so the batch-size wiring test can observe
+// the handoff without Verifier carrying an otherwise-unused exported getter.
+type verifyChunkSizer interface {
+	SetChunkSize(size int)
+}
+
 // applyChunkSizing wires the effective processing.batch_size into copy-only's
 // copy, verify, and resume-bookkeeping chunk sizes, mirroring the archive
 // orchestrator (orchestrator.go). Without it copy-only silently pins copy chunks
 // at defaultCopyBatchSize (200) and verify/resume chunks at 1000, ignoring the
 // operator's batch_size (issue #8, Problem 2).
-func (o *CopyOnlyOrchestrator) applyChunkSizing(copyPhase *CopyPhase, dataVerifier *verifier.Verifier, resumeMgr *ResumeManager) {
+func (o *CopyOnlyOrchestrator) applyChunkSizing(copyPhase *CopyPhase, dataVerifier verifyChunkSizer, resumeMgr *ResumeManager) {
 	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
 	dataVerifier.SetChunkSize(o.processingCfg.BatchSize)
 	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
@@ -446,4 +453,3 @@ func (o *CopyOnlyOrchestrator) checkDestinationEmpty(ctx context.Context) error 
 	}
 	return nil
 }
-

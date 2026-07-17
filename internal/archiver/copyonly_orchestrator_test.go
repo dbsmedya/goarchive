@@ -350,6 +350,13 @@ func TestCopyOnlyOrchestrator_DisplayInfoOrPrompt_ForceAccepted(t *testing.T) {
 // wiring, copy chunks stay pinned at defaultCopyBatchSize (200) and verify/resume
 // chunks at 1000, so tuning batch_size for a copy-only job silently changes only
 // the root fetch.
+// verifyChunkSpy is a test-local stand-in for verifyChunkSizer
+// (copyonly_orchestrator.go) so this wiring test can observe the SetChunkSize
+// handoff without depending on an otherwise-unused *verifier.Verifier getter.
+type verifyChunkSpy struct{ chunkSize int }
+
+func (s *verifyChunkSpy) SetChunkSize(size int) { s.chunkSize = size }
+
 func TestCopyOnlyOrchestrator_WiresBatchSizeIntoChunking(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -362,7 +369,7 @@ func TestCopyOnlyOrchestrator_WiresBatchSizeIntoChunking(t *testing.T) {
 	log := logger.NewDefault()
 
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
-	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
+	spy := &verifyChunkSpy{}
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 
 	const batchSize = 37
@@ -377,12 +384,12 @@ func TestCopyOnlyOrchestrator_WiresBatchSizeIntoChunking(t *testing.T) {
 		t.Fatal("precondition failed: copy phase already at batch_size before wiring")
 	}
 
-	o.applyChunkSizing(copyPhase, dataVerifier, resumeMgr)
+	o.applyChunkSizing(copyPhase, spy, resumeMgr)
 
 	if got := copyPhase.effectiveBatchSize(); got != batchSize {
 		t.Errorf("copy chunk size = %d, want %d (batch_size ignored)", got, batchSize)
 	}
-	if got := dataVerifier.GetChunkSize(); got != batchSize {
+	if got := spy.chunkSize; got != batchSize {
 		t.Errorf("verify chunk size = %d, want %d (batch_size ignored)", got, batchSize)
 	}
 	if got := resumeMgr.effectiveChunkSize(); got != batchSize {

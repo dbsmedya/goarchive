@@ -660,53 +660,19 @@ func TestSetChunkSize(t *testing.T) {
 	v, _ := NewVerifier(db, db, g, MethodSHA256, log)
 
 	v.SetChunkSize(500)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Expected chunk size 500, got %d", v.GetChunkSize())
+	if v.chunkSize != 500 {
+		t.Errorf("Expected chunk size 500, got %d", v.chunkSize)
 	}
 
 	// Test that 0 or negative doesn't change
 	v.SetChunkSize(0)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Chunk size should not change with 0, got %d", v.GetChunkSize())
+	if v.chunkSize != 500 {
+		t.Errorf("Chunk size should not change with 0, got %d", v.chunkSize)
 	}
 
 	v.SetChunkSize(-1)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Chunk size should not change with negative, got %d", v.GetChunkSize())
-	}
-}
-
-func TestGetMethod(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-
-	v, _ := NewVerifier(db, db, g, MethodCount, log)
-	if v.GetMethod() != MethodCount {
-		t.Errorf("Expected method %s, got %s", MethodCount, v.GetMethod())
-	}
-
-	v2, _ := NewVerifier(db, db, g, MethodSHA256, log)
-	if v2.GetMethod() != MethodSHA256 {
-		t.Errorf("Expected method %s, got %s", MethodSHA256, v2.GetMethod())
-	}
-}
-
-func TestSetLogger(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-	v, _ := NewVerifier(db, db, g, MethodCount, log)
-
-	newLog := logger.NewDefault()
-	v.SetLogger(newLog)
-
-	if v.logger != newLog {
-		t.Error("SetLogger did not set logger correctly")
+	if v.chunkSize != 500 {
+		t.Errorf("Chunk size should not change with negative, got %d", v.chunkSize)
 	}
 }
 
