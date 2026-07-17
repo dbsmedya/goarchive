@@ -90,6 +90,10 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	maxLevel := 0
 	d.logger.Infof("Starting graph discovery from root table %q with %d PKs", rootTable, len(rootPKs))
 
+	// One dedup set per child table, held for the whole traversal — child PKs
+	// arriving via different parent edges dedup without rebuilding a map per edge.
+	seen := make(map[string]map[interface{}]struct{}, len(order))
+
 	// Process tables in topological order and accumulate child PKs across all parent paths.
 	for _, table := range order {
 		// Check for context cancellation (graceful shutdown)
@@ -142,7 +146,8 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 			d.logger.Debugf("Discovered %d %s records from %d parent PKs",
 				len(childPKs), childTable, len(parentPKs))
 
-			result.Records[childTable] = appendUniqueInterfaces(result.Records[childTable], childPKs)
+			set := tableSeen(seen, result.Records[childTable], childTable)
+			result.Records[childTable] = appendUnique(result.Records[childTable], childPKs, set)
 
 			nextLevel := level + 1
 			if current, ok := levels[childTable]; !ok || nextLevel > current {
@@ -170,31 +175,33 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	return result, nil
 }
 
-func appendUniqueInterfaces(existing, incoming []interface{}) []interface{} {
-	if len(incoming) == 0 {
-		return existing
-	}
-
-	seen := make(map[string]struct{}, len(existing)+len(incoming))
-	for _, v := range existing {
-		seen[interfaceKey(v)] = struct{}{}
-	}
-
-	result := existing
-	for _, v := range incoming {
-		key := interfaceKey(v)
-		if _, ok := seen[key]; ok {
-			continue
+// tableSeen returns the persistent dedup set for table, creating it on first
+// use seeded from PKs already recorded for that table (the root table is
+// pre-populated before the BFS loop runs).
+func tableSeen(seen map[string]map[interface{}]struct{}, existing []interface{}, table string) map[interface{}]struct{} {
+	m, ok := seen[table]
+	if !ok {
+		m = make(map[interface{}]struct{}, len(existing))
+		for _, v := range existing {
+			m[v] = struct{}{}
 		}
-		seen[key] = struct{}{}
-		result = append(result, v)
+		seen[table] = m
 	}
-
-	return result
+	return m
 }
 
-func interfaceKey(v interface{}) string {
-	return fmt.Sprintf("%T:%v", v, v)
+// appendUnique appends incoming PKs not already in seen. PK values are int64
+// or string (fetchChildIDs converts []byte), so they are valid map keys and
+// the map distinguishes types the same way the old "%T:%v" string keys did.
+func appendUnique(existing, incoming []interface{}, seen map[interface{}]struct{}) []interface{} {
+	for _, v := range incoming {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		existing = append(existing, v)
+	}
+	return existing
 }
 
 // fetchChildIDs queries the child table for all PKs that reference the parent PKs.

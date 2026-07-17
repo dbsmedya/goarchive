@@ -2,7 +2,7 @@ package archiver
 
 import "testing"
 
-func BenchmarkAppendUniqueInterfaces(b *testing.B) {
+func BenchmarkAppendUnique(b *testing.B) {
 	// Simulates one parent->child edge merge: 5k existing PKs, 1k incoming
 	// with 50% overlap — the shape Discover produces on wide child tables.
 	existing := make([]interface{}, 0, 5000)
@@ -17,7 +17,11 @@ func BenchmarkAppendUniqueInterfaces(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		seen := make(map[interface{}]struct{}, len(existing))
+		for _, v := range existing {
+			seen[v] = struct{}{}
+		}
 		base := existing[:5000:5000]
-		_ = appendUniqueInterfaces(base, incoming)
+		_ = appendUnique(base, incoming, seen)
 	}
 }

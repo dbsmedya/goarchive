@@ -727,3 +727,42 @@ func TestDiscovery_BatchVsFull(t *testing.T) {
 		t.Error("Full discovery should have more total records than batch")
 	}
 }
+
+func TestAppendUnique_DedupsAcrossCalls(t *testing.T) {
+	seen := make(map[interface{}]struct{})
+	got := appendUnique(nil, []interface{}{int64(1), int64(2), int64(1)}, seen)
+	got = appendUnique(got, []interface{}{int64(2), int64(3)}, seen)
+	want := []interface{}{int64(1), int64(2), int64(3)}
+	if len(got) != len(want) {
+		t.Fatalf("appendUnique = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("appendUnique[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestAppendUnique_TypeDistinguishesKeys(t *testing.T) {
+	// int64(1) and "1" are distinct PKs, exactly as the old "%T:%v" keys were.
+	seen := make(map[interface{}]struct{})
+	got := appendUnique(nil, []interface{}{int64(1), "1"}, seen)
+	if len(got) != 2 {
+		t.Fatalf("expected int64(1) and \"1\" to be distinct, got %v", got)
+	}
+}
+
+func TestTableSeen_SeedsFromExistingRecords(t *testing.T) {
+	// If a table already has recorded PKs (the root table), the first dedup
+	// set for it must be seeded from them or duplicates would slip through.
+	seen := make(map[string]map[interface{}]struct{})
+	existing := []interface{}{int64(10), int64(20)}
+	set := tableSeen(seen, existing, "users")
+	got := appendUnique(existing, []interface{}{int64(10), int64(30)}, set)
+	if len(got) != 3 {
+		t.Fatalf("expected seeded dedup to yield 3 entries, got %v", got)
+	}
+	if same := tableSeen(seen, nil, "users"); len(same) != 3 {
+		t.Fatalf("expected persistent set with 3 keys on second call, got %d", len(same))
+	}
+}
