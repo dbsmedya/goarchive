@@ -211,7 +211,11 @@ func appendUnique(existing, incoming []interface{}, seen map[interface{}]struct{
 //
 // Query format:
 //
-//	SELECT DISTINCT child_pk FROM child_table WHERE fk_column IN (parent_pks)
+//	SELECT child_pk FROM child_table WHERE fk_column IN (parent_pks)
+//
+// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+// so every returned value is already unique; cross-chunk dedup happens in
+// appendUnique.
 //
 // For large parent PK sets, the query is chunked to avoid exceeding database limits.
 func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childTable string, parentPKs []interface{}) ([]interface{}, error) {
@@ -234,7 +238,9 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 	childPK := d.graph.GetPK(childTable)
 
 	// GA-P3-F2-T4: Fetch only PKs, not full rows (memory-efficient)
-	// Use DISTINCT to avoid duplicates in 1-N relationships
+	// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+	// so every returned value is already unique; cross-chunk dedup happens in
+	// appendUnique.
 	var allChildPKs []interface{}
 
 	// Chunk parent PKs to avoid exceeding IN clause limits
@@ -246,14 +252,16 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 		}
 		chunk := parentPKs[i:end]
 
-		// Build query: SELECT DISTINCT id FROM child_table WHERE fk_column IN (?, ?, ...)
+		// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+		// so every returned value is already unique; cross-chunk dedup happens in
+		// appendUnique.
 		placeholders := make([]string, len(chunk))
 		for j := range placeholders {
 			placeholders[j] = "?"
 		}
 
 		query := fmt.Sprintf(
-			"SELECT DISTINCT %s FROM %s WHERE %s IN (%s)",
+			"SELECT %s FROM %s WHERE %s IN (%s)",
 			sqlutil.QuoteIdentifier(childPK),
 			sqlutil.QuoteIdentifier(childTable),
 			sqlutil.QuoteIdentifier(foreignKey),
