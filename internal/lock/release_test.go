@@ -3,7 +3,6 @@ package lock
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 )
@@ -32,7 +31,7 @@ func TestAdvisoryLock_ReleaseLock_Success(t *testing.T) {
 		t.Fatal("Expected to acquire lock")
 	}
 
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should be held before release")
 	}
 
@@ -46,7 +45,7 @@ func TestAdvisoryLock_ReleaseLock_Success(t *testing.T) {
 		t.Error("Expected ReleaseLock to return true")
 	}
 
-	if lock.IsHeld() {
+	if lock.held {
 		t.Error("Lock should not be held after release")
 	}
 }
@@ -69,7 +68,7 @@ func TestAdvisoryLock_ReleaseLock_NotHeld(t *testing.T) {
 		t.Error("ReleaseLock should return false when lock was not held")
 	}
 
-	if lock.IsHeld() {
+	if lock.held {
 		t.Error("Lock should not be marked as held")
 	}
 }
@@ -103,7 +102,7 @@ func TestAdvisoryLock_ReleaseLock_DoubleRelease(t *testing.T) {
 		t.Error("Second release should return false (already released)")
 	}
 
-	if lock.IsHeld() {
+	if lock.held {
 		t.Error("Lock should not be held after release")
 	}
 }
@@ -147,7 +146,7 @@ func TestAdvisoryLock_ReleaseLock_AllowsReacquisition(t *testing.T) {
 		t.Error("Second connection should acquire lock after release")
 	}
 
-	if !lock2.IsHeld() {
+	if !lock2.held {
 		t.Error("Second lock should be held")
 	}
 
@@ -200,7 +199,7 @@ func TestAdvisoryLock_TryAcquire_Success(t *testing.T) {
 		t.Error("Expected TryAcquire to succeed on available lock")
 	}
 
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should be held after successful TryAcquire")
 	}
 
@@ -232,7 +231,7 @@ func TestAdvisoryLock_TryAcquire_AlreadyHeld(t *testing.T) {
 		t.Error("TryAcquire should return true when already holding the lock")
 	}
 
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should still be held")
 	}
 
@@ -276,7 +275,7 @@ func TestAdvisoryLock_TryAcquire_Contention(t *testing.T) {
 		t.Errorf("TryAcquire should return immediately, took %v", elapsed)
 	}
 
-	if lock2.IsHeld() {
+	if lock2.held {
 		t.Error("Second lock should not be held")
 	}
 
@@ -304,179 +303,7 @@ func TestAdvisoryLock_TryAcquire_NonBlocking(t *testing.T) {
 		}
 	}
 
-	if !lock.IsHeld() {
-		t.Error("Lock should be held")
-	}
-
-	// Cleanup
-	_, _ = lock.ReleaseLock(ctx)
-}
-
-// ============================================================================
-// AcquireOrFail Tests
-// ============================================================================
-
-func TestAdvisoryLock_AcquireOrFail_Success(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock := NewAdvisoryLock(db, lockName)
-	ctx := context.Background()
-
-	// AcquireOrFail should succeed when lock is available
-	err := lock.AcquireOrFail(ctx)
-	if err != nil {
-		t.Fatalf("AcquireOrFail failed: %v", err)
-	}
-
-	if !lock.IsHeld() {
-		t.Error("Lock should be held after successful AcquireOrFail")
-	}
-
-	// Cleanup
-	_, _ = lock.ReleaseLock(ctx)
-}
-
-func TestAdvisoryLock_AcquireOrFail_AlreadyHeld(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock := NewAdvisoryLock(db, lockName)
-	ctx := context.Background()
-
-	// First acquire the lock
-	err1 := lock.AcquireOrFail(ctx)
-	if err1 != nil {
-		t.Fatalf("First AcquireOrFail failed: %v", err1)
-	}
-
-	// Second call should succeed (idempotent)
-	err2 := lock.AcquireOrFail(ctx)
-	if err2 != nil {
-		t.Errorf("Second AcquireOrFail should succeed when already held: %v", err2)
-	}
-
-	if !lock.IsHeld() {
-		t.Error("Lock should still be held")
-	}
-
-	// Cleanup
-	_, _ = lock.ReleaseLock(ctx)
-}
-
-func TestAdvisoryLock_AcquireOrFail_TimeoutError(t *testing.T) {
-	db1 := connectToTestDB(t)
-	defer func() { _ = db1.Close() }()
-
-	db2 := connectToTestDB(t)
-	defer func() { _ = db2.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock1 := NewAdvisoryLock(db1, lockName)
-	lock2 := NewAdvisoryLock(db2, lockName)
-	ctx := context.Background()
-
-	// First connection acquires the lock
-	err1 := lock1.AcquireOrFail(ctx)
-	if err1 != nil {
-		t.Fatalf("First AcquireOrFail failed: %v", err1)
-	}
-
-	// Second connection tries to acquire (will timeout after 1 second)
-	start := time.Now()
-	err2 := lock2.AcquireOrFail(ctx)
-	elapsed := time.Since(start)
-
-	// Should return ErrLockTimeout
-	if err2 == nil {
-		t.Fatal("Expected AcquireOrFail to return error on timeout")
-	}
-
-	if !errors.Is(err2, ErrLockTimeout) {
-		t.Errorf("Expected ErrLockTimeout, got: %v", err2)
-	}
-
-	// Error message should contain lock name
-	if err2.Error() == "" {
-		t.Error("Error message should not be empty")
-	}
-
-	// Should have waited approximately TimeoutShort (1 second)
-	if elapsed < 900*time.Millisecond || elapsed > 1500*time.Millisecond {
-		t.Errorf("Expected ~1s timeout, took %v", elapsed)
-	}
-
-	if lock2.IsHeld() {
-		t.Error("Second lock should not be held")
-	}
-
-	// Cleanup
-	_, _ = lock1.ReleaseLock(ctx)
-}
-
-func TestAdvisoryLock_AcquireOrFail_ErrorContainsLockName(t *testing.T) {
-	db1 := connectToTestDB(t)
-	defer func() { _ = db1.Close() }()
-
-	db2 := connectToTestDB(t)
-	defer func() { _ = db2.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock1 := NewAdvisoryLock(db1, lockName)
-	lock2 := NewAdvisoryLock(db2, lockName)
-	ctx := context.Background()
-
-	// First connection acquires the lock
-	_ = lock1.AcquireOrFail(ctx)
-
-	// Second connection tries to acquire
-	err := lock2.AcquireOrFail(ctx)
-
-	// Error should contain the lock name
-	if err == nil {
-		t.Fatal("Expected error")
-	}
-
-	errMsg := err.Error()
-	if !errors.Is(err, ErrLockTimeout) {
-		t.Error("Error should wrap ErrLockTimeout")
-	}
-
-	// Error message should mention the lock
-	if errMsg == "" {
-		t.Error("Error message should not be empty")
-	}
-
-	// Cleanup
-	_, _ = lock1.ReleaseLock(ctx)
-}
-
-func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock := NewAdvisoryLock(db, lockName)
-	ctx := context.Background()
-
-	// First acquire
-	err := lock.AcquireOrFail(ctx)
-	if err != nil {
-		t.Fatalf("First acquire failed: %v", err)
-	}
-
-	// Release
-	_, _ = lock.ReleaseLock(ctx)
-
-	// Can acquire again after release
-	err = lock.AcquireOrFail(ctx)
-	if err != nil {
-		t.Errorf("Second acquire after release failed: %v", err)
-	}
-
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should be held")
 	}
 
@@ -487,49 +314,6 @@ func TestAdvisoryLock_AcquireOrFail_FastFail(t *testing.T) {
 // ============================================================================
 // Integration Tests
 // ============================================================================
-
-func TestAdvisoryLock_FullLifecycle(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock := NewAdvisoryLock(db, lockName)
-	ctx := context.Background()
-
-	// 1. Initial state
-	if lock.IsHeld() {
-		t.Error("New lock should not be held")
-	}
-
-	// 2. Acquire using different methods
-	acquired, _ := lock.TryAcquire(ctx)
-	if !acquired {
-		t.Fatal("TryAcquire should succeed")
-	}
-
-	// 3. Release
-	released, _ := lock.ReleaseLock(ctx)
-	if !released {
-		t.Error("Release should succeed")
-	}
-
-	// 4. Re-acquire using AcquireOrFail
-	err := lock.AcquireOrFail(ctx)
-	if err != nil {
-		t.Errorf("AcquireOrFail after release failed: %v", err)
-	}
-
-	// 5. Release again
-	released, _ = lock.ReleaseLock(ctx)
-	if !released {
-		t.Error("Second release should succeed")
-	}
-
-	// 6. Final state
-	if lock.IsHeld() {
-		t.Error("Lock should not be held at end")
-	}
-}
 
 func TestAdvisoryLock_ConcurrentAcquireAndRelease(t *testing.T) {
 	db1 := connectToTestDB(t)
@@ -626,24 +410,24 @@ func TestAdvisoryLock_MultipleLocksIndependentLifecycle(t *testing.T) {
 	_, _ = lock1.AcquireLock(ctx, 1)
 	_, _ = lock2.AcquireLock(ctx, 1)
 
-	if !lock1.IsHeld() || !lock2.IsHeld() {
+	if !lock1.held || !lock2.held {
 		t.Error("Both locks should be held")
 	}
 
 	// Release only first
 	_, _ = lock1.ReleaseLock(ctx)
 
-	if lock1.IsHeld() {
+	if lock1.held {
 		t.Error("Lock1 should be released")
 	}
-	if !lock2.IsHeld() {
+	if !lock2.held {
 		t.Error("Lock2 should still be held")
 	}
 
 	// Release second
 	_, _ = lock2.ReleaseLock(ctx)
 
-	if lock2.IsHeld() {
+	if lock2.held {
 		t.Error("Lock2 should be released")
 	}
 }

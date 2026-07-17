@@ -46,8 +46,12 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	}
 
 	holderLock := lock.NewJobLock(destDB, jobName)
-	if err := holderLock.AcquireOrFail(ctx); err != nil {
-		t.Fatalf("setup acquire holder lock: %v", err)
+	acquired, err := holderLock.AcquireLock(ctx, lock.TimeoutShort)
+	if err != nil {
+		t.Fatalf("failed to acquire blocking lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("failed to acquire blocking lock: already held")
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
@@ -115,8 +119,12 @@ func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	}
 
 	holderLock := lock.NewJobLock(destDB, jobName)
-	if err := holderLock.AcquireOrFail(ctx); err != nil {
-		t.Fatalf("setup acquire holder lock: %v", err)
+	acquired, err := holderLock.AcquireLock(ctx, lock.TimeoutShort)
+	if err != nil {
+		t.Fatalf("failed to acquire blocking lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("failed to acquire blocking lock: already held")
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
@@ -188,8 +196,12 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	}
 
 	holderLock := lock.NewJobLock(destDB, jobName)
-	if err := holderLock.AcquireOrFail(ctx); err != nil {
-		t.Fatalf("setup acquire holder lock: %v", err)
+	acquired, err := holderLock.AcquireLock(ctx, lock.TimeoutShort)
+	if err != nil {
+		t.Fatalf("failed to acquire blocking lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("failed to acquire blocking lock: already held")
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
