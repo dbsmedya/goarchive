@@ -2,9 +2,6 @@ package verifier
 
 import (
 	"testing"
-
-	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/dbsmedya/goarchive/internal/logger"
 )
 
 func benchColumnsAndValues() ([]string, []interface{}) {
@@ -17,15 +14,12 @@ func benchColumnsAndValues() ([]string, []interface{}) {
 }
 
 func BenchmarkSerializeRow(b *testing.B) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-	g := createTestGraph()
-	v, _ := NewVerifier(db, db, g, MethodSHA256, logger.NewDefault())
 	columns, values := benchColumnsAndValues()
+	s := newRowSerializer(columns)
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = v.serializeRow(columns, values)
+		_ = s.appendRow(values)
 	}
 }
