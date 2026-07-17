@@ -59,6 +59,9 @@ gofmt -w .
 
 # Lint
 golint ./...
+
+# Dead-code guard (must stay clean — issue #9 purge)
+make deadcode
 ```
 
 ## Architecture

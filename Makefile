@@ -152,6 +152,21 @@ github-release: clean check lint
 vulncheck:
 	govulncheck ./...
 
+# Dead-code guard version (golang.org/x/tools/cmd/deadcode)
+DEADCODE_VERSION := v0.48.0
+
+# Fail if the production binary carries unreachable functions
+.PHONY: deadcode
+deadcode: ## Fail if the production binary carries unreachable functions
+	@out=$$(go run golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION) ./cmd/goarchive) || { \
+		echo "deadcode: tool execution failed (exit $$?)"; exit 1; }; \
+	if [ -n "$$out" ]; then \
+		echo "$$out"; \
+		echo "deadcode: production-unreachable functions found (see issue #9)"; \
+		exit 1; \
+	fi; \
+	echo "deadcode: clean"
+
 # Integration test configuration
 INTEGRATION_CONFIG_DIR := internal/archiver
 INTEGRATION_CONFIG_TEMPLATE := $(INTEGRATION_CONFIG_DIR)/integration_test.yaml
