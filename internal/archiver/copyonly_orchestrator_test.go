@@ -105,10 +105,7 @@ func TestCopyOnlyOrchestrator_Initialize(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	order, err := orch.GetCopyOrder()
-	if err != nil {
-		t.Fatalf("GetCopyOrder failed: %v", err)
-	}
+	order := orch.copyOrder
 	if len(order) == 0 {
 		t.Fatal("expected non-empty copy order")
 	}

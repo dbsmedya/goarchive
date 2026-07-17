@@ -447,10 +447,3 @@ func (o *CopyOnlyOrchestrator) checkDestinationEmpty(ctx context.Context) error 
 	return nil
 }
 
-// GetCopyOrder returns table copy order.
-func (o *CopyOnlyOrchestrator) GetCopyOrder() ([]string, error) {
-	if !o.initialized {
-		return nil, fmt.Errorf("orchestrator not initialized")
-	}
-	return o.copyOrder, nil
-}

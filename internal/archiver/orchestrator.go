@@ -202,24 +202,6 @@ func (o *ArchiveOrchestrator) ValidateGraph() error {
 	return nil
 }
 
-// GetCopyOrder returns the table order for copying (parent tables first).
-// Returns an error if the orchestrator has not been initialized.
-func (o *ArchiveOrchestrator) GetCopyOrder() ([]string, error) {
-	if !o.initialized {
-		return nil, fmt.Errorf("orchestrator not initialized")
-	}
-	return o.copyOrder, nil
-}
-
-// GetDeleteOrder returns the table order for deletion (child tables first).
-// Returns an error if the orchestrator has not been initialized.
-func (o *ArchiveOrchestrator) GetDeleteOrder() ([]string, error) {
-	if !o.initialized {
-		return nil, fmt.Errorf("orchestrator not initialized")
-	}
-	return o.deleteOrder, nil
-}
-
 // Execute runs the archive operation. It processes records in batches,
 // copying them to the destination and then deleting from the source.
 // The checkpoint callback is invoked after each root PK is processed.
@@ -807,31 +789,6 @@ func (o *ArchiveOrchestrator) SetStopChannel(stop <-chan struct{}) {
 // Initialize/Execute so all phases inherit it.
 func (o *ArchiveOrchestrator) SetLogger(log *logger.Logger) {
 	o.logger = log
-}
-
-// IsInitialized returns true if the orchestrator has been initialized.
-func (o *ArchiveOrchestrator) IsInitialized() bool {
-	return o.initialized
-}
-
-// GetGraph returns the dependency graph. Returns nil if not initialized.
-func (o *ArchiveOrchestrator) GetGraph() *graph.Graph {
-	return o.graph
-}
-
-// GetJobConfig returns the job configuration.
-func (o *ArchiveOrchestrator) GetJobConfig() *config.JobConfig {
-	return o.jobConfig
-}
-
-// GetConfig returns the global configuration.
-func (o *ArchiveOrchestrator) GetConfig() *config.Config {
-	return o.config
-}
-
-// GetJobName returns the job name.
-func (o *ArchiveOrchestrator) GetJobName() string {
-	return o.jobName
 }
 
 // convertRecordSet converts types.RecordSet to archiver.RecordSet

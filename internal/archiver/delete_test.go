@@ -545,63 +545,6 @@ func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 // Setter/Getter Tests
 // ============================================================================
 
-func TestDeletePhase_SetBatchSize(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createDeleteTestGraph()
-	log := logger.NewDefault()
-	dp, _ := NewDeletePhase(db, g, 500, log)
-
-	dp.SetBatchSize(1000)
-	if dp.GetBatchSize() != 1000 {
-		t.Errorf("Expected batch size 1000, got %d", dp.GetBatchSize())
-	}
-
-	// Test that 0 or negative doesn't change
-	dp.SetBatchSize(0)
-	if dp.GetBatchSize() != 1000 {
-		t.Errorf("Batch size should not change with 0, got %d", dp.GetBatchSize())
-	}
-
-	dp.SetBatchSize(-1)
-	if dp.GetBatchSize() != 1000 {
-		t.Errorf("Batch size should not change with negative, got %d", dp.GetBatchSize())
-	}
-}
-
-func TestDeletePhase_SetSleepSeconds(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createDeleteTestGraph()
-	log := logger.NewDefault()
-	dp, _ := NewDeletePhase(db, g, 500, log)
-
-	// Default is 0 (no throttle).
-	if dp.GetSleepSeconds() != 0 {
-		t.Errorf("expected default delete sleep 0, got %v", dp.GetSleepSeconds())
-	}
-
-	dp.SetSleepSeconds(1.5)
-	if dp.GetSleepSeconds() != 1.5 {
-		t.Errorf("expected delete sleep 1.5, got %v", dp.GetSleepSeconds())
-	}
-
-	// Zero is a valid value (explicitly disables the throttle).
-	dp.SetSleepSeconds(0)
-	if dp.GetSleepSeconds() != 0 {
-		t.Errorf("expected delete sleep 0 after explicit disable, got %v", dp.GetSleepSeconds())
-	}
-
-	// Negative is ignored.
-	dp.SetSleepSeconds(2)
-	dp.SetSleepSeconds(-1)
-	if dp.GetSleepSeconds() != 2 {
-		t.Errorf("delete sleep should not change on negative, got %v", dp.GetSleepSeconds())
-	}
-}
-
 // TestDelete_ThrottleSleepBetweenChunks verifies that delete_sleep_seconds pauses
 // between delete chunks (after each batch_delete_size delete, except the last in a
 // table) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
@@ -684,35 +627,6 @@ func TestDelete_NoThrottleByDefault(t *testing.T) {
 	}
 	if sleepCalls != 0 {
 		t.Fatalf("expected 0 throttle sleeps when delete_sleep_seconds=0, got %d", sleepCalls)
-	}
-}
-
-func TestDeletePhase_GetGraph(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createDeleteTestGraph()
-	log := logger.NewDefault()
-	dp, _ := NewDeletePhase(db, g, 500, log)
-
-	if dp.GetGraph() != g {
-		t.Error("GetGraph returned wrong graph")
-	}
-}
-
-func TestDeletePhase_SetLogger(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createDeleteTestGraph()
-	log := logger.NewDefault()
-	dp, _ := NewDeletePhase(db, g, 500, log)
-
-	newLog := logger.NewDefault()
-	dp.SetLogger(newLog)
-
-	if dp.logger != newLog {
-		t.Error("SetLogger did not set logger correctly")
 	}
 }
 

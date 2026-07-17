@@ -417,14 +417,6 @@ func (cp *CopyPhase) execInsertBatch(ctx context.Context, tx *sql.Tx, table stri
 	return affected, nil
 }
 
-// buildInsertIgnoreQuery constructs an INSERT IGNORE statement for the given table and columns.
-//
-// GA-P3-F3-T5: INSERT IGNORE syntax for idempotent inserts
-// Example: INSERT IGNORE INTO users (id, name, email) VALUES (?, ?, ?)
-func (cp *CopyPhase) buildInsertIgnoreQuery(table string, columns []string) string {
-	return cp.buildInsertIgnoreBatchQuery(table, columns, 1)
-}
-
 func (cp *CopyPhase) buildInsertIgnoreBatchQuery(table string, columns []string, rowCount int) string {
 	// Column list: (`col1`, `col2`, `col3`)
 	quotedColumns := make([]string, len(columns))

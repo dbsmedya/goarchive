@@ -429,15 +429,8 @@ func TestOrchestrator_FullWorkflow(t *testing.T) {
 	}
 
 	// Get orders
-	copyOrder, err := orch.GetCopyOrder()
-	if err != nil {
-		t.Fatalf("GetCopyOrder failed: %v", err)
-	}
-
-	deleteOrder, err := orch.GetDeleteOrder()
-	if err != nil {
-		t.Fatalf("GetDeleteOrder failed: %v", err)
-	}
+	copyOrder := orch.copyOrder
+	deleteOrder := orch.deleteOrder
 
 	// Verify orders are correct
 	if len(copyOrder) != len(deleteOrder) {

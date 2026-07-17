@@ -698,10 +698,7 @@ func TestOrchestrator_MultiLevelHierarchy_Integration(t *testing.T) {
 	}
 
 	// Verify graph depth
-	copyOrder, err := orch.GetCopyOrder()
-	if err != nil {
-		t.Fatalf("GetCopyOrder failed: %v", err)
-	}
+	copyOrder := orch.copyOrder
 
 	// Should have 4 tables: customers -> orders -> order_items, order_payments
 	if len(copyOrder) != 4 {

@@ -235,17 +235,6 @@ func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 	return nil
 }
 
-// GetOrCreateJob retrieves an existing job or creates a new one.
-//
-// If the job exists and has a checkpoint, it indicates resumption capability.
-// If the job is new, it starts with checkpoint 0.
-//
-// GA-P3-F4-T6: Checkpoint query
-// GA-P3-F4-T7: Resume detection
-func (r *ResumeManager) GetOrCreateJob(ctx context.Context, jobName, rootTable string) (*JobState, error) {
-	return r.GetOrCreateJobWithType(ctx, jobName, rootTable, JobTypeArchive)
-}
-
 // GetOrCreateJobWithType retrieves an existing job or creates a new one with expected job type.
 func (r *ResumeManager) GetOrCreateJobWithType(ctx context.Context, jobName, rootTable, jobType string) (*JobState, error) {
 	if jobType == "" {
@@ -674,46 +663,6 @@ func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool,
 
 	r.logger.Infof("Job %q has no pending work, starting fresh", jobName)
 	return false, nil
-}
-
-// GetStats returns per-status counts for the manager's current job. jobName is
-// accepted for API symmetry but is not used: the resolved per-job log table
-// (r.logTable) already scopes results to this job.
-// NOTE: not yet surfaced in any run summary; currently exercised only by tests.
-func (r *ResumeManager) GetStats(ctx context.Context, jobName string) (pending, copied, completed, failed int, err error) {
-	if err := r.requireLogTable(); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	rows, err := r.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT log_status, COUNT(*) FROM %s GROUP BY log_status", r.logTable),
-	)
-	if err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to get stats: %w", err)
-	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			r.logger.Warnf("Failed to close rows: %v", cerr)
-		}
-	}()
-
-	for rows.Next() {
-		var status LogStatus
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return 0, 0, 0, 0, fmt.Errorf("failed to scan stats: %w", err)
-		}
-		switch status {
-		case LogStatusPending:
-			pending = count
-		case LogStatusCopied:
-			copied = count
-		case LogStatusCompleted:
-			completed = count
-		case LogStatusFailed:
-			failed = count
-		}
-	}
-	return pending, copied, completed, failed, rows.Err()
 }
 
 func formatPK(pk interface{}) (string, error) {

@@ -165,70 +165,6 @@ func TestResumeManager_InitializeTables_LegacyShapeRejected(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestResumeManager_GetOrCreateJob_CreateNew(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	log := logger.NewDefault()
-	_, _ = NewResumeManager(db, log, "testdb")
-
-	// Mock: Job doesn't exist (ErrNoRows is tricky with sqlmock, skip this complex test)
-	t.Skip("Complex sqlmock behavior with sql.ErrNoRows - covered by integration tests")
-}
-
-func TestResumeManager_GetOrCreateJob_ExistingWithCheckpoint(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	// Mock: Existing job with checkpoint (use time.Time values for Scan compatibility)
-	rows := sqlmock.NewRows([]string{"id", "job_name", "root_table", "job_type", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow(int64(7), "test_job", "customers", JobTypeArchive, "100", JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC))
-
-	mock.ExpectQuery("SELECT id, job_name, root_table").
-		WithArgs("test_job").
-		WillReturnRows(rows)
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job_log_\\d+").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	ctx := context.Background()
-	state, err := rm.GetOrCreateJob(ctx, "test_job", "customers")
-
-	require.NoError(t, err)
-	require.NotNil(t, state)
-	assert.Equal(t, "test_job", state.JobName)
-	assert.Equal(t, "customers", state.RootTable)
-	assert.Equal(t, "100", state.LastProcessedRootPKID)
-	assert.Equal(t, JobStatusIdle, state.Status)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestResumeManager_GetOrCreateJob_ExistingNoCheckpoint(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	// Mock: Existing job without checkpoint (checkpoint = 0, use time.Time values)
-	rows := sqlmock.NewRows([]string{"id", "job_name", "root_table", "job_type", "last_processed_root_pk_id", "job_status", "created_at", "updated_at"}).
-		AddRow(int64(9), "test_job", "orders", JobTypeArchive, "", JobStatusIdle, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-
-	mock.ExpectQuery("SELECT id, job_name, root_table").
-		WithArgs("test_job").
-		WillReturnRows(rows)
-	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job_log_\\d+").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-
-	ctx := context.Background()
-	state, err := rm.GetOrCreateJob(ctx, "test_job", "orders")
-
-	require.NoError(t, err)
-	require.NotNil(t, state)
-	assert.Equal(t, "", state.LastProcessedRootPKID)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestResumeManager_UpdateJobStatus_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -472,33 +408,6 @@ func TestResumeManager_ShouldResume_False(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestResumeManager_GetStats_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-	rm.setJobID(7)
-
-	rows := sqlmock.NewRows([]string{"log_status", "count"}).
-		AddRow(int8(LogStatusPending), 5).
-		AddRow(int8(LogStatusCopied), 3).
-		AddRow(int8(LogStatusCompleted), 95).
-		AddRow(int8(LogStatusFailed), 2)
-
-	mock.ExpectQuery("SELECT log_status, COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+").
-		WillReturnRows(rows)
-
-	ctx := context.Background()
-	pending, copied, completed, failed, err := rm.GetStats(ctx, "test_job")
-
-	require.NoError(t, err)
-	assert.Equal(t, 5, pending)
-	assert.Equal(t, 3, copied)
-	assert.Equal(t, 95, completed)
-	assert.Equal(t, 2, failed)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestLogBatchPendingMultiRow(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -699,12 +608,6 @@ func TestRequireLogTableGuard(t *testing.T) {
 
 	t.Run("GetRootPKsByStatus", func(t *testing.T) {
 		_, err := rm.GetRootPKsByStatus(ctx, "job", LogStatusPending)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "per-job log table not resolved")
-	})
-
-	t.Run("GetStats", func(t *testing.T) {
-		_, _, _, _, err := rm.GetStats(ctx, "job")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "per-job log table not resolved")
 	})
