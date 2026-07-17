@@ -626,29 +626,6 @@ func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]st
 	return pks, nil
 }
 
-// GetCheckpoint retrieves the last processed root PK for a job.
-//
-// GA-P3-F4-T6: Checkpoint query
-// GA-P3-F4-T8: Resume from checkpoint
-func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (string, error) {
-	var checkpoint sql.NullString
-	err := r.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT last_processed_root_pk_id FROM %s WHERE job_name = ?", r.jobTable),
-		jobName,
-	).Scan(&checkpoint)
-
-	if err == sql.ErrNoRows {
-		// No job exists - start from 0
-		return "", nil
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to get checkpoint: %w", err)
-	}
-
-	return checkpoint.String, nil
-}
-
 // ShouldResume checks if a job needs resumption (has pending work).
 //
 // A job should resume if:
@@ -737,11 +714,6 @@ func (r *ResumeManager) GetStats(ctx context.Context, jobName string) (pending, 
 		}
 	}
 	return pending, copied, completed, failed, rows.Err()
-}
-
-// SetLogger sets a custom logger for the resume manager.
-func (r *ResumeManager) SetLogger(log *logger.Logger) {
-	r.logger = log
 }
 
 func formatPK(pk interface{}) (string, error) {

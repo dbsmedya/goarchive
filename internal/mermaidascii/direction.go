@@ -41,9 +41,6 @@ func (d direction) getOpposite() direction {
 func (c gridCoord) Direction(dir direction) gridCoord {
 	return gridCoord{x: c.x + dir.x, y: c.y + dir.y}
 }
-func (c drawingCoord) Direction(dir direction) drawingCoord {
-	return drawingCoord{x: c.x + dir.x, y: c.y + dir.y}
-}
 
 func selfReferenceDirection(e *edge) (direction, direction, direction, direction) {
 	if graphDirection == "LR" {

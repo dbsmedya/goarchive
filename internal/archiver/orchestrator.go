@@ -834,16 +834,6 @@ func (o *ArchiveOrchestrator) GetJobName() string {
 	return o.jobName
 }
 
-// GetProcessingConfig returns the effective processing configuration.
-func (o *ArchiveOrchestrator) GetProcessingConfig() config.ProcessingConfig {
-	return o.processingCfg
-}
-
-// GetVerificationConfig returns the effective verification configuration.
-func (o *ArchiveOrchestrator) GetVerificationConfig() config.VerificationConfig {
-	return o.verificationCfg
-}
-
 // convertRecordSet converts types.RecordSet to archiver.RecordSet
 func convertRecordSet(ts *types.RecordSet) *RecordSet {
 	return &RecordSet{

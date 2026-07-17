@@ -25,7 +25,6 @@ type CopyStats struct {
 	Duration      time.Duration // Time taken for copy operation
 	TablesSkipped int           // Tables with no rows to copy
 	RowsPerTable  map[string]int64
-	InsertErrors  int // Number of rows that failed to insert (should be 0 with INSERT IGNORE)
 }
 
 // CopyPhase manages the transactional copy of discovered records from source to destination.
@@ -491,14 +490,4 @@ func (cp *CopyPhase) setForeignKeyChecks(ctx context.Context, tx *sql.Tx, disabl
 	}
 
 	return nil
-}
-
-// GetGraph returns the dependency graph used by this copy phase.
-func (cp *CopyPhase) GetGraph() *graph.Graph {
-	return cp.graph
-}
-
-// SetLogger sets a custom logger for the copy phase.
-func (cp *CopyPhase) SetLogger(log *logger.Logger) {
-	cp.logger = log
 }

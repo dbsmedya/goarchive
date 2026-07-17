@@ -87,35 +87,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return nil
 }
 
-// ConnectSource establishes connection to source database only.
-//
-// Deprecated: All orchestrators (archive, purge, copy-only) now require a
-// destination connection because resume metadata and advisory locks live on
-// Destination. Use Connect instead. Retained for callers that still need a
-// source-only connection path.
-func (m *Manager) ConnectSource(ctx context.Context) error {
-	if m == nil {
-		return fmt.Errorf("database manager is nil")
-	}
-	if m.config == nil {
-		return fmt.Errorf("database manager config is nil")
-	}
-
-	var err error
-
-	if err := m.closeExistingConnections(); err != nil {
-		return fmt.Errorf("failed to close existing connections: %w", err)
-	}
-
-	// Connect to source database only
-	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
-	if err != nil {
-		return fmt.Errorf("failed to connect to source database: %w", err)
-	}
-
-	return nil
-}
-
 // connectWithRetry attempts to connect with exponential backoff.
 func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig) (*sql.DB, error) {
 	var db *sql.DB
