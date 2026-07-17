@@ -20,11 +20,10 @@ import (
 // GA-P3-F2-T1: BFS Traversal Structure
 // GA-P3-F2-T3: Multi-level discovery
 type RecordDiscovery struct {
-	graph           *graph.Graph
-	db              *sql.DB
-	batchSize       int
-	logger          *logger.Logger
-	allowSimulation bool
+	graph     *graph.Graph
+	db        *sql.DB
+	batchSize int
+	logger    *logger.Logger
 }
 
 // NewRecordDiscovery creates a new discovery service with the given dependency graph,
@@ -125,17 +124,13 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 			table, level, len(parentPKs), len(children))
 
 		for _, childTable := range children {
-			// GA-P3-F2-T2: Fetch child IDs via database query or simulation
-			var childPKs []interface{}
-			if d.db == nil && d.allowSimulation {
-				childPKs = d.simulateDiscovery(childTable, parentPKs)
-			} else if d.db != nil {
-				childPKs, err = d.fetchChildIDs(ctx, table, childTable, parentPKs)
-				if err != nil {
-					return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
-				}
-			} else {
+			// GA-P3-F2-T2: Fetch child IDs via database query
+			if d.db == nil {
 				return nil, fmt.Errorf("discovery database is nil")
+			}
+			childPKs, err := d.fetchChildIDs(ctx, table, childTable, parentPKs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
 			}
 
 			if len(childPKs) == 0 {
@@ -300,107 +295,7 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 	return allChildPKs, nil
 }
 
-// DiscoverBatch is a convenience wrapper that enforces batch size limits on root PKs.
-// This is useful when the caller has already fetched a large set of root PKs
-// and wants to process them in manageable chunks.
-func (d *RecordDiscovery) DiscoverBatch(ctx context.Context, rootPKs []interface{}) (*types.RecordSet, error) {
-	if len(rootPKs) == 0 {
-		return &types.RecordSet{
-			RootPKs: []interface{}{},
-			Records: make(map[string][]interface{}),
-			Stats:   types.DiscoveryStats{},
-		}, nil
-	}
-
-	// Limit root batch size if needed
-	if len(rootPKs) > d.batchSize {
-		d.logger.Warnf("Root PKs (%d) exceed batch size (%d), truncating", len(rootPKs), d.batchSize)
-		rootPKs = rootPKs[:d.batchSize]
-	}
-
-	return d.Discover(ctx, rootPKs)
-}
-
-// GetGraph returns the dependency graph used by this discovery service.
-func (d *RecordDiscovery) GetGraph() *graph.Graph {
-	return d.graph
-}
-
-// GetBatchSize returns the configured batch size for IN clause chunking.
-func (d *RecordDiscovery) GetBatchSize() int {
-	return d.batchSize
-}
-
 // SetLogger sets a custom logger for the discovery service.
 func (d *RecordDiscovery) SetLogger(log *logger.Logger) {
 	d.logger = log
-}
-
-// simulateDiscovery simulates child record discovery for testing purposes.
-// It generates synthetic child PKs based on the table name and parent PKs,
-// allowing tests to run without a real database connection.
-//
-// This method is used by tests to verify discovery logic without requiring
-// an actual database. It simulates:
-//   - 1-N relationships: Returns multiple child records per parent (e.g., orders)
-//   - 1-1 relationships: Returns exactly one child record per parent (e.g., profiles)
-//   - Multi-level: Supports traversing the full graph depth
-func (d *RecordDiscovery) simulateDiscovery(childTable string, parentPKs []interface{}) []interface{} {
-	if len(parentPKs) == 0 {
-		return []interface{}{}
-	}
-
-	switch childTable {
-	case "orders":
-		// 1-N relationship: 1-2 orders per user
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			// Each user has 1-2 orders
-			numOrders := 1 + (i % 2)
-			for j := 0; j < numOrders; j++ {
-				childPK := fmt.Sprintf("order_%s_%d", parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-
-	case "profiles":
-		// 1-1 relationship: exactly 1 profile per user
-		childPKs := []interface{}{}
-		for _, parentPK := range parentPKs {
-			childPK := fmt.Sprintf("profile_%s", parentPK)
-			childPKs = append(childPKs, childPK)
-		}
-		return childPKs
-
-	case "order_items":
-		// 1-N relationship: 2-3 items per order
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			// Each order has 2-3 items
-			numItems := 2 + (i % 2)
-			for j := 0; j < numItems; j++ {
-				childPK := fmt.Sprintf("item_%s_%d", parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-
-	case "unknown_table":
-		// Explicitly unknown table for testing - return empty
-		return []interface{}{}
-
-	default:
-		// For generic test tables (A, B, C, etc.),
-		// simulate a 1-N relationship with 1-2 records per parent
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			numChildren := 1 + (i % 2) // 1-2 children per parent
-			for j := 0; j < numChildren; j++ {
-				childPK := fmt.Sprintf("%s_child_%s_%d", childTable, parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-	}
 }
