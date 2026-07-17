@@ -210,9 +210,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 }
 
 func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher) error {
-	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	pending, dataType, unsigned, err := pendingReplayPKs(ctx, resumeMgr, o.jobName, o.graph)
 	if err != nil {
 		return err
+	}
+	if len(pending) == 0 {
+		return nil
 	}
 	for _, rawPK := range pending {
 		// Cooperative graceful stop: each replayed root reaches 'completed' before
@@ -228,10 +231,6 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 		if stopRequested(o.stopCh) {
 			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
 			return nil
-		}
-		dataType, unsigned, ok := o.graph.GetRootPKMeta()
-		if !ok {
-			return fmt.Errorf("root PK metadata not loaded")
 		}
 		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
 		if err != nil {

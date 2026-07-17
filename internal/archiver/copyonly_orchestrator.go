@@ -308,7 +308,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 }
 
 func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, result *CopyOnlyResult) error {
-	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
+	pending, dataType, unsigned, err := pendingReplayPKs(ctx, resumeMgr, o.jobName, o.graph)
 	if err != nil {
 		return err
 	}
@@ -349,10 +349,6 @@ func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *
 		if stopRequested(o.stopCh) {
 			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
 			return nil
-		}
-		dataType, unsigned, ok := o.graph.GetRootPKMeta()
-		if !ok {
-			return fmt.Errorf("root PK metadata not loaded")
 		}
 		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
 		if err != nil {

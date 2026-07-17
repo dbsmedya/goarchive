@@ -577,15 +577,16 @@ func (r *ResumeManager) CompleteBatch(ctx context.Context, jobName string, rootP
 	return nil
 }
 
-// GetRootPKsByStatus returns root_pk_ids for a job filtered by log_status,
-// ordered lexicographically by the VARCHAR column (callers re-sort numerically).
+// GetRootPKsByStatus returns root_pk_ids for a job filtered by log_status.
+// Order is unspecified — root_pk_id is a VARCHAR column, so SQL ordering would
+// be lexicographic anyway; callers sort numerically (sortPendingPKsNumeric).
 // jobName is informational only (used for log messages); query scoping is via the resolved per-job log table.
 func (r *ResumeManager) GetRootPKsByStatus(ctx context.Context, jobName string, status LogStatus) ([]string, error) {
 	if err := r.requireLogTable(); err != nil {
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT root_pk_id FROM %s WHERE log_status = ? ORDER BY root_pk_id ASC", r.logTable),
+		fmt.Sprintf("SELECT root_pk_id FROM %s WHERE log_status = ?", r.logTable),
 		status,
 	)
 	if err != nil {

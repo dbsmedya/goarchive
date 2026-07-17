@@ -667,6 +667,87 @@ func TestSortPendingPKsNumeric(t *testing.T) {
 	}
 }
 
+func newReplayTestResumeManager(t *testing.T) (*ResumeManager, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	rm, err := NewResumeManager(db, logger.NewDefault(), "goarchive")
+	if err != nil {
+		t.Fatalf("NewResumeManager failed: %v", err)
+	}
+	rm.logTable = "`goarchive`.`archiver_job_log_1`"
+	return rm, mock
+}
+
+func TestPendingReplayPKs_NumericOrder_Signed(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10").AddRow("9").AddRow("-2"))
+
+	g := graph.NewGraph("payment", "payment_id")
+	g.SetRootPKMeta("int", false)
+
+	pending, dataType, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil {
+		t.Fatalf("pendingReplayPKs failed: %v", err)
+	}
+	if dataType != "int" || unsigned {
+		t.Fatalf("meta = (%q, %v), want (\"int\", false)", dataType, unsigned)
+	}
+	want := []string{"-2", "9", "10"}
+	if len(pending) != len(want) {
+		t.Fatalf("pending = %v, want %v", pending, want)
+	}
+	for i := range want {
+		if pending[i] != want[i] {
+			t.Fatalf("pending = %v, want %v (lexicographic leak?)", pending, want)
+		}
+	}
+}
+
+func TestPendingReplayPKs_NumericOrder_Unsigned(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("18446744073709551615").AddRow("10").AddRow("9"))
+
+	g := graph.NewGraph("payment", "payment_id")
+	g.SetRootPKMeta("bigint", true)
+
+	pending, _, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil {
+		t.Fatalf("pendingReplayPKs failed: %v", err)
+	}
+	if !unsigned {
+		t.Fatal("expected unsigned=true")
+	}
+	want := []string{"9", "10", "18446744073709551615"}
+	for i := range want {
+		if pending[i] != want[i] {
+			t.Fatalf("pending = %v, want %v", pending, want)
+		}
+	}
+}
+
+func TestPendingReplayPKs_EmptyAndMissingMeta(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+	g := graph.NewGraph("payment", "payment_id")
+	pending, _, _, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil || pending != nil {
+		t.Fatalf("empty pending: got (%v, %v), want (nil, nil)", pending, err)
+	}
+
+	rm2, mock2 := newReplayTestResumeManager(t)
+	mock2.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("1"))
+	if _, _, _, err := pendingReplayPKs(context.Background(), rm2, "job", g); err == nil {
+		t.Fatal("expected error when root PK metadata is not loaded")
+	}
+}
+
 func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()

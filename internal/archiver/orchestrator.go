@@ -769,6 +769,28 @@ func sortPendingPKsNumeric(pending []string, unsigned bool) {
 	})
 }
 
+// pendingReplayPKs returns the job's 'pending' root PKs in numeric replay
+// order, plus the root-PK metadata needed to convert them back to driver
+// values. The log table stores PKs as VARCHAR and GetRootPKsByStatus is
+// unordered; without the numeric sort "10" would replay before "9". Both
+// copy-only and purge replay consume this helper (issue #9); the archive
+// orchestrator's recovery path sorts equivalently in recoverChunks.
+func pendingReplayPKs(ctx context.Context, resumeMgr *ResumeManager, jobName string, g *graph.Graph) ([]string, string, bool, error) {
+	pending, err := resumeMgr.GetPendingPKs(ctx, jobName)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(pending) == 0 {
+		return nil, "", false, nil
+	}
+	dataType, unsigned, ok := g.GetRootPKMeta()
+	if !ok {
+		return nil, "", false, fmt.Errorf("root PK metadata not loaded")
+	}
+	sortPendingPKsNumeric(pending, unsigned)
+	return pending, dataType, unsigned, nil
+}
+
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *ArchiveOrchestrator) SetForce(force bool) {
 	o.force = force
