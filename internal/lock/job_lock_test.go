@@ -177,4 +177,3 @@ func TestNewJobLock_SanitizedName(t *testing.T) {
 		t.Errorf("Sanitized lock name = %q, expected %q", lock.lockName, expectedLockName)
 	}
 }
-

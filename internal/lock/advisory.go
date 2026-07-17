@@ -376,4 +376,3 @@ func GenerateRootTableLockName(rootTable string) string {
 func NewRootTableLock(db *sql.DB, rootTable string) *AdvisoryLock {
 	return NewAdvisoryLock(db, GenerateRootTableLockName(rootTable))
 }
-
