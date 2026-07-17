@@ -2,12 +2,24 @@ package cmd
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/stretchr/testify/assert"
 )
+
+// setOutputWriter sets the output writer (used for testing)
+func setOutputWriter(w io.Writer) {
+	outputWriter = w
+}
+
+// resetOutputWriter resets output to stdout (used for testing)
+func resetOutputWriter() {
+	outputWriter = os.Stdout
+}
 
 func TestPlanCommandStructure(t *testing.T) {
 	assert.NotNil(t, planCmd)
