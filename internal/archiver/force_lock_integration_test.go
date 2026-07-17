@@ -55,9 +55,8 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
-	dbManager := setupRealDBManager(t, setup)
+	dbManager, cfg := setupRealDBManager(t, setup)
 	defer func() { _ = dbManager.Close() }()
-	cfg := dbManager.GetConfig()
 	cfg.Verification.Method = "sha256"
 	jobCfg := createCustomerOrderJobConfig()
 
@@ -128,9 +127,8 @@ func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
-	dbManager := setupRealDBManager(t, setup)
+	dbManager, cfg := setupRealDBManager(t, setup)
 	defer func() { _ = dbManager.Close() }()
-	cfg := dbManager.GetConfig()
 	cfg.Verification.Method = "sha256"
 	jobCfg := createCustomerOrderJobConfig()
 
@@ -205,9 +203,8 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	}
 	defer func() { _, _ = holderLock.ReleaseLock(context.Background()) }()
 
-	dbManager := setupRealDBManager(t, setup)
+	dbManager, cfg := setupRealDBManager(t, setup)
 	defer func() { _ = dbManager.Close() }()
-	cfg := dbManager.GetConfig()
 	cfg.Verification.Method = "sha256"
 	jobCfg := createCustomerOrderJobConfig()
 
@@ -268,9 +265,8 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dbManager := setupRealDBManager(t, setup)
+	dbManager, cfg := setupRealDBManager(t, setup)
 	defer func() { _ = dbManager.Close() }()
-	cfg := dbManager.GetConfig()
 	cfg.Verification.Method = "sha256"
 	jobCfg := createCustomerOrderJobConfig()
 

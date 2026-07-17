@@ -187,11 +187,6 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	return dsnCfg.FormatDSN()
 }
 
-// GetConfig returns the configuration used by this manager.
-func (m *Manager) GetConfig() *config.Config {
-	return m.config
-}
-
 // Close closes all database connections gracefully.
 func (m *Manager) Close() error {
 	var errs []error

@@ -21,7 +21,7 @@ import (
 // setupPurgeDBManager creates a database manager for purge tests.
 // Purge now requires a real destination connection because resume tables and
 // advisory locks live there.
-func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Manager {
+func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) (*database.Manager, *config.Config) {
 	var sourceCfg, destCfg DatabaseConfig
 	found := 0
 	for _, db := range setup.Config.Databases {
@@ -77,7 +77,7 @@ func setupPurgeDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Ma
 		t.Fatalf("Failed to connect database manager: %v", err)
 	}
 
-	return dbManager
+	return dbManager, cfg
 }
 
 // clearPurgeSource truncates source data tables and resets destination state
@@ -224,10 +224,10 @@ func TestPurge_FullCycle_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_full")
 
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_full", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_full", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -280,8 +280,8 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 
 	// First run: simulate crash after processing first batch
 	{
-		dbManager := setupPurgeDBManager(t, setup)
-		orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_recovery", jobCfg, dbManager)
+		dbManager, cfg := setupPurgeDBManager(t, setup)
+		orch, err := NewPurgeOrchestrator(cfg, "test_purge_recovery", jobCfg, dbManager)
 		if err != nil {
 			t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 		}
@@ -308,11 +308,11 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 
 	// Second run: resume and complete
 	{
-		dbManager := setupPurgeDBManager(t, setup)
+		dbManager, cfg := setupPurgeDBManager(t, setup)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_recovery", jobCfg, dbManager)
+		orch, err := NewPurgeOrchestrator(cfg, "test_purge_recovery", jobCfg, dbManager)
 		if err != nil {
 			t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 		}
@@ -364,10 +364,10 @@ func TestPurge_EmptyResultSet_Integration(t *testing.T) {
 	}
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_empty")
 
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_empty", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_empty", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -442,10 +442,10 @@ func TestPurge_ContextCancellation_Integration(t *testing.T) {
 	t.Logf("Test data generation complete: 1000 customers, 2000 orders")
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_cancel")
 
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_cancel", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_cancel", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -501,10 +501,10 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_resume")
 
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_resume", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_resume", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -539,8 +539,8 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	// Second execution with same job name - should resume from checkpoint but find new work
-	dbManager2 := setupPurgeDBManager(t, setup)
-	orch2, err := NewPurgeOrchestrator(dbManager2.GetConfig(), "test_purge_resume", jobCfg, dbManager2)
+	dbManager2, cfg2 := setupPurgeDBManager(t, setup)
+	orch2, err := NewPurgeOrchestrator(cfg2, "test_purge_resume", jobCfg, dbManager2)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -579,10 +579,10 @@ func TestPurge_MultiLevelHierarchy_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_hierarchy")
 
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_hierarchy", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_hierarchy", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
@@ -640,18 +640,18 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 	seedPurgeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupPurgeDBManager(t, setup)
+	dbManager, cfg := setupPurgeDBManager(t, setup)
 	cleanupPurgeJobState(t, setup, "test_purge_jobtype")
 
 	// Resume metadata now lives on Destination for all orchestrators.
 	destDB, _ := setup.GetDB("destination")
-	destSchema := dbManager.GetConfig().Destination.EffectiveJobSchema()
+	destSchema := cfg.Destination.EffectiveJobSchema()
 	resumeMgr, _ := NewResumeManager(destDB, nil, destSchema)
 	_ = resumeMgr.InitializeTables(ctx)
 	_, _ = resumeMgr.GetOrCreateJobWithType(ctx, "test_purge_jobtype", "customers", JobTypeArchive)
 
 	// Now try to create a purge job with the same name
-	orch, err := NewPurgeOrchestrator(dbManager.GetConfig(), "test_purge_jobtype", jobCfg, dbManager)
+	orch, err := NewPurgeOrchestrator(cfg, "test_purge_jobtype", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewPurgeOrchestrator failed: %v", err)
 	}
