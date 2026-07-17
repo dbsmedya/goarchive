@@ -1827,26 +1827,6 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 }
 
 // ============================================================================
-// Setter Tests
-// ============================================================================
-
-func TestPreflightChecker_SetLogger(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-
-	newLog := logger.NewDefault()
-	checker.SetLogger(newLog)
-
-	if checker.logger != newLog {
-		t.Error("SetLogger did not set logger correctly")
-	}
-}
-
-// ============================================================================
 // isColumnIndexed Tests (via ValidateForeignKeyIndexes)
 // ============================================================================
 

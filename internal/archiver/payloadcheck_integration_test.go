@@ -12,8 +12,7 @@ import (
 
 func newPayloadValidator(t *testing.T, setup *IntegrationTestSetup, jobCfg *config.JobConfig, batchSize int) *PayloadValidator {
 	t.Helper()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	builder := graph.NewBuilder(jobCfg)
 	g, err := builder.Build()
@@ -58,8 +57,7 @@ func TestPayloadValidate_RestoresFKChecksOnPool_Integration(t *testing.T) {
 	sourceDB, _ := setup.GetDB("source")
 	seedTestData(t, sourceDB)
 
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	// Pin the destination pool to a single connection so the post-validation
 	// query below is guaranteed to reuse the exact connection the validator used.

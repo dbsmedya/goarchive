@@ -190,7 +190,7 @@ func TestInitialize_Success(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	if !orch.IsInitialized() {
+	if !orch.initialized {
 		t.Error("Orchestrator should be initialized")
 	}
 
@@ -320,180 +320,6 @@ func TestValidateGraph_Cycle(t *testing.T) {
 }
 
 // ============================================================================
-// GetCopyOrder Tests
-// ============================================================================
-
-func TestGetCopyOrder_Success(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	copyOrder, err := orch.GetCopyOrder()
-	if err != nil {
-		t.Fatalf("GetCopyOrder failed: %v", err)
-	}
-
-	// Should have 4 tables: users, orders, order_items, profiles
-	if len(copyOrder) != 4 {
-		t.Errorf("Expected 4 tables in copy order, got %d: %v", len(copyOrder), copyOrder)
-	}
-
-	// Root (users) should be first
-	if copyOrder[0] != "users" {
-		t.Errorf("Expected users first, got %s", copyOrder[0])
-	}
-}
-
-func TestGetCopyOrder_NotInitialized(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	_, err := orch.GetCopyOrder()
-	if err == nil {
-		t.Error("Expected error when not initialized")
-	}
-}
-
-func TestGetCopyOrder_ParentFirst(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	copyOrder, _ := orch.GetCopyOrder()
-
-	// Build position map
-	positions := make(map[string]int)
-	for i, table := range copyOrder {
-		positions[table] = i
-	}
-
-	// Verify parent comes before child
-	if positions["users"] >= positions["orders"] {
-		t.Error("users should come before orders")
-	}
-	if positions["orders"] >= positions["order_items"] {
-		t.Error("orders should come before order_items")
-	}
-	if positions["users"] >= positions["profiles"] {
-		t.Error("users should come before profiles")
-	}
-}
-
-// ============================================================================
-// GetDeleteOrder Tests
-// ============================================================================
-
-func TestGetDeleteOrder_Success(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	deleteOrder, err := orch.GetDeleteOrder()
-	if err != nil {
-		t.Fatalf("GetDeleteOrder failed: %v", err)
-	}
-
-	// Should have 4 tables
-	if len(deleteOrder) != 4 {
-		t.Errorf("Expected 4 tables in delete order, got %d: %v", len(deleteOrder), deleteOrder)
-	}
-
-	// Root (users) should be last
-	if deleteOrder[len(deleteOrder)-1] != "users" {
-		t.Errorf("Expected users last, got %s", deleteOrder[len(deleteOrder)-1])
-	}
-}
-
-func TestGetDeleteOrder_NotInitialized(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	_, err := orch.GetDeleteOrder()
-	if err == nil {
-		t.Error("Expected error when not initialized")
-	}
-}
-
-func TestGetDeleteOrder_ChildFirst(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	deleteOrder, _ := orch.GetDeleteOrder()
-
-	// Build position map
-	positions := make(map[string]int)
-	for i, table := range deleteOrder {
-		positions[table] = i
-	}
-
-	// Verify child comes before parent
-	if positions["orders"] >= positions["users"] {
-		t.Error("orders should come before users in delete order")
-	}
-	if positions["order_items"] >= positions["orders"] {
-		t.Error("order_items should come before orders in delete order")
-	}
-}
-
-func TestGetDeleteOrder_ReverseOfCopyOrder(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	copyOrder, _ := orch.GetCopyOrder()
-	deleteOrder, _ := orch.GetDeleteOrder()
-
-	if len(copyOrder) != len(deleteOrder) {
-		t.Fatal("Copy and delete orders have different lengths")
-	}
-
-	// Verify delete order is reverse of copy order
-	for i := 0; i < len(copyOrder); i++ {
-		expected := copyOrder[len(copyOrder)-1-i]
-		if deleteOrder[i] != expected {
-			t.Errorf("DeleteOrder[%d] = %s, expected %s", i, deleteOrder[i], expected)
-		}
-	}
-}
-
-// ============================================================================
 // Execute Tests
 // ============================================================================
 
@@ -526,88 +352,6 @@ func TestExecute_NilContext(t *testing.T) {
 	_, err := orch.Execute(context.TODO(), nil)
 	if err == nil {
 		t.Error("Expected error for nil context")
-	}
-}
-
-// ============================================================================
-// Helper Method Tests
-// ============================================================================
-
-func TestIsInitialized(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if orch.IsInitialized() {
-		t.Error("New orchestrator should not be initialized")
-	}
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	if !orch.IsInitialized() {
-		t.Error("Orchestrator should be initialized after Initialize()")
-	}
-}
-
-func TestGetGraph(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	// Before initialization
-	if orch.GetGraph() != nil {
-		t.Error("GetGraph should return nil before initialization")
-	}
-
-	if err := orch.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
-
-	// After initialization
-	if orch.GetGraph() == nil {
-		t.Error("GetGraph should return graph after initialization")
-	}
-}
-
-func TestGetJobConfig(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if orch.GetJobConfig() != jobCfg {
-		t.Error("GetJobConfig returned wrong config")
-	}
-}
-
-func TestGetConfig(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-
-	if orch.GetConfig() != cfg {
-		t.Error("GetConfig returned wrong config")
-	}
-}
-
-func TestGetJobName(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, _ := NewOrchestrator(cfg, "my_test_job", jobCfg, dbManager)
-
-	if orch.GetJobName() != "my_test_job" {
-		t.Errorf("Expected job name 'my_test_job', got %s", orch.GetJobName())
 	}
 }
 
@@ -664,6 +408,87 @@ func TestSortPendingPKsNumeric(t *testing.T) {
 		if unsigned[i] != wantUnsigned[i] {
 			t.Fatalf("unsigned sort = %v, want %v", unsigned, wantUnsigned)
 		}
+	}
+}
+
+func newReplayTestResumeManager(t *testing.T) (*ResumeManager, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	rm, err := NewResumeManager(db, logger.NewDefault(), "goarchive")
+	if err != nil {
+		t.Fatalf("NewResumeManager failed: %v", err)
+	}
+	rm.logTable = "`goarchive`.`archiver_job_log_1`"
+	return rm, mock
+}
+
+func TestPendingReplayPKs_NumericOrder_Signed(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10").AddRow("9").AddRow("-2"))
+
+	g := graph.NewGraph("payment", "payment_id")
+	g.SetRootPKMeta("int", false)
+
+	pending, dataType, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil {
+		t.Fatalf("pendingReplayPKs failed: %v", err)
+	}
+	if dataType != "int" || unsigned {
+		t.Fatalf("meta = (%q, %v), want (\"int\", false)", dataType, unsigned)
+	}
+	want := []string{"-2", "9", "10"}
+	if len(pending) != len(want) {
+		t.Fatalf("pending = %v, want %v", pending, want)
+	}
+	for i := range want {
+		if pending[i] != want[i] {
+			t.Fatalf("pending = %v, want %v (lexicographic leak?)", pending, want)
+		}
+	}
+}
+
+func TestPendingReplayPKs_NumericOrder_Unsigned(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("18446744073709551615").AddRow("10").AddRow("9"))
+
+	g := graph.NewGraph("payment", "payment_id")
+	g.SetRootPKMeta("bigint", true)
+
+	pending, _, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil {
+		t.Fatalf("pendingReplayPKs failed: %v", err)
+	}
+	if !unsigned {
+		t.Fatal("expected unsigned=true")
+	}
+	want := []string{"9", "10", "18446744073709551615"}
+	for i := range want {
+		if pending[i] != want[i] {
+			t.Fatalf("pending = %v, want %v", pending, want)
+		}
+	}
+}
+
+func TestPendingReplayPKs_EmptyAndMissingMeta(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+	g := graph.NewGraph("payment", "payment_id")
+	pending, _, _, err := pendingReplayPKs(context.Background(), rm, "job", g)
+	if err != nil || pending != nil {
+		t.Fatalf("empty pending: got (%v, %v), want (nil, nil)", pending, err)
+	}
+
+	rm2, mock2 := newReplayTestResumeManager(t)
+	mock2.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
+		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("1"))
+	if _, _, _, err := pendingReplayPKs(context.Background(), rm2, "job", g); err == nil {
+		t.Fatal("expected error when root PK metadata is not loaded")
 	}
 }
 

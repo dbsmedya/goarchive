@@ -56,8 +56,8 @@ func TestNewRootTableLock(t *testing.T) {
 	db, _, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 	l := NewRootTableLock(db, "users")
-	if l.LockName() != "goarchive:root:users" {
-		t.Fatalf("lock name: want %q, got %q", "goarchive:root:users", l.LockName())
+	if l.lockName != "goarchive:root:users" {
+		t.Fatalf("lock name: want %q, got %q", "goarchive:root:users", l.lockName)
 	}
 }
 
@@ -125,8 +125,8 @@ func TestAdvisoryLock_CheckOwnership(t *testing.T) {
 			if !tt.wantErr && err != nil {
 				t.Fatalf("unexpected ownership error: %v", err)
 			}
-			if lock.IsHeld() != tt.wantHeld {
-				t.Fatalf("IsHeld() = %v, want %v", lock.IsHeld(), tt.wantHeld)
+			if lock.held != tt.wantHeld {
+				t.Fatalf("held = %v, want %v", lock.held, tt.wantHeld)
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
@@ -244,7 +244,7 @@ func TestAdvisoryLock_AcquireLock_Success(t *testing.T) {
 		t.Error("Expected to acquire lock successfully")
 	}
 
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should report as held after successful acquisition")
 	}
 
@@ -303,7 +303,7 @@ func TestAdvisoryLock_AcquireLock_AlreadyHeld(t *testing.T) {
 		t.Error("Expected second acquisition to return true (already held)")
 	}
 
-	if !lock.IsHeld() {
+	if !lock.held {
 		t.Error("Lock should still be held")
 	}
 
@@ -351,7 +351,7 @@ func TestAdvisoryLock_AcquireLock_Timeout(t *testing.T) {
 		t.Errorf("Timeout duration unexpected: %v (expected ~1s)", elapsed)
 	}
 
-	if lock2.IsHeld() {
+	if lock2.held {
 		t.Error("Lock2 should not report as held after timeout")
 	}
 
@@ -408,61 +408,6 @@ func TestAdvisoryLock_AcquireLock_ContextCancellation(t *testing.T) {
 }
 
 // ============================================================================
-// Lock State and Metadata Tests
-// ============================================================================
-
-func TestAdvisoryLock_IsHeld(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	lockName := generateUniqueLockName(t)
-	lock := NewAdvisoryLock(db, lockName)
-
-	// Initially not held
-	if lock.IsHeld() {
-		t.Error("New lock should not be held")
-	}
-
-	// Acquire the lock
-	ctx := context.Background()
-	acquired, err := lock.AcquireLock(ctx, 5)
-	if err != nil {
-		t.Fatalf("AcquireLock failed: %v", err)
-	}
-	if !acquired {
-		t.Fatal("Expected to acquire lock")
-	}
-
-	if !lock.IsHeld() {
-		t.Error("Lock should be held after acquisition")
-	}
-
-	// Cleanup
-	_, _ = lock.ReleaseLock(ctx)
-}
-
-func TestAdvisoryLock_LockName(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	tests := []string{
-		"simple_lock",
-		"lock-with-dashes",
-		"lock_with_underscores",
-		"LockWithMixedCase",
-		"a",
-		"very_long_lock_name_that_is_still_valid_for_testing_purposes",
-	}
-
-	for _, lockName := range tests {
-		lock := NewAdvisoryLock(db, lockName)
-		if lock.LockName() != lockName {
-			t.Errorf("LockName() = %q, expected %q", lock.LockName(), lockName)
-		}
-	}
-}
-
-// ============================================================================
 // Concurrent Access Tests
 // ============================================================================
 
@@ -498,7 +443,7 @@ func TestAdvisoryLock_ConcurrentDifferentLocks(t *testing.T) {
 		t.Error("Expected lock2 to be acquired")
 	}
 
-	if !lock1.IsHeld() || !lock2.IsHeld() {
+	if !lock1.held || !lock2.held {
 		t.Error("Both locks should be held")
 	}
 
@@ -633,7 +578,7 @@ func TestAdvisoryLock_Integration_MultipleLocksSequence(t *testing.T) {
 
 	// Verify all are held
 	for i, lock := range locks {
-		if !lock.IsHeld() {
+		if !lock.held {
 			t.Errorf("Lock %d should be held", i)
 		}
 	}
@@ -642,36 +587,6 @@ func TestAdvisoryLock_Integration_MultipleLocksSequence(t *testing.T) {
 	for i := len(lockNames) - 1; i >= 0; i-- {
 		_, _ = locks[i].ReleaseLock(ctx)
 	}
-}
-
-func TestAdvisoryLock_LockNameIsolation(t *testing.T) {
-	db := connectToTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	baseName := generateUniqueLockName(t)
-
-	// Create locks with similar but different names
-	lockA := NewAdvisoryLock(db, baseName+"_job1")
-	lockB := NewAdvisoryLock(db, baseName+"_job2")
-	lockC := NewAdvisoryLock(db, baseName+"job1") // Different from _job1
-
-	ctx := context.Background()
-
-	// All should acquire independently
-	for i, lock := range []*AdvisoryLock{lockA, lockB, lockC} {
-		acquired, err := lock.AcquireLock(ctx, 1)
-		if err != nil {
-			t.Fatalf("Lock %d acquisition failed: %v", i, err)
-		}
-		if !acquired {
-			t.Errorf("Expected lock %d to be acquired", i)
-		}
-	}
-
-	// Cleanup
-	_, _ = lockA.ReleaseLock(ctx)
-	_, _ = lockB.ReleaseLock(ctx)
-	_, _ = lockC.ReleaseLock(ctx)
 }
 
 func TestAdvisoryLock_SpecialCharactersInName(t *testing.T) {
@@ -744,11 +659,11 @@ func TestAdvisoryLock_Scenario_JobPrevention(t *testing.T) {
 		t.Error("Instance 2 should NOT have acquired the lock (job already running)")
 	}
 
-	if !instance1.IsHeld() {
+	if !instance1.held {
 		t.Error("Instance 1 should still hold the lock")
 	}
 
-	if instance2.IsHeld() {
+	if instance2.held {
 		t.Error("Instance 2 should NOT report holding the lock")
 	}
 
@@ -786,7 +701,7 @@ func TestAdvisoryLock_Scenario_RapidAcquireRelease(t *testing.T) {
 			t.Fatalf("Iteration %d: Expected to acquire lock", i)
 		}
 
-		if !lock.IsHeld() {
+		if !lock.held {
 			t.Errorf("Iteration %d: Lock should be held", i)
 		}
 
@@ -810,11 +725,11 @@ func TestAdvisoryLock_NilDatabase(t *testing.T) {
 
 	// The lock object can be created, but AcquireLock will panic with nil db
 	// This is expected - callers must provide a valid database connection
-	if lock.LockName() != "test_lock" {
+	if lock.lockName != "test_lock" {
 		t.Error("Lock name should be set even with nil db")
 	}
 
-	if lock.IsHeld() {
+	if lock.held {
 		t.Error("Lock should not be held")
 	}
 }

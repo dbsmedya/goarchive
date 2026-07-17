@@ -20,7 +20,7 @@ import (
 // ============================================================================
 
 // setupRealDBManager creates a database manager using the integration test setup
-func setupRealDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Manager {
+func setupRealDBManager(t *testing.T, setup *IntegrationTestSetup) (*database.Manager, *config.Config) {
 	// Get connection details from setup config
 	var sourceCfg, destCfg DatabaseConfig
 	found := 0
@@ -81,7 +81,7 @@ func setupRealDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Man
 		t.Fatalf("Failed to connect database manager: %v", err)
 	}
 
-	return dbManager
+	return dbManager, cfg
 }
 
 // createCustomerOrderJobConfig creates a job config for the customer/orders schema
@@ -393,9 +393,8 @@ func TestOrchestrator_FullArchiveCycle_Integration(t *testing.T) {
 
 	// Create orchestrator with real DB manager
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
+	dbManager, cfg := setupRealDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewOrchestrator(cfg, "test_full_cycle", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewOrchestrator failed: %v", err)
@@ -444,8 +443,7 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 	seedTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	// First run: process then cancel
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -504,8 +502,7 @@ func TestOrchestrator_ReplicationLagPause_Integration(t *testing.T) {
 	seedTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	orch, err := NewOrchestrator(cfg, "test_lag_pause", jobCfg, dbManager)
 	if err != nil {
@@ -541,8 +538,7 @@ func TestOrchestrator_VerificationMismatch_Integration(t *testing.T) {
 	seedTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 	cfg.Verification.Method = "count"
 	cfg.Verification.SkipVerification = false
 
@@ -578,8 +574,7 @@ func TestOrchestrator_ContextCancellation_Integration(t *testing.T) {
 	seedLargeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	orch, err := NewOrchestrator(cfg, "test_cancellation", jobCfg, dbManager)
 	if err != nil {
@@ -642,8 +637,7 @@ func TestOrchestrator_EmptyResultSet_Integration(t *testing.T) {
 	// Where clause that matches no rows
 	jobCfg.Where = "created_at < '2020-01-01'"
 
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	orch, err := NewOrchestrator(cfg, "test_empty_result", jobCfg, dbManager)
 	if err != nil {
@@ -686,8 +680,7 @@ func TestOrchestrator_MultiLevelHierarchy_Integration(t *testing.T) {
 	seedTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	orch, err := NewOrchestrator(cfg, "test_multi_level", jobCfg, dbManager)
 	if err != nil {
@@ -698,10 +691,7 @@ func TestOrchestrator_MultiLevelHierarchy_Integration(t *testing.T) {
 	}
 
 	// Verify graph depth
-	copyOrder, err := orch.GetCopyOrder()
-	if err != nil {
-		t.Fatalf("GetCopyOrder failed: %v", err)
-	}
+	copyOrder := orch.copyOrder
 
 	// Should have 4 tables: customers -> orders -> order_items, order_payments
 	if len(copyOrder) != 4 {
@@ -743,8 +733,7 @@ func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
 	batchDeleteSize := 1000
 	jobCfg.Processing = &config.ProcessingOverrides{BatchSize: &batchSize, BatchDeleteSize: &batchDeleteSize}
 
-	dbManager := setupRealDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupRealDBManager(t, setup)
 
 	orch, err := NewOrchestrator(cfg, "test_batch_archive", jobCfg, dbManager)
 	if err != nil {

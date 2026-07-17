@@ -202,24 +202,6 @@ func (o *ArchiveOrchestrator) ValidateGraph() error {
 	return nil
 }
 
-// GetCopyOrder returns the table order for copying (parent tables first).
-// Returns an error if the orchestrator has not been initialized.
-func (o *ArchiveOrchestrator) GetCopyOrder() ([]string, error) {
-	if !o.initialized {
-		return nil, fmt.Errorf("orchestrator not initialized")
-	}
-	return o.copyOrder, nil
-}
-
-// GetDeleteOrder returns the table order for deletion (child tables first).
-// Returns an error if the orchestrator has not been initialized.
-func (o *ArchiveOrchestrator) GetDeleteOrder() ([]string, error) {
-	if !o.initialized {
-		return nil, fmt.Errorf("orchestrator not initialized")
-	}
-	return o.deleteOrder, nil
-}
-
 // Execute runs the archive operation. It processes records in batches,
 // copying them to the destination and then deleting from the source.
 // The checkpoint callback is invoked after each root PK is processed.
@@ -769,6 +751,28 @@ func sortPendingPKsNumeric(pending []string, unsigned bool) {
 	})
 }
 
+// pendingReplayPKs returns the job's 'pending' root PKs in numeric replay
+// order, plus the root-PK metadata needed to convert them back to driver
+// values. The log table stores PKs as VARCHAR and GetRootPKsByStatus is
+// unordered; without the numeric sort "10" would replay before "9". Both
+// copy-only and purge replay consume this helper (issue #9); the archive
+// orchestrator's recovery path sorts equivalently in recoverChunks.
+func pendingReplayPKs(ctx context.Context, resumeMgr *ResumeManager, jobName string, g *graph.Graph) ([]string, string, bool, error) {
+	pending, err := resumeMgr.GetPendingPKs(ctx, jobName)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(pending) == 0 {
+		return nil, "", false, nil
+	}
+	dataType, unsigned, ok := g.GetRootPKMeta()
+	if !ok {
+		return nil, "", false, fmt.Errorf("root PK metadata not loaded")
+	}
+	sortPendingPKsNumeric(pending, unsigned)
+	return pending, dataType, unsigned, nil
+}
+
 // SetForce controls heartbeat-aware advisory lock bypass.
 func (o *ArchiveOrchestrator) SetForce(force bool) {
 	o.force = force
@@ -785,41 +789,6 @@ func (o *ArchiveOrchestrator) SetStopChannel(stop <-chan struct{}) {
 // Initialize/Execute so all phases inherit it.
 func (o *ArchiveOrchestrator) SetLogger(log *logger.Logger) {
 	o.logger = log
-}
-
-// IsInitialized returns true if the orchestrator has been initialized.
-func (o *ArchiveOrchestrator) IsInitialized() bool {
-	return o.initialized
-}
-
-// GetGraph returns the dependency graph. Returns nil if not initialized.
-func (o *ArchiveOrchestrator) GetGraph() *graph.Graph {
-	return o.graph
-}
-
-// GetJobConfig returns the job configuration.
-func (o *ArchiveOrchestrator) GetJobConfig() *config.JobConfig {
-	return o.jobConfig
-}
-
-// GetConfig returns the global configuration.
-func (o *ArchiveOrchestrator) GetConfig() *config.Config {
-	return o.config
-}
-
-// GetJobName returns the job name.
-func (o *ArchiveOrchestrator) GetJobName() string {
-	return o.jobName
-}
-
-// GetProcessingConfig returns the effective processing configuration.
-func (o *ArchiveOrchestrator) GetProcessingConfig() config.ProcessingConfig {
-	return o.processingCfg
-}
-
-// GetVerificationConfig returns the effective verification configuration.
-func (o *ArchiveOrchestrator) GetVerificationConfig() config.VerificationConfig {
-	return o.verificationCfg
 }
 
 // convertRecordSet converts types.RecordSet to archiver.RecordSet

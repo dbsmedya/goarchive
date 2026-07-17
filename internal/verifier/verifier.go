@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -350,6 +351,15 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 				return fmt.Errorf("failed to get columns: %w", err)
 			}
 
+			// Allocate scan targets and the serializer once per chunk;
+			// Scan overwrites values in place on every row.
+			serializer := newRowSerializer(columns)
+			values := make([]interface{}, len(columns))
+			valuePtrs := make([]interface{}, len(columns))
+			for j := range values {
+				valuePtrs[j] = &values[j]
+			}
+
 			// Hash each row
 			for rows.Next() {
 				// Check context cancellation
@@ -357,20 +367,12 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 					return fmt.Errorf("hash computation interrupted: %w", err)
 				}
 
-				values := make([]interface{}, len(columns))
-				valuePtrs := make([]interface{}, len(columns))
-				for j := range values {
-					valuePtrs[j] = &values[j]
-				}
-
 				if err := rows.Scan(valuePtrs...); err != nil {
 					return fmt.Errorf("failed to scan row: %w", err)
 				}
 
-				// Hash row: column1=value1,column2=value2,...
-				rowStr := v.serializeRow(columns, values)
-				hasher.Write([]byte(rowStr))
-				hasher.Write([]byte("\n"))
+				// Hash row: col1=val1\x00col2=val2...\n (sorted by column name)
+				hasher.Write(serializer.appendRow(values))
 				totalRows++
 			}
 
@@ -389,51 +391,63 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 	return hashStr, totalRows, nil
 }
 
-// serializeRow converts a row to a deterministic string representation for hashing.
-// Format: col1=val1\x00col2=val2\x00... (null-byte separated to avoid ambiguity with commas in values)
-func (v *Verifier) serializeRow(columns []string, values []interface{}) string {
-	type columnValue struct {
-		column string
-		value  string
+// rowSerializer serializes rows that share one column set into a reusable
+// buffer, preserving the historical byte format the hasher consumes:
+// pairs sorted by column name, "col=value" joined by \x00, one \n per row.
+type rowSerializer struct {
+	order []int    // column indices in name-sorted order, computed once
+	names []string // column names in driver order
+	buf   []byte   // reused across rows; valid until the next appendRow
+}
+
+func newRowSerializer(columns []string) *rowSerializer {
+	order := make([]int, len(columns))
+	for i := range order {
+		order[i] = i
 	}
-	pairs := make([]columnValue, 0, len(columns))
-
-	for i, col := range columns {
-		val := values[i]
-		var valStr string
-
-		switch v := val.(type) {
-		case nil:
-			valStr = "NULL"
-		case []byte:
-			valStr = "0x" + hex.EncodeToString(v)
-		case int64:
-			valStr = fmt.Sprintf("%d", v)
-		case float64:
-			valStr = fmt.Sprintf("%.17g", v)
-		case bool:
-			valStr = fmt.Sprintf("%t", v)
-		case string:
-			valStr = v
-		default:
-			valStr = fmt.Sprintf("%v", v)
-		}
-
-		pairs = append(pairs, columnValue{column: col, value: valStr})
-	}
-
-	// Canonicalize by column name so hash is stable even if DB column order differs.
-	sort.Slice(pairs, func(i, j int) bool {
-		return pairs[i].column < pairs[j].column
+	sort.Slice(order, func(a, b int) bool {
+		return columns[order[a]] < columns[order[b]]
 	})
+	return &rowSerializer{order: order, names: columns}
+}
 
-	parts := make([]string, len(pairs))
-	for i, p := range pairs {
-		parts[i] = fmt.Sprintf("%s=%s", p.column, p.value)
+// appendRow serializes values (driver order) into the reused buffer and
+// returns it for a direct hasher.Write. The slice is invalidated by the
+// next appendRow call.
+func (s *rowSerializer) appendRow(values []interface{}) []byte {
+	s.buf = s.buf[:0]
+	for n, idx := range s.order {
+		if n > 0 {
+			s.buf = append(s.buf, 0)
+		}
+		s.buf = append(s.buf, s.names[idx]...)
+		s.buf = append(s.buf, '=')
+		s.buf = appendValue(s.buf, values[idx])
 	}
+	s.buf = append(s.buf, '\n')
+	return s.buf
+}
 
-	// Use null byte separator to avoid ambiguity with column values containing commas
-	return strings.Join(parts, "\x00")
+// appendValue appends a driver value using the same formatting the legacy
+// Sprintf-based serializer produced ("%d", "%.17g", "%t", hex, "%v").
+func appendValue(buf []byte, val interface{}) []byte {
+	switch v := val.(type) {
+	case nil:
+		return append(buf, "NULL"...)
+	case []byte:
+		buf = append(buf, '0', 'x')
+		return hex.AppendEncode(buf, v)
+	case int64:
+		return strconv.AppendInt(buf, v, 10)
+	case float64:
+		return strconv.AppendFloat(buf, v, 'g', 17, 64)
+	case bool:
+		return strconv.AppendBool(buf, v)
+	case string:
+		return append(buf, v...)
+	default:
+		return fmt.Appendf(buf, "%v", v)
+	}
 }
 
 // SetChunkSize sets the chunk size for chunked SHA256 verification.
@@ -443,19 +457,4 @@ func (v *Verifier) SetChunkSize(size int) {
 	if size > 0 {
 		v.chunkSize = size
 	}
-}
-
-// GetChunkSize returns the current chunk size.
-func (v *Verifier) GetChunkSize() int {
-	return v.chunkSize
-}
-
-// SetLogger sets a custom logger for the verifier.
-func (v *Verifier) SetLogger(log *logger.Logger) {
-	v.logger = log
-}
-
-// GetMethod returns the configured verification method.
-func (v *Verifier) GetMethod() VerificationMethod {
-	return v.method
 }

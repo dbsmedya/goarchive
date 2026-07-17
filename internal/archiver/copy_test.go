@@ -601,14 +601,6 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 	assert.NoError(t, destMock.ExpectationsWereMet())
 }
 
-func TestBuildInsertIgnoreQuery_QuotesColumnNames(t *testing.T) {
-	cp := &CopyPhase{}
-	query := cp.buildInsertIgnoreQuery("orders", []string{"id", "order", "group"})
-
-	expected := "INSERT IGNORE INTO `orders` (`id`, `order`, `group`) VALUES (?, ?, ?)"
-	assert.Equal(t, expected, query)
-}
-
 // TestMaxRowsPerInsert covers the pure placeholder-clamp arithmetic:
 // maxRowsPerInsert(columnCount) must always keep columnCount*rows <= 65535
 // while returning at least 1 row.

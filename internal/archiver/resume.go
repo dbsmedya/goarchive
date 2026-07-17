@@ -235,17 +235,6 @@ func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 	return nil
 }
 
-// GetOrCreateJob retrieves an existing job or creates a new one.
-//
-// If the job exists and has a checkpoint, it indicates resumption capability.
-// If the job is new, it starts with checkpoint 0.
-//
-// GA-P3-F4-T6: Checkpoint query
-// GA-P3-F4-T7: Resume detection
-func (r *ResumeManager) GetOrCreateJob(ctx context.Context, jobName, rootTable string) (*JobState, error) {
-	return r.GetOrCreateJobWithType(ctx, jobName, rootTable, JobTypeArchive)
-}
-
 // GetOrCreateJobWithType retrieves an existing job or creates a new one with expected job type.
 func (r *ResumeManager) GetOrCreateJobWithType(ctx context.Context, jobName, rootTable, jobType string) (*JobState, error) {
 	if jobType == "" {
@@ -577,15 +566,16 @@ func (r *ResumeManager) CompleteBatch(ctx context.Context, jobName string, rootP
 	return nil
 }
 
-// GetRootPKsByStatus returns root_pk_ids for a job filtered by log_status,
-// ordered lexicographically by the VARCHAR column (callers re-sort numerically).
+// GetRootPKsByStatus returns root_pk_ids for a job filtered by log_status.
+// Order is unspecified — root_pk_id is a VARCHAR column, so SQL ordering would
+// be lexicographic anyway; callers sort numerically (sortPendingPKsNumeric).
 // jobName is informational only (used for log messages); query scoping is via the resolved per-job log table.
 func (r *ResumeManager) GetRootPKsByStatus(ctx context.Context, jobName string, status LogStatus) ([]string, error) {
 	if err := r.requireLogTable(); err != nil {
 		return nil, err
 	}
 	rows, err := r.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT root_pk_id FROM %s WHERE log_status = ? ORDER BY root_pk_id ASC", r.logTable),
+		fmt.Sprintf("SELECT root_pk_id FROM %s WHERE log_status = ?", r.logTable),
 		status,
 	)
 	if err != nil {
@@ -623,29 +613,6 @@ func (r *ResumeManager) GetPendingPKs(ctx context.Context, jobName string) ([]st
 		r.logger.Infof("Found %d pending PKs for job %q (requires reprocessing)", len(pks), jobName)
 	}
 	return pks, nil
-}
-
-// GetCheckpoint retrieves the last processed root PK for a job.
-//
-// GA-P3-F4-T6: Checkpoint query
-// GA-P3-F4-T8: Resume from checkpoint
-func (r *ResumeManager) GetCheckpoint(ctx context.Context, jobName string) (string, error) {
-	var checkpoint sql.NullString
-	err := r.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT last_processed_root_pk_id FROM %s WHERE job_name = ?", r.jobTable),
-		jobName,
-	).Scan(&checkpoint)
-
-	if err == sql.ErrNoRows {
-		// No job exists - start from 0
-		return "", nil
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to get checkpoint: %w", err)
-	}
-
-	return checkpoint.String, nil
 }
 
 // ShouldResume checks if a job needs resumption (has pending work).
@@ -696,51 +663,6 @@ func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool,
 
 	r.logger.Infof("Job %q has no pending work, starting fresh", jobName)
 	return false, nil
-}
-
-// GetStats returns per-status counts for the manager's current job. jobName is
-// accepted for API symmetry but is not used: the resolved per-job log table
-// (r.logTable) already scopes results to this job.
-// NOTE: not yet surfaced in any run summary; currently exercised only by tests.
-func (r *ResumeManager) GetStats(ctx context.Context, jobName string) (pending, copied, completed, failed int, err error) {
-	if err := r.requireLogTable(); err != nil {
-		return 0, 0, 0, 0, err
-	}
-	rows, err := r.db.QueryContext(ctx,
-		fmt.Sprintf("SELECT log_status, COUNT(*) FROM %s GROUP BY log_status", r.logTable),
-	)
-	if err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("failed to get stats: %w", err)
-	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			r.logger.Warnf("Failed to close rows: %v", cerr)
-		}
-	}()
-
-	for rows.Next() {
-		var status LogStatus
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return 0, 0, 0, 0, fmt.Errorf("failed to scan stats: %w", err)
-		}
-		switch status {
-		case LogStatusPending:
-			pending = count
-		case LogStatusCopied:
-			copied = count
-		case LogStatusCompleted:
-			completed = count
-		case LogStatusFailed:
-			failed = count
-		}
-	}
-	return pending, copied, completed, failed, rows.Err()
-}
-
-// SetLogger sets a custom logger for the resume manager.
-func (r *ResumeManager) SetLogger(log *logger.Logger) {
-	r.logger = log
 }
 
 func formatPK(pk interface{}) (string, error) {

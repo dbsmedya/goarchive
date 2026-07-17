@@ -19,7 +19,7 @@ While legendary tools like pt-archiver are excellent for offloading single table
 GoArchive was born from the need to visualize and automate these complexities. However, to maintain the integrity of your production environment, we adhere to two core principles:
 
 1. **Cold Data Only**
-GoArchive is designed to move COLD data to an archive server—specifically for performance tuning or meeting GDPR compliance.
+GoArchive is designed ONLY to move COLD data to an archive server—specifically for performance tuning or meeting GDPR compliance.
 
  > [!IMPORTANT] 
  > If you intend to archive "hot" data that is currently receiving heavy transactions, stop here. Grab a coffee, enjoy the sunshine, and reconsider your architecture. Live-data shifting is outside the scope of this tool.
@@ -682,64 +682,6 @@ SELECT id, job_name FROM <job_schema>.archiver_job;
 | `check_interval` | Lag check frequency in seconds | 5 |
 | `disable_foreign_key_checks` | Disable FK checks during copy | false |
 
-## Upgrade Notes
-
-### Resume metadata and advisory locks unified on destination
-
-Previously `purge` wrote its `archiver_job` and `archiver_job_log` state tables
-to the **source** database, while `archive` and `copy-only` wrote them to the
-**destination** database. Advisory locks were similarly split (archive and
-purge on source, copy-only on destination). This left gaps in the
-cross-command concurrency check and made state hard to reason about.
-
-After this upgrade:
-
-- `archive`, `purge`, and `copy-only` all use the **destination** database for
-  both `archiver_job`/`archiver_job_log` metadata and for advisory locks.
-- `purge` now requires a destination connection to be configured (it was
-  already implicitly required by validation, but is now load-bearing at
-  runtime).
-
-**DBA action required:** drop the now-unused state tables from the source
-database after upgrading. Any checkpoint rows there are orphaned and will not
-be migrated automatically:
-
-```sql
--- On the SOURCE server only
-DROP TABLE IF EXISTS archiver_job_log;
-DROP TABLE IF EXISTS archiver_job;
-```
-
-No action is needed on the destination — archive and copy-only already wrote
-there, and purge's existing job rows remain on source (harmless once dropped).
-
-### Tracking table reshape (per-job log tables, integer id PK)
-
-This release replaces the single shared `archiver_job_log` table with per-job
-`archiver_job_log_<id>` tables and promotes `archiver_job.id` from a simple
-column to the integer `PRIMARY KEY` (with `job_name` now a `UNIQUE KEY`).
-
-**Not state-compatible with prior versions.** A startup probe detects old-shape
-tables and exits with upgrade guidance. No auto-migration is performed.
-
-**Before upgrading:**
-
-1. Drain all in-flight jobs to completion.
-2. Have a DBA drop the old tracking tables on the destination (or on your
-   `job_schema` if you have configured a separate schema):
-
-   ```sql
-   DROP TABLE IF EXISTS archiver_job_log;
-   DROP TABLE IF EXISTS archiver_job;
-   ```
-
-3. The new tables are created automatically on the next run.
-4. If using an isolated `job_schema`, a DBA must `CREATE DATABASE <schema>` and
-   grant `CREATE, SELECT, INSERT, UPDATE` on it before running the upgraded binary.
-
-Per-job log tables (`archiver_job_log_<id>`) are not deleted automatically —
-completed and failed rows are kept as evidence. A DBA may `DROP` or `TRUNCATE`
-them for housekeeping as needed.
 
 ### FOREIGN_KEY_CHECKS handling hardened
 
@@ -756,7 +698,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.6.0-community` (stable for the scope below)
+- **Version**: `1.7.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
@@ -856,30 +798,6 @@ should be aware of the following known limits before pointing it at real data:
   passes validate but has the wrong `WHERE` clause can delete the wrong rows
   from source. Always run `goarchive dry-run` and review the estimated row
   counts before executing `archive`.
-- **Upgrade caveat: not state-compatible with prior versions.** This release
-  reshapes tracking tables (`archiver_job` now has an integer `id` PRIMARY KEY;
-  the shared `archiver_job_log` table is replaced by per-job
-  `archiver_job_log_<id>` tables). A startup probe detects old-shape tables and
-  rejects them with upgrade guidance — no auto-migration is performed.
-  **Before upgrading:** drain all in-flight jobs to completion, then have a DBA
-  drop the old tables on the destination (or on `job_schema` if isolated):
-  ```sql
-  DROP TABLE IF EXISTS archiver_job_log;
-  DROP TABLE IF EXISTS archiver_job;
-  ```
-  They are recreated automatically on the next run. If you use an isolated
-  `job_schema`, a DBA must pre-create that schema and grant
-  `CREATE, SELECT, INSERT, UPDATE` before running the upgraded binary. Per-job
-  log tables (`archiver_job_log_<id>`) accumulate over time as jobs are created;
-  a DBA may `DROP` or `TRUNCATE` them for housekeeping (evidence rows are not
-  deleted automatically).
-- **Upgrade caveat: config identifiers are now restricted to `[A-Za-z0-9_]+`.**
-  `root_table`, `primary_key`, relation `table`/`foreign_key`/`primary_key`, and
-  `job_schema` are validated against this pattern at config load. Identifiers
-  using `$`, dots (e.g. a dotted `schema.table` name), or other characters that
-  are legal in MySQL but fall outside this pattern previously loaded and will
-  now fail with a hard config-load error — rename the identifier before
-  upgrading.
 
 ### What's Included in Community
 

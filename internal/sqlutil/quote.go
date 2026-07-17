@@ -25,22 +25,3 @@ var validIdentifierRegex = regexp.MustCompile("^[a-zA-Z0-9_]+$")
 func IsValidIdentifier(name string) bool {
 	return validIdentifierRegex.MatchString(name)
 }
-
-// QuoteIdentifierSafe quotes a MySQL identifier after validating it.
-// Returns an error if the identifier contains invalid characters.
-// Use this when identifiers might come from untrusted sources.
-func QuoteIdentifierSafe(name string) (string, error) {
-	if !IsValidIdentifier(name) {
-		return "", &InvalidIdentifierError{Name: name}
-	}
-	return QuoteIdentifier(name), nil
-}
-
-// InvalidIdentifierError is returned when an identifier contains invalid characters.
-type InvalidIdentifierError struct {
-	Name string
-}
-
-func (e *InvalidIdentifierError) Error() string {
-	return "invalid identifier: " + e.Name + " (must contain only alphanumeric characters and underscores)"
-}

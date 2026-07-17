@@ -20,7 +20,7 @@ import (
 // ============================================================================
 
 // setupCopyOnlyDBManager creates a database manager for copy-only tests
-func setupCopyOnlyDBManager(t *testing.T, setup *IntegrationTestSetup) *database.Manager {
+func setupCopyOnlyDBManager(t *testing.T, setup *IntegrationTestSetup) (*database.Manager, *config.Config) {
 	var sourceCfg, destCfg DatabaseConfig
 	found := 0
 	for _, db := range setup.Config.Databases {
@@ -80,7 +80,7 @@ func setupCopyOnlyDBManager(t *testing.T, setup *IntegrationTestSetup) *database
 		t.Fatalf("Failed to connect database manager: %v", err)
 	}
 
-	return dbManager
+	return dbManager, cfg
 }
 
 // clearCopyOnlyDestination truncates all tables in destination for copy-only tests
@@ -192,9 +192,8 @@ func TestCopyOnly_FullCycle_Integration(t *testing.T) {
 
 	// Create orchestrator with real DB manager
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_copy_only_full", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
@@ -263,9 +262,8 @@ func TestCopyOnly_DestinationNotEmpty_Integration(t *testing.T) {
 	}
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_dest_not_empty", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
@@ -324,9 +322,8 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 	}()
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_concurrent", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
@@ -361,8 +358,7 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 	seedCopyOnlyTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
 	// First run: process then cancel
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -384,8 +380,7 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 
 	// Second run: resume from checkpoint (need fresh dbManager to avoid state issues)
 	ctx2 := context.Background()
-	dbManager2 := setupCopyOnlyDBManager(t, setup)
-	cfg2 := dbManager2.GetConfig()
+	dbManager2, cfg2 := setupCopyOnlyDBManager(t, setup)
 	orch2, err := NewCopyOnlyOrchestrator(cfg2, "test_copy_recovery", jobCfg, dbManager2)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator (resume) failed: %v", err)
@@ -434,8 +429,7 @@ func TestCopyOnly_SkipVerification_Integration(t *testing.T) {
 	seedCopyOnlyTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 	cfg.Verification.SkipVerification = true
 
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_skip_verify", jobCfg, dbManager)
@@ -495,9 +489,8 @@ func TestCopyOnly_ForceMode_BypassesDuplicateCheck_Integration(t *testing.T) {
 	}
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_force_bypass", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
@@ -541,9 +534,8 @@ func TestCopyOnly_ForceMode_Cancelled_Integration(t *testing.T) {
 	seedCopyOnlyTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_force_cancel", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
@@ -613,8 +605,7 @@ func TestCopyOnly_EmptyResultSet_Integration(t *testing.T) {
 	// Where clause that matches no rows
 	jobCfg.Where = "created_at < '2020-01-01'"
 
-	dbManager := setupCopyOnlyDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_empty_result", jobCfg, dbManager)
 	if err != nil {
@@ -659,8 +650,7 @@ func TestCopyOnly_ContextCancellation_Integration(t *testing.T) {
 	seedLargeTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
-	cfg := dbManager.GetConfig()
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_cancellation", jobCfg, dbManager)
 	if err != nil {
@@ -714,9 +704,8 @@ func TestCopyOnly_ResumeTableInDestination_Integration(t *testing.T) {
 	seedCopyOnlyTestData(t, sourceDB)
 
 	jobCfg := createCustomerOrderJobConfig()
-	dbManager := setupCopyOnlyDBManager(t, setup)
+	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
 
-	cfg := dbManager.GetConfig()
 	orch, err := NewCopyOnlyOrchestrator(cfg, "test_resume_dest", jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)

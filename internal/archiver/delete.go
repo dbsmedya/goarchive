@@ -252,20 +252,6 @@ func (dp *DeletePhase) executeDelete(ctx context.Context, table, pkColumn string
 	return rowsAffected, nil
 }
 
-// SetBatchSize sets the batch size for delete operations.
-//
-// GA-P4-F2-T2: Batch delete size configuration
-func (dp *DeletePhase) SetBatchSize(size int) {
-	if size > 0 {
-		dp.batchSize = size
-	}
-}
-
-// GetBatchSize returns the current batch size.
-func (dp *DeletePhase) GetBatchSize() int {
-	return dp.batchSize
-}
-
 // SetSleepSeconds sets the inter-chunk throttle pause (in seconds) applied
 // between delete chunks. 0 disables the throttle (the default). Negative values
 // are ignored. Use this to limit binlog generation / replication lag on the
@@ -274,19 +260,4 @@ func (dp *DeletePhase) SetSleepSeconds(s float64) {
 	if s >= 0 {
 		dp.sleepSeconds = s
 	}
-}
-
-// GetSleepSeconds returns the current inter-chunk throttle pause in seconds.
-func (dp *DeletePhase) GetSleepSeconds() float64 {
-	return dp.sleepSeconds
-}
-
-// GetGraph returns the dependency graph used by this delete phase.
-func (dp *DeletePhase) GetGraph() *graph.Graph {
-	return dp.graph
-}
-
-// SetLogger sets a custom logger for the delete phase.
-func (dp *DeletePhase) SetLogger(log *logger.Logger) {
-	dp.logger = log
 }

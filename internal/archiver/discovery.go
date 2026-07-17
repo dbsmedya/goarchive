@@ -20,11 +20,10 @@ import (
 // GA-P3-F2-T1: BFS Traversal Structure
 // GA-P3-F2-T3: Multi-level discovery
 type RecordDiscovery struct {
-	graph           *graph.Graph
-	db              *sql.DB
-	batchSize       int
-	logger          *logger.Logger
-	allowSimulation bool
+	graph     *graph.Graph
+	db        *sql.DB
+	batchSize int
+	logger    *logger.Logger
 }
 
 // NewRecordDiscovery creates a new discovery service with the given dependency graph,
@@ -90,6 +89,10 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	maxLevel := 0
 	d.logger.Infof("Starting graph discovery from root table %q with %d PKs", rootTable, len(rootPKs))
 
+	// One dedup set per child table, held for the whole traversal — child PKs
+	// arriving via different parent edges dedup without rebuilding a map per edge.
+	seen := make(map[string]map[interface{}]struct{}, len(order))
+
 	// Process tables in topological order and accumulate child PKs across all parent paths.
 	for _, table := range order {
 		// Check for context cancellation (graceful shutdown)
@@ -121,17 +124,13 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 			table, level, len(parentPKs), len(children))
 
 		for _, childTable := range children {
-			// GA-P3-F2-T2: Fetch child IDs via database query or simulation
-			var childPKs []interface{}
-			if d.db == nil && d.allowSimulation {
-				childPKs = d.simulateDiscovery(childTable, parentPKs)
-			} else if d.db != nil {
-				childPKs, err = d.fetchChildIDs(ctx, table, childTable, parentPKs)
-				if err != nil {
-					return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
-				}
-			} else {
+			// GA-P3-F2-T2: Fetch child IDs via database query
+			if d.db == nil {
 				return nil, fmt.Errorf("discovery database is nil")
+			}
+			childPKs, err := d.fetchChildIDs(ctx, table, childTable, parentPKs)
+			if err != nil {
+				return nil, fmt.Errorf("failed to discover %s records: %w", childTable, err)
 			}
 
 			if len(childPKs) == 0 {
@@ -142,7 +141,8 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 			d.logger.Debugf("Discovered %d %s records from %d parent PKs",
 				len(childPKs), childTable, len(parentPKs))
 
-			result.Records[childTable] = appendUniqueInterfaces(result.Records[childTable], childPKs)
+			set := tableSeen(seen, result.Records[childTable], childTable)
+			result.Records[childTable] = appendUnique(result.Records[childTable], childPKs, set)
 
 			nextLevel := level + 1
 			if current, ok := levels[childTable]; !ok || nextLevel > current {
@@ -170,31 +170,33 @@ func (d *RecordDiscovery) Discover(ctx context.Context, rootPKs []interface{}) (
 	return result, nil
 }
 
-func appendUniqueInterfaces(existing, incoming []interface{}) []interface{} {
-	if len(incoming) == 0 {
-		return existing
-	}
-
-	seen := make(map[string]struct{}, len(existing)+len(incoming))
-	for _, v := range existing {
-		seen[interfaceKey(v)] = struct{}{}
-	}
-
-	result := existing
-	for _, v := range incoming {
-		key := interfaceKey(v)
-		if _, ok := seen[key]; ok {
-			continue
+// tableSeen returns the persistent dedup set for table, creating it on first
+// use seeded from PKs already recorded for that table (the root table is
+// pre-populated before the BFS loop runs).
+func tableSeen(seen map[string]map[interface{}]struct{}, existing []interface{}, table string) map[interface{}]struct{} {
+	m, ok := seen[table]
+	if !ok {
+		m = make(map[interface{}]struct{}, len(existing))
+		for _, v := range existing {
+			m[v] = struct{}{}
 		}
-		seen[key] = struct{}{}
-		result = append(result, v)
+		seen[table] = m
 	}
-
-	return result
+	return m
 }
 
-func interfaceKey(v interface{}) string {
-	return fmt.Sprintf("%T:%v", v, v)
+// appendUnique appends incoming PKs not already in seen. PK values are int64
+// or string (fetchChildIDs converts []byte), so they are valid map keys and
+// the map distinguishes types the same way the old "%T:%v" string keys did.
+func appendUnique(existing, incoming []interface{}, seen map[interface{}]struct{}) []interface{} {
+	for _, v := range incoming {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		existing = append(existing, v)
+	}
+	return existing
 }
 
 // fetchChildIDs queries the child table for all PKs that reference the parent PKs.
@@ -204,7 +206,11 @@ func interfaceKey(v interface{}) string {
 //
 // Query format:
 //
-//	SELECT DISTINCT child_pk FROM child_table WHERE fk_column IN (parent_pks)
+//	SELECT child_pk FROM child_table WHERE fk_column IN (parent_pks)
+//
+// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+// so every returned value is already unique; cross-chunk dedup happens in
+// appendUnique.
 //
 // For large parent PK sets, the query is chunked to avoid exceeding database limits.
 func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childTable string, parentPKs []interface{}) ([]interface{}, error) {
@@ -227,7 +233,9 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 	childPK := d.graph.GetPK(childTable)
 
 	// GA-P3-F2-T4: Fetch only PKs, not full rows (memory-efficient)
-	// Use DISTINCT to avoid duplicates in 1-N relationships
+	// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+	// so every returned value is already unique; cross-chunk dedup happens in
+	// appendUnique.
 	var allChildPKs []interface{}
 
 	// Chunk parent PKs to avoid exceeding IN clause limits
@@ -239,14 +247,16 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 		}
 		chunk := parentPKs[i:end]
 
-		// Build query: SELECT DISTINCT id FROM child_table WHERE fk_column IN (?, ?, ...)
+		// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
+		// so every returned value is already unique; cross-chunk dedup happens in
+		// appendUnique.
 		placeholders := make([]string, len(chunk))
 		for j := range placeholders {
 			placeholders[j] = "?"
 		}
 
 		query := fmt.Sprintf(
-			"SELECT DISTINCT %s FROM %s WHERE %s IN (%s)",
+			"SELECT %s FROM %s WHERE %s IN (%s)",
 			sqlutil.QuoteIdentifier(childPK),
 			sqlutil.QuoteIdentifier(childTable),
 			sqlutil.QuoteIdentifier(foreignKey),
@@ -285,107 +295,7 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 	return allChildPKs, nil
 }
 
-// DiscoverBatch is a convenience wrapper that enforces batch size limits on root PKs.
-// This is useful when the caller has already fetched a large set of root PKs
-// and wants to process them in manageable chunks.
-func (d *RecordDiscovery) DiscoverBatch(ctx context.Context, rootPKs []interface{}) (*types.RecordSet, error) {
-	if len(rootPKs) == 0 {
-		return &types.RecordSet{
-			RootPKs: []interface{}{},
-			Records: make(map[string][]interface{}),
-			Stats:   types.DiscoveryStats{},
-		}, nil
-	}
-
-	// Limit root batch size if needed
-	if len(rootPKs) > d.batchSize {
-		d.logger.Warnf("Root PKs (%d) exceed batch size (%d), truncating", len(rootPKs), d.batchSize)
-		rootPKs = rootPKs[:d.batchSize]
-	}
-
-	return d.Discover(ctx, rootPKs)
-}
-
-// GetGraph returns the dependency graph used by this discovery service.
-func (d *RecordDiscovery) GetGraph() *graph.Graph {
-	return d.graph
-}
-
-// GetBatchSize returns the configured batch size for IN clause chunking.
-func (d *RecordDiscovery) GetBatchSize() int {
-	return d.batchSize
-}
-
 // SetLogger sets a custom logger for the discovery service.
 func (d *RecordDiscovery) SetLogger(log *logger.Logger) {
 	d.logger = log
-}
-
-// simulateDiscovery simulates child record discovery for testing purposes.
-// It generates synthetic child PKs based on the table name and parent PKs,
-// allowing tests to run without a real database connection.
-//
-// This method is used by tests to verify discovery logic without requiring
-// an actual database. It simulates:
-//   - 1-N relationships: Returns multiple child records per parent (e.g., orders)
-//   - 1-1 relationships: Returns exactly one child record per parent (e.g., profiles)
-//   - Multi-level: Supports traversing the full graph depth
-func (d *RecordDiscovery) simulateDiscovery(childTable string, parentPKs []interface{}) []interface{} {
-	if len(parentPKs) == 0 {
-		return []interface{}{}
-	}
-
-	switch childTable {
-	case "orders":
-		// 1-N relationship: 1-2 orders per user
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			// Each user has 1-2 orders
-			numOrders := 1 + (i % 2)
-			for j := 0; j < numOrders; j++ {
-				childPK := fmt.Sprintf("order_%s_%d", parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-
-	case "profiles":
-		// 1-1 relationship: exactly 1 profile per user
-		childPKs := []interface{}{}
-		for _, parentPK := range parentPKs {
-			childPK := fmt.Sprintf("profile_%s", parentPK)
-			childPKs = append(childPKs, childPK)
-		}
-		return childPKs
-
-	case "order_items":
-		// 1-N relationship: 2-3 items per order
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			// Each order has 2-3 items
-			numItems := 2 + (i % 2)
-			for j := 0; j < numItems; j++ {
-				childPK := fmt.Sprintf("item_%s_%d", parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-
-	case "unknown_table":
-		// Explicitly unknown table for testing - return empty
-		return []interface{}{}
-
-	default:
-		// For generic test tables (A, B, C, etc.),
-		// simulate a 1-N relationship with 1-2 records per parent
-		childPKs := []interface{}{}
-		for i, parentPK := range parentPKs {
-			numChildren := 1 + (i % 2) // 1-2 children per parent
-			for j := 0; j < numChildren; j++ {
-				childPK := fmt.Sprintf("%s_child_%s_%d", childTable, parentPK, j+1)
-				childPKs = append(childPKs, childPK)
-			}
-		}
-		return childPKs
-	}
 }

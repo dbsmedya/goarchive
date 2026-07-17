@@ -15,16 +15,6 @@ import (
 // outputWriter is used for printing output, can be overridden in tests
 var outputWriter io.Writer = os.Stdout
 
-// setOutputWriter sets the output writer (used for testing)
-func setOutputWriter(w io.Writer) {
-	outputWriter = w
-}
-
-// resetOutputWriter resets output to stdout (used for testing)
-func resetOutputWriter() {
-	outputWriter = os.Stdout
-}
-
 var planJob string
 
 var planCmd = &cobra.Command{

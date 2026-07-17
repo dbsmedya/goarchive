@@ -129,15 +129,6 @@ func (g *Graph) NodeCount() int {
 	return len(g.Nodes)
 }
 
-// EdgeCount returns the number of edges in the graph.
-func (g *Graph) EdgeCount() int {
-	count := 0
-	for _, children := range g.Children {
-		count += len(children)
-	}
-	return count
-}
-
 // AllNodes returns a slice of all table names in the graph.
 func (g *Graph) AllNodes() []string {
 	nodes := make([]string, 0, len(g.Nodes))
@@ -156,27 +147,6 @@ func (g *Graph) AllEdges() []Edge {
 		}
 	}
 	return edges
-}
-
-// LeafNodes returns all nodes with no children (leaf tables).
-func (g *Graph) LeafNodes() []string {
-	var leaves []string
-	for name := range g.Nodes {
-		if len(g.Children[name]) == 0 {
-			leaves = append(leaves, name)
-		}
-	}
-	return leaves
-}
-
-// InDegree returns the number of incoming edges (parents) for a node.
-func (g *Graph) InDegree(name string) int {
-	return len(g.Parents[name])
-}
-
-// OutDegree returns the number of outgoing edges (children) for a node.
-func (g *Graph) OutDegree(name string) int {
-	return len(g.Children[name])
 }
 
 // SetPK sets the primary key column name for a table.

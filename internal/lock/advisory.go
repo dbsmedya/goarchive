@@ -200,13 +200,6 @@ func (a *AdvisoryLock) ReleaseLock(ctx context.Context) (bool, error) {
 	}
 }
 
-// IsHeld returns true if this lock is currently held by this instance.
-func (a *AdvisoryLock) IsHeld() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.held
-}
-
 // StartKeepAlive periodically verifies that this instance still owns the lock.
 func (a *AdvisoryLock) StartKeepAlive(ctx context.Context, interval time.Duration) <-chan error {
 	lost := make(chan error, 1)
@@ -313,11 +306,6 @@ func (a *AdvisoryLock) markLostLocked() {
 	a.connID = 0
 }
 
-// LockName returns the name of the advisory lock.
-func (a *AdvisoryLock) LockName() string {
-	return a.lockName
-}
-
 // TryAcquire attempts to acquire the lock immediately without waiting.
 // Returns true if acquired, false if the lock is already held by another instance.
 // Returns an error only if there is a database failure.
@@ -326,24 +314,6 @@ func (a *AdvisoryLock) LockName() string {
 // Use this for fast duplicate job detection.
 func (a *AdvisoryLock) TryAcquire(ctx context.Context) (bool, error) {
 	return a.AcquireLock(ctx, TimeoutImmediate)
-}
-
-// AcquireOrFail attempts to acquire the lock with a short timeout.
-// Returns nil if lock is acquired successfully.
-// Returns ErrLockTimeout if another instance is holding the lock.
-// Returns other errors for database failures.
-//
-// This is a convenience method for the common pattern of failing fast when
-// a duplicate job is detected. Uses TimeoutShort (1 second) by default.
-func (a *AdvisoryLock) AcquireOrFail(ctx context.Context) error {
-	acquired, err := a.AcquireLock(ctx, TimeoutShort)
-	if err != nil {
-		return err
-	}
-	if !acquired {
-		return fmt.Errorf("%w: lock %q is held by another instance", ErrLockTimeout, a.lockName)
-	}
-	return nil
 }
 
 // GenerateJobLockName creates a consistent lock name for a GoArchive job.
@@ -377,11 +347,13 @@ func GenerateJobLockName(jobName string) string {
 // Example:
 //
 //	lock := NewJobLock(db, "archive_old_orders")
-//	if err := lock.AcquireOrFail(ctx); err != nil {
-//	    if errors.Is(err, ErrLockTimeout) {
-//	        log.Error("Job is already running")
-//	    }
+//	acquired, err := lock.TryAcquire(ctx)
+//	if err != nil {
 //	    return err
+//	}
+//	if !acquired {
+//	    log.Error("Job is already running")
+//	    return nil
 //	}
 //	defer lock.ReleaseLock(ctx)
 func NewJobLock(db *sql.DB, jobName string) *AdvisoryLock {
@@ -403,154 +375,4 @@ func GenerateRootTableLockName(rootTable string) string {
 // NewRootTableLock creates an advisory lock keyed on a root table.
 func NewRootTableLock(db *sql.DB, rootTable string) *AdvisoryLock {
 	return NewAdvisoryLock(db, GenerateRootTableLockName(rootTable))
-}
-
-// IsJobRunning checks if a specific job is currently running by attempting
-// to acquire its lock immediately without waiting.
-//
-// Returns:
-//   - true, nil: Job is currently running (lock is held by another instance)
-//   - false, nil: Job is not running (lock is available)
-//   - false, error: Database error occurred while checking
-//
-// This is useful for pre-flight checks or status reporting without actually
-// acquiring the lock. Note that this check is not atomic - the job state
-// could change immediately after this function returns.
-//
-// Example:
-//
-//	running, err := IsJobRunning(ctx, db, "archive_old_orders")
-//	if err != nil {
-//	    return fmt.Errorf("failed to check job status: %w", err)
-//	}
-//	if running {
-//	    log.Info("Job is currently running, skipping")
-//	    return nil
-//	}
-func IsJobRunning(ctx context.Context, db *sql.DB, jobName string) (bool, error) {
-	lock := NewJobLock(db, jobName)
-
-	// Try to acquire lock immediately
-	acquired, err := lock.TryAcquire(ctx)
-	if err != nil {
-		return false, fmt.Errorf("failed to check if job %q is running: %w", jobName, err)
-	}
-
-	// If we acquired the lock, the job was not running
-	// Release it immediately since we were just checking
-	if acquired {
-		if _, releaseErr := lock.ReleaseLock(ctx); releaseErr != nil {
-			return false, fmt.Errorf("failed to release lock after job status check for %q: %w", jobName, releaseErr)
-		}
-		return false, nil
-	}
-
-	// Lock was not acquired - job is running
-	return true, nil
-}
-
-// WithLock executes a function while holding an advisory lock, ensuring
-// automatic release even if the function panics.
-//
-// This provides crash-safe lock management by using defer to guarantee
-// lock release regardless of how the function exits (normal return, error,
-// or panic). The lock is acquired with the specified timeout before
-// executing the function.
-//
-// Returns:
-//   - ErrLockTimeout if lock cannot be acquired within timeout
-//   - Any error returned by the function
-//   - Any panic from the function is re-raised after releasing the lock
-//
-// Example:
-//
-//	lock := lock.NewJobLock(db, "archive_old_orders")
-//	err := lock.WithLock(ctx, lock.TimeoutShort, func() error {
-//	    // Critical section - lock is held
-//	    // Lock will be released even if this panics
-//	    return processJob()
-//	})
-func (a *AdvisoryLock) WithLock(ctx context.Context, timeoutSeconds int, fn func() error) (err error) {
-	// Acquire the lock
-	acquired, err := a.AcquireLock(ctx, timeoutSeconds)
-	if err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	if !acquired {
-		return fmt.Errorf("%w: lock %q is held by another instance", ErrLockTimeout, a.lockName)
-	}
-
-	// Ensure lock is released even on panic
-	defer func() {
-		origPanic := recover()
-
-		// Release lock in a separate context to avoid cancellation issues
-		// Use background context with short timeout for cleanup
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		var releaseErr error
-		var releasePanic interface{}
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					releasePanic = r
-				}
-			}()
-			_, releaseErr = a.ReleaseLock(releaseCtx)
-		}()
-
-		if releasePanic != nil {
-			if origPanic != nil {
-				panic(origPanic)
-			}
-			panic(releasePanic)
-		}
-
-		if releaseErr != nil {
-			releaseWrappedErr := fmt.Errorf("failed to release lock %q: %w", a.lockName, releaseErr)
-			if err != nil {
-				err = errors.Join(err, releaseWrappedErr)
-			} else {
-				err = releaseWrappedErr
-			}
-		}
-
-		if origPanic != nil {
-			panic(origPanic)
-		}
-	}()
-
-	// Execute the protected function
-	err = fn()
-	return err
-}
-
-// WithJobLock executes a function while holding a job-specific advisory lock.
-// This is a convenience wrapper around WithLock that automatically generates
-// the job lock name and provides crash-safe execution.
-//
-// The lock is acquired with TimeoutShort (1 second) by default for fast
-// duplicate detection. If you need a different timeout, create a lock with
-// NewJobLock and use WithLock directly.
-//
-// Returns:
-//   - ErrLockTimeout if another instance is running the same job
-//   - Any error returned by the function
-//   - Any panic from the function is re-raised after releasing the lock
-//
-// Example:
-//
-//	err := lock.WithJobLock(ctx, db, "archive_old_orders", func() error {
-//	    // Job execution - protected by advisory lock
-//	    // Lock automatically released even if this panics
-//	    return runArchiveJob()
-//	})
-//	if errors.Is(err, lock.ErrLockTimeout) {
-//	    log.Info("Job already running, skipping")
-//	    return nil
-//	}
-func WithJobLock(ctx context.Context, db *sql.DB, jobName string, fn func() error) error {
-	lock := NewJobLock(db, jobName)
-	return lock.WithLock(ctx, TimeoutShort, fn)
 }

@@ -30,18 +30,6 @@ func Load(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// LoadFromViper creates a Config from an existing Viper instance.
-// Useful for testing or when Viper is configured externally.
-func LoadFromViper(v *viper.Viper) (*Config, error) {
-	cfg := DefaultConfig()
-
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	return cfg, nil
-}
-
 // GetJob retrieves a specific job configuration by name.
 func (c *Config) GetJob(name string) (*JobConfig, error) {
 	job, exists := c.Jobs[name]

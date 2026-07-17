@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT RELEASE_VERSION below when releasing
 # Or override per-build with: make build VERSION=1.2.3
-RELEASE_VERSION := 1.6.0-community
+RELEASE_VERSION := 1.7.0-community
 # Use the exact git tag when building from a tagged release commit, otherwise
 # fall back to the pinned RELEASE_VERSION above.
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || echo "$(RELEASE_VERSION)")
@@ -151,6 +151,21 @@ github-release: clean check lint
 .PHONY: vulncheck
 vulncheck:
 	govulncheck ./...
+
+# Dead-code guard version (golang.org/x/tools/cmd/deadcode)
+DEADCODE_VERSION := v0.48.0
+
+# Fail if the production binary carries unreachable functions
+.PHONY: deadcode
+deadcode: ## Fail if the production binary carries unreachable functions
+	@out=$$(go run golang.org/x/tools/cmd/deadcode@$(DEADCODE_VERSION) ./cmd/goarchive) || { \
+		echo "deadcode: tool execution failed (exit $$?)"; exit 1; }; \
+	if [ -n "$$out" ]; then \
+		echo "$$out"; \
+		echo "deadcode: production-unreachable functions found (see issue #9)"; \
+		exit 1; \
+	fi; \
+	echo "deadcode: clean"
 
 # Integration test configuration
 INTEGRATION_CONFIG_DIR := internal/archiver

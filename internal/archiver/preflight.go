@@ -1655,11 +1655,6 @@ func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []str
 	return results, rows.Err()
 }
 
-// SetLogger sets a custom logger for the preflight checker.
-func (p *PreflightChecker) SetLogger(log *logger.Logger) {
-	p.logger = log
-}
-
 // SetVerification tells the checker which verification the job will run.
 // Charset mismatches are fatal under count verification (which cannot detect
 // transcoded text) but only warnings under sha256 (which fails closed at

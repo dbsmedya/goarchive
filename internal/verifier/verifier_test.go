@@ -3,8 +3,14 @@ package verifier
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -654,151 +660,179 @@ func TestSetChunkSize(t *testing.T) {
 	v, _ := NewVerifier(db, db, g, MethodSHA256, log)
 
 	v.SetChunkSize(500)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Expected chunk size 500, got %d", v.GetChunkSize())
+	if v.chunkSize != 500 {
+		t.Errorf("Expected chunk size 500, got %d", v.chunkSize)
 	}
 
 	// Test that 0 or negative doesn't change
 	v.SetChunkSize(0)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Chunk size should not change with 0, got %d", v.GetChunkSize())
+	if v.chunkSize != 500 {
+		t.Errorf("Chunk size should not change with 0, got %d", v.chunkSize)
 	}
 
 	v.SetChunkSize(-1)
-	if v.GetChunkSize() != 500 {
-		t.Errorf("Chunk size should not change with negative, got %d", v.GetChunkSize())
-	}
-}
-
-func TestGetMethod(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-
-	v, _ := NewVerifier(db, db, g, MethodCount, log)
-	if v.GetMethod() != MethodCount {
-		t.Errorf("Expected method %s, got %s", MethodCount, v.GetMethod())
-	}
-
-	v2, _ := NewVerifier(db, db, g, MethodSHA256, log)
-	if v2.GetMethod() != MethodSHA256 {
-		t.Errorf("Expected method %s, got %s", MethodSHA256, v2.GetMethod())
-	}
-}
-
-func TestSerializeRow_StableAcrossColumnOrder(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-	v, _ := NewVerifier(db, db, g, MethodSHA256, log)
-
-	rowA := v.serializeRow(
-		[]string{"id", "name", "email"},
-		[]interface{}{int64(1), "John", "john@example.com"},
-	)
-	rowB := v.serializeRow(
-		[]string{"email", "id", "name"},
-		[]interface{}{"john@example.com", int64(1), "John"},
-	)
-
-	if rowA != rowB {
-		t.Fatalf("row serialization should be independent of column order: %q != %q", rowA, rowB)
-	}
-}
-
-func TestSetLogger(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-	v, _ := NewVerifier(db, db, g, MethodCount, log)
-
-	newLog := logger.NewDefault()
-	v.SetLogger(newLog)
-
-	if v.logger != newLog {
-		t.Error("SetLogger did not set logger correctly")
+	if v.chunkSize != 500 {
+		t.Errorf("Chunk size should not change with negative, got %d", v.chunkSize)
 	}
 }
 
 // ============================================================================
-// serializeRow Tests
+// rowSerializer Tests
 // ============================================================================
 
-func TestSerializeRow(t *testing.T) {
-	db, _, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createTestGraph()
-	log := logger.NewDefault()
-	v, _ := NewVerifier(db, db, g, MethodSHA256, log)
-
+func TestRowSerializer_ByteFormat(t *testing.T) {
 	tests := []struct {
-		name     string
-		columns  []string
-		values   []interface{}
-		contains []string
+		name    string
+		columns []string
+		values  []interface{}
+		want    string
 	}{
 		{
-			name:     "basic row",
-			columns:  []string{"id", "name"},
-			values:   []interface{}{int64(1), "test"},
-			contains: []string{"id=1", "name=test"},
+			name:    "basic row sorted by column name",
+			columns: []string{"name", "id"},
+			values:  []interface{}{"test", int64(1)},
+			want:    "id=1\x00name=test\n",
 		},
 		{
-			name:     "with nil",
-			columns:  []string{"id", "optional"},
-			values:   []interface{}{int64(1), nil},
-			contains: []string{"id=1", "optional=NULL"},
+			name:    "nil becomes NULL",
+			columns: []string{"id", "optional"},
+			values:  []interface{}{int64(1), nil},
+			want:    "id=1\x00optional=NULL\n",
 		},
 		{
-			name:     "with bytes",
-			columns:  []string{"id", "data"},
-			values:   []interface{}{int64(1), []byte("hello")},
-			contains: []string{"id=1", "data=0x68656c6c6f"},
+			name:    "bytes hex-encoded",
+			columns: []string{"id", "data"},
+			values:  []interface{}{int64(1), []byte("hello")},
+			want:    "data=0x68656c6c6f\x00id=1\n",
 		},
 		{
-			name:     "with float",
-			columns:  []string{"id", "value"},
-			values:   []interface{}{int64(1), float64(3.14)},
-			contains: []string{"id=1"},
+			name:    "float matches legacy %.17g",
+			columns: []string{"id", "value"},
+			values:  []interface{}{int64(1), float64(3.14)},
+			want:    "id=1\x00value=" + fmt.Sprintf("%.17g", 3.14) + "\n",
 		},
 		{
-			name:     "with bool",
-			columns:  []string{"id", "active"},
-			values:   []interface{}{int64(1), true},
-			contains: []string{"id=1", "active=true"},
+			name:    "large float matches legacy %.17g",
+			columns: []string{"v"},
+			values:  []interface{}{float64(1e300)},
+			want:    "v=" + fmt.Sprintf("%.17g", 1e300) + "\n",
+		},
+		{
+			name:    "negative zero float matches legacy %.17g",
+			columns: []string{"v"},
+			values:  []interface{}{math.Copysign(0, -1)},
+			want:    "v=" + fmt.Sprintf("%.17g", math.Copysign(0, -1)) + "\n",
+		},
+		{
+			name:    "bool",
+			columns: []string{"id", "active"},
+			values:  []interface{}{int64(1), true},
+			want:    "active=true\x00id=1\n",
+		},
+		{
+			name:    "negative int64",
+			columns: []string{"id"},
+			values:  []interface{}{int64(-42)},
+			want:    "id=-42\n",
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := v.serializeRow(tt.columns, tt.values)
-			for _, expected := range tt.contains {
-				if !containsSubstring(result, expected) {
-					t.Errorf("Expected result to contain %q, got %q", expected, result)
-				}
+			s := newRowSerializer(tt.columns)
+			got := string(s.appendRow(tt.values))
+			if got != tt.want {
+				t.Errorf("appendRow = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstringHelper(s, substr))
+func TestRowSerializer_StableAcrossColumnOrder(t *testing.T) {
+	a := newRowSerializer([]string{"id", "name", "email"})
+	rowA := string(a.appendRow([]interface{}{int64(1), "John", "john@example.com"}))
+	b := newRowSerializer([]string{"email", "id", "name"})
+	rowB := string(b.appendRow([]interface{}{"john@example.com", int64(1), "John"}))
+	if rowA != rowB {
+		t.Fatalf("row serialization should be independent of column order: %q != %q", rowA, rowB)
+	}
 }
 
-func containsSubstringHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestRowSerializer_BufferReuseDoesNotCorrupt(t *testing.T) {
+	s := newRowSerializer([]string{"id"})
+	first := string(s.appendRow([]interface{}{int64(1)}))
+	second := string(s.appendRow([]interface{}{int64(2)}))
+	if first != "id=1\n" || second != "id=2\n" {
+		t.Fatalf("buffer reuse corrupted rows: %q, %q", first, second)
 	}
-	return false
+}
+
+// legacySerializeRow is the pre-#9 Sprintf/sort/join implementation, kept
+// test-side verbatim to pin byte-for-byte equivalence of the streaming
+// serializer across the full driver-value matrix — including types that hit
+// the default "%v" branch (time.Time, float32, uint64, int32).
+func legacySerializeRow(columns []string, values []interface{}) string {
+	type columnValue struct {
+		column string
+		value  string
+	}
+	pairs := make([]columnValue, 0, len(columns))
+
+	for i, col := range columns {
+		val := values[i]
+		var valStr string
+
+		switch v := val.(type) {
+		case nil:
+			valStr = "NULL"
+		case []byte:
+			valStr = "0x" + hex.EncodeToString(v)
+		case int64:
+			valStr = fmt.Sprintf("%d", v)
+		case float64:
+			valStr = fmt.Sprintf("%.17g", v)
+		case bool:
+			valStr = fmt.Sprintf("%t", v)
+		case string:
+			valStr = v
+		default:
+			valStr = fmt.Sprintf("%v", v)
+		}
+
+		pairs = append(pairs, columnValue{column: col, value: valStr})
+	}
+
+	sort.Slice(pairs, func(i, j int) bool {
+		return pairs[i].column < pairs[j].column
+	})
+
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = fmt.Sprintf("%s=%s", p.column, p.value)
+	}
+
+	return strings.Join(parts, "\x00")
+}
+
+func TestRowSerializer_MatchesLegacyAcrossDriverTypes(t *testing.T) {
+	columns := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	values := []interface{}{
+		nil,
+		int64(-42),
+		float64(3.141592653589793),
+		true,
+		"text with = and \x00 inside",
+		[]byte{0x00, 0xFF, 0x7A},
+		uint64(math.MaxUint64),
+		float32(1.5),
+		time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC),
+		int32(7),
+	}
+	s := newRowSerializer(columns)
+	got := string(s.appendRow(values))
+	want := legacySerializeRow(columns, values) + "\n"
+	if got != want {
+		t.Fatalf("streaming serializer diverged from legacy:\n got %q\nwant %q", got, want)
+	}
 }
 
 // ============================================================================

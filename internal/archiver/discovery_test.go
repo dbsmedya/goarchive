@@ -2,9 +2,11 @@ package archiver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/graph"
 )
 
@@ -19,9 +21,10 @@ func createTestGraph() *graph.Graph {
 	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.AddNode("profiles", &graph.Node{Name: "profiles", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-1"})
-	g.AddEdge("users", "orders")
-	g.AddEdge("orders", "order_items")
-	g.AddEdge("users", "profiles")
+	// FK/ref names match the Node metadata already declared above.
+	g.AddEdgeWithMeta("users", "orders", "user_id", "id", "1-N")
+	g.AddEdgeWithMeta("orders", "order_items", "order_id", "id", "1-N")
+	g.AddEdgeWithMeta("users", "profiles", "user_id", "id", "1-1")
 	return g
 }
 
@@ -32,10 +35,12 @@ func createDeepGraph() *graph.Graph {
 	g.AddNode("C", &graph.Node{Name: "C"})
 	g.AddNode("D", &graph.Node{Name: "D"})
 	g.AddNode("E", &graph.Node{Name: "E"})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("D", "E")
+	// Synthetic FK names; only edge presence + a non-empty FK column matter
+	// to the mocked queries.
+	g.AddEdgeWithMeta("A", "B", "a_id", "id", "1-N")
+	g.AddEdgeWithMeta("B", "C", "b_id", "id", "1-N")
+	g.AddEdgeWithMeta("C", "D", "c_id", "id", "1-N")
+	g.AddEdgeWithMeta("D", "E", "d_id", "id", "1-N")
 	return g
 }
 
@@ -47,20 +52,123 @@ func createDiamondGraph() *graph.Graph {
 	g.AddNode("B", &graph.Node{Name: "B"})
 	g.AddNode("C", &graph.Node{Name: "C"})
 	g.AddNode("D", &graph.Node{Name: "D"})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.AddEdgeWithMeta("A", "B", "a_id", "id", "1-N")
+	g.AddEdgeWithMeta("A", "C", "a_id", "id", "1-N")
+	g.AddEdgeWithMeta("B", "D", "b_id", "id", "1-N")
+	g.AddEdgeWithMeta("C", "D", "c_id", "id", "1-N")
 	return g
 }
 
-func newSimulatedRecordDiscovery(t *testing.T, g *graph.Graph, batchSize int) *RecordDiscovery {
+// simulatedChildren reproduces the deleted simulateDiscovery fixtures, moved
+// out of the production binary: synthetic child PKs derived from parent PKs.
+func simulatedChildren(childTable string, parentPKs []interface{}) []interface{} {
+	if len(parentPKs) == 0 {
+		return []interface{}{}
+	}
+	switch childTable {
+	case "orders":
+		childPKs := []interface{}{}
+		for i, parentPK := range parentPKs {
+			numOrders := 1 + (i % 2)
+			for j := 0; j < numOrders; j++ {
+				childPKs = append(childPKs, fmt.Sprintf("order_%v_%d", parentPK, j+1))
+			}
+		}
+		return childPKs
+	case "profiles":
+		childPKs := []interface{}{}
+		for _, parentPK := range parentPKs {
+			childPKs = append(childPKs, fmt.Sprintf("profile_%v", parentPK))
+		}
+		return childPKs
+	case "order_items":
+		childPKs := []interface{}{}
+		for i, parentPK := range parentPKs {
+			numItems := 2 + (i % 2)
+			for j := 0; j < numItems; j++ {
+				childPKs = append(childPKs, fmt.Sprintf("item_%v_%d", parentPK, j+1))
+			}
+		}
+		return childPKs
+	case "unknown_table":
+		return []interface{}{}
+	default:
+		childPKs := []interface{}{}
+		for i, parentPK := range parentPKs {
+			numChildren := 1 + (i % 2)
+			for j := 0; j < numChildren; j++ {
+				childPKs = append(childPKs, fmt.Sprintf("%s_child_%v_%d", childTable, parentPK, j+1))
+			}
+		}
+		return childPKs
+	}
+}
+
+// newSimulatedRecordDiscovery returns a RecordDiscovery backed by a sqlmock DB
+// pre-programmed to answer the exact BFS walk Discover will perform for
+// rootPKs, returning the same synthetic children the old in-binary simulation
+// produced. rootPKs must match what the test passes to Discover.
+func newSimulatedRecordDiscovery(t *testing.T, g *graph.Graph, batchSize int, rootPKs ...interface{}) *RecordDiscovery {
 	t.Helper()
-	discovery, err := NewRecordDiscovery(g, nil, batchSize)
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New failed: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	effectiveBatch := batchSize
+	if effectiveBatch <= 0 {
+		effectiveBatch = 1000 // NewRecordDiscovery default
+	}
+
+	// Mirror Discover's traversal: topological order, children per table,
+	// chunked queries, dedup accumulation — programming one expectation per
+	// (edge, chunk) in the order the queries will be issued.
+	if len(rootPKs) > 0 {
+		records := map[string][]interface{}{g.Root: rootPKs}
+		seen := map[string]map[interface{}]struct{}{}
+		order, err := g.CopyOrder()
+		if err != nil {
+			t.Fatalf("CopyOrder failed: %v", err)
+		}
+		for _, table := range order {
+			parents := records[table]
+			if len(parents) == 0 {
+				continue
+			}
+			for _, child := range g.GetChildren(table) {
+				childPK := g.GetPK(child)
+				for i := 0; i < len(parents); i += effectiveBatch {
+					end := i + effectiveBatch
+					if end > len(parents) {
+						end = len(parents)
+					}
+					chunkChildren := simulatedChildren(child, parents[i:end])
+					rows := sqlmock.NewRows([]string{childPK})
+					for _, pk := range chunkChildren {
+						rows.AddRow(pk)
+					}
+					mock.ExpectQuery("SELECT .+ FROM `" + child + "` WHERE").WillReturnRows(rows)
+				}
+				all := simulatedChildren(child, parents)
+				set := tableSeen(seen, records[child], child)
+				records[child] = appendUnique(records[child], all, set)
+			}
+		}
+	}
+
+	// Every programmed expectation must be consumed — this is what proves the
+	// mirror-walk matches Discover's real query sequence (reviewer requirement).
+	t.Cleanup(func() {
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unmet sqlmock expectations: %v", err)
+		}
+	})
+
+	discovery, err := NewRecordDiscovery(g, db, batchSize)
 	if err != nil {
 		t.Fatalf("NewRecordDiscovery failed: %v", err)
 	}
-	discovery.allowSimulation = true
 	return discovery
 }
 
@@ -147,7 +255,7 @@ func TestDiscover_EmptyRootPKs(t *testing.T) {
 
 func TestDiscover_SingleRootPK(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -190,7 +298,7 @@ func TestDiscover_NilDBErrorsForNonEmptyInput(t *testing.T) {
 
 func TestDiscover_MultipleRootPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1", "user2", "user3")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -212,7 +320,7 @@ func TestDiscover_MultipleRootPKs(t *testing.T) {
 
 func TestDiscover_BFSTraversalOrder(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -234,7 +342,7 @@ func TestDiscover_BFSTraversalOrder(t *testing.T) {
 
 func TestDiscover_DeepGraph(t *testing.T) {
 	g := createDeepGraph() // A -> B -> C -> D -> E
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "a1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1"}
@@ -260,7 +368,7 @@ func TestDiscover_DeepGraph(t *testing.T) {
 
 func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
 	g := createDiamondGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "a1", "a2")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1", "a2"}
@@ -285,7 +393,7 @@ func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
 
 func TestDiscover_RecordsPopulated(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -359,76 +467,12 @@ func TestDiscover_ContextTimeout(t *testing.T) {
 }
 
 // ============================================================================
-// DiscoverBatch Tests
-// ============================================================================
-
-func TestDiscoverBatch_Success(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	ctx := context.Background()
-	rootPKs := []interface{}{"user1", "user2", "user3"}
-	result, err := discovery.DiscoverBatch(ctx, rootPKs)
-
-	if err != nil {
-		t.Fatalf("DiscoverBatch failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Result is nil")
-	}
-}
-
-func TestDiscoverBatch_RespectsBatchSize(t *testing.T) {
-	g := createTestGraph()
-	batchSize := 2
-	discovery := newSimulatedRecordDiscovery(t, g, batchSize)
-
-	ctx := context.Background()
-	rootPKs := []interface{}{"user1", "user2", "user3", "user4", "user5"}
-	result, err := discovery.DiscoverBatch(ctx, rootPKs)
-
-	if err != nil {
-		t.Fatalf("DiscoverBatch failed: %v", err)
-	}
-
-	// Should only process batchSize root PKs
-	if len(result.RootPKs) != batchSize {
-		t.Errorf("Expected %d root PKs (batch size), got %d", batchSize, len(result.RootPKs))
-	}
-
-	if len(result.Records["users"]) != batchSize {
-		t.Errorf("Expected %d users (batch size), got %d", batchSize, len(result.Records["users"]))
-	}
-}
-
-func TestDiscoverBatch_EmptyPKs(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	ctx := context.Background()
-	result, err := discovery.DiscoverBatch(ctx, []interface{}{})
-
-	if err != nil {
-		t.Fatalf("DiscoverBatch failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Result is nil")
-	}
-
-	if len(result.RootPKs) != 0 {
-		t.Errorf("Expected 0 root PKs, got %d", len(result.RootPKs))
-	}
-}
-
-// ============================================================================
 // DiscoveryStats Tests
 // ============================================================================
 
 func TestDiscoveryStats_Populated(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -461,7 +505,7 @@ func TestDiscoveryStats_Populated(t *testing.T) {
 
 func TestDiscoveryStats_MultipleRootPKs(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1", "user2", "user3")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -514,7 +558,7 @@ func TestDiscoveryStats_EmptyDiscovery(t *testing.T) {
 
 func TestRecordSet_ContainsAllTables(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
@@ -548,7 +592,7 @@ func TestRecordSet_ContainsAllTables(t *testing.T) {
 
 func TestRecordSet_RootPKsMatch(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
+	discovery := newSimulatedRecordDiscovery(t, g, 100, "user1", "user2", "user3")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
@@ -573,24 +617,6 @@ func TestRecordSet_RootPKsMatch(t *testing.T) {
 // Helper Method Tests
 // ============================================================================
 
-func TestDiscoveryGetGraph(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	if discovery.GetGraph() != g {
-		t.Error("GetGraph returned wrong graph")
-	}
-}
-
-func TestGetBatchSize(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 500)
-
-	if discovery.GetBatchSize() != 500 {
-		t.Errorf("Expected batch size 500, got %d", discovery.GetBatchSize())
-	}
-}
-
 func TestSetLogger(t *testing.T) {
 	g := createTestGraph()
 	discovery := newSimulatedRecordDiscovery(t, g, 100)
@@ -607,67 +633,12 @@ func TestSetLogger(t *testing.T) {
 }
 
 // ============================================================================
-// Simulate Discovery Tests
-// ============================================================================
-
-func TestSimulateDiscovery_Orders(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	parentPKs := []interface{}{"user1", "user2", "user3"}
-	childPKs := discovery.simulateDiscovery("orders", parentPKs)
-
-	// Each user should have at least 1 order, some have 2
-	if len(childPKs) < len(parentPKs) {
-		t.Errorf("Expected at least %d orders, got %d", len(parentPKs), len(childPKs))
-	}
-
-	// Check naming pattern
-	for _, pk := range childPKs {
-		pkStr, ok := pk.(string)
-		if !ok {
-			t.Error("PK should be a string")
-			continue
-		}
-		if len(pkStr) < 6 || pkStr[:6] != "order_" {
-			t.Errorf("Expected order_ prefix, got %s", pkStr)
-		}
-	}
-}
-
-func TestSimulateDiscovery_Profiles(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	parentPKs := []interface{}{"user1", "user2", "user3"}
-	childPKs := discovery.simulateDiscovery("profiles", parentPKs)
-
-	// Each user should have exactly 1 profile
-	if len(childPKs) != len(parentPKs) {
-		t.Errorf("Expected %d profiles, got %d", len(parentPKs), len(childPKs))
-	}
-}
-
-func TestSimulateDiscovery_UnknownTable(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 100)
-
-	parentPKs := []interface{}{"user1"}
-	childPKs := discovery.simulateDiscovery("unknown_table", parentPKs)
-
-	// Unknown table should return empty
-	if len(childPKs) != 0 {
-		t.Errorf("Expected 0 records for unknown table, got %d", len(childPKs))
-	}
-}
-
-// ============================================================================
 // Integration Tests
 // ============================================================================
 
 func TestDiscovery_FullWorkflow(t *testing.T) {
 	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 1000)
+	discovery := newSimulatedRecordDiscovery(t, g, 1000, "user1", "user2", "user3", "user4", "user5")
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3", "user4", "user5"}
@@ -699,31 +670,41 @@ func TestDiscovery_FullWorkflow(t *testing.T) {
 	}
 }
 
-func TestDiscovery_BatchVsFull(t *testing.T) {
-	g := createTestGraph()
-	discovery := newSimulatedRecordDiscovery(t, g, 2) // Batch size 2
-
-	ctx := context.Background()
-	rootPKs := []interface{}{"user1", "user2", "user3", "user4"}
-
-	// Full discovery
-	fullResult, err := discovery.Discover(ctx, rootPKs)
-	if err != nil {
-		t.Fatalf("Discover failed: %v", err)
+func TestAppendUnique_DedupsAcrossCalls(t *testing.T) {
+	seen := make(map[interface{}]struct{})
+	got := appendUnique(nil, []interface{}{int64(1), int64(2), int64(1)}, seen)
+	got = appendUnique(got, []interface{}{int64(2), int64(3)}, seen)
+	want := []interface{}{int64(1), int64(2), int64(3)}
+	if len(got) != len(want) {
+		t.Fatalf("appendUnique = %v, want %v", got, want)
 	}
-
-	// Batch discovery (should only process 2)
-	batchResult, err := discovery.DiscoverBatch(ctx, rootPKs)
-	if err != nil {
-		t.Fatalf("DiscoverBatch failed: %v", err)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("appendUnique[%d] = %v, want %v", i, got[i], want[i])
+		}
 	}
+}
 
-	// Full should have more records
-	if len(fullResult.RootPKs) <= len(batchResult.RootPKs) {
-		t.Error("Full discovery should have more root PKs than batch")
+func TestAppendUnique_TypeDistinguishesKeys(t *testing.T) {
+	// int64(1) and "1" are distinct PKs, exactly as the old "%T:%v" keys were.
+	seen := make(map[interface{}]struct{})
+	got := appendUnique(nil, []interface{}{int64(1), "1"}, seen)
+	if len(got) != 2 {
+		t.Fatalf("expected int64(1) and \"1\" to be distinct, got %v", got)
 	}
+}
 
-	if fullResult.Stats.RecordsFound <= batchResult.Stats.RecordsFound {
-		t.Error("Full discovery should have more total records than batch")
+func TestTableSeen_SeedsFromExistingRecords(t *testing.T) {
+	// If a table already has recorded PKs (the root table), the first dedup
+	// set for it must be seeded from them or duplicates would slip through.
+	seen := make(map[string]map[interface{}]struct{})
+	existing := []interface{}{int64(10), int64(20)}
+	set := tableSeen(seen, existing, "users")
+	got := appendUnique(existing, []interface{}{int64(10), int64(30)}, set)
+	if len(got) != 3 {
+		t.Fatalf("expected seeded dedup to yield 3 entries, got %v", got)
+	}
+	if same := tableSeen(seen, nil, "users"); len(same) != 3 {
+		t.Fatalf("expected persistent set with 3 keys on second call, got %d", len(same))
 	}
 }

@@ -173,7 +173,7 @@ func TestOrchestrator_Initialize_FailsFastOnCycle(t *testing.T) {
 	}
 
 	// Verify orchestrator is marked as initialized
-	if !orch.IsInitialized() {
+	if !orch.initialized {
 		t.Error("Orchestrator should be initialized after successful Initialize()")
 	}
 }
@@ -198,40 +198,6 @@ func TestOrchestrator_Execute_NotInitialized(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "not initialized") {
 		t.Errorf("Error should mention 'not initialized', got: %v", err)
-	}
-}
-
-// TestOrchestrator_GetCopyOrder_NotInitialized tests GetCopyOrder fails when not initialized
-func TestOrchestrator_GetCopyOrder_NotInitialized(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, err := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-	if err != nil {
-		t.Fatalf("Failed to create orchestrator: %v", err)
-	}
-
-	_, err = orch.GetCopyOrder()
-	if err == nil {
-		t.Fatal("GetCopyOrder should return error when not initialized")
-	}
-}
-
-// TestOrchestrator_GetDeleteOrder_NotInitialized tests GetDeleteOrder fails when not initialized
-func TestOrchestrator_GetDeleteOrder_NotInitialized(t *testing.T) {
-	cfg := createTestConfig()
-	jobCfg := createTestJobConfig()
-	dbManager := mockDBManager(cfg)
-
-	orch, err := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
-	if err != nil {
-		t.Fatalf("Failed to create orchestrator: %v", err)
-	}
-
-	_, err = orch.GetDeleteOrder()
-	if err == nil {
-		t.Fatal("GetDeleteOrder should return error when not initialized")
 	}
 }
 
@@ -292,7 +258,7 @@ func TestOrchestrator_Initialize_NoDBOperationsOnCycle(t *testing.T) {
 	}
 
 	// Verify orchestrator is ready for use
-	if orch.GetGraph() == nil {
+	if orch.graph == nil {
 		t.Error("Graph should be set after initialization")
 	}
 }
@@ -342,14 +308,14 @@ func TestOrchestrator_Initialize_Idempotent(t *testing.T) {
 		t.Fatalf("First Initialize failed: %v", err)
 	}
 
-	copyOrder1, _ := orch.GetCopyOrder()
+	copyOrder1 := orch.copyOrder
 
 	// Second Initialize should be no-op (idempotent)
 	if err := orch.Initialize(); err != nil {
 		t.Fatalf("Second Initialize failed: %v", err)
 	}
 
-	copyOrder2, _ := orch.GetCopyOrder()
+	copyOrder2 := orch.copyOrder
 
 	// Orders should be the same
 	if len(copyOrder1) != len(copyOrder2) {

@@ -50,11 +50,6 @@ func (pq *ProcessingQueue) Dequeue() (string, bool) {
 	return elem.Value.(string), true
 }
 
-// Len returns the number of nodes in the queue.
-func (pq *ProcessingQueue) Len() int {
-	return pq.queue.Len()
-}
-
 // IsEmpty returns true if the queue has no nodes.
 func (pq *ProcessingQueue) IsEmpty() bool {
 	return pq.queue.Len() == 0
@@ -79,18 +74,6 @@ func (g *Graph) CalculateInDegrees() map[string]int {
 	}
 
 	return inDegree
-}
-
-// GetZeroInDegreeNodes returns all nodes with in-degree of 0.
-// These are the starting nodes for Kahn's algorithm (nodes with no dependencies).
-func (g *Graph) GetZeroInDegreeNodes(inDegree map[string]int) []string {
-	var nodes []string
-	for name, degree := range inDegree {
-		if degree == 0 {
-			nodes = append(nodes, name)
-		}
-	}
-	return nodes
 }
 
 // ErrCycleDetected is returned when the dependency graph contains a cycle,
