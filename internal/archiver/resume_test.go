@@ -366,10 +366,11 @@ func TestResumeManager_ShouldResume_True(t *testing.T) {
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 
-	// Then mock non-terminal count > 0 (pending OR copied) triggers resume.
+	// Then mock non-terminal count > 0 (pending OR copied OR legacy failed)
+	// triggers resume.
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(5)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
-		WithArgs(LogStatusPending, LogStatusCopied).
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -397,7 +398,7 @@ func TestResumeManager_ShouldResume_False(t *testing.T) {
 	// Non-terminal count = 0 (no resume needed).
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(0)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
-		WithArgs(LogStatusPending, LogStatusCopied).
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -645,8 +646,8 @@ func TestShouldResumeTriggersOnCopied(t *testing.T) {
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"last_processed_root_pk_id"}).AddRow(nil))
 	// No pending, but one copied -> must still resume.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN \\(\\?, \\?\\)").
-		WithArgs(LogStatusPending, LogStatusCopied).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN \\(\\?, \\?, \\?\\)").
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
 
 	should, err := rm.ShouldResume(context.Background(), "job1")
@@ -658,5 +659,26 @@ func TestShouldResumeTriggersOnCopied(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// TestShouldResumeTriggersOnFailed: a log table holding ONLY legacy failed
+// rows (no checkpoint, no pending/copied) must still demand resume, so the
+// failed-row gate fires instead of the main loop silently re-processing.
+func TestShouldResumeTriggersOnFailed(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT last_processed_root_pk_id FROM .*archiver_job` WHERE job_name = \\?").
+		WithArgs("job").
+		WillReturnRows(sqlmock.NewRows([]string{"last_processed_root_pk_id"}).AddRow(""))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	should, err := rm.ShouldResume(context.Background(), "job")
+	if err != nil {
+		t.Fatalf("ShouldResume failed: %v", err)
+	}
+	if !should {
+		t.Fatal("failed-only log table must require resume (gate bypass)")
 	}
 }

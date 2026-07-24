@@ -368,7 +368,12 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	}
 
 	if shouldResume {
-		if err := o.resumePending(ctx, pipeline, resumeMgr, copyPhase, checkpoint, result); err != nil {
+		agg, err := pipeline.recover(ctx, checkpoint)
+		result.RecordsCopied += agg.RecordsCopied
+		result.RecordsDeleted += agg.RecordsDeleted
+		result.TablesVerified += agg.TablesVerified
+		result.RecordsVerified += agg.RecordsVerified
+		if err != nil {
 			return fail("resume failed: %w", err)
 		}
 	}
@@ -475,91 +480,6 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	)
 
 	return result, nil
-}
-
-// resumePending recovers any non-terminal batches left by a prior run, in the
-// correct order: 'copied' (delete-only) first, then 'pending' (full pipeline).
-func (o *ArchiveOrchestrator) resumePending(
-	ctx context.Context,
-	pipeline *batchPipeline,
-	resumeMgr *ResumeManager,
-	copyPhase *CopyPhase,
-	checkpoint CheckpointCallback,
-	result *ArchiveResult,
-) error {
-	copied, err := resumeMgr.GetRootPKsByStatus(ctx, o.jobName, LogStatusCopied)
-	if err != nil {
-		return fmt.Errorf("failed to get copied PKs: %w", err)
-	}
-	pending, err := resumeMgr.GetPendingPKs(ctx, o.jobName)
-	if err != nil {
-		return fmt.Errorf("failed to get pending PKs: %w", err)
-	}
-	if len(copied) == 0 && len(pending) == 0 {
-		return nil
-	}
-
-	// count-mode cannot safely re-derive ANY non-terminal rows.
-	if o.verificationCfg.EffectiveMethod() == "count" {
-		total := len(copied) + len(pending)
-		preview := append(append([]string{}, copied...), pending...)
-		if len(preview) > 10 {
-			preview = preview[:10]
-		}
-		return fmt.Errorf(
-			"job %q has %d non-terminal root PKs (copied/pending) from a prior interrupted run, and is configured with verification.method: count.\n\n"+
-				"Resuming a count-mode job is unsafe - pre-existing destination rows cannot be verified equal to source.\n\n"+
-				"To recover, choose one:\n"+
-				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
-				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the entries:\n"+
-				"       UPDATE %s SET log_status=2 WHERE log_status IN (0,1);\n"+
-				"     and re-run.\n\n"+
-				"PKs (first 10): %v",
-			o.jobName, total, resumeMgr.LogTableName(), preview)
-	}
-
-	// Strict INSERT (forced by --skip-verify or a destination secondary unique
-	// index — review P0-1/P1-2/003) cannot re-copy 'pending' rows: a crash between
-	// the copy commit and MarkBatchCopied leaves those rows already committed on
-	// the destination, so a strict re-INSERT aborts on duplicate and the job would
-	// self-block on every resume. 'copied' rows are safe (delete-only, no re-copy),
-	// so we refuse only when there are pending rows and let a copied-only resume
-	// proceed on the next run once the operator clears the pending entries.
-	if copyPhase.StrictInsert() && len(pending) > 0 {
-		preview := pending
-		if len(preview) > 10 {
-			preview = preview[:10]
-		}
-		return fmt.Errorf(
-			"job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
-				"(forced by --skip-verify or a destination secondary unique index), so they cannot be "+
-				"safely re-copied (their destination rows may already be committed, and a strict INSERT "+
-				"aborts on duplicate).\n\n"+
-				"To recover, choose one:\n"+
-				"  1. Delete the destination rows already written for these pending PKs, then re-run "+
-				"(the strict re-copy then inserts cleanly).\n"+
-				"  2. If you have confirmed the destination rows match source, mark them copied so they "+
-				"resume as delete-only:\n"+
-				"       UPDATE %s SET log_status=1 WHERE log_status=0;\n"+
-				"     and re-run.\n\n"+
-				"Pending PKs (first 10): %v",
-			o.jobName, len(pending), resumeMgr.LogTableName(), preview)
-	}
-
-	agg := &BatchStats{}
-	// Phase A: finish copied batches (already verified; delete-only).
-	if err := pipeline.recoverChunks(ctx, copied, batchDeleteOnly, false, checkpoint, agg); err != nil {
-		return fmt.Errorf("copied recovery failed: %w", err)
-	}
-	// Phase B: finish pending batches (source intact; full pipeline).
-	if err := pipeline.recoverChunks(ctx, pending, batchFull, false, checkpoint, agg); err != nil {
-		return fmt.Errorf("pending recovery failed: %w", err)
-	}
-	result.RecordsCopied += agg.RecordsCopied
-	result.RecordsDeleted += agg.RecordsDeleted
-	result.TablesVerified += agg.TablesVerified
-	result.RecordsVerified += agg.RecordsVerified
-	return nil
 }
 
 // sortPendingPKsNumeric sorts string PKs by their numeric value in place.

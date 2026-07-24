@@ -686,13 +686,6 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
-	}
 	p := &batchPipeline{
 		jobName:       "job1",
 		mainMode:      batchFull,
@@ -707,9 +700,11 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 		resumeMgr:     resumeMgr,
 		fetcher:       fetcher,
 	}
-	result := &ArchiveResult{}
 
-	// arch DB: status fetches first (copied, then pending)
+	// arch DB: status fetches first (failed gate, then copied, then pending)
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
 	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
 		WithArgs(LogStatusCopied).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10"))
@@ -749,7 +744,7 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
 	destMock.ExpectCommit()
 
-	err := o.resumePending(context.Background(), p, resumeMgr, copyPhase, nil, result)
+	_, err := p.recover(context.Background(), nil)
 	require.NoError(t, err)
 	require.NoError(t, archMock.ExpectationsWereMet())
 	require.NoError(t, sourceMock.ExpectationsWereMet())
@@ -781,13 +776,6 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
-	}
 	p := &batchPipeline{
 		jobName:       "job1",
 		mainMode:      batchFull,
@@ -802,10 +790,12 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 		resumeMgr:     resumeMgr,
 		fetcher:       fetcher,
 	}
-	result := &ArchiveResult{}
 
-	// Only the two status fetches run; the strict-insert guard then refuses, so
-	// NO copy/verify/delete is attempted (no source/dest expectations).
+	// Only the three status fetches run; the strict-insert guard then refuses,
+	// so NO copy/verify/delete is attempted (no source/dest expectations).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
 	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
 		WithArgs(LogStatusCopied).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
@@ -813,7 +803,7 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
 
-	err := o.resumePending(context.Background(), p, resumeMgr, copyPhase, nil, result)
+	_, err := p.recover(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected refusal when strict insert + pending rows, got nil")
 	}

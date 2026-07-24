@@ -12,6 +12,7 @@ package archiver
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -242,6 +243,243 @@ func (p *batchPipeline) recoverChunks(ctx context.Context, rawPKs []string, mode
 			return fmt.Errorf("recovery processBatch failed: %w", err)
 		}
 		agg.add(batchStats)
+	}
+	return nil
+}
+
+// recover is the status-aware resume entry point shared by all three
+// orchestrators. Gate order: legacy failed rows (refuse, all modes) ->
+// count-mode (refuse, archive) -> strict-INSERT pending (refuse, archive +
+// copy-only) -> copied replay -> pending replay. Returns aggregate stats for
+// the caller's result type.
+func (p *batchPipeline) recover(ctx context.Context, checkpoint CheckpointCallback) (*BatchStats, error) {
+	agg := &BatchStats{}
+
+	// Gate 1: rows marked failed (log_status=3) by a pre-1.8 release. This
+	// release never writes 'failed' — errors leave rows recoverable — but a
+	// legacy failed row below the checkpoint is exactly the silent permanent
+	// hole issue #18 describes, so refuse until the operator resolves it.
+	failed, err := p.resumeMgr.GetRootPKsByStatus(ctx, p.jobName, LogStatusFailed)
+	if err != nil {
+		return agg, fmt.Errorf("failed to get failed PKs: %w", err)
+	}
+	if len(failed) > 0 {
+		preview := failed
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return agg, fmt.Errorf(
+			"job %q has %d root PKs marked 'failed' (log_status=3) by an earlier GoArchive release.\n\n"+
+				"This release no longer marks rows failed (errors leave rows in a recoverable status), but these "+
+				"legacy rows would otherwise be skipped forever.\n\n"+
+				"To recover, inspect the rows (error_message column explains each failure) and choose per PK:\n"+
+				"  1. Re-queue it for processing:\n"+
+				"       UPDATE %s SET log_status=0 WHERE log_status=3;\n"+
+				"  2. Skip it permanently: exclude the PK in the job's 'where' clause (e.g. AND id NOT IN (...))\n"+
+				"     or resolve the source row manually, then clear the marker:\n"+
+				"       UPDATE %s SET log_status=2 WHERE log_status=3;\n"+
+				"     NOTE: the status edit alone does NOT skip the row - the forward scan re-fetches any\n"+
+				"     source row above the checkpoint regardless of log status.\n"+
+				"Then re-run.\n\n"+
+				"Failed PKs (first 10): %v",
+			p.jobName, len(failed), p.resumeMgr.LogTableName(), p.resumeMgr.LogTableName(), preview)
+	}
+
+	copied, err := p.resumeMgr.GetRootPKsByStatus(ctx, p.jobName, LogStatusCopied)
+	if err != nil {
+		return agg, fmt.Errorf("failed to get copied PKs: %w", err)
+	}
+	pending, err := p.resumeMgr.GetPendingPKs(ctx, p.jobName)
+	if err != nil {
+		return agg, fmt.Errorf("failed to get pending PKs: %w", err)
+	}
+	if len(copied) == 0 && len(pending) == 0 {
+		return agg, nil
+	}
+
+	// Gate 2 (archive): count-mode cannot safely re-derive ANY non-terminal
+	// rows — pre-existing destination rows cannot be verified equal to source.
+	if p.mainMode == batchFull && p.countMode {
+		total := len(copied) + len(pending)
+		preview := append(append([]string{}, copied...), pending...)
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		return agg, fmt.Errorf(
+			"job %q has %d non-terminal root PKs (copied/pending) from a prior interrupted run, and is configured with verification.method: count.\n\n"+
+				"Resuming a count-mode job is unsafe - pre-existing destination rows cannot be verified equal to source.\n\n"+
+				"To recover, choose one:\n"+
+				"  1. Switch this job to verification.method: sha256 in config and re-run (recommended).\n"+
+				"  2. Manually inspect destination rows for these PKs, delete any that don't match source, then clear the entries:\n"+
+				"       UPDATE %s SET log_status=2 WHERE log_status IN (0,1);\n"+
+				"     and re-run.\n\n"+
+				"PKs (first 10): %v",
+			p.jobName, total, p.resumeMgr.LogTableName(), preview)
+	}
+
+	// Gate 3 (archive + copy-only): strict INSERT cannot re-copy 'pending'
+	// rows — their destination copy may already be committed, so a strict
+	// re-INSERT aborts on duplicate and the job would self-block on every
+	// resume. 'copied' rows are safe (no re-copy), so refuse only on pending.
+	if p.copyPhase != nil && p.copyPhase.StrictInsert() && len(pending) > 0 {
+		preview := pending
+		if len(preview) > 10 {
+			preview = preview[:10]
+		}
+		recovery := "  1. Delete the destination rows already written for these pending PKs, then re-run " +
+			"(the strict re-copy then inserts cleanly).\n" +
+			"  2. If you have confirmed the destination rows match source, mark them copied so they " +
+			"resume as delete-only:\n" +
+			fmt.Sprintf("       UPDATE %s SET log_status=1 WHERE log_status=0;\n", p.resumeMgr.LogTableName()) +
+			"     and re-run."
+		if p.mainMode == batchCopyVerify {
+			recovery = "  1. Delete the destination rows already written for these pending PKs, then re-run.\n" +
+				"  2. If using --skip-verify, drop it (and use verification.method: sha256) so replay uses " +
+				"idempotent INSERT IGNORE, then re-run."
+		}
+		return agg, fmt.Errorf(
+			"job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
+				"(forced by verification.method: count, --skip-verify, or a destination secondary unique index), "+
+				"so they cannot be safely re-copied (their destination rows may already be committed, and a "+
+				"strict INSERT aborts on duplicate).\n\n"+
+				"To recover, choose one:\n%s\n\n"+
+				"Pending PKs (first 10): %v",
+			p.jobName, len(pending), recovery, preview)
+	}
+
+	// Copy-only: one merged, globally ascending schedule across BOTH statuses.
+	// Copy-only recovery advances the checkpoint per chunk, so copied and
+	// pending must NOT run as two independent phases: with copied={10},
+	// pending={9}, promote-first would advance the checkpoint to 10 while 9 is
+	// still pending, then regress it to 9 — violating the never-past-
+	// non-terminal invariant and re-opening completed roots to the forward
+	// scan. The merged schedule keeps the checkpoint monotonic: when any
+	// chunk's checkpoint commits, every lower PK is already terminal.
+	if p.mainMode == batchCopyVerify {
+		_, unsigned, ok := p.graph.GetRootPKMeta()
+		if !ok {
+			return agg, fmt.Errorf("root PK metadata not loaded")
+		}
+		for _, run := range mergeRecoverySchedule(copied, pending, unsigned) {
+			if run.copied {
+				if err := p.promoteCopied(ctx, run.pks, agg); err != nil {
+					return agg, fmt.Errorf("copied promotion failed: %w", err)
+				}
+			} else {
+				if err := p.recoverChunks(ctx, run.pks, batchCopyVerify, true, checkpoint, agg); err != nil {
+					return agg, fmt.Errorf("pending recovery failed: %w", err)
+				}
+			}
+		}
+		return agg, nil
+	}
+
+	// Archive/purge: copied first (delete-only), then pending (full pipeline),
+	// nil checkpoint throughout — recovered source rows are deleted, so the
+	// forward scan cannot re-fetch them and ordering across statuses is free.
+	if err := p.recoverChunks(ctx, copied, batchDeleteOnly, false, checkpoint, agg); err != nil {
+		return agg, fmt.Errorf("copied recovery failed: %w", err)
+	}
+	if err := p.recoverChunks(ctx, pending, p.mainMode, false, checkpoint, agg); err != nil {
+		return agg, fmt.Errorf("pending recovery failed: %w", err)
+	}
+	return agg, nil
+}
+
+// recoveryRun is a maximal run of same-status PKs within the merged,
+// numerically ascending copy-only recovery schedule.
+type recoveryRun struct {
+	copied bool
+	pks    []string
+}
+
+// mergeRecoverySchedule merges the copied and pending PK sets into one
+// globally ascending schedule, segmented into maximal same-status runs.
+// Processing runs in order (promote for copied, full pipeline for pending)
+// keeps the per-chunk checkpoint advance monotonic across statuses.
+func mergeRecoverySchedule(copied, pending []string, unsigned bool) []recoveryRun {
+	type entry struct {
+		pk     string
+		copied bool
+	}
+	entries := make([]entry, 0, len(copied)+len(pending))
+	for _, pk := range copied {
+		entries = append(entries, entry{pk: pk, copied: true})
+	}
+	for _, pk := range pending {
+		entries = append(entries, entry{pk: pk, copied: false})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return numericPKLess(entries[i].pk, entries[j].pk, unsigned)
+	})
+	var runs []recoveryRun
+	for _, e := range entries {
+		if len(runs) == 0 || runs[len(runs)-1].copied != e.copied {
+			runs = append(runs, recoveryRun{copied: e.copied})
+		}
+		runs[len(runs)-1].pks = append(runs[len(runs)-1].pks, e.pk)
+	}
+	return runs
+}
+
+// promoteCopied finishes copy-only 'copied' rows: copy+verify already
+// succeeded and copy-only has no delete phase, so the rows are simply marked
+// completed — no re-discovery, no re-copy, no re-verify (issue #1). Each
+// ascending chunk commits completion + checkpoint atomically for the same
+// reason pending recovery advances per chunk: copy-only source rows persist,
+// so an unmoved checkpoint would make the forward scan re-fetch them.
+// Promote chunks honor the same stop/sentinel boundary contract as
+// recoverChunks: each started chunk commits, the remainder stays 'copied'.
+func (p *batchPipeline) promoteCopied(ctx context.Context, rawPKs []string, agg *BatchStats) error {
+	if len(rawPKs) == 0 {
+		return nil
+	}
+	dataType, unsigned, ok := p.graph.GetRootPKMeta()
+	if !ok {
+		return fmt.Errorf("root PK metadata not loaded")
+	}
+	sortPendingPKsNumeric(rawPKs, unsigned)
+	p.logger.Infow("Promoting already-copied PKs to completed (copy+verify already succeeded)",
+		"job", p.jobName, "count", len(rawPKs))
+	batchSize := p.processingCfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	for start := 0; start < len(rawPKs); start += batchSize {
+		if stopRequested(p.stopCh) {
+			p.logger.Warn("Graceful stop requested - stopping promotion at chunk boundary (run again to resume)")
+			return nil
+		}
+		if err := newSentinelGate(p.processingCfg.SentinelFile, p.logger).wait(ctx, p.stopCh); err != nil {
+			return err
+		}
+		if stopRequested(p.stopCh) {
+			p.logger.Warn("Graceful stop requested - stopping promotion at chunk boundary (run again to resume)")
+			return nil
+		}
+		end := start + batchSize
+		if end > len(rawPKs) {
+			end = len(rawPKs)
+		}
+		typed := make([]interface{}, 0, end-start)
+		for _, raw := range rawPKs[start:end] {
+			pk, err := types.ConvertRootPK(raw, dataType, unsigned)
+			if err != nil {
+				return fmt.Errorf("convert PK %q: %w", raw, err)
+			}
+			typed = append(typed, pk)
+		}
+		var checkpointPK interface{}
+		if p.aboveCheckpointFloor(rawPKs[end-1], unsigned) {
+			checkpointPK = typed[len(typed)-1]
+		}
+		if err := p.resumeMgr.CompleteBatch(ctx, p.jobName, typed, checkpointPK); err != nil {
+			return fmt.Errorf("promote completion failed: %w", err)
+		}
+		if checkpointPK != nil {
+			p.fetcher.UpdateCheckpoint(checkpointPK)
+		}
+		agg.RootsProcessed += len(typed)
 	}
 	return nil
 }

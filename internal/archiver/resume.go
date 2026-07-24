@@ -644,14 +644,17 @@ func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool,
 		return true, nil
 	}
 
-	// Check for non-terminal entries (pending OR copied) left by a crash.
+	// Check for entries requiring resume handling left by a crash: pending and
+	// copied are non-terminal; failed (legacy, pre-1.8) must also force the
+	// resume path so recover()'s failed-row gate can refuse with guidance
+	// instead of the main loop silently re-processing the row.
 	if err := r.requireLogTable(); err != nil {
 		return false, err
 	}
 	nonTerminal := 0
 	err = r.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE log_status IN (?, ?)", r.logTable),
-		LogStatusPending, LogStatusCopied,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE log_status IN (?, ?, ?)", r.logTable),
+		LogStatusPending, LogStatusCopied, LogStatusFailed,
 	).Scan(&nonTerminal)
 	if err != nil {
 		return false, fmt.Errorf("failed to count non-terminal entries: %w", err)
