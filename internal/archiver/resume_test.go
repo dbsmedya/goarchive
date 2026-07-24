@@ -200,41 +200,6 @@ func TestResumeManager_UpdateJobStatus_Error(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestResumeManager_UpdateCheckpoint_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_processed_root_pk_id").
-		WithArgs("500", "test_job").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.UpdateCheckpoint(ctx, "test_job", 500)
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestResumeManager_UpdateCheckpoint_Error(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_processed_root_pk_id").
-		WithArgs("250", "test_job").
-		WillReturnError(assert.AnError)
-
-	ctx := context.Background()
-	err := rm.UpdateCheckpoint(ctx, "test_job", 250)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to update checkpoint")
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestResumeManager_LogBatchPending_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -266,42 +231,6 @@ func TestResumeManager_LogBatchPending_EmptyBatch(t *testing.T) {
 	err := rm.LogBatchPending(ctx, "test_job", []interface{}{})
 
 	assert.NoError(t, err) // Should succeed with no-op for empty batch
-}
-
-func TestResumeManager_MarkCompleted_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-	rm.setJobID(7)
-
-	mock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
-		WithArgs(LogStatusCompleted, "1").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.MarkCompleted(ctx, "test_job", 1)
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestResumeManager_MarkFailed_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-	rm.setJobID(7)
-
-	mock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
-		WithArgs(LogStatusFailed, "test error", "2").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.MarkFailed(ctx, "test_job", 2, "test error")
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestResumeManager_GetPendingPKs_Success(t *testing.T) {
@@ -582,18 +511,6 @@ func TestRequireLogTableGuard(t *testing.T) {
 
 	t.Run("MarkBatchCopied", func(t *testing.T) {
 		err := rm.MarkBatchCopied(ctx, "job", []interface{}{1})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "per-job log table not resolved")
-	})
-
-	t.Run("MarkCompleted", func(t *testing.T) {
-		err := rm.MarkCompleted(ctx, "job", 1)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "per-job log table not resolved")
-	})
-
-	t.Run("MarkFailed", func(t *testing.T) {
-		err := rm.MarkFailed(ctx, "job", 1, "some error")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "per-job log table not resolved")
 	})

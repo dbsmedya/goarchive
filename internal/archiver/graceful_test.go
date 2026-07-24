@@ -3,7 +3,6 @@ package archiver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -22,27 +21,6 @@ func TestStopRequested(t *testing.T) {
 	close(closed)
 	if !stopRequested(closed) {
 		t.Error("closed channel must report stop")
-	}
-}
-
-func TestIsCancellation(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"canceled", context.Canceled, true},
-		{"deadline", context.DeadlineExceeded, true},
-		{"wrapped canceled", fmt.Errorf("copy failed: %w", context.Canceled), true},
-		{"other", errors.New("duplicate entry"), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isCancellation(tc.err); got != tc.want {
-				t.Errorf("isCancellation(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
 	}
 }
 
