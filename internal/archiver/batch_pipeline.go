@@ -35,6 +35,12 @@ const (
 	// Discover -> (lag) -> Delete -> CompleteBatch. Skips copy/verify — used
 	// where the copy already happened (or never happens, for purge).
 	batchDeleteOnly
+	// batchPromote (copied-replay for copy-only): CompleteBatch only. Skips
+	// discovery, copy, verify AND delete — these rows' copy+verify already
+	// succeeded and copy-only has no delete phase, so nothing remains but the
+	// completion tail (issue #1). Never a mainMode: it is a recovery-only mode
+	// reached via recoverChunks.
+	batchPromote
 )
 
 // batchPipeline is the shared engine. copyPhase/dataVerifier are nil for
@@ -83,7 +89,8 @@ func (s *BatchStats) add(o *BatchStats) {
 // non-nil, commits in the same transaction as the completion and is then
 // applied to the fetcher — the T3 invariant: the checkpoint can never advance
 // past a non-terminal row. Recovery paths that must not advance the main
-// checkpoint pass nil.
+// checkpoint pass nil. batchPromote selects no phases at all: it runs the
+// completion tail alone, which is exactly what a copy-only 'copied' row needs.
 //
 // On any error the batch's rows keep their current non-terminal status
 // (pending or copied) — NEVER failed — so status-aware recovery replays them.
@@ -93,11 +100,24 @@ func (p *batchPipeline) processBatch(ctx context.Context, rootIDs []interface{},
 		return stats, nil
 	}
 
-	discovered, err := p.discovery.Discover(ctx, rootIDs)
-	if err != nil {
-		return stats, fmt.Errorf("discovery failed: %w", err)
+	// batchPromote runs the completion tail ONLY. Discovery must not fire: its
+	// rows were already copied and verified, and copy-only has no delete phase,
+	// so the discovered set has no consumer — issuing the source SELECTs would
+	// be pure waste. Both phase gates below enumerate their modes explicitly,
+	// so neither admits batchPromote, and nothing derived from `discovered`
+	// (recordSet) is reachable in this mode.
+	var (
+		discovered *types.RecordSet
+		recordSet  *RecordSet
+	)
+	if mode != batchPromote {
+		var err error
+		discovered, err = p.discovery.Discover(ctx, rootIDs)
+		if err != nil {
+			return stats, fmt.Errorf("discovery failed: %w", err)
+		}
+		recordSet = convertRecordSet(discovered)
 	}
-	recordSet := convertRecordSet(discovered)
 
 	if mode == batchFull || mode == batchCopyVerify {
 		copyStats, err := p.copyPhase.Copy(ctx, recordSet)
@@ -177,7 +197,8 @@ func (p *batchPipeline) aboveCheckpointFloor(rawPK string, unsigned bool) bool {
 // selects the checkpoint policy:
 //   - false (archive/purge recovery): nil checkpoint — recovered source rows
 //     are deleted, so the forward scan cannot re-fetch them.
-//   - true (copy-only recovery): the chunk's max PK — copy-only source rows
+//   - true (copy-only recovery, both batchCopyVerify replay and batchPromote):
+//     the chunk's max PK — copy-only source rows
 //     persist, so the checkpoint must move or the forward scan would re-fetch
 //     recovered roots (and abort strict-INSERT jobs on duplicates). Chunks
 //     ascend and completion+checkpoint commit atomically, and the failed-row
@@ -192,8 +213,14 @@ func (p *batchPipeline) recoverChunks(ctx context.Context, rawPKs []string, mode
 		return fmt.Errorf("root PK metadata not loaded")
 	}
 	sortPendingPKsNumeric(rawPKs, unsigned)
-	p.logger.Infow("Recovering non-terminal PKs from prior run",
-		"job", p.jobName, "count", len(rawPKs), "mode", mode)
+	// batchPromote gets its own wording: "recovering" understates what is
+	// actually happening (no replay, just the completion tail), and operators
+	// reading the log should see that no re-copy is being attempted.
+	msg := "Recovering non-terminal PKs from prior run"
+	if mode == batchPromote {
+		msg = "Promoting already-copied PKs to completed (copy+verify already succeeded)"
+	}
+	p.logger.Infow(msg, "job", p.jobName, "count", len(rawPKs), "mode", mode)
 
 	batchSize := p.processingCfg.BatchSize
 	if batchSize <= 0 {
@@ -362,7 +389,7 @@ func (p *batchPipeline) recover(ctx context.Context, checkpoint CheckpointCallba
 		}
 		for _, run := range mergeRecoverySchedule(copied, pending, unsigned) {
 			if run.copied {
-				if err := p.promoteCopied(ctx, run.pks, agg); err != nil {
+				if err := p.recoverChunks(ctx, run.pks, batchPromote, true, checkpoint, agg); err != nil {
 					return agg, fmt.Errorf("copied promotion failed: %w", err)
 				}
 			} else {
@@ -420,66 +447,4 @@ func mergeRecoverySchedule(copied, pending []string, unsigned bool) []recoveryRu
 		runs[len(runs)-1].pks = append(runs[len(runs)-1].pks, e.pk)
 	}
 	return runs
-}
-
-// promoteCopied finishes copy-only 'copied' rows: copy+verify already
-// succeeded and copy-only has no delete phase, so the rows are simply marked
-// completed — no re-discovery, no re-copy, no re-verify (issue #1). Each
-// ascending chunk commits completion + checkpoint atomically for the same
-// reason pending recovery advances per chunk: copy-only source rows persist,
-// so an unmoved checkpoint would make the forward scan re-fetch them.
-// Promote chunks honor the same stop/sentinel boundary contract as
-// recoverChunks: each started chunk commits, the remainder stays 'copied'.
-func (p *batchPipeline) promoteCopied(ctx context.Context, rawPKs []string, agg *BatchStats) error {
-	if len(rawPKs) == 0 {
-		return nil
-	}
-	dataType, unsigned, ok := p.graph.GetRootPKMeta()
-	if !ok {
-		return fmt.Errorf("root PK metadata not loaded")
-	}
-	sortPendingPKsNumeric(rawPKs, unsigned)
-	p.logger.Infow("Promoting already-copied PKs to completed (copy+verify already succeeded)",
-		"job", p.jobName, "count", len(rawPKs))
-	batchSize := p.processingCfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = 1
-	}
-	for start := 0; start < len(rawPKs); start += batchSize {
-		if stopRequested(p.stopCh) {
-			p.logger.Warn("Graceful stop requested - stopping promotion at chunk boundary (run again to resume)")
-			return nil
-		}
-		if err := newSentinelGate(p.processingCfg.SentinelFile, p.logger).wait(ctx, p.stopCh); err != nil {
-			return err
-		}
-		if stopRequested(p.stopCh) {
-			p.logger.Warn("Graceful stop requested - stopping promotion at chunk boundary (run again to resume)")
-			return nil
-		}
-		end := start + batchSize
-		if end > len(rawPKs) {
-			end = len(rawPKs)
-		}
-		typed := make([]interface{}, 0, end-start)
-		for _, raw := range rawPKs[start:end] {
-			pk, err := types.ConvertRootPK(raw, dataType, unsigned)
-			if err != nil {
-				return fmt.Errorf("convert PK %q: %w", raw, err)
-			}
-			typed = append(typed, pk)
-		}
-		var checkpointPK interface{}
-		if p.aboveCheckpointFloor(rawPKs[end-1], unsigned) {
-			checkpointPK = typed[len(typed)-1]
-		}
-		if err := p.resumeMgr.CompleteBatch(ctx, p.jobName, typed, checkpointPK); err != nil {
-			return fmt.Errorf("promote completion failed: %w", err)
-		}
-		if checkpointPK != nil {
-			p.fetcher.UpdateCheckpoint(checkpointPK)
-		}
-		agg.RootsProcessed += len(typed)
-	}
-	return nil
 }

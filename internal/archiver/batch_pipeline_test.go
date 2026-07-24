@@ -149,7 +149,10 @@ func TestRecoverRefusesLegacyFailedRows(t *testing.T) {
 }
 
 // TestRecoverCopyOnlyPromotesCopied: copy-only 'copied' rows complete WITHOUT
-// re-copy or re-verify (issue #1), advancing the checkpoint atomically.
+// re-copy or re-verify (issue #1), advancing the checkpoint atomically. The
+// promotion runs through recoverChunks in batchPromote mode, which skips
+// discovery/copy/verify/delete and executes only processBatch's completion
+// tail — so the ONLY SQL is the CompleteBatch transaction below.
 func TestRecoverCopyOnlyPromotesCopied(t *testing.T) {
 	p, sourceMock, destMock, archMock := newTestPipeline(t, batchCopyVerify)
 
@@ -287,7 +290,8 @@ func TestRecoverCopyOnlyMixedStatusesAscendGlobally(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	archMock.ExpectCommit()
 
-	// Run 2 — copied [10]: promote only (no re-copy), CompleteBatch(checkpoint=10).
+	// Run 2 — copied [10]: batchPromote (no re-discovery/re-copy/re-verify),
+	// CompleteBatch(checkpoint=10).
 	archMock.ExpectBegin()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCompleted, "10").
@@ -305,10 +309,11 @@ func TestRecoverCopyOnlyMixedStatusesAscendGlobally(t *testing.T) {
 	require.NoError(t, archMock.ExpectationsWereMet())
 }
 
-// TestPromoteCopiedHonorsStopChannel: a cooperative stop halts promotion at
-// the chunk boundary with nil error and NO bookkeeping — remaining rows stay
-// 'copied' for the next run (same contract as recoverChunks).
-func TestPromoteCopiedHonorsStopChannel(t *testing.T) {
+// TestRecoverCopyOnlyPromoteHonorsStopChannel: a cooperative stop halts
+// promotion at the chunk boundary with nil error and NO bookkeeping —
+// remaining rows stay 'copied' for the next run. Promotion is now recoverChunks
+// in batchPromote mode, so this is recoverChunks' own stop contract.
+func TestRecoverCopyOnlyPromoteHonorsStopChannel(t *testing.T) {
 	p, sourceMock, destMock, archMock := newTestPipeline(t, batchCopyVerify)
 	stopped := make(chan struct{})
 	close(stopped)
