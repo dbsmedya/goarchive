@@ -647,7 +647,7 @@ Refer to it rather than duplicating those details here.
 
 The tracking tables stored in `job_schema`:
 - **`archiver_job`** — one row per configured job; `id` is an integer `PRIMARY KEY`; `job_name` is a `UNIQUE KEY`. Checkpoint and heartbeat data live here.
-- **`archiver_job_log_<id>`** — one per-job table, named by the job's integer `id`. Tracks per-root-PK status as a `TINYINT` (0=pending, 1=copied, 2=completed, 3=failed). No `job_name` column; no timestamps. Completed and failed rows are kept as evidence — they are not deleted automatically.
+- **`archiver_job_log_<id>`** — one per-job table, named by the job's integer `id`. Tracks per-root-PK status as a `TINYINT` (0=pending, 1=copied, 2=completed, 3=failed). No `job_name` column; no timestamps. Completed rows are kept as evidence — they are not deleted automatically. Current releases never write `3=failed`: an error aborts the run and leaves that batch's rows in a recoverable status (`pending` or `copied`) for the next run to replay. The value remains only for rows written by a pre-1.8 release, which block resume until an operator resolves them.
 
 To look up which log table belongs to a job:
 ```sql

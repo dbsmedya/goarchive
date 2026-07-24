@@ -204,15 +204,22 @@ source but never *stricter*:
 - `where` is required on every job; `"1=1"` is the explicit full-table opt-in.
 - `batch_size` is the real copy chunk unit: root and every child table fetch and
   insert `batch_size` rows at a time.
-- Crash recovery is status-aware via the per-job log TINYINT status: `pending` →
-  full replay, `copied` (copy+verify succeeded, safe to delete) → delete-only, no
-  re-verify.
+- Crash recovery is status-aware via the per-job log TINYINT status, uniformly
+  across archive, copy-only, and purge (all three share one batch pipeline):
+  `pending` → full replay; `copied` → delete-only replay (archive/purge) or
+  direct promotion to completed (copy-only — copy+verify already succeeded).
+  A row marked `failed` by a pre-1.8 release blocks resume with recovery
+  guidance; current releases never write `failed` — errors abort the run and
+  leave rows recoverable. Checkpoints advance only inside the atomic
+  batch-completion transaction (copy-only recovery advances per ascending
+  chunk because its source rows persist; archive/purge recovery does not).
 - **Strict-insert jobs refuse to auto-resume `pending` rows.** When strict INSERT
   is forced (`verification.method: count`, `--skip-verify`, or a destination
   secondary unique index) a `pending` row's destination copy may already be
   committed, so re-copying it would abort on duplicate. Resume therefore *refuses*
   with recovery guidance instead of self-blocking; `copied` rows still resume
-  delete-only. Applies to archive and copy-only (see `.ayder/003`).
+  delete-only. Applies to archive and copy-only via the shared pipeline's resume
+  gates (see `.ayder/003`).
 - `delete_sleep_seconds` (default 0) pauses between `batch_delete_size` delete
   chunks to limit binlog/replication lag — independent of `sleep_seconds`, which
   paces whole batches.
