@@ -212,14 +212,20 @@ source but never *stricter*:
   guidance; current releases never write `failed` — errors abort the run and
   leave rows recoverable. Checkpoints advance only inside the atomic
   batch-completion transaction (copy-only recovery advances per ascending
-  chunk because its source rows persist; archive/purge recovery does not).
+  chunk because its source rows persist — but only for chunks whose max PK is
+  strictly above the job's startup checkpoint (`checkpointFloor`), so requeuing
+  a legacy `failed` row below it will not regress the checkpoint and will not
+  advance it either; archive/purge recovery does not advance per chunk).
 - **Strict-insert jobs refuse to auto-resume `pending` rows.** When strict INSERT
   is forced (`verification.method: count`, `--skip-verify`, or a destination
   secondary unique index) a `pending` row's destination copy may already be
   committed, so re-copying it would abort on duplicate. Resume therefore *refuses*
   with recovery guidance instead of self-blocking; `copied` rows still resume
-  delete-only. Applies to archive and copy-only via the shared pipeline's resume
-  gates (see `.ayder/003`).
+  without re-copy (delete-only for archive, promotion to completed for copy-only,
+  which has no delete phase). Note that archive under `verification.method: count`
+  refuses resume outright — an earlier gate fires on *any* `copied` or `pending`
+  row, so the `copied` path is never reached. Applies to archive and copy-only
+  via the shared pipeline's resume gates (see `.ayder/003`).
 - `delete_sleep_seconds` (default 0) pauses between `batch_delete_size` delete
   chunks to limit binlog/replication lag — independent of `sleep_seconds`, which
   paces whole batches.
