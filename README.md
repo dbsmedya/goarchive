@@ -698,7 +698,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.7.0-community` (stable for the scope below)
+- **Version**: `1.8.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
