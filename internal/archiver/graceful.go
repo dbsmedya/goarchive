@@ -2,9 +2,12 @@
 // copy-only, and purge orchestrators.
 //
 // The orchestrators run a copy→verify→delete loop that must not be torn apart by
-// a single Ctrl-C — an interruption mid-cycle would leave root PKs in a
-// non-terminal (pending/copied) status for the next run's status-aware recovery
-// to sort out.
+// a single Ctrl-C. An interruption mid-cycle leaves root PKs in a non-terminal
+// (pending/copied) status, which the next run's status-aware recovery replays —
+// except in count-mode archive jobs and strict-INSERT archive/copy-only jobs,
+// where resume refuses outright and demands operator intervention (hand-editing
+// log_status, or removing the destination rows already written) before the job
+// can run again. See recover's gates in batch_pipeline.go.
 //
 // The contract: the work context (from database.SetupGracefulShutdown) is only
 // canceled on the SECOND signal. The first signal closes a stop channel, which

@@ -393,9 +393,9 @@ func TestOrchestrator_CycleDetection(t *testing.T) {
 }
 
 func TestSortPendingPKsNumeric(t *testing.T) {
-	signed := []string{"10", "100", "9"}
+	signed := []string{"10", "100", "9", "-2"}
 	sortPendingPKsNumeric(signed, false)
-	wantSigned := []string{"9", "10", "100"}
+	wantSigned := []string{"-2", "9", "10", "100"}
 	for i := range wantSigned {
 		if signed[i] != wantSigned[i] {
 			t.Fatalf("signed sort = %v, want %v", signed, wantSigned)
