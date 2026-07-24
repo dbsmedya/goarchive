@@ -380,3 +380,41 @@ func TestRecoverCopyOnlyRespectsCheckpointFloor(t *testing.T) {
 	require.NoError(t, destMock.ExpectationsWereMet())
 	require.NoError(t, archMock.ExpectationsWereMet())
 }
+
+// TestRecoverPurgeReplaysCopiedDeleteOnly: purge never writes 'copied' itself,
+// but a mode switch or hand-edit can leave one (issue #1). Recovery must
+// replay it through the delete pipeline — with NO checkpoint advance (nil):
+// purge recovery deletes source rows, so the forward scan cannot re-fetch.
+func TestRecoverPurgeReplaysCopiedDeleteOnly(t *testing.T) {
+	p, sourceMock, destMock, archMock := newTestPipeline(t, batchDeleteOnly)
+	p.copyPhase = nil // purge has no copy/verify phase
+	p.dataVerifier = nil
+
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("5"))
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusPending).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+
+	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
+		WithArgs(int64(5)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// CompleteBatch WITHOUT a job-table checkpoint UPDATE (nil checkpoint).
+	archMock.ExpectBegin()
+	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
+		WithArgs(LogStatusCompleted, "5").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	archMock.ExpectCommit()
+
+	stats, err := p.recover(context.Background(), nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.RootsProcessed)
+	require.Equal(t, int64(1), stats.RecordsDeleted)
+	require.NoError(t, sourceMock.ExpectationsWereMet())
+	require.NoError(t, destMock.ExpectationsWereMet())
+	require.NoError(t, archMock.ExpectationsWereMet())
+}
