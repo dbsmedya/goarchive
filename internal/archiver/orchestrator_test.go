@@ -511,14 +511,6 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{},
-	}
-
 	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -530,9 +522,22 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	archMock.ExpectCommit()
 
 	stub := &stubLagWaiter{}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
-		batchDeleteOnly, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, stub.calls)
 
@@ -564,20 +569,25 @@ func TestProcessBatchDeleteOnlyLagErrorGatesDelete(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{},
-	}
-
 	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
 	// expectations: the lag error must gate the delete before either fires.
 	stub := &stubLagWaiter{err: errors.New("lag too high")}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
-		batchDeleteOnly, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lag")
 	require.Equal(t, 1, stub.calls)
@@ -613,14 +623,6 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
-	}
-
 	// Copy phase: must fire (proves the re-check runs AFTER copy/verify).
 	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(20)).
@@ -638,9 +640,23 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
 	// expectations: the lag error must gate the delete before either fires.
 	stub := &stubLagWaiter{err: errors.New("lag too high")}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(20)},
-		batchFull, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(20)},
+		batchFull, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lag")
 	require.Equal(t, 1, stub.calls)
@@ -676,6 +692,20 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 		graph:           g,
 		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
 		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	}
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
 	}
 	result := &ArchiveResult{}
 
@@ -719,8 +749,7 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
 	destMock.ExpectCommit()
 
-	err := o.resumePending(context.Background(), resumeMgr,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	err := o.resumePending(context.Background(), p, resumeMgr, copyPhase, nil, result)
 	require.NoError(t, err)
 	require.NoError(t, archMock.ExpectationsWereMet())
 	require.NoError(t, sourceMock.ExpectationsWereMet())
@@ -759,6 +788,20 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
 		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
 	}
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+	}
 	result := &ArchiveResult{}
 
 	// Only the two status fetches run; the strict-insert guard then refuses, so
@@ -770,8 +813,7 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
 
-	err := o.resumePending(context.Background(), resumeMgr,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	err := o.resumePending(context.Background(), p, resumeMgr, copyPhase, nil, result)
 	if err == nil {
 		t.Fatal("expected refusal when strict insert + pending rows, got nil")
 	}
