@@ -160,7 +160,9 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		agg, err := pipeline.recover(ctx, nil)
 		result.RecordsDeleted += agg.RecordsDeleted
 		if err != nil {
-			return nil, fmt.Errorf("resume failed: %w", err)
+			// Return result, not nil: agg is folded in above so partial recovery
+			// totals survive a mid-resume failure (matches archive/copy-only).
+			return result, fmt.Errorf("resume failed: %w", err)
 		}
 	}
 

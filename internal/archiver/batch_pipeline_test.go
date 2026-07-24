@@ -142,6 +142,16 @@ func TestRecoverRefusesLegacyFailedRows(t *testing.T) {
 		require.Contains(t, err.Error(), "log_status=3")
 		require.Contains(t, err.Error(), "SET log_status=0") // requeue guidance
 		require.Contains(t, err.Error(), "SET log_status=2") // acknowledge guidance
+		// Both UPDATEs must be scoped per PK, not table-wide: a table-wide
+		// "SET log_status=2 WHERE log_status=3" would mark every failed row
+		// completed, re-creating issue #18's silent permanent hole.
+		require.NotContains(t, err.Error(), "SET log_status=0 WHERE log_status=3;")
+		require.NotContains(t, err.Error(), "SET log_status=2 WHERE log_status=3;")
+		require.Contains(t, err.Error(), "SET log_status=0 WHERE log_status=3 AND root_pk_id IN (")
+		require.Contains(t, err.Error(), "SET log_status=2 WHERE log_status=3 AND root_pk_id IN (")
+		// The operator must be told how to enumerate the full set (the preview
+		// below caps at 10).
+		require.Contains(t, err.Error(), "SELECT root_pk_id, error_message FROM ")
 		require.NoError(t, sourceMock.ExpectationsWereMet())
 		require.NoError(t, destMock.ExpectationsWereMet())
 		require.NoError(t, archMock.ExpectationsWereMet())

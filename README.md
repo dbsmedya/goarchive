@@ -719,7 +719,7 @@ should be aware of the following known limits before pointing it at real data:
   shared destination that other workloads are reading.
 - **No built-in metrics or telemetry.** Operators monitor progress through
   the structured log output and by querying the per-job `archiver_job_log_<id>` table directly (look up `id` from `archiver_job` by `job_name`).
-- **Sequential by design.** One root PK at a time, one job at a time per
+- **Sequential by design.** One batch at a time, one job at a time per
   destination. Advisory locks plus heartbeat-aware same-root checks prevent
   concurrent runs of the same job name or root table.
 - **Advisory lock sessions must stay alive.** GoArchive keeps the job

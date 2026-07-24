@@ -401,6 +401,17 @@ func TestSortPendingPKsNumeric(t *testing.T) {
 			t.Fatalf("signed sort = %v, want %v", signed, wantSigned)
 		}
 	}
+	// Discriminating negative case: the input is already in the wrong order, so a
+	// broken parse (both values collapsing to 0, i.e. neither "less") leaves it
+	// untouched. A plain string sort would also fail here, since "-1" < "-2".
+	negatives := []string{"-1", "-2"}
+	sortPendingPKsNumeric(negatives, false)
+	wantNegatives := []string{"-2", "-1"}
+	for i := range wantNegatives {
+		if negatives[i] != wantNegatives[i] {
+			t.Fatalf("signed negative sort = %v, want %v", negatives, wantNegatives)
+		}
+	}
 	unsigned := []string{"18446744073709551615", "2", "100"}
 	sortPendingPKsNumeric(unsigned, true)
 	wantUnsigned := []string{"2", "100", "18446744073709551615"}

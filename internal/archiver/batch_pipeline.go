@@ -279,6 +279,11 @@ func (p *batchPipeline) recoverChunks(ctx context.Context, rawPKs []string, mode
 // count-mode (refuse, archive) -> strict-INSERT pending (refuse, archive +
 // copy-only) -> copied replay -> pending replay. Returns aggregate stats for
 // the caller's result type.
+//
+// The returned *BatchStats is ALWAYS non-nil, on every error path included, so
+// callers may accumulate its counters into their result before checking the
+// error (all three orchestrators rely on this to keep partial recovery totals
+// when a resume fails part-way through).
 func (p *batchPipeline) recover(ctx context.Context, checkpoint CheckpointCallback) (*BatchStats, error) {
 	agg := &BatchStats{}
 
@@ -299,17 +304,21 @@ func (p *batchPipeline) recover(ctx context.Context, checkpoint CheckpointCallba
 			"job %q has %d root PKs marked 'failed' (log_status=3) by an earlier GoArchive release.\n\n"+
 				"This release no longer marks rows failed (errors leave rows in a recoverable status), but these "+
 				"legacy rows would otherwise be skipped forever.\n\n"+
-				"To recover, inspect the rows (error_message column explains each failure) and choose per PK:\n"+
+				"To recover, first list the full set (error_message explains each failure):\n"+
+				"       SELECT root_pk_id, error_message FROM %s WHERE log_status=3;\n"+
+				"Then choose per PK - substitute the PKs you decided on for each option, and run each\n"+
+				"statement only against its own subset (the IN list is what keeps this per PK):\n"+
 				"  1. Re-queue it for processing:\n"+
-				"       UPDATE %s SET log_status=0 WHERE log_status=3;\n"+
+				"       UPDATE %s SET log_status=0 WHERE log_status=3 AND root_pk_id IN ('<pk>', ...);\n"+
 				"  2. Skip it permanently: exclude the PK in the job's 'where' clause (e.g. AND id NOT IN (...))\n"+
 				"     or resolve the source row manually, then clear the marker:\n"+
-				"       UPDATE %s SET log_status=2 WHERE log_status=3;\n"+
+				"       UPDATE %s SET log_status=2 WHERE log_status=3 AND root_pk_id IN ('<pk>', ...);\n"+
 				"     NOTE: the status edit alone does NOT skip the row - the forward scan re-fetches any\n"+
 				"     source row above the checkpoint regardless of log status.\n"+
 				"Then re-run.\n\n"+
 				"Failed PKs (first 10): %v",
-			p.jobName, len(failed), p.resumeMgr.LogTableName(), p.resumeMgr.LogTableName(), preview)
+			p.jobName, len(failed), p.resumeMgr.LogTableName(), p.resumeMgr.LogTableName(),
+			p.resumeMgr.LogTableName(), preview)
 	}
 
 	copied, err := p.resumeMgr.GetRootPKsByStatus(ctx, p.jobName, LogStatusCopied)
