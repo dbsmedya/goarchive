@@ -16,6 +16,10 @@ import (
 // TestCopyOnlyReplayRefusesStrictInsertWithPending guards review-003 Claim 1 for
 // copy-only: once copy-only forces strict INSERT (review #1), its resume path must
 // refuse to re-copy 'pending' rows rather than self-block on duplicate INSERTs.
+// The refusal now lives in the shared engine's recover(), so this pins the
+// copy-only variant of the guidance text (batchCopyVerify has no delete phase,
+// so the archive-only "mark them copied -> resume delete-only" advice must not
+// leak into it).
 func TestCopyOnlyReplayRefusesStrictInsertWithPending(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -36,26 +40,43 @@ func TestCopyOnlyReplayRefusesStrictInsertWithPending(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &CopyOnlyOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchCopyVerify,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase, // SetStrictInsert(true) already applied above
+		dataVerifier:  dataVerifier,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
 	}
-	result := &CopyOnlyResult{}
 
-	// GetPendingPKs runs; the strict-insert guard then refuses (no copy attempted).
+	// The three status fetches run in gate order (failed -> copied -> pending);
+	// the strict-insert guard then refuses (no copy attempted).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusCopied).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
 	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
 		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
 
-	err := o.replayPendingPKs(context.Background(), resumeMgr, discovery, copyPhase, dataVerifier, fetcher, result)
+	_, err := p.recover(context.Background(), nil)
 	if err == nil {
-		t.Fatal("expected copy-only replay to refuse under strict insert + pending, got nil")
+		t.Fatal("expected copy-only recover to refuse under strict insert + pending, got nil")
 	}
 	if !strings.Contains(err.Error(), "strict INSERT") {
 		t.Fatalf("expected strict-insert refusal, got: %v", err)
+	}
+	// copy-only recovery guidance must NOT suggest the archive-only
+	// "mark them copied -> delete-only" path (there is no delete phase).
+	if strings.Contains(err.Error(), "log_status=1") {
+		t.Fatalf("copy-only refusal leaked archive recovery guidance: %v", err)
 	}
 	if err := archMock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

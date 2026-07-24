@@ -16,7 +16,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/dbsmedya/goarchive/internal/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/types"
 	"github.com/dbsmedya/goarchive/internal/verifier"
 )
 
@@ -238,12 +237,32 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	}
 
 	// Honor processing.batch_size for copy/verify/resume chunking, not just the
-	// root fetch (issue #8, Problem 2). Must run before replay and the batch loop.
+	// root fetch (issue #8, Problem 2). Must run before recovery and the batch loop.
 	o.applyChunkSizing(copyPhase, dataVerifier, resumeMgr)
 
+	pipeline := &batchPipeline{
+		jobName:         o.jobName,
+		mainMode:        batchCopyVerify,
+		graph:           o.graph,
+		logger:          o.logger,
+		stopCh:          o.stopCh,
+		processingCfg:   o.processingCfg,
+		skipVerify:      o.verificationCfg.SkipVerification,
+		checkpointFloor: jobState.LastProcessedRootPKID,
+		discovery:       discovery,
+		copyPhase:       copyPhase,
+		dataVerifier:    dataVerifier,
+		resumeMgr:       resumeMgr,
+		fetcher:         fetcher,
+	}
+
 	if shouldResume {
-		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, copyPhase, dataVerifier, fetcher, result); err != nil {
-			return fail("pending replay failed: %w", err)
+		agg, err := pipeline.recover(ctx, nil)
+		result.RecordsCopied += agg.RecordsCopied
+		result.TablesVerified += agg.TablesVerified
+		result.RecordsVerified += agg.RecordsVerified
+		if err != nil {
+			return fail("resume failed: %w", err)
 		}
 	}
 
@@ -283,13 +302,14 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 			return fail("failed to log pending batch entries: %w", err)
 		}
 
-		for _, rootID := range rootIDs {
-			copied, err := o.processCopyOnlyRoot(ctx, rootID, discovery, copyPhase, dataVerifier, fetcher, resumeMgr, result)
-			if err != nil {
-				return fail("%w", err)
-			}
-			result.RecordsCopied += copied
+		batchStats, err := pipeline.processBatch(ctx, rootIDs, batchCopyVerify,
+			rootIDs[len(rootIDs)-1], nil)
+		if err != nil {
+			return fail("processBatch failed: %w", err)
 		}
+		result.RecordsCopied += batchStats.RecordsCopied
+		result.TablesVerified += batchStats.TablesVerified
+		result.RecordsVerified += batchStats.RecordsVerified
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
@@ -305,62 +325,6 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	result.TablesCopied = len(o.copyOrder)
 
 	return result, nil
-}
-
-func (o *CopyOnlyOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, result *CopyOnlyResult) error {
-	pending, dataType, unsigned, err := pendingReplayPKs(ctx, resumeMgr, o.jobName, o.graph)
-	if err != nil {
-		return err
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	// Strict INSERT (forced by count verification, --skip-verify, or a destination
-	// secondary unique index — review P0-1/P1-2/003) cannot re-copy 'pending' rows:
-	// their destination copy may already be committed, so a strict re-INSERT aborts
-	// on duplicate and the job would self-block on every resume. Refuse with
-	// recovery guidance rather than loop forever.
-	if copyPhase.StrictInsert() {
-		preview := pending
-		if len(preview) > 10 {
-			preview = preview[:10]
-		}
-		return fmt.Errorf("job %q has %d 'pending' root PKs from a prior interrupted run and uses strict INSERT "+
-			"(forced by verification.method: count, --skip-verify, or a destination secondary unique index), so they "+
-			"cannot be safely re-copied (their destination rows may already be committed, and a strict INSERT aborts "+
-			"on duplicate).\n\n"+
-			"To recover, choose one:\n"+
-			"  1. Delete the destination rows already written for these pending PKs, then re-run.\n"+
-			"  2. If using --skip-verify, drop it (and use verification.method: sha256) so replay uses idempotent "+
-			"INSERT IGNORE, then re-run.\n\n"+
-			"Pending PKs (first 10): %v", o.jobName, len(pending), preview)
-	}
-	for _, rawPK := range pending {
-		// Cooperative graceful stop: each replayed root reaches 'completed' before
-		// we loop, so stopping here leaves the remainder in 'pending' to resume.
-		if stopRequested(o.stopCh) {
-			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
-			return nil
-		}
-		// Operator pause switch also applies during resume/recovery.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
-			return err
-		}
-		if stopRequested(o.stopCh) {
-			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
-			return nil
-		}
-		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
-		if err != nil {
-			return err
-		}
-		copied, err := o.processCopyOnlyRoot(ctx, typedPK, discovery, copyPhase, dataVerifier, fetcher, resumeMgr, result)
-		if err != nil {
-			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
-		}
-		result.RecordsCopied += copied
-	}
-	return nil
 }
 
 // verifyChunkSizer is the narrow slice of *verifier.Verifier that
@@ -379,38 +343,6 @@ func (o *CopyOnlyOrchestrator) applyChunkSizing(copyPhase *CopyPhase, dataVerifi
 	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
 	dataVerifier.SetChunkSize(o.processingCfg.BatchSize)
 	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
-}
-
-func (o *CopyOnlyOrchestrator) processCopyOnlyRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, copyPhase *CopyPhase, dataVerifier *verifier.Verifier, fetcher *RootIDFetcher, resumeMgr *ResumeManager, result *CopyOnlyResult) (int64, error) {
-	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
-	if err != nil {
-		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
-		return 0, fmt.Errorf("discovery failed: %w", err)
-	}
-	copyStats, err := copyPhase.Copy(ctx, convertRecordSet(discovered))
-	if err != nil {
-		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
-		return 0, fmt.Errorf("copy failed: %w", err)
-	}
-	if !o.verificationCfg.SkipVerification {
-		verifyStats, err := dataVerifier.Verify(ctx, discovered)
-		if err != nil {
-			markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
-			return 0, fmt.Errorf("verification failed: %w", err)
-		}
-		if verifyStats != nil {
-			result.TablesVerified += verifyStats.TablesVerified
-			result.RecordsVerified += verifyStats.TotalRows
-		}
-	}
-	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-		return 0, fmt.Errorf("checkpoint update failed: %w", err)
-	}
-	fetcher.UpdateCheckpoint(rootID)
-	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-		return 0, fmt.Errorf("failed to mark completed: %w", err)
-	}
-	return copyStats.RowsCopied, nil
 }
 
 func (o *CopyOnlyOrchestrator) displayInfoOrPrompt(force bool) error {
