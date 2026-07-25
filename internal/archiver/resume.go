@@ -341,28 +341,6 @@ func (r *ResumeManager) IsHeartbeatStale(ctx context.Context, jobName string, th
 	return age > threshold, age, nil
 }
 
-// UpdateCheckpoint updates the last processed root PK for resumption.
-//
-// GA-P3-F4-T6: Checkpoint query
-// GA-P3-F4-T8: Resume from checkpoint
-func (r *ResumeManager) UpdateCheckpoint(ctx context.Context, jobName string, lastPKID interface{}) error {
-	pk, err := formatPK(lastPKID)
-	if err != nil {
-		return fmt.Errorf("invalid checkpoint PK: %w", err)
-	}
-
-	_, err = r.db.ExecContext(ctx,
-		fmt.Sprintf("UPDATE %s SET last_processed_root_pk_id = ?, updated_at = CURRENT_TIMESTAMP WHERE job_name = ?", r.jobTable),
-		pk, jobName,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to update checkpoint: %w", err)
-	}
-
-	r.logger.Debugf("Job %q checkpoint updated to PK=%q", jobName, pk)
-	return nil
-}
-
 // LogBatchPending inserts 'pending' log entries for a batch of root PKs using
 // chunked multi-row INSERT IGNORE (idempotent on retry).
 // jobName is informational only (used for log messages); query scoping is via the resolved per-job log table.
@@ -439,56 +417,6 @@ func (r *ResumeManager) MarkBatchCopied(ctx context.Context, jobName string, roo
 			return fmt.Errorf("failed to mark batch copied: %w", err)
 		}
 	}
-	return nil
-}
-
-// MarkCompleted updates a log entry to 'completed' status.
-// jobName is informational only (used for log messages); query scoping is via the resolved per-job log table.
-//
-// GA-P3-F4-T4: Update to completed
-func (r *ResumeManager) MarkCompleted(ctx context.Context, jobName string, rootPKID interface{}) error {
-	if err := r.requireLogTable(); err != nil {
-		return err
-	}
-	pk, err := formatPK(rootPKID)
-	if err != nil {
-		return fmt.Errorf("invalid completion PK: %w", err)
-	}
-
-	_, err = r.db.ExecContext(ctx,
-		fmt.Sprintf("UPDATE %s SET log_status = ? WHERE root_pk_id = ?", r.logTable),
-		LogStatusCompleted, pk,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to mark PK=%q completed: %w", pk, err)
-	}
-
-	r.logger.Debugf("Marked PK=%q completed for job %q", pk, jobName)
-	return nil
-}
-
-// MarkFailed updates a log entry to 'failed' status with error message.
-// jobName is informational only (used for log messages); query scoping is via the resolved per-job log table.
-//
-// GA-P3-F4-T5: Update to failed
-func (r *ResumeManager) MarkFailed(ctx context.Context, jobName string, rootPKID interface{}, errorMsg string) error {
-	if err := r.requireLogTable(); err != nil {
-		return err
-	}
-	pk, err := formatPK(rootPKID)
-	if err != nil {
-		return fmt.Errorf("invalid failed PK: %w", err)
-	}
-
-	_, err = r.db.ExecContext(ctx,
-		fmt.Sprintf("UPDATE %s SET log_status = ?, error_message = ? WHERE root_pk_id = ?", r.logTable),
-		LogStatusFailed, errorMsg, pk,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to mark PK=%q failed: %w", pk, err)
-	}
-
-	r.logger.Warnf("Marked PK=%q failed for job %q: %s", pk, jobName, errorMsg)
 	return nil
 }
 
@@ -644,14 +572,17 @@ func (r *ResumeManager) ShouldResume(ctx context.Context, jobName string) (bool,
 		return true, nil
 	}
 
-	// Check for non-terminal entries (pending OR copied) left by a crash.
+	// Check for entries requiring resume handling left by a crash: pending and
+	// copied are non-terminal; failed (legacy, pre-1.8) must also force the
+	// resume path so recover()'s failed-row gate can refuse with guidance
+	// instead of the main loop silently re-processing the row.
 	if err := r.requireLogTable(); err != nil {
 		return false, err
 	}
 	nonTerminal := 0
 	err = r.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE log_status IN (?, ?)", r.logTable),
-		LogStatusPending, LogStatusCopied,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE log_status IN (?, ?, ?)", r.logTable),
+		LogStatusPending, LogStatusCopied, LogStatusFailed,
 	).Scan(&nonTerminal)
 	if err != nil {
 		return false, fmt.Errorf("failed to count non-terminal entries: %w", err)

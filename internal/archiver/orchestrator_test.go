@@ -393,12 +393,23 @@ func TestOrchestrator_CycleDetection(t *testing.T) {
 }
 
 func TestSortPendingPKsNumeric(t *testing.T) {
-	signed := []string{"10", "100", "9"}
+	signed := []string{"10", "100", "9", "-2"}
 	sortPendingPKsNumeric(signed, false)
-	wantSigned := []string{"9", "10", "100"}
+	wantSigned := []string{"-2", "9", "10", "100"}
 	for i := range wantSigned {
 		if signed[i] != wantSigned[i] {
 			t.Fatalf("signed sort = %v, want %v", signed, wantSigned)
+		}
+	}
+	// Discriminating negative case: the input is already in the wrong order, so a
+	// broken parse (both values collapsing to 0, i.e. neither "less") leaves it
+	// untouched. A plain string sort would also fail here, since "-1" < "-2".
+	negatives := []string{"-1", "-2"}
+	sortPendingPKsNumeric(negatives, false)
+	wantNegatives := []string{"-2", "-1"}
+	for i := range wantNegatives {
+		if negatives[i] != wantNegatives[i] {
+			t.Fatalf("signed negative sort = %v, want %v", negatives, wantNegatives)
 		}
 	}
 	unsigned := []string{"18446744073709551615", "2", "100"}
@@ -426,72 +437,6 @@ func newReplayTestResumeManager(t *testing.T) (*ResumeManager, sqlmock.Sqlmock) 
 	return rm, mock
 }
 
-func TestPendingReplayPKs_NumericOrder_Signed(t *testing.T) {
-	rm, mock := newReplayTestResumeManager(t)
-	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
-		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10").AddRow("9").AddRow("-2"))
-
-	g := graph.NewGraph("payment", "payment_id")
-	g.SetRootPKMeta("int", false)
-
-	pending, dataType, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
-	if err != nil {
-		t.Fatalf("pendingReplayPKs failed: %v", err)
-	}
-	if dataType != "int" || unsigned {
-		t.Fatalf("meta = (%q, %v), want (\"int\", false)", dataType, unsigned)
-	}
-	want := []string{"-2", "9", "10"}
-	if len(pending) != len(want) {
-		t.Fatalf("pending = %v, want %v", pending, want)
-	}
-	for i := range want {
-		if pending[i] != want[i] {
-			t.Fatalf("pending = %v, want %v (lexicographic leak?)", pending, want)
-		}
-	}
-}
-
-func TestPendingReplayPKs_NumericOrder_Unsigned(t *testing.T) {
-	rm, mock := newReplayTestResumeManager(t)
-	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
-		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("18446744073709551615").AddRow("10").AddRow("9"))
-
-	g := graph.NewGraph("payment", "payment_id")
-	g.SetRootPKMeta("bigint", true)
-
-	pending, _, unsigned, err := pendingReplayPKs(context.Background(), rm, "job", g)
-	if err != nil {
-		t.Fatalf("pendingReplayPKs failed: %v", err)
-	}
-	if !unsigned {
-		t.Fatal("expected unsigned=true")
-	}
-	want := []string{"9", "10", "18446744073709551615"}
-	for i := range want {
-		if pending[i] != want[i] {
-			t.Fatalf("pending = %v, want %v", pending, want)
-		}
-	}
-}
-
-func TestPendingReplayPKs_EmptyAndMissingMeta(t *testing.T) {
-	rm, mock := newReplayTestResumeManager(t)
-	mock.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
-	g := graph.NewGraph("payment", "payment_id")
-	pending, _, _, err := pendingReplayPKs(context.Background(), rm, "job", g)
-	if err != nil || pending != nil {
-		t.Fatalf("empty pending: got (%v, %v), want (nil, nil)", pending, err)
-	}
-
-	rm2, mock2 := newReplayTestResumeManager(t)
-	mock2.ExpectQuery("SELECT root_pk_id FROM").WillReturnRows(
-		sqlmock.NewRows([]string{"root_pk_id"}).AddRow("1"))
-	if _, _, _, err := pendingReplayPKs(context.Background(), rm2, "job", g); err == nil {
-		t.Fatal("expected error when root PK metadata is not loaded")
-	}
-}
-
 func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	sourceDB, sourceMock, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -511,14 +456,6 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{},
-	}
-
 	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -530,9 +467,22 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	archMock.ExpectCommit()
 
 	stub := &stubLagWaiter{}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
-		batchDeleteOnly, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, stub.calls)
 
@@ -564,20 +514,25 @@ func TestProcessBatchDeleteOnlyLagErrorGatesDelete(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{},
-	}
-
 	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
 	// expectations: the lag error must gate the delete before either fires.
 	stub := &stubLagWaiter{err: errors.New("lag too high")}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(1)},
-		batchDeleteOnly, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(1)},
+		batchDeleteOnly, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lag")
 	require.Equal(t, 1, stub.calls)
@@ -613,14 +568,6 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
-	}
-
 	// Copy phase: must fire (proves the re-check runs AFTER copy/verify).
 	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(20)).
@@ -638,9 +585,23 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	// No source DELETE and no arch CompleteBatch (BEGIN/UPDATE completed/COMMIT)
 	// expectations: the lag error must gate the delete before either fires.
 	stub := &stubLagWaiter{err: errors.New("lag too high")}
-	_, err := o.processBatch(context.Background(), []interface{}{int64(20)},
-		batchFull, false, nil,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, resumeMgr, stub)
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+		lagMonitor:    stub,
+	}
+	_, err := p.processBatch(context.Background(), []interface{}{int64(20)},
+		batchFull, nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "lag")
 	require.Equal(t, 1, stub.calls)
@@ -670,16 +631,25 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
 	}
-	result := &ArchiveResult{}
 
-	// arch DB: status fetches first (copied, then pending)
+	// arch DB: status fetches first (failed gate, then copied, then pending)
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
 	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
 		WithArgs(LogStatusCopied).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("10"))
@@ -719,8 +689,7 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
 	destMock.ExpectCommit()
 
-	err := o.resumePending(context.Background(), resumeMgr,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	_, err := p.recover(context.Background(), nil)
 	require.NoError(t, err)
 	require.NoError(t, archMock.ExpectationsWereMet())
 	require.NoError(t, sourceMock.ExpectationsWereMet())
@@ -752,17 +721,26 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
 
-	o := &ArchiveOrchestrator{
-		jobName:         "job1",
-		logger:          log,
-		graph:           g,
-		processingCfg:   config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
-		verificationCfg: config.VerificationConfig{Method: "sha256", SkipVerification: true},
+	p := &batchPipeline{
+		jobName:       "job1",
+		mainMode:      batchFull,
+		graph:         g,
+		logger:        log,
+		processingCfg: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 1000},
+		skipVerify:    true,
+		discovery:     discovery,
+		copyPhase:     copyPhase,
+		dataVerifier:  dataVerifier,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
 	}
-	result := &ArchiveResult{}
 
-	// Only the two status fetches run; the strict-insert guard then refuses, so
-	// NO copy/verify/delete is attempted (no source/dest expectations).
+	// Only the three status fetches run; the strict-insert guard then refuses,
+	// so NO copy/verify/delete is attempted (no source/dest expectations).
+	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
+		WithArgs(LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
 	archMock.ExpectQuery("SELECT root_pk_id FROM .*archiver_job_log_\\d+. WHERE log_status = \\?").
 		WithArgs(LogStatusCopied).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}))
@@ -770,8 +748,7 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("20"))
 
-	err := o.resumePending(context.Background(), resumeMgr,
-		discovery, copyPhase, dataVerifier, deletePhase, fetcher, nil, nil, result)
+	_, err := p.recover(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected refusal when strict insert + pending rows, got nil")
 	}

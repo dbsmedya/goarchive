@@ -200,41 +200,6 @@ func TestResumeManager_UpdateJobStatus_Error(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestResumeManager_UpdateCheckpoint_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_processed_root_pk_id").
-		WithArgs("500", "test_job").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.UpdateCheckpoint(ctx, "test_job", 500)
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestResumeManager_UpdateCheckpoint_Error(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_processed_root_pk_id").
-		WithArgs("250", "test_job").
-		WillReturnError(assert.AnError)
-
-	ctx := context.Background()
-	err := rm.UpdateCheckpoint(ctx, "test_job", 250)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to update checkpoint")
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
 func TestResumeManager_LogBatchPending_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -266,42 +231,6 @@ func TestResumeManager_LogBatchPending_EmptyBatch(t *testing.T) {
 	err := rm.LogBatchPending(ctx, "test_job", []interface{}{})
 
 	assert.NoError(t, err) // Should succeed with no-op for empty batch
-}
-
-func TestResumeManager_MarkCompleted_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-	rm.setJobID(7)
-
-	mock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
-		WithArgs(LogStatusCompleted, "1").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.MarkCompleted(ctx, "test_job", 1)
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-func TestResumeManager_MarkFailed_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-	rm.setJobID(7)
-
-	mock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
-		WithArgs(LogStatusFailed, "test error", "2").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-
-	ctx := context.Background()
-	err := rm.MarkFailed(ctx, "test_job", 2, "test error")
-
-	assert.NoError(t, err)
-	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestResumeManager_GetPendingPKs_Success(t *testing.T) {
@@ -366,10 +295,11 @@ func TestResumeManager_ShouldResume_True(t *testing.T) {
 		WithArgs("test_job").
 		WillReturnRows(jobRows)
 
-	// Then mock non-terminal count > 0 (pending OR copied) triggers resume.
+	// Then mock non-terminal count > 0 (pending OR copied OR legacy failed)
+	// triggers resume.
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(5)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
-		WithArgs(LogStatusPending, LogStatusCopied).
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -397,7 +327,7 @@ func TestResumeManager_ShouldResume_False(t *testing.T) {
 	// Non-terminal count = 0 (no resume needed).
 	countRows := sqlmock.NewRows([]string{"count"}).AddRow(0)
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
-		WithArgs(LogStatusPending, LogStatusCopied).
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(countRows)
 
 	ctx := context.Background()
@@ -585,18 +515,6 @@ func TestRequireLogTableGuard(t *testing.T) {
 		assert.Contains(t, err.Error(), "per-job log table not resolved")
 	})
 
-	t.Run("MarkCompleted", func(t *testing.T) {
-		err := rm.MarkCompleted(ctx, "job", 1)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "per-job log table not resolved")
-	})
-
-	t.Run("MarkFailed", func(t *testing.T) {
-		err := rm.MarkFailed(ctx, "job", 1, "some error")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "per-job log table not resolved")
-	})
-
 	t.Run("CompleteBatch", func(t *testing.T) {
 		// Non-empty rootPKs forces past CompleteBatch's early-return (which
 		// fires only when both rootPKs and checkpointPK are empty/nil) so the
@@ -645,8 +563,8 @@ func TestShouldResumeTriggersOnCopied(t *testing.T) {
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"last_processed_root_pk_id"}).AddRow(nil))
 	// No pending, but one copied -> must still resume.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN \\(\\?, \\?\\)").
-		WithArgs(LogStatusPending, LogStatusCopied).
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN \\(\\?, \\?, \\?\\)").
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
 
 	should, err := rm.ShouldResume(context.Background(), "job1")
@@ -658,5 +576,26 @@ func TestShouldResumeTriggersOnCopied(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// TestShouldResumeTriggersOnFailed: a log table holding ONLY legacy failed
+// rows (no checkpoint, no pending/copied) must still demand resume, so the
+// failed-row gate fires instead of the main loop silently re-processing.
+func TestShouldResumeTriggersOnFailed(t *testing.T) {
+	rm, mock := newReplayTestResumeManager(t)
+	mock.ExpectQuery("SELECT last_processed_root_pk_id FROM .*archiver_job` WHERE job_name = \\?").
+		WithArgs("job").
+		WillReturnRows(sqlmock.NewRows([]string{"last_processed_root_pk_id"}).AddRow(""))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM .*archiver_job_log_\\d+. WHERE log_status IN").
+		WithArgs(LogStatusPending, LogStatusCopied, LogStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	should, err := rm.ShouldResume(context.Background(), "job")
+	if err != nil {
+		t.Fatalf("ShouldResume failed: %v", err)
+	}
+	if !should {
+		t.Fatal("failed-only log table must require resume (gate bypass)")
 	}
 }

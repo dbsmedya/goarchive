@@ -9,7 +9,6 @@ import (
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/types"
 )
 
 // PurgeResult contains statistics and status of purge operation.
@@ -141,12 +140,29 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 	deletePhase.SetSleepSeconds(o.processingCfg.DeleteSleepSeconds)
 
 	// Honor processing.batch_size for resume bookkeeping chunking (issue #8,
-	// Problem 2). Must run before replay and the batch loop.
+	// Problem 2). Must run before recovery and the batch loop.
 	o.applyResumeChunkSizing(resumeMgr)
 
+	pipeline := &batchPipeline{
+		jobName:       o.jobName,
+		mainMode:      batchDeleteOnly,
+		graph:         o.graph,
+		logger:        o.logger,
+		stopCh:        o.stopCh,
+		processingCfg: o.processingCfg,
+		discovery:     discovery,
+		deletePhase:   deletePhase,
+		resumeMgr:     resumeMgr,
+		fetcher:       fetcher,
+	}
+
 	if shouldResume {
-		if err := o.replayPendingPKs(ctx, resumeMgr, discovery, deletePhase, fetcher); err != nil {
-			return nil, fmt.Errorf("pending replay failed: %w", err)
+		agg, err := pipeline.recover(ctx, nil)
+		result.RecordsDeleted += agg.RecordsDeleted
+		if err != nil {
+			// Return result, not nil: agg is folded in above so partial recovery
+			// totals survive a mid-resume failure (matches archive/copy-only).
+			return result, fmt.Errorf("resume failed: %w", err)
 		}
 	}
 
@@ -187,13 +203,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 			return nil, fmt.Errorf("failed to log pending batch entries: %w", err)
 		}
 
-		for _, rootID := range rootIDs {
-			deleted, err := o.processPurgeRoot(ctx, rootID, discovery, deletePhase, fetcher, resumeMgr)
-			if err != nil {
-				return nil, err
-			}
-			result.RecordsDeleted += deleted
+		batchStats, err := pipeline.processBatch(ctx, rootIDs, batchDeleteOnly,
+			rootIDs[len(rootIDs)-1], nil)
+		if err != nil {
+			return nil, fmt.Errorf("processBatch failed: %w", err)
 		}
+		result.RecordsDeleted += batchStats.RecordsDeleted
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
@@ -209,40 +224,6 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 	return result, nil
 }
 
-func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *ResumeManager, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher) error {
-	pending, dataType, unsigned, err := pendingReplayPKs(ctx, resumeMgr, o.jobName, o.graph)
-	if err != nil {
-		return err
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	for _, rawPK := range pending {
-		// Cooperative graceful stop: each replayed root reaches 'completed' before
-		// we loop, so stopping here leaves the remainder in 'pending' to resume.
-		if stopRequested(o.stopCh) {
-			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
-			return nil
-		}
-		// Operator pause switch also applies during resume/recovery.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
-			return err
-		}
-		if stopRequested(o.stopCh) {
-			o.logger.Warn("Graceful stop requested - stopping replay at boundary (run again to resume)")
-			return nil
-		}
-		typedPK, err := types.ConvertRootPK(rawPK, dataType, unsigned)
-		if err != nil {
-			return err
-		}
-		if _, err := o.processPurgeRoot(ctx, typedPK, discovery, deletePhase, fetcher, resumeMgr); err != nil {
-			return fmt.Errorf("replay failed for pk=%s: %w", rawPK, err)
-		}
-	}
-	return nil
-}
-
 // applyResumeChunkSizing wires processing.batch_size into purge's
 // resume-bookkeeping chunk size. Purge has no copy/verify phase — discovery and
 // delete already receive batch_size / batch_delete_size directly — but the resume
@@ -251,27 +232,6 @@ func (o *PurgeOrchestrator) replayPendingPKs(ctx context.Context, resumeMgr *Res
 // Problem 2).
 func (o *PurgeOrchestrator) applyResumeChunkSizing(resumeMgr *ResumeManager) {
 	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
-}
-
-func (o *PurgeOrchestrator) processPurgeRoot(ctx context.Context, rootID interface{}, discovery *RecordDiscovery, deletePhase *DeletePhase, fetcher *RootIDFetcher, resumeMgr *ResumeManager) (int64, error) {
-	discovered, err := discovery.Discover(ctx, []interface{}{rootID})
-	if err != nil {
-		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
-		return 0, fmt.Errorf("discovery failed: %w", err)
-	}
-	deleteStats, err := deletePhase.Delete(ctx, convertRecordSet(discovered))
-	if err != nil {
-		markFailedUnlessCanceled(ctx, resumeMgr, o.logger, o.jobName, rootID, err)
-		return 0, fmt.Errorf("delete failed: %w", err)
-	}
-	if err := resumeMgr.UpdateCheckpoint(ctx, o.jobName, rootID); err != nil {
-		return 0, fmt.Errorf("checkpoint update failed: %w", err)
-	}
-	fetcher.UpdateCheckpoint(rootID)
-	if err := resumeMgr.MarkCompleted(ctx, o.jobName, rootID); err != nil {
-		return 0, fmt.Errorf("failed to mark completed: %w", err)
-	}
-	return deleteStats.RowsDeleted, nil
 }
 
 // SetForce controls heartbeat-aware advisory lock bypass.

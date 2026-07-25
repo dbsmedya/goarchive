@@ -647,7 +647,7 @@ Refer to it rather than duplicating those details here.
 
 The tracking tables stored in `job_schema`:
 - **`archiver_job`** — one row per configured job; `id` is an integer `PRIMARY KEY`; `job_name` is a `UNIQUE KEY`. Checkpoint and heartbeat data live here.
-- **`archiver_job_log_<id>`** — one per-job table, named by the job's integer `id`. Tracks per-root-PK status as a `TINYINT` (0=pending, 1=copied, 2=completed, 3=failed). No `job_name` column; no timestamps. Completed and failed rows are kept as evidence — they are not deleted automatically.
+- **`archiver_job_log_<id>`** — one per-job table, named by the job's integer `id`. Tracks per-root-PK status as a `TINYINT` (0=pending, 1=copied, 2=completed, 3=failed). No `job_name` column; no timestamps. Completed rows are kept as evidence — they are not deleted automatically. Current releases never write `3=failed`: an error aborts the run and leaves that batch's rows in a recoverable status (`pending` or `copied`) for the next run to replay. The value remains only for rows written by a pre-1.8 release, which block resume until an operator resolves them.
 
 To look up which log table belongs to a job:
 ```sql
@@ -698,7 +698,7 @@ constraints.
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.7.0-community` (stable for the scope below)
+- **Version**: `1.8.0-community` (stable for the scope below)
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite (working archives + preflight-validation demos) — see [tests/README.md](tests/README.md)
 
@@ -719,7 +719,7 @@ should be aware of the following known limits before pointing it at real data:
   shared destination that other workloads are reading.
 - **No built-in metrics or telemetry.** Operators monitor progress through
   the structured log output and by querying the per-job `archiver_job_log_<id>` table directly (look up `id` from `archiver_job` by `job_name`).
-- **Sequential by design.** One root PK at a time, one job at a time per
+- **Sequential by design.** One batch at a time, one job at a time per
   destination. Advisory locks plus heartbeat-aware same-root checks prevent
   concurrent runs of the same job name or root table.
 - **Advisory lock sessions must stay alive.** GoArchive keeps the job
