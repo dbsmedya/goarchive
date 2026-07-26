@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.8.0-community` (stable for single-operator workstation archival of cold data; see README "Known Limits & Caution").
+**Version**: `1.8.0-community` (stable for single-operator workstation archival of cold data; see `docs/README_LIMITATIONS.md`).
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
@@ -104,13 +104,85 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 - MySQL 8.0+ with InnoDB only
 - Zap for structured logging
 
-## Task System
+## Project history (archival — NOT current state)
 
-Tasks use hierarchical IDs: `GA-P{phase}-F{feature}-T{task}`
+The original phase-based plan under `.ayder/project-documentation/project-plan/`
+documents the Jan–Feb 2026 build-out using hierarchical task IDs
+(`GA-P{phase}-F{feature}-T{task}`). Those IDs still appear in source comments —
+that is the only reason to open it.
 
-- Task index: `docs/project-plan/tasks/TASK_INDEX.md`
-- Current state: `docs/project-plan/tracking/CURRENT_STATE.md`
-- Task details: `docs/project-plan/tasks/phase-{n}/GA-P{n}-F{n}-T{n}.md`
+> **It is frozen and wrong as a status report.**
+> `tracking/CURRENT_STATE.md` was last updated 2026-02-06 and claims Phase 4
+> integration testing is still pending and the project is "95% complete". Both
+> shipped long ago. **Never use it to decide what is or isn't implemented.**
+
+For what is actually current:
+
+| Question | Source of truth |
+|----------|-----------------|
+| What does the code do today? | **Behavior & Gotchas** below, plus `docs/` |
+| What changed, and when? | `git log`, GitHub PRs, `.ayder/00N-version-*.md` release notes |
+| What work is in flight? | `.ayder/superpowers_<YYYYMMDD>/{plans,specs,decisions}` |
+| How do I run the tests? | `tests/README.md` |
+
+## Documentation Layout (RULE)
+
+There are two distinct documentation trees. Putting a file in the wrong one is a
+mistake — `docs/` ships to users, `.ayder/` does not (it is gitignored).
+
+| Tree | Audience | Contents |
+|------|----------|----------|
+| `README.md`, `INSTALL.md`, `docs/`, `tests/README.md` | **Users / operators** | Published, user-facing documentation. Tracked in git. |
+| `.ayder/` | **Development only** | Internal working documents. Gitignored, never shipped. |
+
+The published `docs/` set — keep these current when behavior changes:
+
+| File | Owns |
+|------|------|
+| `docs/README.md` | Index of the documentation set |
+| `docs/README_CONFIGURATION.md` | Every config block, option, default, precedence rule |
+| `docs/README_VALIDATION.md` | All 18 preflight checks + the check-to-command matrix |
+| `docs/README_PERMISSIONS.md` | Privilege matrix, grant recipes, global-SELECT requirement |
+| `docs/README_LIMITATIONS.md` | Hard constraints, model limits, operational cautions |
+| `docs/README_OPERATIONS.md` | Commands/flags, tuning, pausing, crash recovery, resume gates |
+| `docs/README_JOBS_SCHEMA.md` | Tracking table DDL, DBA maintenance, safe-truncate rules |
+| `docs/README_TESTING.md` | Test layers overview (defers to `tests/README.md`) |
+
+`README.md` keeps only: philosophy, problem statement, pt-archiver comparison,
+features, quick start, **Basic Usage**, **Architecture**, and project status.
+Detailed reference material belongs in `docs/`, not the README.
+
+> **Do not rename the `## Known Limits & Caution` heading in
+> `docs/README_LIMITATIONS.md`.** Two preflight error messages point operators at
+> it by name (`internal/archiver/preflight.go`, `ROOT_PK_TYPE_UNSUPPORTED` and
+> `COMPOSITE_PK_CHECK`). Renaming the heading breaks that reference.
+
+### RULE: internal development documentation goes under `.ayder/superpowers_<YYYYMMDD>/`
+
+Every Superpowers-style internal development artifact — brainstormed designs,
+specs, implementation plans, and architectural decisions — **MUST** be written to:
+
+```
+.ayder/superpowers_<YYYYMMDD>/
+├── plans/       # implementation plans (writing-plans / executing-plans output)
+├── specs/       # designs and specifications (brainstorming output)
+└── decisions/   # architectural decision records; why an approach was chosen/rejected
+```
+
+- `<YYYYMMDD>` is the date the work started, no separators — e.g.
+  `.ayder/superpowers_20260726/`. Existing directories: `superpowers_20260503`,
+  `superpowers_20260702`, `superpowers_20260724`.
+- Create the dated directory (and only the subdirectories you need) when a new
+  body of work begins; keep all artifacts for that effort inside it. Do **not**
+  append to a previous date's directory for new work.
+- File naming inside: `YYYY-MM-DD-<topic>.md`, with the brainstorming design
+  suffixed `-design.md` (e.g. `specs/2026-07-26-readme-docs-split-design.md`,
+  `plans/2026-07-26-readme-docs-split.md`).
+- This **overrides the Superpowers skills' default paths.** When a skill says to
+  write to `docs/superpowers/specs/...` or any other location, write it here
+  instead. Never create `docs/superpowers/`.
+- `docs/` is reserved exclusively for published user-facing documentation.
+  Never place a plan, spec, decision record, review, or session note there.
 
 ## Behavior & Gotchas
 
