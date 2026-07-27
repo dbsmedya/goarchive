@@ -404,22 +404,35 @@ Three MySQL 8.4 servers are available for testing. **Ask the user if connection 
 
 | Server | Host | Port | User | Password | Database |
 |--------|------|------|------|----------|----------|
-| Source | 127.0.0.1 | 3305 | root | (see .env) | sakila |
-| Archive | 127.0.0.1 | 3307 | root | (see .env) | (empty) |
-| Replica | 127.0.0.1 | 3308 | root | (see .env) | (replication test) |
+| Source | 127.0.0.1 | 3305 | root | `$MYSQL_ROOT_PASSWORD` | sakila |
+| Archive | 127.0.0.1 | 3307 | root | `$MYSQL_ROOT_PASSWORD` | (empty) |
+| Replica | 127.0.0.1 | 3308 | root | `$MYSQL_ROOT_PASSWORD` | (replication test) |
 
 ### Test Database Connection
 
+The root password lives in `tests/.env` as **`MYSQL_ROOT_PASSWORD`** — source it first.
+There is no `MYSQL_PASSWORD` variable.
+
+> **Why this matters:** an unset password variable does not make `mysqlsh` fail loudly.
+> It connects with no password and returns
+> `MySQL Error 1045 (28000): Access denied`. If you are grepping the output for rows —
+> as a "did this leave residue?" check does — **an auth failure looks exactly like a
+> clean empty result**, so a broken command reports a false PASS. Always source
+> `tests/.env` before any `mysqlsh` invocation, and treat `Access denied` as a failed
+> check rather than an empty one.
+
 ```bash
+set -a; source tests/.env; set +a
+
 # Use mysqlsh for testing (not mysql client)
 # Source (has Sakila sample database)
-mysqlsh --host=127.0.0.1 --port=3305 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW DATABASES;"
+mysqlsh --host=127.0.0.1 --port=3305 --user=root --password="$MYSQL_ROOT_PASSWORD" --sql -e "SHOW DATABASES;"
 
 # Archive (destination for archived data)
-mysqlsh --host=127.0.0.1 --port=3307 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW DATABASES;"
+mysqlsh --host=127.0.0.1 --port=3307 --user=root --password="$MYSQL_ROOT_PASSWORD" --sql -e "SHOW DATABASES;"
 
 # Replica (for replication lag monitoring tests)
-mysqlsh --host=127.0.0.1 --port=3308 --user=root --password=$MYSQL_PASSWORD --sql -e "SHOW REPLICA STATUS\G"
+mysqlsh --host=127.0.0.1 --port=3308 --user=root --password="$MYSQL_ROOT_PASSWORD" --sql -e "SHOW REPLICA STATUS\G"
 ```
 
 ### Sakila Schema (Source)
