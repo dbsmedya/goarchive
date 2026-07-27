@@ -141,7 +141,7 @@ The published `docs/` set — keep these current when behavior changes:
 |------|------|
 | `docs/README.md` | Index of the documentation set |
 | `docs/README_CONFIGURATION.md` | Every config block, option, default, precedence rule |
-| `docs/README_VALIDATION.md` | All 18 preflight checks + the check-to-command matrix |
+| `docs/README_VALIDATION.md` | All 19 preflight checks + the check-to-command matrix |
 | `docs/README_PERMISSIONS.md` | Privilege matrix, grant recipes, global-SELECT requirement |
 | `docs/README_LIMITATIONS.md` | Hard constraints, model limits, operational cautions |
 | `docs/README_OPERATIONS.md` | Commands/flags, tuning, pausing, crash recovery, resume gates |
