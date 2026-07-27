@@ -59,7 +59,7 @@ GoArchive selects one of three profiles per command:
 
 ## Which checks run for which command
 
-18 named checks exist. ✅ = enforced, ❌ = not run.
+19 named checks exist. ✅ = enforced, ❌ = not run.
 
 | Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
 |-------|:---------:|:-------:|:-----------:|:---------:|:----------:|
