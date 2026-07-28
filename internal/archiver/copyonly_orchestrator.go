@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/sqlutil"
 	"github.com/dbsmedya/goarchive/internal/verifier"
 )
 

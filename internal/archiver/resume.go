@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/sqlutil"
 )
 
 // JobStatus represents the state of an archive job.
@@ -100,7 +100,7 @@ func NewResumeManager(db *sql.DB, log *logger.Logger, jobSchema string) (*Resume
 	if log == nil {
 		log = logger.NewDefault()
 	}
-	if !sqlutil.IsValidIdentifier(jobSchema) {
+	if !sqlutil.IsSimpleIdentifier(jobSchema) {
 		return nil, fmt.Errorf("invalid job_schema %q: must contain only alphanumeric characters and underscores", jobSchema)
 	}
 	return &ResumeManager{
