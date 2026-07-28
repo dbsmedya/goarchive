@@ -32,14 +32,6 @@ func (e *PreflightError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Check, e.Message)
 }
 
-// StorageEngineResult holds storage engine check results.
-//
-// GA-P4-F3-T1: Storage engine check
-type StorageEngineResult struct {
-	Table  string
-	Engine string
-}
-
 // TriggerCheckResult holds trigger detection results.
 //
 // GA-P4-F3-T4: DELETE trigger detection
@@ -167,7 +159,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	// GA-P4-F3-T1: Storage engine check
-	if err := p.ValidateStorageEngine(ctx, tables); err != nil {
+	if err := p.ValidateStorageEngine(ctx, run); err != nil {
 		return err
 	}
 
@@ -420,70 +412,65 @@ func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, run *preflig
 	return nil
 }
 
-// ValidateStorageEngine checks that all tables use InnoDB storage engine.
+// ValidateStorageEngine checks that all graph tables use the InnoDB storage engine.
+//
+// The table fact was already acquired by the existence check at position 1, so this
+// stage issues no query of its own. Non-base objects are skipped by CheckStorageEngine
+// because they have no engine; phase 013's non-base-table policy has already rejected
+// them at that earlier stage, so nothing reaches here that needs skipping.
 //
 // GA-P4-F3-T1: Storage engine check
-func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, tables []string) error {
+func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking storage engines...")
-	if len(tables) == 0 {
-		p.logger.Debug("Storage engine check skipped (no tables)")
-		return nil
-	}
 
-	const query = `
-		SELECT TABLE_NAME, ENGINE
-		FROM information_schema.TABLES
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME IN (?)`
-
-	// Build placeholders for table list
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.sourceDBName
-	for i, table := range tables {
-		placeholders[i] = "?"
-		args[i+1] = table
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-
-	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
+	found, err := run.sourceTables(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query storage engines: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var nonInnoDBTables []string
-	for rows.Next() {
-		var result StorageEngineResult
-		if err := rows.Scan(&result.Table, &result.Engine); err != nil {
-			return err
-		}
-
-		if result.Engine != "InnoDB" {
-			nonInnoDBTables = append(nonInnoDBTables, fmt.Sprintf("%s(%s)", result.Table, result.Engine))
-		}
+		return inspectionError("storage_engine", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return err
+	findings := validations.CheckStorageEngine(found, requiredStorageEngine)
+
+	var offenders []string
+	for _, f := range findings {
+		if f.Check != validations.IDStorageEngine {
+			return unexpectedFindingError("storage_engine", f)
+		}
+		info, ok := f.Facts.(validations.TableInfo)
+		if !ok {
+			return unexpectedFactsError(
+				"storage_engine",
+				f,
+				"validations.TableInfo",
+			)
+		}
+		// Deviation D6: MySQL can report a BASE TABLE with NULL ENGINE (anomalous
+		// metadata — a corrupted or unknown-engine table). The library scans that into
+		// an empty Engine, which fails the comparison and lands here. 1.8 never got this
+		// far: it scanned ENGINE into a bare string, so NULL aborted preflight with a
+		// driver error carrying no check ID and no table name. Failing closed under
+		// STORAGE_ENGINE_CHECK keeps the verdict and adds the attribution.
+		engine := info.Engine
+		if engine == "" {
+			engine = "<unknown>"
+		}
+		offenders = append(offenders, info.Table+"("+engine+")")
 	}
 
-	if len(nonInnoDBTables) > 0 {
+	if len(offenders) > 0 {
 		return &PreflightError{
 			Check:   "STORAGE_ENGINE_CHECK",
 			Message: "Only InnoDB tables are supported. Use ALTER TABLE to convert",
-			Tables:  nonInnoDBTables,
+			Tables:  offenders,
 		}
 	}
 
 	p.logger.Debugf("Storage engine check PASSED (all tables are InnoDB)")
 	return nil
 }
+
+// requiredStorageEngine is the only engine GoArchive supports. Non-transactional
+// engines cannot provide the integrity a copy-verify-delete cycle depends on.
+const requiredStorageEngine = "InnoDB"
 
 // ValidateNoInvisibleColumns rejects any participating (graph) table that has an
 // INVISIBLE column. GoArchive copies rows with SELECT *, which MySQL excludes
