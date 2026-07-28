@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/dbsmedya/goarchive/internal/sqlutil"
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	mysql "github.com/go-sql-driver/mysql"
 )
 

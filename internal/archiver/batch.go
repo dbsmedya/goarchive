@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/dbsmedya/goarchive/internal/sqlutil"
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 )
 
 // RootIDFetcher handles fetching batches of root table primary keys.

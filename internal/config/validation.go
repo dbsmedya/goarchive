@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dbsmedya/goarchive/internal/sqlutil"
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 )
 
 // ValidationError represents a configuration validation error.
@@ -145,7 +145,7 @@ func (c *Config) validateDatabase(prefix string, db *DatabaseConfig) ValidationE
 	}
 
 	// job_schema is destination-only; source ignores it.
-	if prefix == "destination" && db.JobSchema != "" && !sqlutil.IsValidIdentifier(db.JobSchema) {
+	if prefix == "destination" && db.JobSchema != "" && !sqlutil.IsSimpleIdentifier(db.JobSchema) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".job_schema",
 			Message: "must contain only alphanumeric characters and underscores",
@@ -191,7 +191,7 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 			Field:   prefix + ".root_table",
 			Message: "root_table is required",
 		})
-	} else if !sqlutil.IsValidIdentifier(job.RootTable) {
+	} else if !sqlutil.IsSimpleIdentifier(job.RootTable) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".root_table",
 			Message: "must contain only alphanumeric characters and underscores",
@@ -203,7 +203,7 @@ func (c *Config) validateJob(name string, job *JobConfig) ValidationErrors {
 			Field:   prefix + ".primary_key",
 			Message: "primary_key is required",
 		})
-	} else if !sqlutil.IsValidIdentifier(job.PrimaryKey) {
+	} else if !sqlutil.IsSimpleIdentifier(job.PrimaryKey) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".primary_key",
 			Message: "must contain only alphanumeric characters and underscores",
@@ -260,7 +260,7 @@ func (c *Config) validateRelation(prefix string, rel *Relation, depth int) Valid
 			Field:   prefix + ".table",
 			Message: "table name is required",
 		})
-	} else if !sqlutil.IsValidIdentifier(rel.Table) {
+	} else if !sqlutil.IsSimpleIdentifier(rel.Table) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".table",
 			Message: "must contain only alphanumeric characters and underscores",
@@ -272,7 +272,7 @@ func (c *Config) validateRelation(prefix string, rel *Relation, depth int) Valid
 			Field:   prefix + ".foreign_key",
 			Message: "foreign_key is required",
 		})
-	} else if !sqlutil.IsValidIdentifier(rel.ForeignKey) {
+	} else if !sqlutil.IsSimpleIdentifier(rel.ForeignKey) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".foreign_key",
 			Message: "must contain only alphanumeric characters and underscores",
@@ -284,7 +284,7 @@ func (c *Config) validateRelation(prefix string, rel *Relation, depth int) Valid
 			Field:   prefix + ".primary_key",
 			Message: "primary_key is required",
 		})
-	} else if !sqlutil.IsValidIdentifier(rel.PrimaryKey) {
+	} else if !sqlutil.IsSimpleIdentifier(rel.PrimaryKey) {
 		errors = append(errors, ValidationError{
 			Field:   prefix + ".primary_key",
 			Message: "must contain only alphanumeric characters and underscores",
