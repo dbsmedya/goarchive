@@ -230,6 +230,18 @@ test-status:
 	@echo "Test database status:"
 	@cd tests && docker compose ps
 
+# Destroy and rebuild the test databases from scratch. Use when a killed test run
+# has left orphaned state that `test-down` cannot clear — `test-down` stops the
+# containers but the data lives in a host bind mount and survives.
+.PHONY: test-reset
+test-reset:
+	@echo "Destroying test database state..."
+	cd tests && docker compose down
+	rm -rf tests/docker_files/dbdata
+	cd tests && docker compose up -d
+	@echo "Containers restarted with empty data directories."
+	@echo "Run 'bash tests/scripts/run-tests.sh --setup' to reload Sakila."
+
 # Run the working Sakila end-to-end suite (test 03 payment single-column-PK
 # archive, test 04 rental->payment 2-level archive). Assumes Docker test DBs are
 # already up (`make test-up`). Use `make e2e-setup` for a fresh-environment run
@@ -278,6 +290,7 @@ help:
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
+	@echo "  make test-reset         - Destroy and rebuild test DBs (clears orphaned state)"
 	@echo "  make e2e                - Sakila E2E (working tests 03-04) — assumes DBs up"
 	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
 	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"

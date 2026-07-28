@@ -274,6 +274,15 @@ cd tests && ./scripts/check-servers.sh && docker compose up -d
 **`destination already contains a row … Duplicate entry`** — leftover state, not a
 regression. Reseed: `./scripts/run-tests.sh --setup`.
 
+**`legacy GoArchive tracking tables detected`** on every run, even right after
+`--setup` — usually leftover state from a killed test process, not a regression.
+`orchestrator_integration_test.go` seeds an old-shape `archiver_job` to exercise
+legacy detection and drops it in `t.Cleanup`, which does not run when a test
+process is killed; because database state lives in a host bind mount,
+`make test-down` does not clear it either. Rebuild from scratch:
+`make test-reset` (destroys `tests/docker_files/dbdata` and restarts the
+containers empty), then reseed: `bash tests/scripts/run-tests.sh --setup`.
+
 **Clean slate:**
 ```bash
 cd tests
