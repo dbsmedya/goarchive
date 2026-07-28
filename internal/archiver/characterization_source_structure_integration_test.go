@@ -50,6 +50,7 @@ func TestCharacterizationStorageEngine(t *testing.T) {
 		t.Run(cmd.Name, func(t *testing.T) {
 			err := chrRun(t, ctx, f.Checker(t, graph.NewGraph("orders", "id")), cmd, false)
 			chrAssertCheck(t, err, "STORAGE_ENGINE_CHECK", []string{"orders"})
+			chrAssertRawTables(t, err, []string{"orders(MyISAM)"})
 		})
 	}
 }

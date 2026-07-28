@@ -190,11 +190,13 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// Table existence check - all exist
+	// Table existence check - all exist. The storage-engine stage now reads this same
+	// memoized fact (position 1) instead of issuing its own query, so the MyISAM
+	// defect must live in THIS row set.
 	mock.ExpectQuery("information_schema.TABLES").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
 			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "MyISAM"). // Not allowed!
 			AddRow("order_items", "BASE TABLE", "InnoDB"))
 
 	// Primary key column existence checks: each configured PK ("id") exists with
@@ -214,13 +216,6 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
 		WithArgs("users", "id").
 		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))
-
-	// Storage engine check - one table is MyISAM
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "MyISAM"). // Not allowed!
-			AddRow("order_items", "InnoDB"))
 
 	err := checker.RunAllChecks(ctx, false)
 
@@ -463,14 +458,12 @@ func TestValidateStorageEngine_Success(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	tables := []string{"users", "orders"}
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "InnoDB"))
 
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "InnoDB"))
-
-	err := checker.ValidateStorageEngine(ctx, tables)
+	err := checker.ValidateStorageEngine(ctx, newPreflightRun(checker))
 
 	if err != nil {
 		t.Fatalf("ValidateStorageEngine failed: %v", err)
@@ -486,15 +479,13 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	tables := []string{"users", "orders", "logs"}
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "MyISAM").
+			AddRow("order_items", "BASE TABLE", "MEMORY"))
 
-	mock.ExpectQuery("SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "ENGINE"}).
-			AddRow("users", "InnoDB").
-			AddRow("orders", "MyISAM").
-			AddRow("logs", "MEMORY"))
-
-	err := checker.ValidateStorageEngine(ctx, tables)
+	err := checker.ValidateStorageEngine(ctx, newPreflightRun(checker))
 
 	if err == nil {
 		t.Error("Expected error for non-InnoDB tables")
@@ -507,23 +498,6 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 
 	if len(preflightErr.Tables) != 2 {
 		t.Errorf("Expected 2 non-InnoDB tables, got %d", len(preflightErr.Tables))
-	}
-}
-
-func TestValidateStorageEngine_EmptyTables(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-
-	err := checker.ValidateStorageEngine(context.Background(), []string{})
-	if err != nil {
-		t.Fatalf("expected no error for empty tables, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected query execution: %v", err)
 	}
 }
 
@@ -1815,6 +1789,187 @@ func TestPreflightError_ErrorNoTables(t *testing.T) {
 	msg := err.Error()
 	if msg == "" {
 		t.Error("Expected non-empty error message")
+	}
+}
+
+// TestValidateStorageEngineReportsEngineInDecoration proves the migrated check keeps
+// the "<table>(<engine>)" Tables decoration the 1.8 engine produced. Step 6 of this
+// phase adds the matching end-to-end assertion (chrAssertRawTables) to phase 004's
+// characterization; this test is the unit-level guard for the same property.
+func TestValidateStorageEngineReportsEngineInDecoration(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("orders", "BASE TABLE", "MyISAM"))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	err = p.ValidateStorageEngine(context.Background(), run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "STORAGE_ENGINE_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "orders(MyISAM)" {
+		t.Fatalf("Tables = %v, want [orders(MyISAM)]", pe.Tables)
+	}
+}
+
+// TestValidateStorageEngineIgnoresCase proves the library's ASCII case folding: a
+// server reporting "innodb" passes. MySQL reports "InnoDB", so this changes no real
+// verdict; it removes a dependency on exact server spelling.
+//
+// This is an assert-passes test and cannot stand alone: it also passes against a
+// ValidateStorageEngine that returns nil unconditionally. Its partner above is what
+// proves the check still fires. See Step 8's mutants.
+func TestValidateStorageEngineIgnoresCase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("orders", "BASE TABLE", "innodb"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	if err := p.ValidateStorageEngine(context.Background(), newPreflightRun(p)); err != nil {
+		t.Fatalf("expected engine 'innodb' to pass under ASCII folding, got: %v", err)
+	}
+}
+
+// TestValidateStorageEngineInspectionErrorIsPlain proves a failed fact fetch surfaces
+// as a PLAIN error, never a *PreflightError. A *PreflightError means "the schema is
+// wrong"; this means "we could not find out". Broken implementations this catches:
+// `return err` unwrapped, and `return &PreflightError{Check: "STORAGE_ENGINE_CHECK"}`.
+//
+// This unit test is the ONLY place the branch can be tested. In production
+// ValidateTablesExist consumes the same memoized fact at position 1 and aborts first,
+// so the storage-engine inspection branch is unreachable end-to-end — which is exactly
+// why characterization_matrix_integration_test.go's SCOPE CAVEAT requires each of
+// phases 013-031 to assert this shape at unit level for the check it replaces.
+func TestValidateStorageEngineInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnError(errors.New("query failed"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidateStorageEngine(context.Background(), newPreflightRun(p))
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "storage_engine") {
+		t.Fatalf("inspection error must name the stage, got: %v", err)
+	}
+}
+
+// TestValidateStorageEngineConsumesTheCachedFact proves this phase's headline property
+// and a standing non-negotiable: the stage issues NO query of its own, because the fact
+// was already acquired by the existence check at position 1.
+//
+// Exactly ONE expectation is registered and the explicit pre-load consumes it. An
+// implementation that ignored `run` and built its own Inspector would issue a second
+// query, receive "all expectations were already fulfilled", and return that as an
+// inspection error — a plain error, so the *PreflightError assertion below fails.
+//
+// Note what does NOT work here: mock.ExpectationsWereMet() cannot detect the re-query,
+// because the single expectation is consumed either way. The VERDICT is what
+// discriminates, not the expectation bookkeeping.
+func TestValidateStorageEngineConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("orders", "BASE TABLE", "MyISAM"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.sourceTables(context.Background()); err != nil {
+		t.Fatalf("pre-load of the source fact failed: %v", err)
+	}
+
+	err = p.ValidateStorageEngine(context.Background(), run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "STORAGE_ENGINE_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+}
+
+// TestValidateStorageEngineNullEngineIsUnknown pins deviation D6: a BASE TABLE whose
+// ENGINE metadata is NULL fails closed under STORAGE_ENGINE_CHECK, attributed to the
+// table, decorated "<unknown>".
+//
+// 1.8 never reached a verdict here at all — it scanned ENGINE into a bare string, so a
+// NULL aborted preflight with a driver scan error carrying no check ID and no table
+// name. Asserting the error is a *PreflightError is therefore the load-bearing half:
+// it is what proves the old scan-error path is gone.
+//
+// The "<unknown>" placeholder is part of D6's contract, not cosmetic. There is no
+// released decoration to preserve, and "orders()" would read as a formatting defect
+// while concealing the fact being reported.
+func TestValidateStorageEngineNullEngineIsUnknown(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("orders", "BASE TABLE", nil))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidateStorageEngine(context.Background(), newPreflightRun(p))
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("a NULL ENGINE must fail closed as *PreflightError, not as the old "+
+			"scan error; got %T: %v", err, err)
+	}
+	if pe.Check != "STORAGE_ENGINE_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "orders(<unknown>)" {
+		t.Fatalf("Tables = %v, want [orders(<unknown>)]", pe.Tables)
 	}
 }
 

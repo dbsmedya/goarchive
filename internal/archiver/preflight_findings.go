@@ -76,3 +76,23 @@ func nonBaseTableNames(found []validations.TableInfo) []string {
 	}
 	return out
 }
+
+// unexpectedFactsError aborts preflight when a RECOGNISED check arrives with a Facts
+// payload of an unexpected type. It is deliberately distinct from
+// unexpectedFindingError, which reports an unrecognised check ID: here goarchive knows
+// the check, so naming it "unrecognised" would misdirect the reader. The fault is the
+// payload, and the message says so — stage, check, actual type, expected type.
+//
+// Like unexpectedFindingError the result is a plain error, not a *PreflightError: it
+// reports that the engine is out of date, not that the schema is wrong.
+func unexpectedFactsError(
+	stage string,
+	f validations.Finding,
+	want string,
+) error {
+	return fmt.Errorf(
+		"PREFLIGHT_UNEXPECTED_FACTS: stage %q received validation check %q "+
+			"with facts type %T; expected %s",
+		stage, f.Check, f.Facts, want,
+	)
+}

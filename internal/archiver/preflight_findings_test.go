@@ -89,3 +89,43 @@ func TestNonBaseTableNamesEmptyForAllBaseTables(t *testing.T) {
 		t.Fatalf("nonBaseTableNames = %v, want empty", got)
 	}
 }
+
+// TestUnexpectedFactsError pins every property callers depend on: the message carries
+// the PREFLIGHT_UNEXPECTED_FACTS prefix, names the recognised check, the actual payload
+// type, the expected type and the stage — never calls the check "unrecognised" — and the
+// result is a plain error, NOT a *PreflightError. That last one is the load-bearing
+// distinction: a *PreflightError means "the schema is wrong", while this means "this
+// build cannot judge the library's answer".
+func TestUnexpectedFactsError(t *testing.T) {
+	f := validations.Finding{
+		Check: validations.IDStorageEngine,
+		Facts: "not-a-TableInfo",
+	}
+	err := unexpectedFactsError("storage_engine", f, "validations.TableInfo")
+	if err == nil {
+		t.Fatal("unexpectedFactsError returned nil")
+	}
+
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("must be a plain error, got *PreflightError: %v", pe)
+	}
+
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "PREFLIGHT_UNEXPECTED_FACTS:") {
+		t.Fatalf("message must carry the PREFLIGHT_UNEXPECTED_FACTS prefix, got %q", msg)
+	}
+	if strings.Contains(msg, "unrecognised") {
+		t.Fatalf("a recognised check must not be reported as unrecognised: %q", msg)
+	}
+	for _, want := range []string{
+		"storage_engine",            // stage
+		validations.IDStorageEngine, // the recognised check
+		"string",                    // the ACTUAL payload type, via %T
+		"validations.TableInfo",     // the expected type
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message %q does not mention %q", msg, want)
+		}
+	}
+}
