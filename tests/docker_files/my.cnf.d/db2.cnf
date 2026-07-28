@@ -14,10 +14,22 @@ log_replica_updates         = 1
 enforce-gtid-consistency    = TRUE
 gtid-mode                   = ON
 relay-log                   = db2_relaylog
-plugin-load-add		    = mysql_clone.so
 
-innodb_dedicated_server	    = ON
+# --- Memory sizing -----------------------------------------------------------
+# See the comment in db1.cnf: innodb_dedicated_server MUST stay OFF, because an
+# unbounded container detects the whole Docker VM and sizes itself for it.
+# This server: 768M pool inside a 2g mem_limit.
+innodb_dedicated_server     = OFF
+innodb_buffer_pool_size     = 768M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity    = 256M
+innodb_log_buffer_size      = 16M
 innodb_numa_interleave      = OFF
 
-plugin_load_add = clone     = mysql_clone.so
+# db2 is the destination — it is the server that ran out. See db1.cnf.
+max_connections             = 500
+
+# Previously declared twice — the second was the malformed
+# `plugin_load_add = clone     = mysql_clone.so`. One correct declaration.
+plugin-load-add		    = mysql_clone.so
 #clone_valid_donor_list	    = db1:3306,db2:3306

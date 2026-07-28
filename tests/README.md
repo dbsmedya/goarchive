@@ -278,16 +278,16 @@ regression. Reseed: `./scripts/run-tests.sh --setup`.
 `--setup` — usually leftover state from a killed test process, not a regression.
 `orchestrator_integration_test.go` seeds an old-shape `archiver_job` to exercise
 legacy detection and drops it in `t.Cleanup`, which does not run when a test
-process is killed; because database state lives in a host bind mount,
-`make test-down` does not clear it either. Rebuild from scratch:
-`make test-reset` (destroys `tests/docker_files/dbdata` and restarts the
-containers empty), then reseed: `bash tests/scripts/run-tests.sh --setup`.
+process is killed; because database state lives in a Docker named volume,
+plain `make test-down` does not clear it either. Rebuild from scratch:
+`make test-reset` (runs `docker compose down -v`, which removes the
+`db1_data`/`db2_data`/`db3_data` volumes), then reseed:
+`bash tests/scripts/run-tests.sh --setup`.
 
 **Clean slate:**
 ```bash
 cd tests
-docker compose down
-rm -rf docker_files/db_data
+docker compose down -v      # the -v is what removes the data volumes
 ./scripts/run-tests.sh --setup
 ```
 
@@ -306,8 +306,8 @@ rm -rf docker_files/db_data
 | `configs/*.yaml.template` | Tracked test configs (local `*.yaml` rendered from these) |
 | `results/` | Per-test logs (`test_<n>.log`) and summary |
 | `sakila-db/` | Sakila database files (downloaded) |
-| `docker_files/` | Docker volume data |
-| `compose.yml` | Docker Compose configuration |
+| `docker_files/my.cnf.d/` | Per-server MySQL config, bind-mounted read-only |
+| `compose.yml` | Docker Compose configuration (datadirs are named volumes) |
 
 ## Adding New Tests
 

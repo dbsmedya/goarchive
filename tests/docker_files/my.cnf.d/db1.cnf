@@ -15,8 +15,34 @@ enforce-gtid-consistency    = TRUE
 gtid-mode                   = ON
 relay-log                   = db1_relaylog
 
-innodb_dedicated_server	    = ON
+# --- Memory sizing -----------------------------------------------------------
+# innodb_dedicated_server MUST stay OFF. When ON, InnoDB sizes itself from the
+# memory it detects on the machine — and an unbounded container detects the whole
+# Docker VM. All three servers independently sized a 5.25 GB buffer pool and a
+# 7 GB redo log for a 7.65 GB VM: ~15.75 GB of buffer pool committed against a
+# 7.4 GB cap. It had not OOMed yet only because InnoDB faults the pool in lazily
+# and the Sakila working set is ~6 MB.
+#
+# Explicit values instead. Keep the sum of the three buffer pools comfortably
+# below the Docker cap, and each one well below its container's mem_limit in
+# compose.yml (this server: 768M pool inside a 2g limit).
+innodb_dedicated_server     = OFF
+innodb_buffer_pool_size     = 768M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity    = 256M
+innodb_log_buffer_size      = 16M
 innodb_numa_interleave      = OFF
+
+# The integration suite opens a pool per DatabaseManager and peaked at 152
+# concurrent connections on the DESTINATION against the default limit of 151,
+# failing with `Error 1040: Too many connections`. The source peaked at 89.
+# Raised on both so the ceiling is not the thing under test.
+#
+# This interacts with mem_limit in compose.yml: per-connection buffers are
+# allocated lazily, but 500 connections is roughly +500 MB worst case on top of
+# the 768M pool, inside a 2g limit. If MySQL starts getting OOM-killed, lower
+# this before raising the container limit.
+max_connections             = 500
 
 plugin_load_add             = mysql_clone.so
 #clone_valid_donor_list	    = db1.local:3306,db2.local:3306

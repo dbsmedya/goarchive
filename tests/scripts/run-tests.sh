@@ -214,13 +214,19 @@ setup_environment() {
     log_step "Setting up test environment..."
     
     if [ "$SKIP_DOCKER" = false ]; then
-        log_info "Stopping existing docker containers..."
+        log_info "Stopping existing docker containers and clearing data volumes..."
         cd "$TESTS_DIR"
-        docker compose down 2>/dev/null || true
-        
-        log_info "Cleaning up database data..."
-        rm -rf "$TESTS_DIR/docker_files/db_data"
-        
+        # `-v` removes the db1_data/db2_data/db3_data named volumes. Without it,
+        # --setup does NOT give you a clean database.
+        #
+        # This previously read `docker compose down` followed by
+        # `rm -rf "$TESTS_DIR/docker_files/db_data"` — but the directory has
+        # always been `dbdata`, not `db_data`. That rm removed a path that never
+        # existed, so --setup printed "Cleaning up database data..." and cleaned
+        # up nothing. It is why orphaned state survived a --setup run and
+        # resurfaced as "legacy GoArchive tracking tables detected".
+        docker compose down -v 2>/dev/null || true
+
         log_info "Starting docker containers..."
         docker compose up -d
         
