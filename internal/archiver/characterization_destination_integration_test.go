@@ -20,6 +20,13 @@ func chrCountVerification() config.VerificationConfig {
 	return config.VerificationConfig{Method: "count"}
 }
 
+// chrSkipVerification selects sha256 as the Method but disables verification
+// entirely (--skip-verify), so a charset mismatch is fatal for the
+// SkipVerification arm of charsetMismatchFatal, not the Method arm.
+func chrSkipVerification() config.VerificationConfig {
+	return config.VerificationConfig{Method: "sha256", SkipVerification: true}
+}
+
 // TestCharacterizationDestTableExistence pins DEST_TABLE_EXISTENCE_CHECK and the
 // purge exemption: the destination checks are skipped entirely under
 // PreflightProfileSourceOnly (preflight.go:188), so purge PASSES the same fixture that
@@ -226,6 +233,30 @@ func TestCharacterizationDestSchemaCharsetWarnsUnderSha256(t *testing.T) {
 	if chrAnyContains(warns, "collation differs") {
 		t.Fatalf("collation advisory must be SUPPRESSED for a column that already warned on charset; got: %v", warns)
 	}
+}
+
+// TestCharacterizationDestSchemaCharsetFatalUnderSkipVerify pins rule 7's other
+// strict path: charsetMismatchFatal() (preflight.go:1668-1670) is a DISJUNCTION —
+// SkipVerification || EffectiveMethod() != "sha256" — and the two existing charset
+// tests above exercise only the second arm (Method: "count" is fatal, Method:
+// "sha256" is advisory). This test exercises the FIRST arm: Method is deliberately
+// "sha256" (the advisory method), with SkipVerification: true the only thing that
+// can make it fatal. This must stay fatal: with verification disabled there is no
+// later gate to catch a transliterated column, and archive/purge DELETE the source
+// rows right after copy — a charset mismatch under --skip-verify is silent,
+// unrecoverable data loss, not merely an unverified copy.
+func TestCharacterizationDestSchemaCharsetFatalUnderSkipVerify(t *testing.T) {
+	_, ctx := SetupIntegrationTest(t)
+	f := newChrFixture(t, ctx)
+
+	f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, note varchar(64) CHARACTER SET utf8mb4 NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+	f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, note varchar(64) CHARACTER SET latin1 NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+
+	checker := f.Checker(t, graph.NewGraph("orders", "id"))
+	checker.SetVerification(chrSkipVerification())
+
+	err := chrRun(t, ctx, checker, chrCommands[0], false)
+	chrAssertCheck(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK", []string{"orders"})
 }
 
 // TestCharacterizationDestSchemaCollationWarnsAlone pins the second half of the
