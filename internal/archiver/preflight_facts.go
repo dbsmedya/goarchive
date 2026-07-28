@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 )
@@ -28,20 +29,30 @@ type preflightRun struct {
 	tables []string
 
 	srcInspector *validations.Inspector
+	dstInspector *validations.Inspector
 
 	srcTables       []validations.TableInfo
 	srcTablesErr    error
 	srcTablesLoaded bool
+
+	dstTables       []validations.TableInfo
+	dstTablesErr    error
+	dstTablesLoaded bool
 }
 
 // newPreflightRun captures the graph's node list and constructs the source
 // inspector. NewInspector performs no I/O, so construction cannot fail and issues
-// no query.
+// no query. The destination inspector is constructed only when a destination has
+// been configured; destTables reports the unconfigured case itself.
 func newPreflightRun(p *PreflightChecker) *preflightRun {
-	return &preflightRun{
+	r := &preflightRun{
 		tables:       p.graph.AllNodes(),
 		srcInspector: validations.NewInspector(p.db, p.sourceDBName),
 	}
+	if p.destinationDB != nil && p.destinationDBName != "" {
+		r.dstInspector = validations.NewInspector(p.destinationDB, p.destinationDBName)
+	}
+	return r
 }
 
 func (r *preflightRun) graphTables() []string { return r.tables }
@@ -55,4 +66,17 @@ func (r *preflightRun) sourceTables(ctx context.Context) ([]validations.TableInf
 		r.srcTablesLoaded = true
 	}
 	return r.srcTables, r.srcTablesErr
+}
+
+// destTables returns the destination-side table facts, fetching them on first use.
+// Both the value and any error are memoized, for the same reason sourceTables does it.
+func (r *preflightRun) destTables(ctx context.Context) ([]validations.TableInfo, error) {
+	if r.dstInspector == nil {
+		return nil, fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
+	if !r.dstTablesLoaded {
+		r.dstTables, r.dstTablesErr = r.dstInspector.Tables(ctx, r.tables)
+		r.dstTablesLoaded = true
+	}
+	return r.dstTables, r.dstTablesErr
 }

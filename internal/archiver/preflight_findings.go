@@ -53,3 +53,26 @@ func unexpectedFindingError(stage string, f validations.Finding) error {
 func inspectionError(stage string, err error) error {
 	return fmt.Errorf("preflight %s inspection failed: %w", stage, err)
 }
+
+// baseTableType is information_schema.TABLES.TABLE_TYPE for a real table.
+const baseTableType = "BASE TABLE"
+
+// nonBaseTableNames returns the objects that exist but are not BASE TABLEs, decorated
+// with the type the server reported.
+//
+// GoArchive supports BASE TABLE objects. Any other type is rejected fail-closed —
+// views, SYSTEM VIEW, and any type a future server version reports — because the
+// copy/delete model is defined only for real tables and an unrecognised object type
+// cannot be judged safe. The type is carried in the name as "name(TYPE)" so the
+// operator error says what the object actually is; that decoration is the diagnostic
+// value of this policy and is asserted end-to-end, not just here.
+func nonBaseTableNames(found []validations.TableInfo) []string {
+	var out []string
+	for _, info := range found {
+		if info.Type == baseTableType {
+			continue
+		}
+		out = append(out, info.Table+"("+info.Type+")")
+	}
+	return out
+}

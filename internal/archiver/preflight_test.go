@@ -907,13 +907,16 @@ func TestValidateDestinationTablesExist_MissingTables(t *testing.T) {
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
 	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
-	tables := []string{"users", "orders"}
-	destRows := sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("users")
-	destMock.ExpectQuery("SELECT TABLE_NAME").
+	// The table list now comes from the run, which reads it from the graph:
+	// createPreflightTestGraph's nodes are users, orders and order_items. Only
+	// "users" is reported back, so orders and order_items are missing.
+	destRows := sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+		AddRow("users", "BASE TABLE", "InnoDB")
+	destMock.ExpectQuery("information_schema.TABLES").
 		WithArgs("destdb").
 		WillReturnRows(destRows)
 
-	err := checker.ValidateDestinationTablesExist(context.Background(), tables)
+	err := checker.ValidateDestinationTablesExist(context.Background(), newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected destination table existence error")
 	}
@@ -1895,7 +1898,7 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 	ctx := context.Background()
 	tables := []string{"users"}
 
-	err = checker.ValidateDestinationTablesExist(ctx, tables)
+	err = checker.ValidateDestinationTablesExist(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("ValidateDestinationTablesExist should return error when destination is nil")
 	}
