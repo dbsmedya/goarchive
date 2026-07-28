@@ -115,6 +115,15 @@ func chrOpenSchema(t *testing.T, ctx context.Context, dbCfg DatabaseConfig, sche
 	return db
 }
 
+// chrExternalSchemaName is the single definition of the naming convention for a
+// schema OUTSIDE a fixture's own source/destination pair that holds a foreign key
+// pointing INTO the fixture's source schema (see chrCreateExternalChild). Both the
+// startup recovery in newChrFixture and every caller that creates such a schema
+// must agree on this name, so it lives in one place.
+func chrExternalSchemaName(srcSchema string) string {
+	return srcSchema + "_ext"
+}
+
 // newChrFixture creates chr_src_<n> on the source server and chr_dst_<n> on the
 // destination server, and registers cleanup that closes the fixture pools and drops
 // both schemas.
@@ -136,6 +145,20 @@ func newChrFixture(t *testing.T, ctx context.Context) *chrFixture {
 	chrSchemaSeq++
 	srcSchema := fmt.Sprintf("chr_src_%d", chrSchemaSeq)
 	dstSchema := fmt.Sprintf("chr_dst_%d", chrSchemaSeq)
+
+	// Startup recovery: a killed run (this project's documented failure mode) can
+	// leave srcSchema's external-child schema (chrCreateExternalChild) behind with
+	// a live foreign key pointing INTO srcSchema. t.Cleanup never runs for a killed
+	// process, so that residue survives the process exit. Drop it BEFORE dropping
+	// srcSchema below — the FK lives in the external schema, so removing that
+	// schema first is what unblocks srcSchema's own DROP DATABASE, which would
+	// otherwise fail with Error 3730 ("Cannot drop table ... referenced by a
+	// foreign key constraint") and brick every characterization test in the
+	// package. See TestCharacterizationFixtureRecoversExternalSchemaResidue for the proof this
+	// actually works.
+	if _, err := adminSource.ExecContext(ctx, "DROP DATABASE IF EXISTS `"+chrExternalSchemaName(srcSchema)+"`"); err != nil {
+		t.Fatalf("startup recovery drop %s: %v", chrExternalSchemaName(srcSchema), err)
+	}
 
 	// Create the schemas over the shared pools. CREATE/DROP DATABASE does not
 	// mutate the session's default schema, so the shared pools stay uncontaminated.
