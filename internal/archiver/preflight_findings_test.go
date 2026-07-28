@@ -64,3 +64,28 @@ func TestInspectionErrorIsNotAPreflightError(t *testing.T) {
 		t.Fatalf("cause must be preserved: %v", err)
 	}
 }
+
+// TestNonBaseTableNamesDecoratesType proves views (and any other non-BASE TABLE
+// object) are surfaced with the observed TABLE_TYPE, so the operator sees why.
+func TestNonBaseTableNamesDecoratesType(t *testing.T) {
+	found := []validations.TableInfo{
+		{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "order_summary", Type: "VIEW"},
+		{Table: "sys_thing", Type: "SYSTEM VIEW"},
+	}
+	got := nonBaseTableNames(found)
+	if len(got) != 2 {
+		t.Fatalf("nonBaseTableNames = %v, want 2 entries", got)
+	}
+	if got[0] != "order_summary(VIEW)" || got[1] != "sys_thing(SYSTEM VIEW)" {
+		t.Fatalf("nonBaseTableNames = %v", got)
+	}
+}
+
+// TestNonBaseTableNamesEmptyForAllBaseTables is the negative control.
+func TestNonBaseTableNamesEmptyForAllBaseTables(t *testing.T) {
+	found := []validations.TableInfo{{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"}}
+	if got := nonBaseTableNames(found); len(got) != 0 {
+		t.Fatalf("nonBaseTableNames = %v, want empty", got)
+	}
+}

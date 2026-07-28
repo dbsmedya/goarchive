@@ -190,7 +190,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 
 	// Destination checks ensure copy target is safe before archive execution.
 	if profile != PreflightProfileSourceOnly && p.destinationDB != nil && p.destinationDBName != "" {
-		if err := p.ValidateDestinationTablesExist(ctx, tables); err != nil {
+		if err := p.ValidateDestinationTablesExist(ctx, run); err != nil {
 			return err
 		}
 		if err := p.ValidateDestinationSchemaCompatibility(ctx, tables); err != nil {
@@ -400,6 +400,20 @@ func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, run *preflig
 		validations.IDTablesExist,
 	); perr != nil {
 		return perr
+	}
+
+	// Explicit non-base-table policy (D5). CheckTablesExist proves name presence only,
+	// so a view satisfies it; this is the earliest type-aware stage, and classifying
+	// here reports the real problem instead of letting it surface downstream as an
+	// unrelated structural error — a source view otherwise reached PRIMARY_KEY_CHECK,
+	// which tells the operator to fix a primary key that a view cannot have.
+	if nonBase := nonBaseTableNames(found); len(nonBase) > 0 {
+		return &PreflightError{
+			Check: "TABLE_EXISTENCE_CHECK",
+			Message: "Only base tables can be archived. These source objects are not base tables; " +
+				"remove them from the configuration, or archive the underlying tables instead",
+			Tables: nonBase,
+		}
 	}
 
 	p.logger.Debugf("Table existence check PASSED (%d tables)", len(run.graphTables()))
@@ -1017,56 +1031,48 @@ type ColumnDefinition struct {
 	Collation       string // empty for non-string columns
 }
 
-// ValidateDestinationTablesExist checks that all graph tables exist in destination DB.
-func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, tables []string) error {
+// ValidateDestinationTablesExist checks that all graph tables exist in destination DB
+// and are base tables.
+func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, run *preflightRun) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	p.logger.Debug("Checking destination table existence...")
 
-	const query = `
-		SELECT TABLE_NAME
-		FROM information_schema.TABLES
-		WHERE TABLE_SCHEMA = ?`
-
-	rows, err := p.destinationDB.QueryContext(ctx, query, p.destinationDBName)
+	found, err := run.destTables(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query destination tables: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	existingTables := make(map[string]bool)
-	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
-			return err
-		}
-		existingTables[tableName] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		return inspectionError("destination_table_existence", err)
 	}
 
-	var missingTables []string
-	for _, table := range tables {
-		if !existingTables[table] {
-			missingTables = append(missingTables, table)
+	findings := validations.CheckTablesExist(run.graphTables(), found)
+	for _, f := range findings {
+		if f.Check != validations.IDTablesExist {
+			return unexpectedFindingError("destination_table_existence", f)
 		}
 	}
+	if perr := findingsToPreflightError(
+		"DEST_TABLE_EXISTENCE_CHECK",
+		"Tables not found in destination database",
+		findings,
+		validations.IDTablesExist,
+	); perr != nil {
+		return perr
+	}
 
-	if len(missingTables) > 0 {
+	// Explicit non-base-table policy (D5), destination half. CheckTablesExist proves
+	// name presence only; this is the earliest type-aware stage on this side. A
+	// destination view otherwise reached DEST_SCHEMA_COMPATIBILITY_CHECK, which
+	// reported a structural mismatch rather than the actual problem.
+	if nonBase := nonBaseTableNames(found); len(nonBase) > 0 {
 		return &PreflightError{
-			Check:   "DEST_TABLE_EXISTENCE_CHECK",
-			Message: "Tables not found in destination database",
-			Tables:  missingTables,
+			Check: "DEST_TABLE_EXISTENCE_CHECK",
+			Message: "Only base tables can receive archived rows. These destination objects are " +
+				"not base tables; create real tables in the destination schema",
+			Tables: nonBase,
 		}
 	}
 
-	p.logger.Debugf("Destination table existence check PASSED (%d tables)", len(tables))
+	p.logger.Debugf("Destination table existence check PASSED (%d tables)", len(run.graphTables()))
 	return nil
 }
 
