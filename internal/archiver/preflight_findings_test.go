@@ -129,3 +129,110 @@ func TestUnexpectedFactsError(t *testing.T) {
 		}
 	}
 }
+
+// TestTriggerOffendersDecoratesFirstTriggerPerTable proves the shared translation keeps
+// goarchive's "<table>(<trigger>)" shape, one entry per table.
+//
+// The facts are fed in DELIBERATELY UNSORTED and passed through CheckTriggersPresent,
+// because that is where the sort lives — triggerOffenders only takes element [0]. A test
+// that hand-fed pre-sorted facts would pass identically against a library that did not
+// sort at all, and would prove nothing about the determinism this phase claims.
+//
+// Table order is fixed here because the fact slice is a literal; it is NOT fixed when
+// facts come from Inspector.Triggers over graph.AllNodes(). See the ordering contract.
+func TestTriggerOffendersDecoratesFirstTriggerPerTable(t *testing.T) {
+	facts := []validations.TriggerInfo{
+		// AFTER first in input; BEFORE must still win after the library's sort.
+		{Table: "orders", Name: "trg_a", Event: "DELETE", Timing: "AFTER"},
+		{Table: "orders", Name: "trg_b", Event: "DELETE", Timing: "BEFORE"},
+		{Table: "order_lines", Name: "trg_x", Event: "DELETE", Timing: "AFTER"},
+	}
+
+	findings := validations.CheckTriggersPresent(facts, validations.TriggerDelete)
+	got, err := triggerOffenders("delete_triggers", findings)
+	if err != nil {
+		t.Fatalf("triggerOffenders: %v", err)
+	}
+
+	want := []string{"orders(trg_b)", "order_lines(trg_x)"}
+	if len(got) != len(want) {
+		t.Fatalf("triggerOffenders = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("triggerOffenders = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestTriggerOffendersFailsClosed enforces the fail-closed rule and, critically, pins
+// WHICH helper reports each fault.
+//
+// The wantPrefix assertion is the load-bearing one. Without it this implementation
+// passes every case:
+//
+//	if !ok || len(triggers) == 0 {
+//	    return nil, unexpectedFindingError(stage, f)   // WRONG helper
+//	}
+//
+// It is non-nil, it is a plain error, and it names the stage — so "aborts correctly"
+// cannot tell it apart from the right one. It would report a check goarchive DOES
+// recognise as "an unrecognised validation check", which is the exact misdirection the
+// two-helper split exists to prevent.
+//
+// Note on the guard's two operands: `!ok` is SUBSUMED by `len(triggers) == 0`, because a
+// failed type assertion yields the zero value — a nil slice. Removing `!ok ||` therefore
+// changes no behaviour and no test can detect it. It is kept for explicitness, not
+// because it is independently load-bearing, and this comment exists so nobody later
+// writes a test claiming to cover it.
+func TestTriggerOffendersFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		finding    validations.Finding
+		wantPrefix string
+	}{
+		{
+			name:       "unknown_check_id",
+			finding:    validations.Finding{Check: "SOMETHING_NEW"},
+			wantPrefix: "PREFLIGHT_UNKNOWN_FINDING",
+		},
+		{
+			name: "wrong_facts_type",
+			finding: validations.Finding{
+				Check:  validations.IDTriggersPresent,
+				Tables: []string{"orders"},
+				Facts:  "not-a-TriggerInfo-slice",
+			},
+			wantPrefix: "PREFLIGHT_UNEXPECTED_FACTS",
+		},
+		{
+			name: "empty_facts_slice",
+			finding: validations.Finding{
+				Check:  validations.IDTriggersPresent,
+				Tables: []string{"orders"},
+				Facts:  []validations.TriggerInfo{},
+			},
+			wantPrefix: "PREFLIGHT_UNEXPECTED_FACTS",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := triggerOffenders("delete_triggers", []validations.Finding{tc.finding})
+			if err == nil {
+				t.Fatalf("must abort, got offenders %v and nil error", got)
+			}
+			var pe *PreflightError
+			if errors.As(err, &pe) {
+				t.Fatalf("fail-closed aborts are plain errors, got *PreflightError: %v", pe)
+			}
+			if !strings.HasPrefix(err.Error(), tc.wantPrefix) {
+				t.Fatalf("wrong helper reported this fault: want prefix %q, got: %v",
+					tc.wantPrefix, err)
+			}
+			if !strings.Contains(err.Error(), "delete_triggers") {
+				t.Fatalf("error must name the stage, got: %v", err)
+			}
+		})
+	}
+}

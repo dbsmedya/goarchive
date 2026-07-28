@@ -623,14 +623,14 @@ func TestValidateTriggers_NoTriggers(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
-	tables := []string{"users", "orders"}
 
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}))
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("testdb", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}))
 
-	err := checker.ValidateTriggers(ctx, tables, false)
-
-	if err != nil {
+	if err := checker.ValidateTriggers(ctx, newPreflightRun(checker), false); err != nil {
 		t.Fatalf("ValidateTriggers failed: %v", err)
 	}
 }
@@ -643,17 +643,27 @@ func TestValidateTriggers_WithTriggers(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
-	tables := []string{"users", "orders"}
 
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("users", "trg_users_delete").
-			AddRow("orders", "trg_orders_delete"))
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("testdb", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).
+			AddRow("users", "trg_users_delete", "DELETE", "AFTER").
+			AddRow("orders", "trg_orders_delete", "DELETE", "AFTER"))
 
-	err := checker.ValidateTriggers(ctx, tables, false)
+	err := checker.ValidateTriggers(ctx, newPreflightRun(checker), false)
 
-	if err == nil {
-		t.Error("Expected error for tables with DELETE triggers")
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "DELETE_TRIGGER_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	// Two tables, but cross-table order follows graph.AllNodes() — compare as a set.
+	if len(pe.Tables) != 2 {
+		t.Fatalf("Tables = %v, want 2 entries", pe.Tables)
 	}
 }
 
@@ -665,93 +675,16 @@ func TestValidateTriggers_WithForce(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
-	tables := []string{"users", "orders"}
 
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("users", "trg_users_delete"))
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("testdb", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("orders", "trg_del", "DELETE", "AFTER"))
 
-	// With force=true, should not error
-	err := checker.ValidateTriggers(ctx, tables, true)
-
-	if err != nil {
-		t.Fatalf("ValidateTriggers should pass with force=true: %v", err)
-	}
-}
-
-// ============================================================================
-// CheckDeleteTriggers Tests
-// ============================================================================
-
-func TestCheckDeleteTriggers_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	tables := []string{"users", "orders"}
-
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("users", "trg_users_delete").
-			AddRow("orders", "trg_orders_delete"))
-
-	triggers, err := checker.CheckDeleteTriggers(ctx, tables)
-
-	if err != nil {
-		t.Fatalf("CheckDeleteTriggers failed: %v", err)
-	}
-
-	if len(triggers) != 2 {
-		t.Errorf("Expected 2 triggers, got %d", len(triggers))
-	}
-}
-
-func TestCheckDeleteTriggers_Empty(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	tables := []string{"users", "orders"}
-
-	mock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}))
-
-	triggers, err := checker.CheckDeleteTriggers(ctx, tables)
-
-	if err != nil {
-		t.Fatalf("CheckDeleteTriggers failed: %v", err)
-	}
-
-	if len(triggers) != 0 {
-		t.Errorf("Expected 0 triggers, got %d", len(triggers))
-	}
-}
-
-func TestCheckDeleteTriggers_EmptyTablesInput(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-
-	triggers, err := checker.CheckDeleteTriggers(context.Background(), []string{})
-	if err != nil {
-		t.Fatalf("expected no error for empty tables, got: %v", err)
-	}
-	if len(triggers) != 0 {
-		t.Fatalf("expected no triggers, got %d", len(triggers))
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected query execution: %v", err)
+	// The rows above DO contain a trigger; only --force-triggers turns this into a pass.
+	if err := checker.ValidateTriggers(ctx, newPreflightRun(checker), true); err != nil {
+		t.Fatalf("--force-triggers must downgrade to a warning, got: %v", err)
 	}
 }
 
@@ -1321,12 +1254,13 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
 	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
-	destMock.ExpectQuery("SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME FROM information_schema.TRIGGERS").
-		WithArgs("destdb", "users").
-		WillReturnRows(sqlmock.NewRows([]string{"EVENT_OBJECT_TABLE", "TRIGGER_NAME"}).
-			AddRow("users", "trg_users_insert"))
+	destMock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("destdb", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("users", "trg_users_insert", "INSERT", "BEFORE"))
 
-	err := checker.ValidateDestinationInsertTriggers(context.Background(), []string{"users"})
+	err := checker.ValidateDestinationInsertTriggers(context.Background(), newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected destination INSERT trigger error")
 	}
@@ -1337,29 +1271,6 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	}
 	if preflightErr.Check != "DEST_INSERT_TRIGGER_CHECK" {
 		t.Fatalf("Expected DEST_INSERT_TRIGGER_CHECK, got %s", preflightErr.Check)
-	}
-}
-
-func TestCheckInsertTriggers_EmptyTablesInput(t *testing.T) {
-	sourceDB, _, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
-
-	triggers, err := checker.CheckInsertTriggers(context.Background(), []string{})
-	if err != nil {
-		t.Fatalf("expected no error for empty tables, got: %v", err)
-	}
-	if len(triggers) != 0 {
-		t.Fatalf("expected no triggers, got %d", len(triggers))
-	}
-	if err := destMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected query execution: %v", err)
 	}
 }
 
@@ -2077,20 +1988,9 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 
-	err = checker.ValidateDestinationInsertTriggers(ctx, tables)
+	err = checker.ValidateDestinationInsertTriggers(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("ValidateDestinationInsertTriggers should return error when destination is nil")
-	}
-	if !strings.Contains(err.Error(), "destination database not configured") {
-		t.Errorf("Unexpected error message: %v", err)
-	}
-
-	triggers, err := checker.CheckInsertTriggers(ctx, tables)
-	if err == nil {
-		t.Fatal("CheckInsertTriggers should return error when destination is nil")
-	}
-	if triggers != nil {
-		t.Errorf("Expected nil triggers, got %v", triggers)
 	}
 	if !strings.Contains(err.Error(), "destination database not configured") {
 		t.Errorf("Unexpected error message: %v", err)
@@ -2614,3 +2514,156 @@ func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
 // ============================================================================
 // Integration Tests
 // ============================================================================
+
+// TestValidateTriggersInspectionErrorIsPlain proves a failed source fetch surfaces as a
+// PLAIN error, never a *PreflightError. Required by the SCOPE CAVEAT in
+// characterization_matrix_integration_test.go for every check phases 013-031 replace —
+// and this phase replaces two, so both sides are asserted.
+//
+// The assertion is on goarchive's WRAPPER text, not the bare stage word.
+func TestValidateTriggersInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("srcdb", "DELETE").
+		WillReturnError(errors.New("query failed"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidateTriggers(context.Background(), newPreflightRun(p), false)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight delete_triggers inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+}
+
+// TestValidateTriggersConsumesTheCachedFact proves the source stage reads the run's
+// memoized fact rather than fetching its own. Nothing else covers this: the memoization
+// tests prove the ACCESSOR caches, not that this stage uses it. An implementation that
+// built its own Inspector passes every other test in this phase.
+//
+// Exactly ONE expectation is registered and the pre-load consumes it, so a re-querying
+// stage receives "all expectations were already fulfilled" and returns it as an
+// inspection error — a plain error, so the *PreflightError assertion fails.
+// mock.ExpectationsWereMet() would NOT catch this; the verdict discriminates.
+func TestValidateTriggersConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("srcdb", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("orders", "trg_del", "DELETE", "AFTER"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.sourceDeleteTriggers(context.Background()); err != nil {
+		t.Fatalf("pre-load of the source trigger fact failed: %v", err)
+	}
+
+	err = p.ValidateTriggers(context.Background(), run, false)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "DELETE_TRIGGER_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "orders(trg_del)" {
+		t.Fatalf("Tables = %v, want [orders(trg_del)]", pe.Tables)
+	}
+}
+
+// TestValidateDestinationInsertTriggersInspectionErrorIsPlain is the destination
+// counterpart. Both sides are required: the stages use different accessors on different
+// pools, so the source test proves nothing about this path.
+func TestValidateDestinationInsertTriggersInspectionErrorIsPlain(t *testing.T) {
+	srcDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	dstMock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("dstdb", "INSERT").
+		WillReturnError(errors.New("query failed"))
+
+	p := chrDestCheckerForFacts(t, srcDB, dstDB)
+
+	err = p.ValidateDestinationInsertTriggers(context.Background(), newPreflightRun(p))
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight destination_insert_triggers inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+}
+
+// TestValidateDestinationInsertTriggersConsumesTheCachedFact is the destination
+// counterpart of the cached-fact proof.
+func TestValidateDestinationInsertTriggersConsumesTheCachedFact(t *testing.T) {
+	srcDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	dstMock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("dstdb", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("orders", "trg_ins", "INSERT", "BEFORE"))
+
+	p := chrDestCheckerForFacts(t, srcDB, dstDB)
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	if _, err := run.destInsertTriggers(ctx); err != nil {
+		t.Fatalf("pre-load of the destination trigger fact failed: %v", err)
+	}
+
+	err = p.ValidateDestinationInsertTriggers(ctx, run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "DEST_INSERT_TRIGGER_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "orders(trg_ins)" {
+		t.Fatalf("Tables = %v, want [orders(trg_ins)]", pe.Tables)
+	}
+}

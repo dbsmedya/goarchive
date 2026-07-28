@@ -488,6 +488,7 @@ func TestCharacterizationDeleteTrigger(t *testing.T) {
 			switch cmd.Name {
 			case "archive", "purge", "validate":
 				chrAssertCheck(t, err, "DELETE_TRIGGER_CHECK", []string{"orders"})
+				chrAssertRawTables(t, err, []string{"orders(trg_orders_del)"})
 			default: // copy-only, dry-run
 				chrAssertPasses(t, err)
 			}

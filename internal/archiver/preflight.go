@@ -32,14 +32,6 @@ func (e *PreflightError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Check, e.Message)
 }
 
-// TriggerCheckResult holds trigger detection results.
-//
-// GA-P4-F3-T4: DELETE trigger detection
-type TriggerCheckResult struct {
-	Table   string
-	Trigger string
-}
-
 // ForeignKeyResult holds foreign key constraint information.
 //
 // GA-P4-F3-T3: FK index check
@@ -191,7 +183,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		if err := p.ValidateDestinationWritePermissions(ctx, tables); err != nil {
 			return err
 		}
-		if err := p.ValidateDestinationInsertTriggers(ctx, tables); err != nil {
+		if err := p.ValidateDestinationInsertTriggers(ctx, run); err != nil {
 			return err
 		}
 	}
@@ -227,7 +219,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		}
 
 		// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
-		if err := p.ValidateTriggers(ctx, tables, forceTriggers); err != nil {
+		if err := p.ValidateTriggers(ctx, run, forceTriggers); err != nil {
 			return err
 		}
 
@@ -692,30 +684,26 @@ func (p *PreflightChecker) isColumnIndexed(ctx context.Context, table, column st
 //
 // GA-P4-F3-T4: DELETE trigger detection
 // GA-P4-F3-T5: --force-triggers flag support
-func (p *PreflightChecker) ValidateTriggers(ctx context.Context, tables []string, forceTriggers bool) error {
+func (p *PreflightChecker) ValidateTriggers(ctx context.Context, run *preflightRun, forceTriggers bool) error {
 	p.logger.Debug("Checking for DELETE triggers...")
 
-	triggers, err := p.CheckDeleteTriggers(ctx, tables)
+	facts, err := run.sourceDeleteTriggers(ctx)
+	if err != nil {
+		return inspectionError("delete_triggers", err)
+	}
+
+	findings := validations.CheckTriggersPresent(facts, validations.TriggerDelete)
+	tableList, err := triggerOffenders("delete_triggers", findings)
 	if err != nil {
 		return err
 	}
 
-	if len(triggers) == 0 {
+	if len(tableList) == 0 {
 		p.logger.Debug("DELETE trigger check PASSED (no triggers found)")
 		return nil
 	}
 
-	// Collect unique table names
-	tableMap := make(map[string]bool)
-	var tableList []string
-	for _, t := range triggers {
-		if !tableMap[t.Table] {
-			tableMap[t.Table] = true
-			tableList = append(tableList, fmt.Sprintf("%s(%s)", t.Table, t.Trigger))
-		}
-	}
-
-	msg := "DELETE triggers detected"
+	const msg = "DELETE triggers detected"
 
 	// GA-P4-F3-T5: Allow override with --force-triggers flag
 	if forceTriggers {
@@ -725,56 +713,9 @@ func (p *PreflightChecker) ValidateTriggers(ctx context.Context, tables []string
 
 	return &PreflightError{
 		Check:   "DELETE_TRIGGER_CHECK",
-		Message: fmt.Sprintf("%s. Use --force-triggers to override (not recommended, triggers will fire during delete)", msg),
+		Message: msg + ". Use --force-triggers to override (not recommended, triggers will fire during delete)",
 		Tables:  tableList,
 	}
-}
-
-// CheckDeleteTriggers scans for DELETE triggers on the specified tables.
-//
-// GA-P4-F3-T4: DELETE trigger detection
-func (p *PreflightChecker) CheckDeleteTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
-	if len(tables) == 0 {
-		return []TriggerCheckResult{}, nil
-	}
-
-	const query = `
-		SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME
-		FROM information_schema.TRIGGERS
-		WHERE EVENT_OBJECT_SCHEMA = ?
-		AND EVENT_OBJECT_TABLE IN (?)
-		AND EVENT_MANIPULATION = 'DELETE'`
-
-	// Build placeholders for table list
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.sourceDBName
-	for i, table := range tables {
-		placeholders[i] = "?"
-		args[i+1] = table
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query triggers: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var results []TriggerCheckResult
-	for rows.Next() {
-		var r TriggerCheckResult
-		if err := rows.Scan(&r.Table, &r.Trigger); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-
-	return results, rows.Err()
 }
 
 // WarnCascadeRules warns about ON DELETE CASCADE rules that may cause unexpected deletions.
@@ -1531,29 +1472,32 @@ func (p *PreflightChecker) ValidatePrimaryKeyColumns(ctx context.Context, tables
 }
 
 // ValidateDestinationInsertTriggers checks for INSERT triggers on destination tables.
-func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context, tables []string) error {
+//
+// --force-triggers deliberately does NOT apply here, and this signature is the
+// guarantee: the flag exists so an operator can accept source DELETE triggers firing
+// during the delete phase, which is a knowable, bounded risk. A destination INSERT
+// trigger silently mutates copied rows before verification reads them back, so there is
+// no safe override. Do not add a force parameter.
+func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context, run *preflightRun) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	p.logger.Debug("Checking destination INSERT triggers...")
 
-	triggers, err := p.CheckInsertTriggers(ctx, tables)
+	facts, err := run.destInsertTriggers(ctx)
+	if err != nil {
+		return inspectionError("destination_insert_triggers", err)
+	}
+
+	findings := validations.CheckTriggersPresent(facts, validations.TriggerInsert)
+	tableList, err := triggerOffenders("destination_insert_triggers", findings)
 	if err != nil {
 		return err
 	}
 
-	if len(triggers) == 0 {
+	if len(tableList) == 0 {
 		p.logger.Debug("Destination INSERT trigger check PASSED (no triggers found)")
 		return nil
-	}
-
-	tableMap := make(map[string]bool)
-	var tableList []string
-	for _, t := range triggers {
-		if !tableMap[t.Table] {
-			tableMap[t.Table] = true
-			tableList = append(tableList, fmt.Sprintf("%s(%s)", t.Table, t.Trigger))
-		}
 	}
 
 	return &PreflightError{
@@ -1561,53 +1505,6 @@ func (p *PreflightChecker) ValidateDestinationInsertTriggers(ctx context.Context
 		Message: "Destination INSERT triggers detected. Disable triggers before running archive copy operations",
 		Tables:  tableList,
 	}
-}
-
-// CheckInsertTriggers scans for INSERT triggers on destination tables.
-func (p *PreflightChecker) CheckInsertTriggers(ctx context.Context, tables []string) ([]TriggerCheckResult, error) {
-	if p.destinationDB == nil {
-		return nil, fmt.Errorf("destination database not configured; call ConfigureDestination first")
-	}
-	if len(tables) == 0 {
-		return []TriggerCheckResult{}, nil
-	}
-
-	const query = `
-		SELECT EVENT_OBJECT_TABLE, TRIGGER_NAME
-		FROM information_schema.TRIGGERS
-		WHERE EVENT_OBJECT_SCHEMA = ?
-		AND EVENT_OBJECT_TABLE IN (?)
-		AND EVENT_MANIPULATION = 'INSERT'`
-
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.destinationDBName
-	for i, table := range tables {
-		placeholders[i] = "?"
-		args[i+1] = table
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-	rows, err := p.destinationDB.QueryContext(ctx, fullQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query destination triggers: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var results []TriggerCheckResult
-	for rows.Next() {
-		var r TriggerCheckResult
-		if err := rows.Scan(&r.Table, &r.Trigger); err != nil {
-			return nil, err
-		}
-		results = append(results, r)
-	}
-
-	return results, rows.Err()
 }
 
 // SetVerification tells the checker which verification the job will run.

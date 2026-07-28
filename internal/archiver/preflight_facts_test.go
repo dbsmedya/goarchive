@@ -331,3 +331,159 @@ func TestPreflightRunMemoizesInvisibleColumnsErrors(t *testing.T) {
 		t.Fatalf("expected invisible-column query was not observed: %v", err)
 	}
 }
+
+// TestPreflightRunMemoizesSourceDeleteTriggers proves the source fact is fetched exactly
+// once. The WithArgs assertion is load-bearing: it pins the DELETE event, so a fetch
+// issued with the wrong event fails here rather than silently receiving these rows.
+func TestPreflightRunMemoizesSourceDeleteTriggers(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("srcdb", "DELETE").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("orders", "trg_del", "DELETE", "AFTER"))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.sourceDeleteTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("first sourceDeleteTriggers: %v", err)
+	}
+	second, err := run.sourceDeleteTriggers(context.Background())
+	if err != nil {
+		t.Fatalf("second sourceDeleteTriggers: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Name != second[0].Name {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected source DELETE-trigger query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesSourceDeleteTriggersErrors proves a failed source fetch is
+// memoized. The identity assertion is what makes it non-vacuous: asserting only that
+// both errors are non-nil passes with memoization removed entirely, because a consumed
+// sqlmock expectation still returns an error on the next call.
+func TestPreflightRunMemoizesSourceDeleteTriggersErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("srcdb", "DELETE").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.sourceDeleteTriggers(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.sourceDeleteTriggers(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected source DELETE-trigger query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesDestInsertTriggers is the destination counterpart. WithArgs
+// pins the INSERT event on the destination pool.
+func TestPreflightRunMemoizesDestInsertTriggers(t *testing.T) {
+	srcDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	dstMock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("dstdb", "INSERT").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
+		}).AddRow("orders", "trg_ins", "INSERT", "BEFORE"))
+
+	run := newPreflightRun(chrDestCheckerForFacts(t, srcDB, dstDB))
+	ctx := context.Background()
+
+	first, err := run.destInsertTriggers(ctx)
+	if err != nil {
+		t.Fatalf("first destInsertTriggers: %v", err)
+	}
+	second, err := run.destInsertTriggers(ctx)
+	if err != nil {
+		t.Fatalf("second destInsertTriggers: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Name != second[0].Name {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := dstMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected destination INSERT-trigger query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesDestInsertTriggersErrors is the destination error counterpart.
+func TestPreflightRunMemoizesDestInsertTriggersErrors(t *testing.T) {
+	srcDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	wantErr := errors.New("boom")
+	dstMock.ExpectQuery("information_schema.TRIGGERS").
+		WithArgs("dstdb", "INSERT").
+		WillReturnError(wantErr)
+
+	run := newPreflightRun(chrDestCheckerForFacts(t, srcDB, dstDB))
+	ctx := context.Background()
+
+	_, firstErr := run.destInsertTriggers(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.destInsertTriggers(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := dstMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected destination INSERT-trigger query was not observed: %v", err)
+	}
+}
