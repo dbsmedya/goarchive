@@ -27,7 +27,7 @@ import (
 // so the rule provably cannot see four destination-only uniqueness hazards.
 //
 // PRE-IMAGE — these four assert TODAY'S PERMISSIVE (buggy) BEHAVIOUR and MUST be
-// INVERTED to fatal by deviation D3 (spec §3.3, §4), landed in phase 031:
+// INVERTED to fatal by deviation D3 (spec §3.3, §4), landed in phase 030:
 //
 //	TestCharacterizationUniqueCompositeDestOnly_PassesToday      composite UNIQUE(a,b), a → MUL
 //	TestCharacterizationUniquePrefixDestOnly_PassesToday         UNIQUE(email(10)) vs UNIQUE(email), both → UNI
@@ -35,11 +35,22 @@ import (
 //	TestCharacterizationUniqueCollationLoosened_WarnsOnlyToday   same UNIQUE, looser destination collation
 //
 // Each is a real INSERT-IGNORE silent-skip data-loss hazard. They are pinned as
-// passing deliberately, so phase 031's amendment is visible as a diff rather than
-// as a silent behaviour change. Do NOT "fix" them outside phase 031.
+// passing deliberately, so the amendment is visible as a diff rather than as a
+// silent behaviour change. Do NOT "fix" them outside phase 030.
+//
+// OWNERSHIP — phase 030 amends this file; phase 031 does NOT.
+//
+//	Phase 030 Step 5 is the sanctioned amendment: rename each of the four above
+//	from _PassesToday / _WarnsOnlyToday to _FatalUnderD3 and change each
+//	chrAssertPasses to chrAssertCheck(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK",
+//	[]string{"orders"}).
+//
+//	Phase 031's non-negotiables require this suite to stay green and UNAMENDED.
+//	If you are implementing 031 and believe you need to change this file, stop —
+//	either phase 030 skipped its Step 5, or you are about to weaken the baseline.
 //
 // NOT pre-image — these four must keep their current outcome after D3, and a
-// phase-031 diff that touches them is a regression, not an amendment:
+// phase-030 diff that touches them is a regression, not an amendment:
 //
 //	TestCharacterizationUniqueSingleColumnDestOnly_Fatal   already fatal, stays fatal
 //	TestCharacterizationUniqueOverlappingDestOnly_Fatal    already fatal, stays fatal
@@ -90,7 +101,7 @@ func TestCharacterizationUniqueOverlappingDestOnly_Fatal(t *testing.T) {
 // Destination-only UNIQUE(a,b). COLUMN_KEY of `a` is MUL, not UNI, so the per-column
 // rule never sees it. This PASSES today and is a real silent-skip hazard: two source
 // rows sharing (a,b) collide in the destination and INSERT IGNORE drops one.
-// D3 (phase 031) makes it FATAL.
+// D3 (phase 030) makes it FATAL.
 func TestCharacterizationUniqueCompositeDestOnly_PassesToday(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -108,7 +119,7 @@ func TestCharacterizationUniqueCompositeDestOnly_PassesToday(t *testing.T) {
 // Source UNIQUE(email), destination UNIQUE(email(10)). Both report COLUMN_KEY = UNI,
 // so the per-column rule sees no difference — but UNIQUE(email(10)) rejects two rows
 // sharing a 10-character prefix that the source accepted. PASSES today.
-// D3 (phase 031) makes it FATAL, because the prefix length is part of the uniqueness
+// D3 (phase 030) makes it FATAL, because the prefix length is part of the uniqueness
 // signature.
 func TestCharacterizationUniquePrefixDestOnly_PassesToday(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
@@ -129,7 +140,7 @@ func TestCharacterizationUniquePrefixDestOnly_PassesToday(t *testing.T) {
 // column MySQL materialises for the expression is also absent from
 // information_schema.COLUMNS (verified on 8.4.4-4: both sides report exactly two
 // columns), so the column-count guard does not catch it either. PASSES today.
-// D3 (phase 031) makes it FATAL under the conservative functional rule.
+// D3 (phase 030) makes it FATAL under the conservative functional rule.
 func TestCharacterizationUniqueFunctionalDestOnly_PassesToday(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -149,7 +160,7 @@ func TestCharacterizationUniqueFunctionalDestOnly_PassesToday(t *testing.T) {
 // charsets are identical so the strict charset rule is satisfied, and the collation
 // difference is only an ADVISORY warning — yet the destination index collides rows the
 // source held as distinct ('A' vs 'a') and INSERT IGNORE silently skips one.
-// PASSES WITH A WARNING today. D3 (phase 031) makes it FATAL regardless of verification
+// PASSES WITH A WARNING today. D3 (phase 030) makes it FATAL regardless of verification
 // mode, because collation is part of the uniqueness signature.
 func TestCharacterizationUniqueCollationLoosened_WarnsOnlyToday(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
