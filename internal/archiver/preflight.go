@@ -167,7 +167,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// copied with SELECT *, which omits invisible columns, so their values would
 	// be silently dropped from the copy and the verification hash and then
 	// deleted from the source (issue #23). Runs for every profile.
-	if err := p.ValidateNoInvisibleColumns(ctx, tables); err != nil {
+	if err := p.ValidateNoInvisibleColumns(ctx, run); err != nil {
 		return err
 	}
 
@@ -474,61 +474,43 @@ const requiredStorageEngine = "InnoDB"
 
 // ValidateNoInvisibleColumns rejects any participating (graph) table that has an
 // INVISIBLE column. GoArchive copies rows with SELECT *, which MySQL excludes
-// invisible columns from, so their stored values would be silently dropped from
-// both the destination INSERT and the SHA/count verification and then deleted
-// from the source (issue #23). Until explicit-column support exists, an
-// invisible column in a participating table is a fatal data-loss hazard.
+// invisible columns from, so their stored values would be silently dropped from both
+// the destination INSERT and the SHA/count verification and then deleted from the
+// source (issue #23). Until explicit-column support exists, an invisible column in a
+// participating table is a fatal data-loss hazard.
 //
-// EXTRA carries the "INVISIBLE" token for both plain invisible columns
-// (EXTRA = "INVISIBLE") and generated invisible columns
-// (EXTRA = "STORED GENERATED INVISIBLE"), so LIKE '%INVISIBLE%' catches both.
-func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, tables []string) error {
+// The library's query uses the same EXTRA LIKE '%INVISIBLE%' predicate 1.8 used, which
+// catches both plain invisible columns (EXTRA = "INVISIBLE") and generated ones
+// (EXTRA = "STORED GENERATED INVISIBLE"). What changes is the shape of the answer, not
+// the question.
+func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking for invisible columns...")
-	if len(tables) == 0 {
-		p.logger.Debug("Invisible column check skipped (no tables)")
-		return nil
-	}
 
-	const query = `
-		SELECT TABLE_NAME, COLUMN_NAME
-		FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME IN (?)
-		AND EXTRA LIKE '%INVISIBLE%'`
-
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, len(tables)+1)
-	args[0] = p.sourceDBName
-	for i, table := range tables {
-		placeholders[i] = "?"
-		args[i+1] = table
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-
-	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
+	facts, err := run.invisibleColumns(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query invisible columns: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var invisibleColumns []string
-	for rows.Next() {
-		var table, column string
-		if err := rows.Scan(&table, &column); err != nil {
-			return err
-		}
-		invisibleColumns = append(invisibleColumns, fmt.Sprintf("%s.%s", table, column))
-	}
-	if err := rows.Err(); err != nil {
-		return err
+		return inspectionError("invisible_columns", err)
 	}
 
-	if len(invisibleColumns) > 0 {
+	findings := validations.CheckInvisibleColumns(facts)
+
+	// The library reports one finding per TABLE with a Columns slice; goarchive has
+	// always reported one entry per COLUMN, as "<table>.<column>". Fan out so the
+	// operator-visible shape is unchanged.
+	var offenders []string
+	for _, f := range findings {
+		if f.Check != validations.IDInvisibleColumns {
+			return unexpectedFindingError("invisible_columns", f)
+		}
+		fact, ok := f.Facts.(validations.InvisibleColumns)
+		if !ok {
+			return unexpectedFactsError("invisible_columns", f, "validations.InvisibleColumns")
+		}
+		for _, col := range fact.Columns {
+			offenders = append(offenders, fact.Table+"."+col)
+		}
+	}
+
+	if len(offenders) > 0 {
 		return &PreflightError{
 			Check: "INVISIBLE_COLUMN_CHECK",
 			Message: "This version of GoArchive does not support INVISIBLE columns. Rows are copied " +
@@ -536,7 +518,7 @@ func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, table
 				"from the copy and the verification hash and then deleted from the source. Make these " +
 				"columns visible (ALTER TABLE ... ALTER COLUMN ... SET VISIBLE) or remove these tables " +
 				"from the archive until explicit-column support exists",
-			Tables: invisibleColumns,
+			Tables: offenders,
 		}
 	}
 
