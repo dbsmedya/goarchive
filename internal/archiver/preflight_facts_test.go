@@ -9,6 +9,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
@@ -485,5 +486,152 @@ func TestPreflightRunMemoizesDestInsertTriggersErrors(t *testing.T) {
 	}
 	if err := dstMock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expected destination INSERT-trigger query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesPrimaryKeys proves the run-scoped cache fetches the PK fact
+// exactly once even when several stages ask for it. sqlmock fails the test if a second
+// query is issued, because only one expectation is registered.
+func TestPreflightRunMemoizesPrimaryKeys(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("srcdb").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+		}).AddRow("orders", "id", "bigint", "bigint unsigned"))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.primaryKeys(context.Background())
+	if err != nil {
+		t.Fatalf("first primaryKeys: %v", err)
+	}
+	second, err := run.primaryKeys(context.Background())
+	if err != nil {
+		t.Fatalf("second primaryKeys: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Table != second[0].Table {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected PrimaryKeys query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesPrimaryKeysErrors proves a failed fetch is memoized too. The
+// identity assertion (errors.Is(secondErr, firstErr)) is what makes this non-vacuous:
+// asserting only that both errors are non-nil passes against a build with no
+// memoization at all, because a consumed sqlmock expectation still returns an error on
+// the next call.
+func TestPreflightRunMemoizesPrimaryKeysErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("srcdb").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.primaryKeys(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.primaryKeys(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected PrimaryKeys query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunRootPKInfoSelectsByRootName proves rootPKInfo selects the root's fact
+// BY NAME, not by position. The cache is pre-populated with the root fact SECOND and no
+// sqlmock expectation is registered, so an implementation that indexed facts[0] would
+// return order_lines' fact here — deterministically wrong, since Graph.AllNodes()
+// ranges over a map and makes the real fetch order a coin flip.
+func TestPreflightRunRootPKInfoSelectsByRootName(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	run.pks = []validations.PKInfo{
+		{Table: "order_lines", Kind: validations.PKSingle, Columns: []string{"line_id"},
+			DataType: "smallint", IsInteger: true},
+		{Table: "orders", Kind: validations.PKSingle, Columns: []string{"id"},
+			DataType: "bigint", IsInteger: true, Unsigned: true},
+	}
+	run.pksLoaded = true
+
+	pk, found, err := run.rootPKInfo(context.Background())
+	if err != nil {
+		t.Fatalf("rootPKInfo: %v", err)
+	}
+	if !found {
+		t.Fatal("expected root PK fact to be found")
+	}
+	if pk.Table != "orders" {
+		t.Fatalf("rootPKInfo returned %q, want %q", pk.Table, "orders")
+	}
+}
+
+// TestPreflightRunExpectedPKsOmitsUnconfiguredTables proves expectedPKs omits a table
+// with no configured primary_key rather than defaulting it to "id". Graph.GetPK
+// defaults to "id" when unset, so an implementation that dropped the HasPK guard would
+// emit out["order_lines"] = "id" here instead of omitting the entry.
+func TestPreflightRunExpectedPKsOmitsUnconfiguredTables(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", &graph.Node{Name: "order_lines"}) // deliberately no SetPK
+
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	got := run.expectedPKs()
+	if len(got) != 1 || got["orders"] != "id" {
+		t.Fatalf("expectedPKs = %v, want only the configured root", got)
+	}
+	if _, ok := got["order_lines"]; ok {
+		t.Fatal("a table with no configured primary_key must be omitted, not defaulted to \"id\"")
 	}
 }

@@ -158,10 +158,12 @@ func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
 	g := graph.NewGraph("users", "id")
 	checker, _ := NewPreflightChecker(db, "testdb", g, nil)
 
-	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
-		WithArgs("users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))
-	if err := checker.ValidateRootPKNumeric(context.Background(), "users", "id"); err != nil {
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("testdb").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+		}).AddRow("users", "id", "bigint", "bigint(20) unsigned"))
+	if err := checker.ValidateRootPKNumeric(context.Background(), newPreflightRun(checker)); err != nil {
 		t.Fatalf("ValidateRootPKNumeric: %v", err)
 	}
 	dataType, unsigned, ok := g.GetRootPKMeta()
@@ -172,12 +174,18 @@ func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
 	db2, mock2, _ := sqlmock.New()
 	defer func() { _ = db2.Close() }()
 	checker2, _ := NewPreflightChecker(db2, "testdb", graph.NewGraph("orders", "uuid"), nil)
-	mock2.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
-		WithArgs("orders", "uuid").
-		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("varchar", "varchar(36)"))
-	err := checker2.ValidateRootPKNumeric(context.Background(), "orders", "uuid")
+	mock2.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("testdb").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+		}).AddRow("orders", "uuid", "varchar", "varchar(36)"))
+	err := checker2.ValidateRootPKNumeric(context.Background(), newPreflightRun(checker2))
 	if err == nil || !strings.Contains(err.Error(), "ROOT_PK_TYPE_UNSUPPORTED") {
 		t.Fatalf("expected ROOT_PK_TYPE_UNSUPPORTED, got %v", err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("ROOT_PK_TYPE_UNSUPPORTED must be a plain error, not *PreflightError: %v", err)
 	}
 }
 
@@ -206,16 +214,17 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			WithArgs("testdb", sqlmock.AnyArg(), "id").
 			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
 	}
-	// PK shape checks (review P1-1 / 003): each table returns its single PRIMARY
-	// KEY column, which matches the graph's configured PK ("id").
-	for i := 0; i < 3; i++ {
-		mock.ExpectQuery("information_schema.STATISTICS").
-			WithArgs("testdb", sqlmock.AnyArg()).
-			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
-	}
-	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE FROM information_schema.COLUMNS").
-		WithArgs("users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).AddRow("bigint", "bigint(20) unsigned"))
+	// PK shape + root PK type now share ONE memoized Inspector.PrimaryKeys fact, so a
+	// single query covers positions 3 and 4. Root is "users" and must be integer, or
+	// position 4 aborts before the storage-engine check under test.
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("testdb").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+		}).
+			AddRow("users", "id", "bigint", "bigint unsigned").
+			AddRow("orders", "id", "bigint", "bigint").
+			AddRow("order_items", "id", "bigint", "bigint"))
 
 	err := checker.RunAllChecks(ctx, false)
 
@@ -2665,5 +2674,126 @@ func TestValidateDestinationInsertTriggersConsumesTheCachedFact(t *testing.T) {
 	}
 	if len(pe.Tables) != 1 || pe.Tables[0] != "orders(trg_ins)" {
 		t.Fatalf("Tables = %v, want [orders(trg_ins)]", pe.Tables)
+	}
+}
+
+// TestValidateSingleColumnPrimaryKeyInspectionErrorIsPlain proves the inspection-error
+// path for ValidateSingleColumnPrimaryKey keeps the released COMPOSITE_PK_LOOKUP prefix
+// and stays a plain error, never a *PreflightError. Asserting only a substring match
+// would let a broken unwrapped `return err` pass, since the library's own *ObjectError
+// already contains its op name ("primary_keys") — the prefix assertion below checks for
+// goarchive's own prefix, not the library's.
+func TestValidateSingleColumnPrimaryKeyInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("srcdb").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+	run := newPreflightRun(p)
+
+	gotErr := p.ValidateSingleColumnPrimaryKey(context.Background(), run)
+	if gotErr == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "COMPOSITE_PK_LOOKUP:") {
+		t.Fatalf("expected COMPOSITE_PK_LOOKUP: prefix, got: %v", gotErr)
+	}
+	var pe *PreflightError
+	if errors.As(gotErr, &pe) {
+		t.Fatalf("inspection failure must be a plain error, not *PreflightError: %v", gotErr)
+	}
+}
+
+// TestValidateRootPKNumericInspectionErrorIsPlain is the ValidateRootPKNumeric
+// counterpart, on the ROOT_PK_TYPE_LOOKUP prefix.
+func TestValidateRootPKNumericInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("srcdb").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+	run := newPreflightRun(p)
+
+	gotErr := p.ValidateRootPKNumeric(context.Background(), run)
+	if gotErr == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !strings.Contains(gotErr.Error(), "ROOT_PK_TYPE_LOOKUP:") {
+		t.Fatalf("expected ROOT_PK_TYPE_LOOKUP: prefix, got: %v", gotErr)
+	}
+	var pe *PreflightError
+	if errors.As(gotErr, &pe) {
+		t.Fatalf("inspection failure must be a plain error, not *PreflightError: %v", gotErr)
+	}
+}
+
+// TestPKStagesShareOneCachedFact proves both PK stages consume a single run-level fact.
+// Exactly ONE PrimaryKeys expectation is registered, and the two stages run in sequence
+// exactly as RunWithProfile calls them (positions 3 and 4). A stage that built its own
+// Inspector would issue a second query, receive "all expectations were already
+// fulfilled", and fail here — which no other test in this phase would catch.
+//
+// The GetRootPKMeta assertion is load-bearing: without it, a ValidateRootPKNumeric that
+// silently returned nil would still pass. It is also, with the rebuilt
+// TestPreflightChecker_ValidateRootPKNumeric, the ONLY coverage of that write-back --
+// make e2e cannot detect its deletion, because loadRootPKMeta runs afterwards on every
+// orchestrator path and overwrites the value before any production reader sees it.
+func TestPKStagesShareOneCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.STATISTICS AS s").
+		WithArgs("srcdb").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+		}).AddRow("orders", "id", "bigint", "bigint unsigned"))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
+		t.Fatalf("shape stage must pass from the cached fact: %v", err)
+	}
+	if err := p.ValidateRootPKNumeric(ctx, run); err != nil {
+		t.Fatalf("root PK stage must pass from the SAME cached fact: %v", err)
+	}
+
+	dataType, unsigned, ok := g.GetRootPKMeta()
+	if !ok || dataType != "bigint" || !unsigned {
+		t.Fatalf("root PK metadata: dataType=%q unsigned=%v ok=%v", dataType, unsigned, ok)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the single PrimaryKeys expectation was not observed: %v", err)
 	}
 }

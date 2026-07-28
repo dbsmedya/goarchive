@@ -26,7 +26,7 @@ import (
 const compositePKTable = "composite_pk_acct"
 const singlePKTable = "single_pk_acct"
 
-func compositePKChecker(t *testing.T, setup *IntegrationTestSetup) (*PreflightChecker, *sql.DB) {
+func compositePKChecker(t *testing.T, setup *IntegrationTestSetup, g *graph.Graph) (*PreflightChecker, *sql.DB) {
 	t.Helper()
 
 	sourceDB, ok := setup.GetDB("source")
@@ -40,7 +40,6 @@ func compositePKChecker(t *testing.T, setup *IntegrationTestSetup) (*PreflightCh
 		}
 	}
 
-	g := graph.NewGraph(compositePKTable, "user")
 	checker, err := NewPreflightChecker(sourceDB, sourceDBName, g, logger.NewDefault())
 	if err != nil {
 		t.Fatalf("failed to create preflight checker: %v", err)
@@ -60,7 +59,7 @@ func TestIntegrationCompositePK_Rejected(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
 	defer setup.Close()
 
-	checker, sourceDB := compositePKChecker(t, setup)
+	checker, sourceDB := compositePKChecker(t, setup, graph.NewGraph(compositePKTable, "user"))
 	dropCompositePKTables(ctx, sourceDB)
 	defer dropCompositePKTables(ctx, sourceDB)
 
@@ -74,7 +73,7 @@ func TestIntegrationCompositePK_Rejected(t *testing.T) {
 		t.Fatalf("failed to create composite-PK source table: %v", err)
 	}
 
-	err := checker.ValidateSingleColumnPrimaryKey(ctx, []string{compositePKTable})
+	err := checker.ValidateSingleColumnPrimaryKey(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected composite PRIMARY KEY to be rejected, got nil")
 	}
@@ -95,12 +94,18 @@ func TestIntegrationCompositePK_Rejected(t *testing.T) {
 
 // TestIntegrationCompositePK_DetectedAsChildTable proves the check covers every
 // participating table, not just the root: a composite-PK table appearing only
-// as a child in the table set is still rejected.
+// as a non-root (child) node in the graph is still rejected. AllNodes() ranges over
+// a map, so request order is nondeterministic and proves nothing about scan order;
+// the property this test proves is that a non-root table's composite PK is caught.
 func TestIntegrationCompositePK_DetectedAsChildTable(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
 	defer setup.Close()
 
-	checker, sourceDB := compositePKChecker(t, setup)
+	g := graph.NewGraph(singlePKTable, "id")
+	g.AddNode(compositePKTable, &graph.Node{Name: compositePKTable})
+	g.SetPK(compositePKTable, "user")
+
+	checker, sourceDB := compositePKChecker(t, setup, g)
 	dropCompositePKTables(ctx, sourceDB)
 	defer dropCompositePKTables(ctx, sourceDB)
 
@@ -123,8 +128,7 @@ func TestIntegrationCompositePK_DetectedAsChildTable(t *testing.T) {
 		t.Fatalf("failed to create composite-PK child table: %v", err)
 	}
 
-	// Order the single-PK table first to prove the scan does not stop early.
-	err := checker.ValidateSingleColumnPrimaryKey(ctx, []string{singlePKTable, compositePKTable})
+	err := checker.ValidateSingleColumnPrimaryKey(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected composite-PK child table to be rejected, got nil")
 	}
@@ -139,7 +143,7 @@ func TestIntegrationCompositePK_SingleColumnPasses(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
 	defer setup.Close()
 
-	checker, sourceDB := compositePKChecker(t, setup)
+	checker, sourceDB := compositePKChecker(t, setup, graph.NewGraph(singlePKTable, "id"))
 	dropCompositePKTables(ctx, sourceDB)
 	defer dropCompositePKTables(ctx, sourceDB)
 
@@ -152,7 +156,7 @@ func TestIntegrationCompositePK_SingleColumnPasses(t *testing.T) {
 		t.Fatalf("failed to create single-PK table: %v", err)
 	}
 
-	if err := checker.ValidateSingleColumnPrimaryKey(ctx, []string{singlePKTable}); err != nil {
+	if err := checker.ValidateSingleColumnPrimaryKey(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected single-column PK to pass, got: %v", err)
 	}
 }
