@@ -96,3 +96,26 @@ func unexpectedFactsError(
 		stage, f.Check, f.Facts, want,
 	)
 }
+
+// triggerOffenders converts trigger findings into goarchive's one-entry-per-table
+// "<table>(<trigger>)" decoration. The library sorts each table's triggers by firing
+// order (BEFORE before AFTER) and then by name, so element [0] is the deterministic
+// "first" — 1.8 reported whichever row information_schema happened to return.
+//
+// An empty Facts slice is treated as unusable rather than as "no triggers": a finding
+// exists only because the table HAS triggers, so an empty payload means this build
+// cannot read the library's answer.
+func triggerOffenders(stage string, findings []validations.Finding) ([]string, error) {
+	var out []string
+	for _, f := range findings {
+		if f.Check != validations.IDTriggersPresent {
+			return nil, unexpectedFindingError(stage, f)
+		}
+		triggers, ok := f.Facts.([]validations.TriggerInfo)
+		if !ok || len(triggers) == 0 {
+			return nil, unexpectedFactsError(stage, f, "non-empty []validations.TriggerInfo")
+		}
+		out = append(out, triggers[0].Table+"("+triggers[0].Name+")")
+	}
+	return out, nil
+}

@@ -298,6 +298,7 @@ func TestCharacterizationDestInsertTrigger(t *testing.T) {
 				return
 			}
 			chrAssertCheck(t, err, "DEST_INSERT_TRIGGER_CHECK", []string{"orders"})
+			chrAssertRawTables(t, err, []string{"orders(trg_orders_ins)"})
 		})
 	}
 }

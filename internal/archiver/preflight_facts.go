@@ -42,6 +42,14 @@ type preflightRun struct {
 	invisible       []validations.InvisibleColumns
 	invisibleErr    error
 	invisibleLoaded bool
+
+	srcDelTriggers       []validations.TriggerInfo
+	srcDelTriggersErr    error
+	srcDelTriggersLoaded bool
+
+	dstInsTriggers       []validations.TriggerInfo
+	dstInsTriggersErr    error
+	dstInsTriggersLoaded bool
 }
 
 // newPreflightRun captures the graph's node list and constructs the source
@@ -96,4 +104,33 @@ func (r *preflightRun) invisibleColumns(ctx context.Context) ([]validations.Invi
 		r.invisibleLoaded = true
 	}
 	return r.invisible, r.invisibleErr
+}
+
+// sourceDeleteTriggers returns DELETE triggers on the graph tables, fetched on first
+// use. Triggers are sorted per table by firing order (BEFORE before AFTER) and then by
+// name, so the reported trigger is deterministic. Both the value and any error are
+// memoized.
+func (r *preflightRun) sourceDeleteTriggers(ctx context.Context) ([]validations.TriggerInfo, error) {
+	if !r.srcDelTriggersLoaded {
+		r.srcDelTriggers, r.srcDelTriggersErr =
+			r.srcInspector.Triggers(ctx, r.tables, validations.TriggerDelete)
+		r.srcDelTriggersLoaded = true
+	}
+	return r.srcDelTriggers, r.srcDelTriggersErr
+}
+
+// destInsertTriggers returns INSERT triggers on the destination graph tables. It is a
+// separate fact from sourceDeleteTriggers, on a separate connection and a separate
+// event: neither memoizes the other, and a wrong event on one side is invisible from
+// the other.
+func (r *preflightRun) destInsertTriggers(ctx context.Context) ([]validations.TriggerInfo, error) {
+	if r.dstInspector == nil {
+		return nil, fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
+	if !r.dstInsTriggersLoaded {
+		r.dstInsTriggers, r.dstInsTriggersErr =
+			r.dstInspector.Triggers(ctx, r.tables, validations.TriggerInsert)
+		r.dstInsTriggersLoaded = true
+	}
+	return r.dstInsTriggers, r.dstInsTriggersErr
 }
