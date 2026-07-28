@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -138,11 +140,13 @@ func (p *PreflightChecker) ConfigureDestination(db *sql.DB, destinationDBName, j
 func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile PreflightProfile, forceTriggers bool, enforceFKVisibility bool) error {
 	p.logger.Info("Running preflight checks...")
 
-	// Get all tables from graph
-	tables := p.graph.AllNodes()
+	// Facts are acquired per stage and memoized for this run only (spec §2). The run
+	// is discarded when this function returns and is never stored on the checker.
+	run := newPreflightRun(p)
+	tables := run.graphTables()
 
 	// GA-P4-F3-T2: Table existence check
-	if err := p.ValidateTablesExist(ctx, tables); err != nil {
+	if err := p.ValidateTablesExist(ctx, run); err != nil {
 		return err
 	}
 
@@ -375,54 +379,30 @@ func (p *PreflightChecker) primaryKeyColumns(ctx context.Context, table string) 
 // ValidateTablesExist checks that all tables in the graph exist in the source database.
 //
 // GA-P4-F3-T2: Table existence check
-func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, tables []string) error {
+func (p *PreflightChecker) ValidateTablesExist(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking table existence...")
 
-	const query = `
-		SELECT TABLE_NAME
-		FROM information_schema.TABLES
-		WHERE TABLE_SCHEMA = ?`
-
-	rows, err := p.db.QueryContext(ctx, query, p.sourceDBName)
+	found, err := run.sourceTables(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query tables: %w", err)
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	existingTables := make(map[string]bool)
-	for rows.Next() {
-		var tableName string
-		if err := rows.Scan(&tableName); err != nil {
-			return err
-		}
-		existingTables[tableName] = true
+		return inspectionError("table_existence", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	// Check for missing tables
-	var missingTables []string
-	for _, table := range tables {
-		if !existingTables[table] {
-			missingTables = append(missingTables, table)
+	findings := validations.CheckTablesExist(run.graphTables(), found)
+	for _, f := range findings {
+		if f.Check != validations.IDTablesExist {
+			return unexpectedFindingError("table_existence", f)
 		}
 	}
-
-	if len(missingTables) > 0 {
-		return &PreflightError{
-			Check:   "TABLE_EXISTENCE_CHECK",
-			Message: "Tables not found in source database",
-			Tables:  missingTables,
-		}
+	if perr := findingsToPreflightError(
+		"TABLE_EXISTENCE_CHECK",
+		"Tables not found in source database",
+		findings,
+		validations.IDTablesExist,
+	); perr != nil {
+		return perr
 	}
 
-	p.logger.Debugf("Table existence check PASSED (%d tables)", len(tables))
+	p.logger.Debugf("Table existence check PASSED (%d tables)", len(run.graphTables()))
 	return nil
 }
 

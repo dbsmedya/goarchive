@@ -1,0 +1,55 @@
+package archiver
+
+import (
+	"fmt"
+
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+)
+
+// findingsToPreflightError converts the findings whose Check equals want into one
+// *PreflightError carrying goarchive's own check id. Table names are taken in finding
+// order, which the library documents as deterministic per check.
+//
+// Findings whose Check is NOT want are ignored here on purpose: a stage that can
+// receive more than one kind must partition them itself and call this once per kind,
+// then reject anything left over with unexpectedFindingError. See phase 026's
+// FK_CLOSURE handling for the worked example.
+func findingsToPreflightError(
+	id, message string,
+	findings []validations.Finding,
+	want string,
+) *PreflightError {
+	var tables []string
+	for _, f := range findings {
+		if f.Check != want {
+			continue
+		}
+		tables = append(tables, f.Tables...)
+	}
+	if len(tables) == 0 {
+		return nil
+	}
+	return &PreflightError{Check: id, Message: message, Tables: tables}
+}
+
+// unexpectedFindingError aborts preflight when a stage receives a finding it does not
+// recognise. Spec §2: unknown library vocabulary fails closed rather than being
+// silently dropped, because a dropped finding is a check that stopped running.
+//
+// The result is deliberately a plain error, not a *PreflightError: it reports that the
+// engine is out of date, not that the schema is wrong.
+func unexpectedFindingError(stage string, f validations.Finding) error {
+	return fmt.Errorf(
+		"PREFLIGHT_UNKNOWN_FINDING: stage %q received an unrecognised validation check %q "+
+			"(tables: %v). This build of GoArchive does not know how to judge it, so preflight "+
+			"fails closed. Upgrade GoArchive or pin the validation library version this build "+
+			"was released against",
+		stage, f.Check, f.Tables)
+}
+
+// inspectionError wraps a metadata-inspection failure. It is deliberately a plain
+// error: a *PreflightError means "the schema is wrong", while this means "we could not
+// find out". Phase 010 characterizes that distinction.
+func inspectionError(stage string, err error) error {
+	return fmt.Errorf("preflight %s inspection failed: %w", stage, err)
+}

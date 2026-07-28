@@ -130,10 +130,10 @@ func TestRunAllChecks_MissingTables(t *testing.T) {
 	ctx := context.Background()
 
 	// Table existence check - only 2 of 3 tables exist
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders"))
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "InnoDB"))
 	// Missing: order_items
 
 	err := checker.RunAllChecks(ctx, false)
@@ -191,11 +191,11 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 	ctx := context.Background()
 
 	// Table existence check - all exist
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "InnoDB").
+			AddRow("order_items", "BASE TABLE", "InnoDB"))
 
 	// Primary key column existence checks: each configured PK ("id") exists with
 	// the exact same case, so the lookup returns the matching column name.
@@ -352,15 +352,15 @@ func TestValidateTablesExist_Success(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	tables := []string{"users", "orders", "order_items"}
+	// The table list now comes from the run, which reads it from the graph.
+	// createPreflightTestGraph's nodes are users, orders and order_items.
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "InnoDB").
+			AddRow("order_items", "BASE TABLE", "InnoDB"))
 
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
-
-	err := checker.ValidateTablesExist(ctx, tables)
+	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
 
 	if err != nil {
 		t.Fatalf("ValidateTablesExist failed: %v", err)
@@ -371,21 +371,24 @@ func TestValidateTablesExist_MissingTables(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
+	// "nonexistent" is a graph node so that the run asks about it; the server
+	// never reports it back, so it must be the one missing table.
 	g := createPreflightTestGraph()
+	g.AddNode("nonexistent", &graph.Node{Name: "nonexistent", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.SetPK("nonexistent", "id")
+	g.AddEdge("orders", "nonexistent")
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	tables := []string{"users", "orders", "order_items", "nonexistent"}
-
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).
-			AddRow("users").
-			AddRow("orders").
-			AddRow("order_items"))
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB").
+			AddRow("orders", "BASE TABLE", "InnoDB").
+			AddRow("order_items", "BASE TABLE", "InnoDB"))
 	// Missing: nonexistent
 
-	err := checker.ValidateTablesExist(ctx, tables)
+	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
 
 	if err == nil {
 		t.Error("Expected error for missing tables")
@@ -405,16 +408,18 @@ func TestValidateTablesExist_ExactCaseRequired(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
-	g := createPreflightTestGraph()
+	// The graph asks for "Users"; the server reports "users". A case-insensitive
+	// match would wrongly pass.
+	g := graph.NewGraph("Users", "id")
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	tables := []string{"Users"}
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME"}).AddRow("users"))
+	mock.ExpectQuery("information_schema.TABLES").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+			AddRow("users", "BASE TABLE", "InnoDB"))
 
-	err := checker.ValidateTablesExist(ctx, tables)
+	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected case-sensitive table mismatch error")
 	}
@@ -429,13 +434,19 @@ func TestValidateTablesExist_QueryError(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT TABLE_NAME FROM information_schema.TABLES").
+	mock.ExpectQuery("information_schema.TABLES").
 		WillReturnError(errors.New("query failed"))
 
-	err := checker.ValidateTablesExist(ctx, []string{"users"})
+	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
 
 	if err == nil {
 		t.Error("Expected error for query failure")
+	}
+
+	// An inspection failure is not a schema verdict.
+	var preflightErr *PreflightError
+	if errors.As(err, &preflightErr) {
+		t.Errorf("query failure must not surface as *PreflightError, got %v", err)
 	}
 }
 
@@ -1816,10 +1827,12 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
+	run := newPreflightRun(checker)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	err := checker.ValidateTablesExist(ctx, []string{"users"})
+	err := checker.ValidateTablesExist(ctx, run)
 
 	if err == nil {
 		t.Error("Expected error for cancelled context")
