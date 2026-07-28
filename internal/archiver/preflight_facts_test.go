@@ -253,3 +253,81 @@ func TestPreflightRunIsNotStoredOnChecker(t *testing.T) {
 		t.Fatalf("the second run reused the first run's cache: %v", err)
 	}
 }
+
+// TestPreflightRunMemoizesInvisibleColumns proves the fact is fetched exactly once even
+// when several stages ask for it. Only one expectation is registered, so an unmemoized
+// second call re-queries and gets "all expectations were already fulfilled".
+func TestPreflightRunMemoizesInvisibleColumns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
+			AddRow("orders", "note"))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.invisibleColumns(context.Background())
+	if err != nil {
+		t.Fatalf("first invisibleColumns: %v", err)
+	}
+	second, err := run.invisibleColumns(context.Background())
+	if err != nil {
+		t.Fatalf("second invisibleColumns: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Table != second[0].Table {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected invisible-column query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesInvisibleColumnsErrors proves a failed fetch is memoized too.
+//
+// The identity assertion (errors.Is(secondErr, firstErr)) is what makes this
+// non-vacuous. Asserting only that both errors are non-nil passes with memoization
+// removed entirely, because a consumed sqlmock expectation still returns an error on the
+// next call and ExpectationsWereMet() still reports nil — both verified by mutation in
+// phase 012, not assumed.
+func TestPreflightRunMemoizesInvisibleColumnsErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("information_schema.COLUMNS").WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.invisibleColumns(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+
+	_, secondErr := run.invisibleColumns(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected invisible-column query was not observed: %v", err)
+	}
+}

@@ -38,6 +38,10 @@ type preflightRun struct {
 	dstTables       []validations.TableInfo
 	dstTablesErr    error
 	dstTablesLoaded bool
+
+	invisible       []validations.InvisibleColumns
+	invisibleErr    error
+	invisibleLoaded bool
 }
 
 // newPreflightRun captures the graph's node list and constructs the source
@@ -79,4 +83,17 @@ func (r *preflightRun) destTables(ctx context.Context) ([]validations.TableInfo,
 		r.dstTablesLoaded = true
 	}
 	return r.dstTables, r.dstTablesErr
+}
+
+// invisibleColumns returns one fact per graph table that has at least one INVISIBLE
+// column, fetched on first use. Tables without invisible columns are absent from the
+// result, so an empty slice means "none". Both the value and any error are memoized, for
+// the same reason sourceTables does it: one broken connection must not produce two
+// different verdicts within a run.
+func (r *preflightRun) invisibleColumns(ctx context.Context) ([]validations.InvisibleColumns, error) {
+	if !r.invisibleLoaded {
+		r.invisible, r.invisibleErr = r.srcInspector.InvisibleColumns(ctx, r.tables)
+		r.invisibleLoaded = true
+	}
+	return r.invisible, r.invisibleErr
 }

@@ -2366,11 +2366,11 @@ func TestValidateNoInvisibleColumns_Rejected(t *testing.T) {
 
 	// The check's query filters EXTRA LIKE '%INVISIBLE%', so it only ever
 	// returns invisible columns.
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS").
+	mock.ExpectQuery("information_schema.COLUMNS").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
 			AddRow("orders", "secret_payload"))
 
-	err := checker.ValidateNoInvisibleColumns(ctx, []string{"users", "orders"})
+	err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected INVISIBLE_COLUMN_CHECK for a participating invisible column, got nil")
 	}
@@ -2398,14 +2398,216 @@ func TestValidateNoInvisibleColumns_Success(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS").
+	mock.ExpectQuery("information_schema.COLUMNS").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}))
 
-	if err := checker.ValidateNoInvisibleColumns(ctx, []string{"users", "orders"}); err != nil {
+	if err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected no error when no invisible columns are present, got: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unfulfilled mock expectations: %v", err)
+	}
+}
+
+// TestValidateNoInvisibleColumnsFansOutPerColumn proves the migrated check preserves the
+// "<table>.<column>" Tables shape. The library emits ONE finding per table with a Columns
+// slice; goarchive reports one entry per column, and phase 004's characterization asserts
+// exactly that (orders.note, orders.doubled).
+//
+// Assertion shape follows the ordering contract: exact ordinal order WITHIN a table, and
+// set equality ACROSS tables. Cross-table order follows graph.AllNodes(), which ranges a
+// map, so a flat ordered assertion would flake roughly half the time.
+func TestValidateNoInvisibleColumnsFansOutPerColumn(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Rows arrive as the library's ORDER BY TABLE_NAME, ORDINAL_POSITION would deliver
+	// them — "order_lines" sorts before "orders" ('_' < 's'). Cross-table row order is
+	// in fact irrelevant (the library buckets into a map), but matching the real query
+	// keeps the fixture honest.
+	//
+	// "zeta" precedes "alpha" DELIBERATELY: ordinal order here is not alphabetical
+	// order, so the within-table assertion below genuinely fails if anything sorts the
+	// columns. With alphabetically-ordered names the assertion could not tell the two
+	// apart and would pin nothing.
+	mock.ExpectQuery("information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
+			AddRow("order_lines", "hidden").
+			AddRow("orders", "zeta").
+			AddRow("orders", "alpha"))
+
+	// AddNode is REQUIRED. AddEdgeWithMeta only records the edge in Children/Parents; it
+	// does NOT register the node, so without this the child never reaches AllNodes(),
+	// is never requested, and the library filters its row out — the test would then fail
+	// for a reason unrelated to what it checks.
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", &graph.Node{
+		Name:           "order_lines",
+		ForeignKey:     "order_id",
+		ReferenceKey:   "id",
+		DependencyType: "1-N",
+	})
+	g.SetPK("order_lines", "id")
+	g.AddEdgeWithMeta("orders", "order_lines", "order_id", "id", "1-N")
+
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	err = p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p))
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "INVISIBLE_COLUMN_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 3 {
+		t.Fatalf("Tables = %v, want exactly 3 entries", pe.Tables)
+	}
+
+	got := map[string][]string{}
+	for _, entry := range pe.Tables {
+		table, column, ok := strings.Cut(entry, ".")
+		if !ok {
+			t.Fatalf("entry %q is not in <table>.<column> form (fan-out lost)", entry)
+		}
+		got[table] = append(got[table], column)
+	}
+
+	want := map[string][]string{
+		"orders":      {"zeta", "alpha"},
+		"order_lines": {"hidden"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("tables = %v, want exactly the keys of %v", got, want)
+	}
+	for table, wantCols := range want {
+		gotCols, ok := got[table]
+		if !ok {
+			t.Fatalf("no entries for table %q; got %v", table, got)
+		}
+		if strings.Join(gotCols, ",") != strings.Join(wantCols, ",") {
+			t.Fatalf("table %q columns = %v, want %v (ORDINAL_POSITION order)",
+				table, gotCols, wantCols)
+		}
+	}
+}
+
+// TestValidateNoInvisibleColumnsPasses is the negative control: no invisible columns
+// among the participating tables passes.
+//
+// This is an assert-passes test and cannot stand alone: it also passes against a
+// ValidateNoInvisibleColumns that returns nil unconditionally. Its partner above is what
+// proves the check still fires.
+func TestValidateNoInvisibleColumnsPasses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	if err := p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p)); err != nil {
+		t.Fatalf("expected pass, got %v", err)
+	}
+}
+
+// TestValidateNoInvisibleColumnsInspectionErrorIsPlain proves a failed fact fetch
+// surfaces as a PLAIN error, never a *PreflightError. A *PreflightError means "the schema
+// is wrong"; this means "we could not find out".
+//
+// Required by the SCOPE CAVEAT in characterization_matrix_integration_test.go: the
+// integration probe dies at the FIRST query RunWithProfile issues, so it can only pin
+// this shape for ValidateTablesExist. Every phase 013-031 must assert it at unit level
+// for the check it replaces.
+//
+// The assertion is on goarchive's WRAPPER text, not on the stage word alone, and that
+// distinction is load-bearing here: the library's own op name for this call is literally
+// "invisible_columns", so the raw *ObjectError already contains that substring
+// ("validations: invisible_columns in schema `srcdb`: query metadata: ..."). Asserting
+// only the stage word would pass against `return err` unwrapped — a plain error that is
+// not a *PreflightError either. Verified empirically, not assumed.
+func TestValidateNoInvisibleColumnsInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.COLUMNS").
+		WillReturnError(errors.New("query failed"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p))
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight invisible_columns inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+}
+
+// TestValidateNoInvisibleColumnsConsumesTheCachedFact proves the stage reads the run's
+// memoized fact rather than fetching its own, which is the standing non-negotiable
+// ("goarchive must never re-query information_schema for a fact the library answers").
+//
+// Nothing else covers this. The memoization tests in preflight_facts_test.go prove the
+// ACCESSOR caches; they say nothing about whether this stage uses it. An implementation
+// that ignored `run` and built its own Inspector passes every other test in this phase,
+// both characterization invisible-column tests, and mutants M1 and M2.
+//
+// Exactly ONE expectation is registered and the explicit pre-load consumes it. A stage
+// that re-queried would receive "all expectations were already fulfilled" and return it
+// as an inspection error — a plain error, so the *PreflightError assertion fails. Note
+// mock.ExpectationsWereMet() would NOT catch this: the single expectation is consumed
+// either way. The verdict discriminates, not the expectation bookkeeping.
+func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("information_schema.COLUMNS").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
+			AddRow("orders", "note"))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.invisibleColumns(context.Background()); err != nil {
+		t.Fatalf("pre-load of the invisible-column fact failed: %v", err)
+	}
+
+	err = p.ValidateNoInvisibleColumns(context.Background(), run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "INVISIBLE_COLUMN_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "orders.note" {
+		t.Fatalf("Tables = %v, want [orders.note]", pe.Tables)
 	}
 }
 

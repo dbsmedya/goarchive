@@ -58,7 +58,7 @@ func dropInvTable(ctx context.Context, db *sql.DB) {
 // naming the given column.
 func assertInvisibleRejected(t *testing.T, ctx context.Context, checker *PreflightChecker, wantCol string) {
 	t.Helper()
-	err := checker.ValidateNoInvisibleColumns(ctx, []string{invTable})
+	err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected INVISIBLE_COLUMN_CHECK for a participating invisible column, got nil — " +
 			"SELECT * would drop its value before the source row is deleted")
@@ -132,7 +132,7 @@ func TestIntegrationInvisibleColumn_Rejected(t *testing.T) {
 				"payload VARCHAR(255) DEFAULT 'x') ENGINE=InnoDB"); err != nil {
 			t.Fatalf("create table: %v", err)
 		}
-		if err := checker.ValidateNoInvisibleColumns(ctx, []string{invTable}); err != nil {
+		if err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker)); err != nil {
 			t.Fatalf("expected a table with only visible columns to pass, got: %v", err)
 		}
 	})
