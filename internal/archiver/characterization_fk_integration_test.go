@@ -37,7 +37,7 @@ import (
 //     because both are natural extensions of the test they live in rather than
 //     ephemeral scratch edits:
 //
-//       - TestCharacterizationFKIndexNeverFires/FKIndexCheckDebugFired:
+//       - TestCharacterizationFKIndexNeverFires/<command>/FKIndexCheckDebugFired:
 //         FK_INDEX_CHECK cannot be provoked end-to-end (MySQL guarantees the
 //         supporting index), so the PASS asserted for every command proves
 //         nothing about whether preflight actually reached and evaluated
@@ -45,11 +45,20 @@ import (
 //         produce the same PASS. This sub-test asserts the checker's own
 //         Debug-level completion log ("FK index check PASSED (%d foreign keys
 //         verified)", preflight.go:606) fired with a non-zero count, proving the
-//         checker actually ran. The sibling sub-test
-//         DestSchemaCompatibilityStillFires is weaker and does NOT prove this —
-//         it only shows the harness reaches preflight at all, via a DIFFERENT,
-//         EARLIER check (preflight.go:138-246) that returns before
-//         ValidateForeignKeyIndexes is ever called; see its own comment.
+//         checker actually ran — independently for EACH command, against a
+//         fixture owned by that command alone. (A prior revision ran all five
+//         commands against ONE shared fixture and scanned the aggregated log
+//         once after the loop; external review found that this proved only
+//         that SOME command logged the message, so a checker skipped for a
+//         single profile still passed as long as any of the other four logged
+//         it. Fixed by giving every command its own fixture, the same pattern
+//         TestCharacterizationCascadeWarning and
+//         TestCharacterizationDeleteTriggerForced already use for the identical
+//         reason.) The sibling sub-test DestSchemaCompatibilityStillFires is
+//         weaker and does NOT prove this — it only shows the harness reaches
+//         preflight at all, via a DIFFERENT, EARLIER check (preflight.go:138-246)
+//         that returns before ValidateForeignKeyIndexes is ever called; see its
+//         own comment.
 //
 //       - TestCharacterizationCascadeWarning/RestrictRuleNoWarning: a warning
 //         that fires whenever ANY foreign key exists (regardless of ON DELETE
@@ -131,47 +140,64 @@ func TestCharacterizationFKIndexNeverFires(t *testing.T) {
 			"FK_INDEX_CHECK may be provokable after all, re-examine phase 024")
 	}
 
-	for _, cmd := range chrCommands {
-		t.Run(cmd.Name, func(t *testing.T) {
-			chrAssertPasses(t, chrRun(t, ctx, f.Checker(t, chrTwoTableGraph()), cmd, false))
-		})
-	}
-
-	// Non-vacuity proof (rigor: pass-asserting tests must be proven, not assumed).
-	// The PASS above cannot distinguish "FK_INDEX_CHECK is genuinely unprovokable"
-	// from "ValidateForeignKeyIndexes never ran." DEST_SCHEMA_COMPATIBILITY_CHECK
+	// Non-vacuity proof (rigor: pass-asserting tests must be proven, not assumed),
+	// PER COMMAND. The PASS below cannot distinguish "FK_INDEX_CHECK is genuinely
+	// unprovokable" from "ValidateForeignKeyIndexes never ran." DEST_SCHEMA_COMPATIBILITY_CHECK
 	// (see DestSchemaCompatibilityStillFires below) CANNOT stand in as that proof:
 	// it is an earlier check in RunWithProfile's fixed order (preflight.go:138-246)
 	// that returns before ValidateForeignKeyIndexes is ever reached, so a fixture
 	// that provokes it never exercises FK_INDEX_CHECK at all. Instead, assert the
 	// checker's own Debug-level completion log directly: ValidateForeignKeyIndexes
 	// logs "FK index check PASSED (%d foreign keys verified)" on success
-	// (preflight.go:606). Require both that the message fired at least once across
-	// the five command runs above and that the parsed count is non-zero — a zero
-	// count would mean an empty fact set (wrong selector, wrong schema arg, or a
-	// lazily-acquired fact never acquired), precisely the phase-024 failure mode
-	// this must catch.
-	t.Run("FKIndexCheckDebugFired", func(t *testing.T) {
-		const prefix = "FK index check PASSED ("
-		var found bool
-		for _, entry := range f.Logs.FilterLevelExact(zapcore.DebugLevel).All() {
-			if !strings.HasPrefix(entry.Message, prefix) {
-				continue
-			}
-			var count int
-			if _, err := fmt.Sscanf(entry.Message, "FK index check PASSED (%d foreign keys verified)", &count); err != nil {
-				t.Fatalf("failed to parse FK count from debug message %q: %v", entry.Message, err)
-			}
-			if count == 0 {
-				t.Fatalf("FK index check logged zero foreign keys verified: %q", entry.Message)
-			}
-			found = true
-		}
-		if !found {
-			t.Fatal(`expected a "FK index check PASSED" debug log from ValidateForeignKeyIndexes; ` +
-				"none was recorded — FK_INDEX_CHECK may not have run")
-		}
-	})
+	// (preflight.go:606). Require both that the message fired for THIS command's
+	// own run and that the parsed count is non-zero — a zero count would mean an
+	// empty fact set (wrong selector, wrong schema arg, or a lazily-acquired fact
+	// never acquired), precisely the phase-024 failure mode this must catch.
+	//
+	// Fresh fixture per command (rather than one shared fixture scanned once after
+	// the loop): a shared fixture's f.Logs accumulates every command's output, so a
+	// single aggregated scan after the loop cannot tell "some command logged this"
+	// apart from "THIS command logged this" — a checker that silently no-ops for
+	// exactly one profile would still satisfy the aggregate proof as long as any of
+	// the other four commands logged the message (this is exactly how an earlier
+	// revision of this test passed under that mutation; external review caught it).
+	// Mirrors the identical fresh-fixture-per-iteration pattern already used by
+	// TestCharacterizationCascadeWarning and TestCharacterizationDeleteTriggerForced,
+	// for the same reason: per-iteration log assertions are meaningless against a
+	// fixture whose log accumulates across iterations.
+	for _, cmd := range chrCommands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			f := newChrFixture(t, ctx)
+			f.ExecSource(t, ctx, chrOrdersDDL)
+			f.ExecSource(t, ctx, chrLinesDDL)
+			f.ExecDest(t, ctx, chrOrdersDDL)
+			f.ExecDest(t, ctx, chrLinesDDL)
+
+			chrAssertPasses(t, chrRun(t, ctx, f.Checker(t, chrTwoTableGraph()), cmd, false))
+
+			t.Run("FKIndexCheckDebugFired", func(t *testing.T) {
+				const prefix = "FK index check PASSED ("
+				var found bool
+				for _, entry := range f.Logs.FilterLevelExact(zapcore.DebugLevel).All() {
+					if !strings.HasPrefix(entry.Message, prefix) {
+						continue
+					}
+					var count int
+					if _, err := fmt.Sscanf(entry.Message, "FK index check PASSED (%d foreign keys verified)", &count); err != nil {
+						t.Fatalf("failed to parse FK count from debug message %q: %v", entry.Message, err)
+					}
+					if count == 0 {
+						t.Fatalf("FK index check logged zero foreign keys verified: %q", entry.Message)
+					}
+					found = true
+				}
+				if !found {
+					t.Fatalf(`expected a "FK index check PASSED" debug log from ValidateForeignKeyIndexes for %s; `+
+						"none was recorded — FK_INDEX_CHECK may not have run", cmd.Name)
+				}
+			})
+		})
+	}
 
 	// DestSchemaCompatibilityStillFires is a WEAKER, narrower proof than the
 	// sub-test above: it shows only that this fixture's checker reaches
@@ -209,7 +235,7 @@ func TestCharacterizationFKCoverageCrossSchema(t *testing.T) {
 			f.ExecDest(t, ctx, chrOrdersDDL)
 			f.ExecDest(t, ctx, chrLinesDDL)
 
-			outside := f.SourceSchema + "_ext"
+			outside := chrExternalSchemaName(f.SourceSchema)
 			chrCreateExternalChild(t, ctx, f, outside, rule)
 
 			for _, cmd := range chrCommands {
@@ -224,8 +250,18 @@ func TestCharacterizationFKCoverageCrossSchema(t *testing.T) {
 
 // chrCreateExternalChild creates schema `outside` holding a table whose foreign key
 // points at the fixture's in-graph `orders` table, with the given ON DELETE rule.
+// `outside` must equal chrExternalSchemaName(f.SourceSchema) — see the assertion
+// below — so that newChrFixture's startup recovery (characterization_support_test.go)
+// knows how to reclaim it; the parameter itself is kept (not derived internally)
+// because phases 010 and 025 already call this function with that shape.
 func chrCreateExternalChild(t *testing.T, ctx context.Context, f *chrFixture, outside, onDelete string) {
 	t.Helper()
+
+	if want := chrExternalSchemaName(f.SourceSchema); outside != want {
+		t.Fatalf("chrCreateExternalChild: outside = %q, want %q (chrExternalSchemaName(f.SourceSchema)) — "+
+			"newChrFixture's startup recovery only knows how to reclaim THAT name; "+
+			"a caller-chosen name outside that convention would leak", outside, want)
+	}
 
 	nullability := "NOT NULL"
 	if onDelete == "SET NULL" {
@@ -242,14 +278,23 @@ func chrCreateExternalChild(t *testing.T, ctx context.Context, f *chrFixture, ou
 	}
 	// Registered immediately after CREATE DATABASE, before the FK-bearing table
 	// below exists — the precedent chrCreateAccount sets deliberately
-	// (characterization_accounts_test.go:121-123). On the passing path ordering
-	// doesn't matter, but a KILLED run (this project's documented failure mode)
-	// dying between here and the table's creation would otherwise leave
-	// `<outside>` behind WITH its FK still pointing into the fixture's source
-	// schema; the next run's newChrFixture then fails its own
-	// `DROP DATABASE chr_src_N` with Error 3730 ("Cannot drop table ... referenced
-	// by a foreign key constraint"), bricking every characterization test in the
-	// package until `make test-reset`.
+	// (characterization_accounts_test.go:121-123). This ordering fixes the
+	// IN-PROCESS failure path: if the CREATE TABLE below commits server-side but
+	// the driver reports an error back to Go (context timeout, dropped
+	// connection) before the FK exists, t.Fatalf fires immediately after — and
+	// with cleanup registered AFTER that statement instead, this t.Cleanup would
+	// never be reached, so `<outside>` would leak with the table (and any FK
+	// that did get created) still in place for the next test in this process.
+	// Registering the cleanup first closes that gap.
+	//
+	// t.Cleanup does NOT run at all when the process is KILLED (this project's
+	// documented failure mode), so a killed run between CREATE DATABASE and here
+	// still leaves `<outside>` behind with a live FK into the fixture's source
+	// schema. That residue is no longer a limitation, though: newChrFixture's
+	// startup recovery drops chrExternalSchemaName(srcSchema) before dropping
+	// srcSchema itself on every subsequent call, so the NEXT fixture created for
+	// the same schema-name slot reclaims it automatically — see
+	// TestCharacterizationFixtureRecoversExternalSchemaResidue for the proof.
 	t.Cleanup(func() {
 		if _, err := f.SourceDB.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+outside+"`"); err != nil {
 			t.Logf("cleanup drop %s: %v", outside, err)
@@ -264,6 +309,75 @@ func chrCreateExternalChild(t *testing.T, ctx context.Context, f *chrFixture, ou
 		outside, nullability, f.SourceSchema, onDelete)
 	if _, err := f.SourceDB.ExecContext(ctx, stmt); err != nil {
 		t.Fatalf("external child setup %q: %v", stmt, err)
+	}
+}
+
+// TestCharacterizationFixtureRecoversExternalSchemaResidue proves that newChrFixture's startup
+// recovery (characterization_support_test.go) actually reclaims the residue a
+// KILLED run leaves behind: chrCreateExternalChild's external schema, holding a
+// live FK into the fixture's own source schema. t.Cleanup never runs for a killed
+// process, so in production this residue survives to the NEXT test-binary
+// invocation; chrSchemaSeq resets to 0 there and replays the identical sequence of
+// schema names (tests in this package run sequentially, so the counter's Nth value
+// is deterministic run-to-run), meaning the next process's Nth newChrFixture call
+// reclaims the exact schema name the killed run left behind. This test reproduces
+// that scenario within a single process by seeding the residue directly, ahead of
+// the newChrFixture call that will claim the same schema-name slot.
+//
+// Non-vacuity: this seeding must actually reproduce the Error 3730 hazard, or the
+// "recovery" it proves is meaningless. Confirmed by mutation: temporarily deleting
+// the recovery drop in newChrFixture and re-running this test fails, surfacing
+// through newChrFixture's own "drop %s: %v" t.Fatalf exactly as the hazard
+// predicts —
+//
+//	drop chr_src_1: Error 3730 (HY000): Cannot drop table 'orders' referenced by
+//	a foreign key constraint 'fk_audit_orders' on table 'audit'.
+//
+// Restoring the recovery line makes this test pass again.
+func TestCharacterizationFixtureRecoversExternalSchemaResidue(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+
+	adminSource, ok := setup.GetDB("source")
+	if !ok {
+		t.Fatal("source database not found in integration setup")
+	}
+
+	// newChrFixture below will claim chrSchemaSeq+1; seed that exact slot's
+	// residue ahead of time: the source schema a killed run would have created,
+	// plus its external child holding a live FK into it.
+	predictedSrc := fmt.Sprintf("chr_src_%d", chrSchemaSeq+1)
+	extSchema := chrExternalSchemaName(predictedSrc)
+
+	for _, stmt := range []string{
+		"DROP DATABASE IF EXISTS `" + extSchema + "`",
+		"DROP DATABASE IF EXISTS `" + predictedSrc + "`",
+		"CREATE DATABASE `" + predictedSrc + "`",
+		"CREATE TABLE `" + predictedSrc + "`.orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+		"CREATE DATABASE `" + extSchema + "`",
+		fmt.Sprintf(
+			"CREATE TABLE `%s`.audit (id bigint NOT NULL, order_id bigint NOT NULL, "+
+				"PRIMARY KEY (id), KEY idx_o (order_id), "+
+				"CONSTRAINT fk_audit_orders FOREIGN KEY (order_id) REFERENCES `%s`.orders (id)"+
+				") ENGINE=InnoDB",
+			extSchema, predictedSrc),
+	} {
+		if _, err := adminSource.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("seed residue %q: %v", stmt, err)
+		}
+	}
+
+	// If newChrFixture's startup recovery does not run (or targets the wrong
+	// name), this call fails HERE with Error 3730 instead of proceeding — see the
+	// non-vacuity note above. Its own t.Cleanup then owns tearing down
+	// predictedSrc (now claimed as f.SourceSchema) and its destination schema;
+	// extSchema is dropped by the recovery step itself, so nothing seeded here
+	// needs manual cleanup on the passing path.
+	f := newChrFixture(t, ctx)
+	if f.SourceSchema != predictedSrc {
+		t.Fatalf("newChrFixture claimed %s, want %s — the chrSchemaSeq assumption this "+
+			"test relies on was violated, so it no longer seeds the slot newChrFixture "+
+			"actually claims", f.SourceSchema, predictedSrc)
 	}
 }
 

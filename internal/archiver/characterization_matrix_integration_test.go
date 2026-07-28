@@ -331,7 +331,7 @@ var chrMatrix = []chrMatrixRow{
 		Fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
 			f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
 			f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
-			chrCreateExternalChild(t, ctx, f, f.SourceSchema+"_ext", "RESTRICT")
+			chrCreateExternalChild(t, ctx, f, chrExternalSchemaName(f.SourceSchema), "RESTRICT")
 			return graph.NewGraph("orders", "id")
 		},
 	},
@@ -377,8 +377,11 @@ var chrMatrix = []chrMatrixRow{
 //   - ROOT_PK_TYPE_UNSUPPORTED — it is a plain error, not a *PreflightError, so it
 //     does not fit the row shape. Phase 005 covers all five commands for it.
 //   - FK_INDEX_CHECK — unprovokable end-to-end (phase 009 Ambiguity 1;
-//     TestCharacterizationFKIndexNeverFires covers all five commands with a
-//     non-vacuity proof).
+//     TestCharacterizationFKIndexNeverFires covers all five commands: each asserts
+//     a PASS, and each independently proves ValidateForeignKeyIndexes actually ran
+//     with a non-zero foreign-key count, via a fixture owned by that command alone
+//     (not a single proof aggregated across all five runs — a per-command fixture
+//     is required for the proof to mean anything per command).
 //   - JOB_SCHEMA_PERMISSION_CHECK, DEST_WRITE_PERMISSION_CHECK,
 //     SOURCE_DELETE_PERMISSION_CHECK, FK_COVERAGE_VISIBILITY_CHECK — they need
 //     restricted accounts, which phases 008 and 009 already assert across all five
@@ -513,7 +516,7 @@ func TestCharacterizationFirstFailureOrdering(t *testing.T) {
 				f.ExecSource(t, ctx, "CREATE TABLE audit_log (id bigint NOT NULL AUTO_INCREMENT, PRIMARY KEY (id)) ENGINE=InnoDB")
 				f.ExecSource(t, ctx, "CREATE TRIGGER trg_del AFTER DELETE ON orders FOR EACH ROW INSERT INTO audit_log VALUES (NULL)")
 				f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
-				chrCreateExternalChild(t, ctx, f, f.SourceSchema+"_ext", "RESTRICT")
+				chrCreateExternalChild(t, ctx, f, chrExternalSchemaName(f.SourceSchema), "RESTRICT")
 				return graph.NewGraph("orders", "id")
 			},
 		},
