@@ -1,51 +1,83 @@
+# Test MySQL topology: db1 = source (sakila), db2 = destination, db3 = replica.
+#
+# The data directories are Docker NAMED VOLUMES, not macOS bind mounts. This is
+# load-bearing, not a style choice:
+#
+#   A bind-mounted datadir lives on the macOS filesystem exposed through
+#   VirtioFS/gRPC-FUSE. InnoDB opens the containing directory and fsyncs it when
+#   it creates a tablespace, and that layer can fail the directory open — which
+#   trips `InnoDB: Assertion failure: os0file.cc:3056:dir_fd != -1` and kills
+#   mysqld with signal 6, mid-CREATE TABLE. It also forced
+#   `lower_case_table_names=2` (macOS is case-insensitive), so tests ran under
+#   different identifier-case semantics than a real Linux server.
+#
+# Named volumes live on the Linux VM's own ext4 filesystem: real POSIX directory
+# semantics, case-sensitive, and considerably faster.
+#
+# Consequence for the workflow: state is cleared with `docker compose down -v`
+# (see `make test-reset`), NOT by deleting a host directory.
+
 services:
   db1:
     container_name: db1
     hostname: db1.local
-    image: percona/percona-server:8.4.4-4.1-arm64
+    image: percona/percona-server:8.4
     cap_add:
       - SYS_NICE
     ports:
       - 3305:3306
       - 33061:33060
     volumes:
-      - ./docker_files/dbdata/data_01:/var/lib/mysql
+      - db1_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db1.cnf:/etc/my.cnf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    # Docker Desktop is capped at ~7.4 GB total. These three limits sum to 5 GB,
+    # leaving headroom for the Linux VM and the Docker daemon. Each container's
+    # innodb_buffer_pool_size is set explicitly in its .cnf and must stay well
+    # under the limit here — see the comment in db1.cnf.
+    mem_limit: 2g
     restart: unless-stopped
 
   db2:
     container_name: db2
     hostname: db2.local
-    image: percona/percona-server:8.4.4-4.1-arm64
+    image: percona/percona-server:8.4
     cap_add:
       - SYS_NICE
     ports:
       - 3307:3306
       - 33062:33060
     volumes:
-      - ./docker_files/dbdata/data_02:/var/lib/mysql
+      - db2_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db2.cnf:/etc/my.cnf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    mem_limit: 2g
     restart: unless-stopped
 
   db3:
     container_name: db3
     hostname: db3.local
-    image: percona/percona-server:8.4.4-4.1-arm64
+    image: percona/percona-server:8.4
     cap_add:
       - SYS_NICE
     ports:
       - 3308:3306
       - 33063:33060
     volumes:
-      - ./docker_files/dbdata/data_03:/var/lib/mysql
+      - db3_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db3.cnf:/etc/my.cnf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+    # db3 only serves replication-lag tests, so it gets the smallest share.
+    mem_limit: 1g
     restart: unless-stopped
+
+volumes:
+  db1_data:
+  db2_data:
+  db3_data:

@@ -232,12 +232,15 @@ test-status:
 
 # Destroy and rebuild the test databases from scratch. Use when a killed test run
 # has left orphaned state that `test-down` cannot clear — `test-down` stops the
-# containers but the data lives in a host bind mount and survives.
+# containers but the data lives in a Docker named volume and survives.
+#
+# The `-v` is the whole point: it removes the db1_data/db2_data/db3_data volumes.
+# (Before 2026-07-28 the datadir was a host bind mount and this target used
+# `rm -rf tests/docker_files/dbdata`. See tests/compose.yml for why it moved.)
 .PHONY: test-reset
 test-reset:
 	@echo "Destroying test database state..."
-	cd tests && docker compose down
-	rm -rf tests/docker_files/dbdata
+	cd tests && docker compose down -v
 	cd tests && docker compose up -d
 	@echo "Containers restarted with empty data directories."
 	@echo "Run 'bash tests/scripts/run-tests.sh --setup' to reload Sakila."
