@@ -97,6 +97,80 @@ func unexpectedFactsError(
 	)
 }
 
+// judgePrimaryKeyShape applies goarchive's PK-shape policy to library facts.
+//
+// It is a pure function over facts so the ordering contract — composite is the headline
+// rejection and is reported ahead of PK-definition problems, as 1.8's
+// ValidateSingleColumnPrimaryKey did — is unit-testable without a database.
+//
+// expected maps table -> configured primary_key. Tables absent from expected have no
+// configured key; ValidatePrimaryKeyColumns rejects those earlier in the check order.
+func judgePrimaryKeyShape(facts []validations.PKInfo, expected map[string]string) error {
+	var compositeIssues []string
+	for _, f := range validations.CheckPKSingleColumn(facts) {
+		if f.Check != validations.IDPKSingleColumn {
+			return unexpectedFindingError("pk_shape", f)
+		}
+		pk, ok := f.Facts.(validations.PKInfo)
+		if !ok {
+			return unexpectedFactsError("pk_shape", f, "validations.PKInfo")
+		}
+		compositeIssues = append(compositeIssues,
+			fmt.Sprintf("%s(%d-column PRIMARY KEY)", pk.Table, len(pk.Columns)))
+	}
+	if len(compositeIssues) > 0 {
+		return &PreflightError{
+			Check:   "COMPOSITE_PK_CHECK",
+			Message: "Composite primary keys are not supported. GoArchive identifies and deletes rows by a single primary-key column; a multi-column PK would over-match and risk deleting rows outside the archived set. See README 'Known Limits & Caution'",
+			Tables:  compositeIssues,
+		}
+	}
+
+	var pkDefIssues []string
+	for _, f := range validations.CheckPKExists(facts) {
+		if f.Check != validations.IDPKExists {
+			return unexpectedFindingError("pk_shape", f)
+		}
+		pk, ok := f.Facts.(validations.PKInfo)
+		if !ok {
+			return unexpectedFactsError("pk_shape", f, "validations.PKInfo")
+		}
+		pkDefIssues = append(pkDefIssues, fmt.Sprintf("%s(no PRIMARY KEY)", pk.Table))
+	}
+	for _, f := range validations.CheckPKMatchesExpected(facts, expected) {
+		if f.Check != validations.IDPKMatchesExpected {
+			return unexpectedFindingError("pk_shape", f)
+		}
+		pk, ok := f.Facts.(validations.PKInfo)
+		if !ok {
+			return unexpectedFactsError("pk_shape", f, "validations.PKInfo")
+		}
+		// Unreachable with dbsgomysql v0.4.1 because CheckPKMatchesExpected already
+		// skips PKNone; retained to prevent duplicate reporting if dependency
+		// behaviour changes. 1.8's switch reported each table exactly once, and that
+		// is the property being protected — not a state reachable today.
+		if pk.Kind == validations.PKNone {
+			continue
+		}
+		actual := ""
+		if len(pk.Columns) > 0 {
+			actual = pk.Columns[0]
+		}
+		pkDefIssues = append(pkDefIssues, fmt.Sprintf(
+			"%s(configured primary_key %q is not the PRIMARY KEY column %q)",
+			pk.Table, expected[pk.Table], actual))
+	}
+	if len(pkDefIssues) > 0 {
+		return &PreflightError{
+			Check:   "PRIMARY_KEY_CHECK",
+			Message: "Every participating table must have a single-column PRIMARY KEY equal to the configured primary_key. GoArchive identifies and deletes rows by that column, so a missing or mismatched PRIMARY KEY can over-match and delete rows outside the archived set",
+			Tables:  pkDefIssues,
+		}
+	}
+
+	return nil
+}
+
 // triggerOffenders converts trigger findings into goarchive's one-entry-per-table
 // "<table>(<trigger>)" decoration. The library sorts each table's triggers by firing
 // order (BEFORE before AFTER) and then by name, so element [0] is the deterministic

@@ -50,6 +50,12 @@ type preflightRun struct {
 	dstInsTriggers       []validations.TriggerInfo
 	dstInsTriggersErr    error
 	dstInsTriggersLoaded bool
+
+	pks       []validations.PKInfo
+	pksErr    error
+	pksLoaded bool
+
+	checker *PreflightChecker
 }
 
 // newPreflightRun captures the graph's node list and constructs the source
@@ -60,6 +66,7 @@ func newPreflightRun(p *PreflightChecker) *preflightRun {
 	r := &preflightRun{
 		tables:       p.graph.AllNodes(),
 		srcInspector: validations.NewInspector(p.db, p.sourceDBName),
+		checker:      p,
 	}
 	if p.destinationDB != nil && p.destinationDBName != "" {
 		r.dstInspector = validations.NewInspector(p.destinationDB, p.destinationDBName)
@@ -133,4 +140,51 @@ func (r *preflightRun) destInsertTriggers(ctx context.Context) ([]validations.Tr
 		r.dstInsTriggersLoaded = true
 	}
 	return r.dstInsTriggers, r.dstInsTriggersErr
+}
+
+// primaryKeys returns one primary-key fact per graph table, fetched on first use.
+// Missing tables are absent from the result; the existence check at position 1 has
+// already rejected those. Both the value and any error are memoized, for the same
+// reason sourceTables does it: one broken connection must not produce two different
+// verdicts within a run.
+func (r *preflightRun) primaryKeys(ctx context.Context) ([]validations.PKInfo, error) {
+	if !r.pksLoaded {
+		r.pks, r.pksErr = r.srcInspector.PrimaryKeys(ctx, r.tables)
+		r.pksLoaded = true
+	}
+	return r.pks, r.pksErr
+}
+
+// expectedPKs maps each graph table to its configured primary_key. Tables with no
+// configured key are omitted — ValidatePrimaryKeyColumns rejects those at position 2,
+// and CheckPKMatchesExpected skips an empty expectation anyway.
+func (r *preflightRun) expectedPKs() map[string]string {
+	out := make(map[string]string, len(r.tables))
+	for _, table := range r.tables {
+		if r.checker.graph.HasPK(table) {
+			out[table] = r.checker.graph.GetPK(table)
+		}
+	}
+	return out
+}
+
+// rootPKInfo returns the primary-key fact for the graph root, reporting whether one
+// was found.
+//
+// It selects BY ROOT NAME rather than by position. Graph.AllNodes() ranges over a map,
+// so r.tables — and therefore the fact order, which PrimaryKeys preserves from the
+// request — is nondeterministic. Indexing the slice would be a coin flip on any graph
+// with more than one table.
+func (r *preflightRun) rootPKInfo(ctx context.Context) (validations.PKInfo, bool, error) {
+	facts, err := r.primaryKeys(ctx)
+	if err != nil {
+		return validations.PKInfo{}, false, err
+	}
+	root := r.checker.graph.Root
+	for _, pk := range facts {
+		if pk.Table == root {
+			return pk, true, nil
+		}
+	}
+	return validations.PKInfo{}, false, nil
 }

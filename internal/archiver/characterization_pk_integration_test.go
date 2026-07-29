@@ -222,11 +222,16 @@ func TestCharacterizationCompositeBeatsPrimaryKey(t *testing.T) {
 // ROOT_PK_TYPE_UNSUPPORTED is a plain string-prefixed error, NOT a *PreflightError.
 // Spec §2 preserves that shape through the re-platforming, so it is asserted here.
 //
-// HAZARD: ValidateRootPKNumeric is the one validator keyed on the session default
-// schema (`WHERE TABLE_SCHEMA = DATABASE()`, preflight.go:260) rather than
-// p.sourceDBName. f.Checker(t, g) binds to f.SourceDB, which newChrFixture opens as a
-// dedicated pool whose DSN default schema is f.SourceSchema — never a borrowed shared
-// pool — so DATABASE() resolves to the fixture's own throwaway schema here.
+// HISTORICAL HAZARD: through 1.8, ValidateRootPKNumeric was the one validator keyed on
+// the session default schema (`WHERE TABLE_SCHEMA = DATABASE()`) rather than
+// p.sourceDBName, so a query against the wrong pool would silently resolve against
+// whatever schema the session happened to default to. f.Checker(t, g) binds to
+// f.SourceDB, which newChrFixture opens as a dedicated pool whose DSN default schema is
+// f.SourceSchema — never a borrowed shared pool — so that was never actually a risk
+// here. Phase 017 moved the validator onto the configured source schema via the run's
+// memoized PrimaryKeys fact, so this hazard no longer applies at all; the fixture stays
+// dedicated per-test for the unrelated reason recorded on chrFixture (reason 2: `USE`
+// session-state leakage on a shared pool).
 func TestCharacterizationRootPKTypeUnsupported(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -243,9 +248,18 @@ func TestCharacterizationRootPKTypeUnsupported(t *testing.T) {
 	}
 }
 
-// TestCharacterizationRootPKIntegerVariantsPass pins the accepted root PK types.
-// isIntegerRootPKType accepts tinyint, smallint, mediumint, int, integer, bigint —
-// signed or unsigned (preflight.go:278-285).
+// TestCharacterizationRootPKIntegerVariantsPass pins the accepted root PK types:
+// tinyint, smallint, mediumint, int, integer, bigint — signed or unsigned.
+//
+// Through 1.8 this classification was attributed to isIntegerRootPKType. As of phase
+// 017, ValidateRootPKNumeric classifies via the library's PKInfo.IsInteger
+// (validations.CheckPKIntegerType), derived from validations.isIntegerDataType —
+// verified byte-identical to isIntegerRootPKType by reading (same six types, same
+// strings.ToLower), not by a unit test, because CheckPKIntegerType trusts the supplied
+// IsInteger field and never itself classifies DataType. This test is what actually
+// exercises the library's real derivation against MySQL, which is precisely why no
+// unit-level equivalence test is needed. isIntegerRootPKType itself is unaffected and
+// stays alive as loadRootPKMeta's production consumer (phase 018 migrates that path).
 func TestCharacterizationRootPKIntegerVariantsPass(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 

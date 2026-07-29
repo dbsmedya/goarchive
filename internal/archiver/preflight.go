@@ -141,12 +141,11 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 
 	// Reject composite primary keys: GoArchive identifies and DELETES rows by a
 	// single PK column, so a multi-column PK would over-match (review P1-1).
-	if err := p.ValidateSingleColumnPrimaryKey(ctx, tables); err != nil {
+	if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
 		return err
 	}
 
-	rootTable := p.graph.Root
-	if err := p.ValidateRootPKNumeric(ctx, rootTable, p.graph.GetPK(rootTable)); err != nil {
+	if err := p.ValidateRootPKNumeric(ctx, run); err != nil {
 		return err
 	}
 
@@ -240,25 +239,60 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers, true)
 }
 
-// ValidateRootPKNumeric ensures the root table primary key is an integer type.
-func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, rootTable, rootPKColumn string) error {
-	const query = `
-		SELECT DATA_TYPE, COLUMN_TYPE
-		FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = DATABASE()
-		  AND TABLE_NAME = ?
-		  AND COLUMN_NAME = ?
-	`
-	var dataType, columnType string
-	err := p.db.QueryRowContext(ctx, query, rootTable, rootPKColumn).Scan(&dataType, &columnType)
+// ValidateRootPKNumeric ensures the root table primary key is an integer type, and
+// records its type and signedness on the graph.
+//
+// The write-back preserves a 1.8 stage side effect (spec §2 "What stays"); it is NOT
+// what supplies the batch pipeline. Every production reader of the metadata
+// (batch_pipeline.go) runs after loadRootPKMeta, which is called by all three
+// orchestrators and unconditionally overwrites this value — so on the archive, purge and
+// copy-only paths this write has no reader, and validate/dry-run never read it at all.
+// It is kept because this phase is behaviour-preserving, not because anything consumes
+// it. Removing it is a dead-write cleanup and belongs in phase 032.
+//
+// The error shape is deliberately a PLAIN string-prefixed error rather than a
+// *PreflightError, preserving 1.8 behaviour (spec §2 "What stays"). Both prefixes are
+// kept: ROOT_PK_TYPE_LOOKUP is unreachable through RunWithProfile (positions 1-3 have
+// already proven the root table exists with a single-column PRIMARY KEY equal to the
+// configured primary_key), but it remains as the defensive branch it always was.
+//
+// This now reads the source schema the checker was constructed with, via the run's
+// memoized fact, instead of the connection's default schema (1.8 queried
+// `WHERE TABLE_SCHEMA = DATABASE()`). Production opens the source pool with
+// DBName = cfg.Database and passes that same value as sourceDBName, so the two are
+// always equal there; the change removes an internal inconsistency rather than altering
+// released behaviour, and carries no deviation-ledger entry.
+func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, run *preflightRun) error {
+	rootTable := p.graph.Root
+	rootPKColumn := p.graph.GetPK(rootTable)
+
+	pk, found, err := run.rootPKInfo(ctx)
 	if err != nil {
 		return fmt.Errorf("ROOT_PK_TYPE_LOOKUP: failed to look up data type for %s.%s: %w", rootTable, rootPKColumn, err)
 	}
-	if !isIntegerRootPKType(dataType) {
-		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'", rootTable, rootPKColumn, dataType)
+	if !found || pk.Kind != validations.PKSingle {
+		return fmt.Errorf("ROOT_PK_TYPE_LOOKUP: failed to look up data type for %s.%s: no single-column primary key fact", rootTable, rootPKColumn)
 	}
+
+	// Written as a length check, NOT `for … range`. A range loop whose body returns on
+	// every path trips staticcheck SA4004 ("the surrounding loop is unconditionally
+	// terminated"), which is production-fatal here: .golangci.yml runs the standard set
+	// at full strength and excludes SA rules only under `path: _test\.go`. Verified —
+	// the loop form fails and this form passes.
+	if findings := validations.CheckPKIntegerType([]validations.PKInfo{pk}); len(findings) > 0 {
+		f := findings[0]
+		if f.Check != validations.IDPKIntegerType {
+			return unexpectedFindingError("root_pk_type", f)
+		}
+		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'", rootTable, rootPKColumn, pk.DataType)
+	}
+
+	// SetRootPKMeta moves here from inside the validator's query (spec §6 slice 4): the
+	// fact is now acquired once by the run and written back explicitly at the call site.
+	// See the doc comment: this preserves the 1.8 stage side effect and is not the write
+	// the batch pipeline reads.
 	if p.graph != nil {
-		p.graph.SetRootPKMeta(strings.ToLower(dataType), strings.Contains(strings.ToLower(columnType), "unsigned"))
+		p.graph.SetRootPKMeta(strings.ToLower(pk.DataType), pk.Unsigned)
 	}
 	return nil
 }
@@ -272,92 +306,24 @@ func isIntegerRootPKType(dataType string) bool {
 	}
 }
 
-// ValidateSingleColumnPrimaryKey rejects participating tables whose PRIMARY KEY
-// spans more than one column. GoArchive discovers, copies, verifies, and DELETES
-// rows by a single PK column (WHERE pk IN (...)); against a composite primary key
-// that filter matches every row sharing the single column value, so a delete
-// could remove rows that were never part of the archived subgraph — silent data
-// loss (review P1-1). The destination PK is required to match the source by the
-// schema-compatibility check, so inspecting the source is sufficient.
-func (p *PreflightChecker) ValidateSingleColumnPrimaryKey(ctx context.Context, tables []string) error {
+// ValidateSingleColumnPrimaryKey rejects participating tables whose PRIMARY KEY spans
+// more than one column, has no PRIMARY KEY, or whose PRIMARY KEY is not the configured
+// primary_key. GoArchive discovers, copies, verifies, and DELETES rows by a single PK
+// column (WHERE pk IN (...)); any of those shapes lets that filter over-match and
+// delete rows that were never part of the archived subgraph (review P1-1, review 003).
+func (p *PreflightChecker) ValidateSingleColumnPrimaryKey(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking primary key shape (single-column PRIMARY KEY matching configured PK)...")
 
-	var compositeIssues []string
-	var pkDefIssues []string
-	for _, table := range tables {
-		pkCols, err := p.primaryKeyColumns(ctx, table)
-		if err != nil {
-			return fmt.Errorf("COMPOSITE_PK_LOOKUP: failed to inspect primary key for %s: %w", table, err)
-		}
-		switch {
-		case len(pkCols) > 1:
-			// Composite PRIMARY KEY: delete-by-single-column would over-match.
-			compositeIssues = append(compositeIssues, fmt.Sprintf("%s(%d-column PRIMARY KEY)", table, len(pkCols)))
-		case len(pkCols) == 0:
-			// No PRIMARY KEY at all: the configured primary_key is then almost
-			// certainly a non-unique column, so delete-by-it would over-match (review 003).
-			pkDefIssues = append(pkDefIssues, fmt.Sprintf("%s(no PRIMARY KEY)", table))
-		case p.graph.HasPK(table) && pkCols[0] != p.graph.GetPK(table):
-			// Configured primary_key is not the table's actual PRIMARY KEY column;
-			// if it is non-unique, delete-by-it over-matches (review 003).
-			pkDefIssues = append(pkDefIssues, fmt.Sprintf("%s(configured primary_key %q is not the PRIMARY KEY column %q)", table, p.graph.GetPK(table), pkCols[0]))
-		}
-	}
-
-	// Composite PKs are the headline rejection (keeps the COMPOSITE_PK_CHECK
-	// category and its E2E demo); report them first when present.
-	if len(compositeIssues) > 0 {
-		return &PreflightError{
-			Check:   "COMPOSITE_PK_CHECK",
-			Message: "Composite primary keys are not supported. GoArchive identifies and deletes rows by a single primary-key column; a multi-column PK would over-match and risk deleting rows outside the archived set. See README 'Known Limits & Caution'",
-			Tables:  compositeIssues,
-		}
-	}
-	if len(pkDefIssues) > 0 {
-		return &PreflightError{
-			Check:   "PRIMARY_KEY_CHECK",
-			Message: "Every participating table must have a single-column PRIMARY KEY equal to the configured primary_key. GoArchive identifies and deletes rows by that column, so a missing or mismatched PRIMARY KEY can over-match and delete rows outside the archived set",
-			Tables:  pkDefIssues,
-		}
-	}
-
-	p.logger.Debugf("Primary key shape check PASSED (%d tables)", len(tables))
-	return nil
-}
-
-// primaryKeyColumns returns the PRIMARY KEY column names of a source table, in
-// key order. An empty slice means the table has no PRIMARY KEY.
-func (p *PreflightChecker) primaryKeyColumns(ctx context.Context, table string) ([]string, error) {
-	const query = `
-		SELECT COLUMN_NAME
-		FROM information_schema.STATISTICS
-		WHERE TABLE_SCHEMA = ?
-		  AND TABLE_NAME = ?
-		  AND INDEX_NAME = 'PRIMARY'
-		ORDER BY SEQ_IN_INDEX`
-
-	rows, err := p.db.QueryContext(ctx, query, p.sourceDBName, table)
+	facts, err := run.primaryKeys(ctx)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("COMPOSITE_PK_LOOKUP: failed to inspect primary keys: %w", err)
 	}
-	defer func() {
-		if cerr := rows.Close(); cerr != nil {
-			p.logger.Warnf("Failed to close rows: %v", cerr)
-		}
-	}()
+	if err := judgePrimaryKeyShape(facts, run.expectedPKs()); err != nil {
+		return err
+	}
 
-	var cols []string
-	for rows.Next() {
-		var col string
-		if err := rows.Scan(&col); err != nil {
-			return nil, err
-		}
-		cols = append(cols, col)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return cols, nil
+	p.logger.Debugf("Primary key shape check PASSED (%d tables)", len(run.graphTables()))
+	return nil
 }
 
 // ValidateTablesExist checks that all tables in the graph exist in the source database.

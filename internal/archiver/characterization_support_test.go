@@ -62,13 +62,14 @@ var chrCommands = []chrCommand{
 //
 // SourceDB and DestDB are fixture-OWNED pools whose DSN default schema is the
 // throwaway schema — they are NOT the shared pools from SetupIntegrationTest.
-// This is load-bearing, for two reasons:
+// This is load-bearing, for two reasons — though only the second is live today:
 //
-//  1. ValidateRootPKNumeric is the one validator keyed on the session's default
-//     schema (`WHERE TABLE_SCHEMA = DATABASE()`, preflight.go:260) instead of
-//     p.sourceDBName. On a pool bound to some other schema it fails with
-//     ROOT_PK_TYPE_LOOKUP. A dedicated pool reproduces production, where the
-//     source handle is opened against the source schema.
+//  1. HISTORICAL. Through 1.8, ValidateRootPKNumeric was the one validator keyed on
+//     the session's default schema (`WHERE TABLE_SCHEMA = DATABASE()`) instead of
+//     p.sourceDBName, so a pool bound to some other schema failed with
+//     ROOT_PK_TYPE_LOOKUP. Phase 017 moved it onto the configured source schema via
+//     the run's memoized PrimaryKeys fact (Inspector.PrimaryKeys), so this reason no
+//     longer holds — but the fixture design survives on reason 2 alone.
 //  2. Issuing `USE <schema>` on a borrowed connection mutates session state that
 //     database/sql hands back to the shared pool, so a shared pool would leak the
 //     throwaway schema into unrelated tests in this package — and those schemas
