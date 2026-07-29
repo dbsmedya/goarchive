@@ -158,7 +158,7 @@ func TestPrivilegeOffendersReportsStateNotWording(t *testing.T) {
 }
 
 // TestPrivilegeOffendersFailsClosed enforces the fail-closed rule and, critically, pins
-// WHICH helper reports each fault — modelled on TestTriggerOffendersFailsClosed above.
+// WHICH helper reports each fault — modelled on TestTriggerOffendersFailsClosed below.
 //
 // There is no "empty facts slice" case here, unlike the trigger version: PrivilegeFact
 // is a struct, not a slice, so a failed type assertion always yields a well-formed zero
