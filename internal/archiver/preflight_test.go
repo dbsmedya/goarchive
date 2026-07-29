@@ -1256,113 +1256,123 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 	}
 }
 
-func newWritePermChecker(t *testing.T) (*PreflightChecker, sqlmock.Sqlmock, func()) {
-	t.Helper()
-	sourceDB, _, _ := sqlmock.New()
-	destDB, destMock, _ := sqlmock.New()
-	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
-	cleanup := func() { _ = sourceDB.Close(); _ = destDB.Close() }
-	return checker, destMock, cleanup
-}
-
-func expectGrantees(mock sqlmock.Sqlmock) {
-	mock.ExpectQuery("SELECT CURRENT_USER()").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE()").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
-}
-
-func TestValidateDestinationWritePermissions_GlobalGrant(t *testing.T) {
-	checker, destMock, cleanup := newWritePermChecker(t)
-	defer cleanup()
-
-	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
-		t.Fatalf("global INSERT grant should pass, got: %v", err)
+// TestValidateDestinationWritePermissionsNamesTables proves the migrated check reports
+// the offending TABLE names rather than privilege names.
+//
+// The decoration DELIBERATELY CHANGES: 1.8 put a bare "orders" in Tables, 2.0 puts
+// "orders(absent)". That follows the same decorate-the-Tables-entry convention as D5 and
+// D6, and phase 008's characterization stays stable because chrTableNames strips the
+// parenthetical before comparing. It is a change, not a preservation — do not describe it
+// as preserving the 1.8 shape.
+func TestValidateDestinationWritePermissionsNamesTables(t *testing.T) {
+	findings := []validations.Finding{
+		{Check: validations.IDTablePrivileges, Tables: []string{"orders"},
+			Facts: validations.PrivilegeFact{Schema: "dst", Table: "orders",
+				Privilege: validations.PrivilegeInsert, State: validations.GrantAbsent}},
+		{Check: validations.IDTablePrivileges, Tables: []string{"lines"},
+			Facts: validations.PrivilegeFact{Schema: "dst", Table: "lines",
+				Privilege: validations.PrivilegeInsert, State: validations.GrantUnconfirmed}},
+	}
+	got, err := privilegeOffenders("destination_write", findings)
+	if err != nil {
+		t.Fatalf("privilegeOffenders: %v", err)
+	}
+	want := []string{"orders(absent)", "lines(unconfirmed)"}
+	if len(got) != len(want) {
+		t.Fatalf("privilegeOffenders = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("privilegeOffenders = %v, want %v", got, want)
+		}
 	}
 }
 
-func TestValidateDestinationWritePermissions_RoleGrant(t *testing.T) {
-	checker, destMock, cleanup := newWritePermChecker(t)
-	defer cleanup()
-
-	destMock.ExpectQuery("SELECT CURRENT_USER()").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("archiver@%"))
-	destMock.ExpectQuery("SELECT CURRENT_ROLE()").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("`app_writer`@`%`"))
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?,\\?\\)").
-		WithArgs("'archiver'@'%'", "'app_writer'@'%'", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
-		t.Fatalf("role-held global INSERT grant should pass, got: %v", err)
+// TestValidateDestinationWritePermissionsInspectionErrorIsPlain proves an inspection
+// failure (destGrants returning an error) surfaces as a plain error carrying goarchive's
+// own wrapper text, never as a *PreflightError. Mirrors
+// TestValidateJobSchemaPermissionsInspectionErrorIsPlain; only the stage word and the
+// validator differ.
+func TestValidateDestinationWritePermissionsInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
 	}
-}
+	defer func() { _ = db.Close() }()
 
-func TestValidateDestinationWritePermissions_SchemaGrant(t *testing.T) {
-	checker, destMock, cleanup := newWritePermChecker(t)
-	defer cleanup()
-
-	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT", "destdb").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
-		t.Fatalf("schema INSERT grant should pass, got: %v", err)
+	wantErr := errors.New("grants failed")
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb",
 	}
-}
-
-func TestValidateDestinationWritePermissions_TableGrant(t *testing.T) {
-	checker, destMock, cleanup := newWritePermChecker(t)
-	defer cleanup()
-
-	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT", "destdb").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT", "destdb", "users").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	if err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"}); err != nil {
-		t.Fatalf("table-level INSERT grant should pass, got: %v", err)
+	run := &preflightRun{
+		checker: p, tables: []string{"orders"},
+		dstGrantsErr: wantErr, dstGrantsLoaded: true,
 	}
-}
 
-func TestValidateDestinationWritePermissions_NoInsertPrivilege(t *testing.T) {
-	checker, destMock, cleanup := newWritePermChecker(t)
-	defer cleanup()
-
-	expectGrantees(destMock)
-	destMock.ExpectQuery("FROM information_schema.USER_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.SCHEMA_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT", "destdb").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-	destMock.ExpectQuery("FROM information_schema.TABLE_PRIVILEGES\\s+WHERE GRANTEE IN \\(\\?\\)").
-		WithArgs("'archiver'@'%'", "INSERT", "destdb", "users").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-
-	err := checker.ValidateDestinationWritePermissions(context.Background(), []string{"users"})
+	err = p.ValidateDestinationWritePermissions(context.Background(), run)
 	if err == nil {
-		t.Fatal("expected write permission error, got nil")
+		t.Fatal("expected an inspection error, got nil")
 	}
-	if !strings.Contains(err.Error(), "DEST_WRITE_PERMISSION_CHECK") {
-		t.Fatalf("expected DEST_WRITE_PERMISSION_CHECK, got: %v", err)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight destination_write inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateDestinationWritePermissionsConsumesTheCachedFact proves the stage consumes
+// the memoized destGrants fact instead of acquiring its own. Zero SQL expectations are
+// registered: a re-querying stage gets no match, returns a plain error, and fails the
+// *PreflightError assertion below. A zero-value Grants reports GrantUnknown for every
+// privilege (it is unpopulated), so all graph tables fail closed — which also pins D1's
+// treatment of GrantUnknown end-to-end.
+//
+// run.tables must be set: this validator reads run.graphTables(), and an empty slice
+// makes CheckTablePrivileges return no findings, passing this test vacuously.
+func TestValidateDestinationWritePermissionsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb",
+	}
+	run := &preflightRun{
+		checker: p, tables: []string{"orders", "lines"},
+		dstGrants: validations.Grants{}, dstGrantsLoaded: true,
+	}
+
+	err = p.ValidateDestinationWritePermissions(context.Background(), run)
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
+	}
+	if pe.Check != "DEST_WRITE_PERMISSION_CHECK" {
+		t.Fatalf("Check = %q, want DEST_WRITE_PERMISSION_CHECK", pe.Check)
+	}
+	for _, want := range []string{"orders(unknown)", "lines(unknown)"} {
+		found := false
+		for _, got := range pe.Tables {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Tables %v does not contain %q", pe.Tables, want)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2103,7 +2113,7 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 
-	err = checker.ValidateDestinationWritePermissions(ctx, tables)
+	err = checker.ValidateDestinationWritePermissions(ctx, nil)
 	if err == nil {
 		t.Fatal("ValidateDestinationWritePermissions should return error when destination is nil")
 	}

@@ -178,7 +178,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		if err := p.ValidateDestinationSchemaCompatibility(ctx, tables); err != nil {
 			return err
 		}
-		if err := p.ValidateDestinationWritePermissions(ctx, tables); err != nil {
+		if err := p.ValidateDestinationWritePermissions(ctx, run); err != nil {
 			return err
 		}
 		if err := p.ValidateDestinationInsertTriggers(ctx, run); err != nil {
@@ -1120,29 +1120,41 @@ func (p *PreflightChecker) currentGrantees(ctx context.Context, db *sql.DB) ([]s
 	return grantees, nil
 }
 
-// ValidateDestinationWritePermissions checks that the connected destination
-// account (including active roles) holds INSERT at the global, schema, or
-// per-table level for all graph tables.
-func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, tables []string) error {
+// ValidateDestinationWritePermissions checks that the connected destination account
+// holds INSERT on every graph table.
+//
+// Deviation D1 (spec §4): only GrantPresent passes. Two 1.8 behaviours therefore change:
+// a privilege held through a role now fails (the library reports role-dependent answers
+// as GrantUnconfirmed, and the 1.8 role path was root-tested only), and a global
+// INSERT ON *.* no longer short-circuits while @@global.partial_revokes is enabled —
+// under partial revokes a global row proves nothing about a particular object until a
+// direct schema or table grant proves it. Without partial revokes a global grant still
+// evaluates GrantPresent, so the recommended recipe is unaffected.
+func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Context, run *preflightRun) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	p.logger.Debug("Checking destination write permissions...")
 
-	grantees, err := p.currentGrantees(ctx, p.destinationDB)
+	grants, err := run.destGrants(ctx)
 	if err != nil {
-		return err
+		return inspectionError("destination_write", err)
 	}
 
-	missing, err := p.tablesMissingPrivilege(ctx, p.destinationDB, grantees, p.destinationDBName, tables, "INSERT")
+	findings := validations.CheckTablePrivileges(
+		grants, p.destinationDBName, run.graphTables(), validations.PrivilegeInsert)
+	offenders, err := privilegeOffenders("destination_write", findings)
 	if err != nil {
 		return err
 	}
-	if len(missing) > 0 {
+	if len(offenders) > 0 {
 		return &PreflightError{
-			Check:   "DEST_WRITE_PERMISSION_CHECK",
-			Message: fmt.Sprintf("Destination account %s lacks INSERT privilege on required tables", grantees[0]),
-			Tables:  missing,
+			Check: "DEST_WRITE_PERMISSION_CHECK",
+			Message: "Destination account lacks provable INSERT privilege on required tables. " +
+				"GoArchive 2.0 requires the privilege to be provable for each object: grant it " +
+				"directly to the account (GRANT INSERT ON <schema>.<table> TO <user>, or on " +
+				"<schema>.*)",
+			Tables: offenders,
 		}
 	}
 

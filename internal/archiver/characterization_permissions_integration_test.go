@@ -164,7 +164,7 @@ func TestCharacterizationJobSchemaPermissionSatisfied(t *testing.T) {
 // between the two destination permission checks: ValidateJobSchemaPermissions calls
 // validations.CheckSchemaPrivileges, which resolves through Grants.Schema — global and
 // schema-scope facts only. Grants.Schema does not consult table-scope facts, unlike
-// Grants.Table (used by ValidateDestinationWritePermissions via tablesMissingPrivilege).
+// Grants.Table (used by ValidateDestinationWritePermissions via validations.CheckTablePrivileges).
 //
 // The fixture is the realistic operator scenario: a DBA who has already created
 // archiver_job by hand and granted INSERT on that one table. GoArchive still
