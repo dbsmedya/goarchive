@@ -212,7 +212,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	if profile == PreflightProfileFull || profile == PreflightProfileSourceOnly {
-		if err := p.ValidateSourceDeletePermissions(ctx, tables); err != nil {
+		if err := p.ValidateSourceDeletePermissions(ctx, run); err != nil {
 			return err
 		}
 
@@ -1227,57 +1227,6 @@ func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context, run
 	}
 }
 
-// tablesMissingPrivilege returns the tables for which none of the grantees
-// holds the privilege at global, schema, or table level. GRANT ALL is
-// expanded into individual privilege rows by MySQL, so matching the specific
-// privilege type covers it.
-func (p *PreflightChecker) tablesMissingPrivilege(ctx context.Context, db *sql.DB, grantees []string, dbName string, tables []string, privilege string) ([]string, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
-	granteeArgs := make([]interface{}, 0, len(grantees)+1)
-	for _, g := range grantees {
-		granteeArgs = append(granteeArgs, g)
-	}
-	granteeArgs = append(granteeArgs, privilege)
-
-	var count int
-	globalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
-		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
-	if err := db.QueryRowContext(ctx, globalQuery, granteeArgs...).Scan(&count); err != nil {
-		return nil, fmt.Errorf("failed to check global privileges: %w", err)
-	}
-	if count > 0 {
-		return nil, nil
-	}
-
-	schemaArgs := make([]interface{}, 0, len(grantees)+2)
-	schemaArgs = append(schemaArgs, granteeArgs...)
-	schemaArgs = append(schemaArgs, dbName)
-	schemaQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES
-		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ?`, placeholders)
-	if err := db.QueryRowContext(ctx, schemaQuery, schemaArgs...).Scan(&count); err != nil {
-		return nil, fmt.Errorf("failed to check schema privileges: %w", err)
-	}
-	if count > 0 {
-		return nil, nil
-	}
-
-	tableQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES
-		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ? AND TABLE_NAME = ?`, placeholders)
-	var missing []string
-	for _, table := range tables {
-		tableArgs := make([]interface{}, 0, len(grantees)+3)
-		tableArgs = append(tableArgs, granteeArgs...)
-		tableArgs = append(tableArgs, dbName, table)
-		if err := db.QueryRowContext(ctx, tableQuery, tableArgs...).Scan(&count); err != nil {
-			return nil, fmt.Errorf("failed to check table privileges for %s: %w", table, err)
-		}
-		if count == 0 {
-			missing = append(missing, table)
-		}
-	}
-	return missing, nil
-}
-
 // hasGlobalPrivilege reports whether any grantee holds priv at global scope
 // (information_schema.USER_PRIVILEGES). GRANT ALL is expanded by MySQL into
 // individual PRIVILEGE_TYPE rows, so matching the specific type covers it.
@@ -1297,24 +1246,33 @@ func (p *PreflightChecker) hasGlobalPrivilege(ctx context.Context, db *sql.DB, g
 	return count > 0, nil
 }
 
-// ValidateSourceDeletePermissions checks the source account can DELETE from
-// all graph tables. Without it, archive fails only after copy has committed.
-func (p *PreflightChecker) ValidateSourceDeletePermissions(ctx context.Context, tables []string) error {
+// ValidateSourceDeletePermissions checks the source account can DELETE from all graph
+// tables. Without it, archive fails only after copy has committed.
+//
+// Deviation D1 (spec §4): only GrantPresent passes. See
+// ValidateDestinationWritePermissions for the two 1.8 behaviours this changes.
+func (p *PreflightChecker) ValidateSourceDeletePermissions(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking source delete permissions...")
 
-	grantees, err := p.currentGrantees(ctx, p.db)
+	grants, err := run.sourceGrants(ctx)
+	if err != nil {
+		return inspectionError("source_delete", err)
+	}
+
+	findings := validations.CheckTablePrivileges(
+		grants, p.sourceDBName, run.graphTables(), validations.PrivilegeDelete)
+	offenders, err := privilegeOffenders("source_delete", findings)
 	if err != nil {
 		return err
 	}
-	missing, err := p.tablesMissingPrivilege(ctx, p.db, grantees, p.sourceDBName, tables, "DELETE")
-	if err != nil {
-		return err
-	}
-	if len(missing) > 0 {
+	if len(offenders) > 0 {
 		return &PreflightError{
-			Check:   "SOURCE_DELETE_PERMISSION_CHECK",
-			Message: fmt.Sprintf("Source account %s lacks DELETE privilege on required tables", grantees[0]),
-			Tables:  missing,
+			Check: "SOURCE_DELETE_PERMISSION_CHECK",
+			Message: "Source account lacks provable DELETE privilege on required tables. " +
+				"GoArchive 2.0 requires the privilege to be provable for each object: grant it " +
+				"directly to the account (GRANT DELETE ON <schema>.<table> TO <user>, or on " +
+				"<schema>.*)",
+			Tables: offenders,
 		}
 	}
 

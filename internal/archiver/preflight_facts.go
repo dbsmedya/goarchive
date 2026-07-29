@@ -60,6 +60,10 @@ type preflightRun struct {
 	dstGrantsErr    error
 	dstGrantsLoaded bool
 
+	srcGrants       validations.Grants
+	srcGrantsErr    error
+	srcGrantsLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -288,4 +292,13 @@ func (r *preflightRun) destGrants(ctx context.Context) (validations.Grants, erro
 		r.dstGrantsLoaded = true
 	}
 	return r.dstGrants, r.dstGrantsErr
+}
+
+// sourceGrants returns the source account's privilege fact, read once per run.
+func (r *preflightRun) sourceGrants(ctx context.Context) (validations.Grants, error) {
+	if !r.srcGrantsLoaded {
+		r.srcGrants, r.srcGrantsErr = readGrants(ctx, r.checker.db, r.checker.sourceDBName)
+		r.srcGrantsLoaded = true
+	}
+	return r.srcGrants, r.srcGrantsErr
 }
