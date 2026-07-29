@@ -64,12 +64,12 @@ import (
 //     This is a purely test-internal comparison: it checks each case's
 //     declared wantID/otherIDs against the chrCheckOrder slice and never
 //     inspects RunWithProfile's actual execution order. It constrains 7 of
-//     the slice's 17 entries via 5 ordering-case pairs. A future phase that
+//     the slice's 18 entries via 5 ordering-case pairs. A future phase that
 //     reorders checks inside RunWithProfile without also reordering
 //     chrCheckOrder is caught by NOTHING here — nor is swapping two entries
 //     that no ordering case exercises together (e.g. SOURCE_DELETE_PERMISSION_
-//     CHECK and INTERNAL_FK_COVERAGE), nor a phase (e.g. 022) that forgets to
-//     add its own new entry to the slice. Runtime detection of a genuinely
+//     CHECK and INTERNAL_FK_COVERAGE), nor a phase that forgets to
+//     add its own new entry to the slice (phase 022 did not). Runtime detection of a genuinely
 //     wrong first-failure ID still comes from chrAssertCheck, which the plan
 //     already had. The plan's own Ambiguity 2 warning is NOT superseded by
 //     this test: the correspondence between chrCheckOrder and RunWithProfile's
@@ -112,9 +112,9 @@ import (
 // exactly one sanctioned exception (deviation D4), and that exception is SPLIT ACROSS
 // TWO PHASES — check which half you are:
 //
-//   - PHASE 022 owns THIS SLICE. It adds ValidateSourceSelectPermissions to
-//     RunWithProfile and must insert "SOURCE_SELECT_PERMISSION_CHECK" here, between
-//     INTERNAL_FK_COVERAGE and SOURCE_DELETE_PERMISSION_CHECK, in the same PR.
+//   - PHASE 022 owned THIS SLICE. It added ValidateSourceSelectPermissions to
+//     RunWithProfile and inserted "SOURCE_SELECT_PERMISSION_CHECK" here, between
+//     INTERNAL_FK_COVERAGE and SOURCE_DELETE_PERMISSION_CHECK, in the same PR. Done.
 //     (phase-022 "Files": Modify … characterization_matrix_integration_test.go —
 //     chrCheckOrder.)
 //   - PHASE 023 owns the chrMatrix ROW and the docs, NOT this slice.
@@ -123,8 +123,8 @@ import (
 //
 // Corrected 2026-07-28: the plan said phase 023 amended this slice. It does not.
 // Getting this wrong is not cosmetic — TestCharacterizationFirstFailureOrdering
-// CONSUMES this slice (see deviation 2 above), so if phase 022 inserts the check
-// into RunWithProfile without updating it here, the ordering assertions are
+// CONSUMES this slice (see deviation 2 above), so phase 022's insertion of the check
+// into RunWithProfile had to update it here too, or the ordering assertions would be
 // silently comparing against a stale order.
 var chrCheckOrder = []string{
 	"TABLE_EXISTENCE_CHECK",
@@ -142,6 +142,7 @@ var chrCheckOrder = []string{
 	"FK_COVERAGE_VISIBILITY_CHECK",
 	"FK_COVERAGE_CHECK",
 	"INTERNAL_FK_COVERAGE",
+	"SOURCE_SELECT_PERMISSION_CHECK", // D4, phase 022 — the one sanctioned insertion
 	"SOURCE_DELETE_PERMISSION_CHECK",
 	"DELETE_TRIGGER_CHECK",
 }
@@ -390,15 +391,24 @@ var chrMatrix = []chrMatrixRow{
 //     duplication is ever worth removing — as things stand today the runner
 //     (TestCharacterizationApplicabilityMatrix) does not read Restricted at all, so
 //     setting it on a row here would have no effect until that phase lands.
+//   - SOURCE_SELECT_PERMISSION_CHECK — TEMPORARY omission, phase 022 (D4). The check
+//     is new in this phase and already needs a restricted account, exactly like the
+//     row above; phase 022's own integration tests
+//     (source_select_permission_integration_test.go) assert it across all five
+//     commands, so adding a Restricted-based chrMatrix row here would duplicate that
+//     work with no new coverage. Phase 023 adds the real chrMatrix row (and the
+//     docs/README_VALIDATION.md entry) and removes this omission entry at that point.
 //
 // Every omission must stay listed here. A row that silently disappears is exactly
 // the drift this suite exists to catch.
 //
 // Cross-checked mechanically against docs/README_VALIDATION.md:64-84 (Step 7): the
-// 13 IDs in chrMatrix plus these 6 omitted IDs total exactly the 19 rows the
-// published table lists, and every row's Applies matches the doc's ✅/❌ columns
-// exactly. No documentation discrepancy was found; see the PR description for the
-// row-by-row cross-check.
+// 13 IDs in chrMatrix plus these 7 omitted IDs total exactly the 20 check IDs
+// RunWithProfile now emits (deviation D4, phase 022) — one ahead of the 19 rows the
+// published table lists, because publication is phase 023's job, not this phase's.
+// Every row's Applies matches the doc's ✅/❌ columns exactly for the 19 checks the
+// doc already covers. No documentation discrepancy was found; see the PR description
+// for the row-by-row cross-check.
 
 // TestCharacterizationApplicabilityMatrix asserts, for each row, that the listed
 // commands report the row's ID and the unlisted commands do NOT. It is the executable

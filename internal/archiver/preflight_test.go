@@ -1464,6 +1464,93 @@ func TestValidateSourceDeletePermissionsConsumesTheCachedFact(t *testing.T) {
 	}
 }
 
+// TestValidateSourceSelectPermissionsInspectionErrorIsPlain proves an inspection
+// failure (sourceGrants returning an error) surfaces as a plain error carrying
+// goarchive's own wrapper text, never as a *PreflightError. Mirrors
+// TestValidateSourceDeletePermissionsInspectionErrorIsPlain; only the stage word and
+// the validator differ.
+func TestValidateSourceSelectPermissionsInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("grants failed")
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
+	}
+	run := &preflightRun{
+		checker: p, tables: []string{"orders"},
+		srcGrantsErr: wantErr, srcGrantsLoaded: true,
+	}
+
+	err = p.ValidateSourceSelectPermissions(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight source_select inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateSourceSelectPermissionsConsumesTheCachedFact proves the stage consumes
+// the memoized sourceGrants fact instead of acquiring its own. Zero SQL expectations
+// are registered: a re-querying stage gets no match, returns a plain error, and fails
+// the *PreflightError assertion below. A zero-value Grants reports GrantUnknown for
+// every privilege (it is unpopulated), so all graph tables fail closed.
+//
+// run.tables must be set: this validator reads run.graphTables(), and an empty slice
+// makes CheckTablePrivileges return no findings, passing this test vacuously.
+func TestValidateSourceSelectPermissionsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
+	}
+	run := &preflightRun{
+		checker: p, tables: []string{"orders", "lines"},
+		srcGrants: validations.Grants{}, srcGrantsLoaded: true,
+	}
+
+	err = p.ValidateSourceSelectPermissions(context.Background(), run)
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
+	}
+	if pe.Check != "SOURCE_SELECT_PERMISSION_CHECK" {
+		t.Fatalf("Check = %q, want SOURCE_SELECT_PERMISSION_CHECK", pe.Check)
+	}
+	for _, want := range []string{"orders(unknown)", "lines(unknown)"} {
+		found := false
+		for _, got := range pe.Tables {
+			if got == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Tables %v does not contain %q", pe.Tables, want)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
+}
+
 func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
