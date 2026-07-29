@@ -13,9 +13,16 @@ import (
 // SOURCE_DELETE_PERMISSION_CHECK — plus today's GLOBAL-PRIVILEGE SHORT-CIRCUIT.
 //
 // Every test here runs preflight as a disposable, precisely-scoped account
-// (characterization_accounts_test.go) rather than as root, because root holds
-// every privilege globally and tablesMissingPrivilege returns immediately on a
-// global hit (preflight.go:1390-1392) — as root, all three checks are vacuous.
+// (characterization_accounts_test.go) rather than as root, because root holds every
+// privilege globally and a global grant satisfies all three checks — as root they are
+// vacuous.
+//
+// The MECHANISM now differs per check, and will until phase 021. JOB_SCHEMA and
+// DEST_WRITE resolve the run-cached Grants fact (CheckSchemaPrivileges and
+// CheckTablePrivileges), where a global row evaluates GrantPresent as long as
+// @@global.partial_revokes is off — which is how these containers run. SOURCE_DELETE
+// still uses 1.8's tablesMissingPrivilege, which returns immediately on a global hit.
+// Either way the conclusion for these fixtures is the same: don't test as root.
 //
 // RELEVANT PART OF THE FIXED CHECK ORDER (RunWithProfile, preflight.go:138-240).
 // Each test's assertion is only meaningful if the checks BEFORE the asserted one
@@ -164,7 +171,7 @@ func TestCharacterizationJobSchemaPermissionSatisfied(t *testing.T) {
 // between the two destination permission checks: ValidateJobSchemaPermissions calls
 // validations.CheckSchemaPrivileges, which resolves through Grants.Schema — global and
 // schema-scope facts only. Grants.Schema does not consult table-scope facts, unlike
-// Grants.Table (used by ValidateDestinationWritePermissions via tablesMissingPrivilege).
+// Grants.Table (used by ValidateDestinationWritePermissions via validations.CheckTablePrivileges).
 //
 // The fixture is the realistic operator scenario: a DBA who has already created
 // archiver_job by hand and granted INSERT on that one table. GoArchive still
@@ -239,9 +246,10 @@ func TestCharacterizationDestWritePermission(t *testing.T) {
 // test above AND the pin on today's per-table fallback: the fixture is identical
 // except for one extra table-scope grant, and every command now passes.
 //
-// The privilege is held at TABLE scope only — proved from information_schema — so
-// the pass can only come from tablesMissingPrivilege's third query
-// (TABLE_PRIVILEGES, preflight.go:1408-1421).
+// The privilege is held at TABLE scope only — proved from information_schema — so the
+// pass can only come from table-scope evidence. Since phase 020 that is Grants.Table
+// consulting the cached table-privilege fact via CheckTablePrivileges; before it, it was
+// tablesMissingPrivilege's third query against TABLE_PRIVILEGES.
 //
 // This outcome SURVIVES deviation D1 unchanged: a direct table grant proves the
 // object, so it evaluates GrantPresent. Phase 020 states it "must pass unamended".
