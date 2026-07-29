@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
@@ -54,6 +55,10 @@ type preflightRun struct {
 	srcColumns       []validations.TableColumns
 	srcColumnsErr    error
 	srcColumnsLoaded bool
+
+	dstGrants       validations.Grants
+	dstGrantsErr    error
+	dstGrantsLoaded bool
 
 	checker *PreflightChecker
 }
@@ -239,4 +244,48 @@ func (r *preflightRun) rootPKInfo(ctx context.Context) (validations.PKInfo, bool
 		}
 	}
 	return validations.PKInfo{}, false, nil
+}
+
+// readGrants obtains a dedicated connection, reads the privilege fact through it, and
+// RELEASES IT IMMEDIATELY — before any other query runs.
+//
+// Two reasons, both load-bearing:
+//
+//   - Answer quality. Inspector.Grants gives its strongest answers through an exact
+//     *sql.Conn; through a pool it "may confirm a direct-account positive but degrades
+//     every negative", which under D1's GrantPresent-or-fail rule would turn correct
+//     passes into failures.
+//   - Deadlock safety. GoArchive supports max_connections: 1, applied straight to
+//     SetMaxOpenConns (internal/database/database.go:137). Holding this Conn across any
+//     other query would block that configuration forever.
+//
+// GoArchive never issues SET ROLE, so no session affinity survives the read and none is
+// needed. What is cached by the caller is the detached Grants VALUE, never the Conn.
+func readGrants(ctx context.Context, db *sql.DB, schema string) (validations.Grants, error) {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return validations.Grants{}, fmt.Errorf("acquire connection for privilege inspection: %w", err)
+	}
+	grants, gerr := validations.NewInspector(conn, schema).Grants(ctx)
+	if cerr := conn.Close(); cerr != nil && gerr == nil {
+		return validations.Grants{}, fmt.Errorf("release privilege-inspection connection: %w", cerr)
+	}
+	if gerr != nil {
+		return validations.Grants{}, gerr
+	}
+	return grants, nil
+}
+
+// destGrants returns the destination account's privilege fact, read once per run. It
+// serves both the data-table checks and the tracking-schema check: Grants is an
+// account-wide fact, so one read answers for every schema on that server.
+func (r *preflightRun) destGrants(ctx context.Context) (validations.Grants, error) {
+	if r.checker.destinationDB == nil {
+		return validations.Grants{}, fmt.Errorf("destination database not configured; call ConfigureDestination first")
+	}
+	if !r.dstGrantsLoaded {
+		r.dstGrants, r.dstGrantsErr = readGrants(ctx, r.checker.destinationDB, r.checker.destinationDBName)
+		r.dstGrantsLoaded = true
+	}
+	return r.dstGrants, r.dstGrantsErr
 }

@@ -165,7 +165,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// archiver_job / per-job logs (archive, purge, copy-only), independent of
 	// the data-table destination checks below.
 	if p.destinationDB != nil && p.jobSchemaName != "" {
-		if err := p.ValidateJobSchemaPermissions(ctx); err != nil {
+		if err := p.ValidateJobSchemaPermissions(ctx, run); err != nil {
 			return err
 		}
 	}
@@ -1150,75 +1150,69 @@ func (p *PreflightChecker) ValidateDestinationWritePermissions(ctx context.Conte
 	return nil
 }
 
-// schemaMissingPrivileges returns the subset of privs not held by any grantee
-// at global (USER_PRIVILEGES) or schema (SCHEMA_PRIVILEGES) level for schema.
-// No per-table fallback — the per-job tracking tables don't exist yet at
-// preflight time.
-func (p *PreflightChecker) schemaMissingPrivileges(ctx context.Context, db *sql.DB, grantees []string, schema string, privs []string) ([]string, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
-	var missing []string
-	for _, priv := range privs {
-		gArgs := make([]interface{}, 0, len(grantees)+1)
-		for _, g := range grantees {
-			gArgs = append(gArgs, g)
-		}
-		gArgs = append(gArgs, priv)
-
-		var count int
-		globalQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
-			WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
-		if err := db.QueryRowContext(ctx, globalQuery, gArgs...).Scan(&count); err != nil {
-			return nil, fmt.Errorf("failed to check global %s: %w", priv, err)
-		}
-		if count > 0 {
-			continue
-		}
-		sArgs := append(append([]interface{}{}, gArgs...), schema)
-		schemaQuery := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.SCHEMA_PRIVILEGES
-			WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ? AND TABLE_SCHEMA = ?`, placeholders)
-		if err := db.QueryRowContext(ctx, schemaQuery, sArgs...).Scan(&count); err != nil {
-			return nil, fmt.Errorf("failed to check schema %s: %w", priv, err)
-		}
-		if count == 0 {
-			missing = append(missing, priv)
-		}
-	}
-	return missing, nil
+// jobSchemaPrivileges are the privileges GoArchive needs on the tracking schema. CREATE
+// is required at runtime because per-job log tables are created on the fly. DELETE and
+// DROP are optional (DBA cleanup only) and intentionally not required.
+var jobSchemaPrivileges = []validations.Privilege{
+	validations.PrivilegeCreate,
+	validations.PrivilegeSelect,
+	validations.PrivilegeInsert,
+	validations.PrivilegeUpdate,
 }
 
 // ValidateJobSchemaPermissions checks the destination account holds CREATE +
-// SELECT/INSERT/UPDATE on the tracking schema. CREATE is required at runtime
-// because per-job log tables are created on the fly. DELETE/DROP are optional
-// (DBA cleanup only) and intentionally not required.
-func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context) error {
+// SELECT/INSERT/UPDATE on the tracking schema.
+//
+// Deviation D1 (spec §4): the check passes only on GrantPresent. A privilege held
+// through a role evaluates GrantUnconfirmed and therefore fails — the 1.8 role path was
+// root-tested only and could not prove what it claimed. Under @@global.partial_revokes,
+// a direct schema-level grant is what proves the object; a global grant alone does not.
+func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context, run *preflightRun) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
-	grantees, err := p.currentGrantees(ctx, p.destinationDB)
+
+	grants, err := run.destGrants(ctx)
+	if err != nil {
+		return inspectionError("job_schema", err)
+	}
+
+	findings := validations.CheckSchemaPrivileges(grants, p.jobSchemaName, jobSchemaPrivileges)
+	offenders, err := privilegeOffenders("job_schema", findings)
 	if err != nil {
 		return err
 	}
-	missing, err := p.schemaMissingPrivileges(ctx, p.destinationDB, grantees, p.jobSchemaName,
-		[]string{"CREATE", "SELECT", "INSERT", "UPDATE"})
-	if err != nil {
-		return err
+	if len(offenders) == 0 {
+		p.logger.Debug("Job schema permission check PASSED")
+		return nil
 	}
-	if len(missing) > 0 {
-		grant := fmt.Sprintf("GRANT %s ON `%s`.* TO <user>", strings.Join(missing, ", "), p.jobSchemaName)
-		hint := grant
-		for _, p2 := range missing {
-			if p2 == "CREATE" {
-				hint = fmt.Sprintf("CREATE DATABASE `%s`; %s", p.jobSchemaName, grant)
-				break
-			}
+
+	missing := make([]string, 0, len(findings))
+	needsCreate := false
+	for _, f := range findings {
+		fact, ok := f.Facts.(validations.PrivilegeFact)
+		if !ok {
+			return unexpectedFactsError("job_schema", f, "validations.PrivilegeFact")
 		}
-		return &PreflightError{
-			Check:   "JOB_SCHEMA_PERMISSION_CHECK",
-			Message: fmt.Sprintf("destination account %s lacks %s on tracking schema %q (DBA must: %s)", grantees[0], strings.Join(missing, ", "), p.jobSchemaName, hint),
+		missing = append(missing, fact.Privilege.String())
+		if fact.Privilege == validations.PrivilegeCreate {
+			needsCreate = true
 		}
 	}
-	p.logger.Debug("Job schema permission check PASSED")
-	return nil
+	grant := fmt.Sprintf("GRANT %s ON `%s`.* TO <user>", strings.Join(missing, ", "), p.jobSchemaName)
+	hint := grant
+	if needsCreate {
+		hint = fmt.Sprintf("CREATE DATABASE `%s`; %s", p.jobSchemaName, grant)
+	}
+
+	return &PreflightError{
+		Check: "JOB_SCHEMA_PERMISSION_CHECK",
+		Message: fmt.Sprintf(
+			"destination account lacks provable %s on tracking schema %q (states: %s). "+
+				"GoArchive 2.0 requires each privilege to be provable for the object: grant each "+
+				"missing privilege directly to the account at schema scope (DBA must: %s)",
+			strings.Join(missing, ", "), p.jobSchemaName, strings.Join(offenders, ", "), hint),
+	}
 }
 
 // tablesMissingPrivilege returns the tables for which none of the grantees

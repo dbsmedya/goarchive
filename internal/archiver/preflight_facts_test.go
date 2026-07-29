@@ -699,6 +699,48 @@ func TestPreflightRunRootPKInfoSelectsByRootName(t *testing.T) {
 	}
 }
 
+// TestPreflightRunMemoizesDestGrantsErrors proves a failed destGrants fetch is
+// memoized. A successful validations.Grants cannot be constructed outside the
+// library (all fields are unexported and there is no constructor), so this uses the
+// error path only: register a single failing SELECT CURRENT_USER() expectation and
+// call destGrants twice.
+//
+// errors.Is(secondErr, wantErr) catches memoization removal, because a retried query
+// has no sqlmock expectation left and returns sqlmock's own "all expectations already
+// fulfilled" error instead of wantErr. errors.Is(secondErr, firstErr) additionally
+// catches an implementation that re-derives the same underlying cause but wraps it
+// into a fresh error value on every accessor call.
+func TestPreflightRunMemoizesDestGrantsErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("grants failed")
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnError(wantErr)
+
+	p := &PreflightChecker{destinationDB: db, destinationDBName: "destdb"}
+	run := &preflightRun{checker: p}
+
+	_, firstErr := run.destGrants(context.Background())
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.destGrants(context.Background())
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected failing grants query was not observed: %v", err)
+	}
+}
+
 // TestPreflightRunExpectedPKsOmitsUnconfiguredTables proves expectedPKs omits a table
 // with no configured primary_key rather than defaulting it to "id". Graph.GetPK
 // defaults to "id" when unset, so an implementation that dropped the HasPK guard would
