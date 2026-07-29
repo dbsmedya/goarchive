@@ -171,6 +171,34 @@ func judgePrimaryKeyShape(facts []validations.PKInfo, expected map[string]string
 	return nil
 }
 
+// privilegeOffenders converts privilege findings into "PRIVILEGE(state)" entries.
+//
+// Deviation D1 / invariant I2: a privilege check passes only on GrantPresent. Every
+// other state — GrantAbsent, GrantUnconfirmed, GrantUnknown — fails closed, and the
+// exact state is surfaced so an operator can tell "you do not have this" from "we
+// cannot prove you have this". The library emits a finding for exactly the failing
+// states, so this function does not re-apply the rule; it only formats.
+func privilegeOffenders(stage string, findings []validations.Finding) ([]string, error) {
+	var out []string
+	for _, f := range findings {
+		switch f.Check {
+		case validations.IDSchemaPrivileges, validations.IDTablePrivileges:
+		default:
+			return nil, unexpectedFindingError(stage, f)
+		}
+		fact, ok := f.Facts.(validations.PrivilegeFact)
+		if !ok {
+			return nil, unexpectedFactsError(stage, f, "validations.PrivilegeFact")
+		}
+		subject := fact.Privilege.String()
+		if fact.Table != "" {
+			subject = fact.Table
+		}
+		out = append(out, subject+"("+fact.State.String()+")")
+	}
+	return out, nil
+}
+
 // asciiFoldEqual reports whether two identifiers differ only by ASCII letter case.
 // Non-ASCII bytes must match exactly, which fails safe: a difference GoArchive cannot
 // classify is treated as a genuine difference rather than as a mere casing slip.

@@ -290,7 +290,7 @@ func TestIntegrationJobSchemaPermissions_MissingCreate(t *testing.T) {
 
 	// ValidateJobSchemaPermissions must fail with JOB_SCHEMA_PERMISSION_CHECK
 	// because the restricted user lacks CREATE.
-	jobSchemaErr := checker.ValidateJobSchemaPermissions(ctx)
+	jobSchemaErr := checker.ValidateJobSchemaPermissions(ctx, newPreflightRun(checker))
 	if jobSchemaErr == nil {
 		t.Fatal("expected JOB_SCHEMA_PERMISSION_CHECK error, got nil")
 	}
@@ -300,5 +300,19 @@ func TestIntegrationJobSchemaPermissions_MissingCreate(t *testing.T) {
 	}
 	if pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
 		t.Fatalf("expected Check == JOB_SCHEMA_PERMISSION_CHECK, got %q: %v", pe.Check, pe)
+	}
+
+	// Folded from the deleted TestValidateJobSchemaPermissions_OnlyCreateMissing: this
+	// fixture's account holds SELECT, INSERT, and UPDATE but not CREATE, so it is the
+	// real-MySQL proof that the message names only the missing CREATE, with its
+	// database hint, and never lists an already-held privilege.
+	if !strings.Contains(pe.Message, "CREATE") ||
+		!strings.Contains(pe.Message, "CREATE DATABASE") {
+		t.Fatalf("expected only-missing CREATE and its database hint, got: %s", pe.Message)
+	}
+	for _, held := range []string{"SELECT", "INSERT", "UPDATE"} {
+		if strings.Contains(pe.Message, held) {
+			t.Errorf("message must not list already-held privilege %s, got: %s", held, pe.Message)
+		}
 	}
 }

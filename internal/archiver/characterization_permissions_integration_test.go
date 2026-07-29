@@ -161,9 +161,10 @@ func TestCharacterizationJobSchemaPermissionSatisfied(t *testing.T) {
 }
 
 // TestCharacterizationJobSchemaNoTableScopeFallback pins the deliberate ASYMMETRY
-// between the two destination permission checks: schemaMissingPrivileges consults
-// USER_PRIVILEGES and SCHEMA_PRIVILEGES only (preflight.go:1305-1335) — it never
-// looks at TABLE_PRIVILEGES, unlike tablesMissingPrivilege.
+// between the two destination permission checks: ValidateJobSchemaPermissions calls
+// validations.CheckSchemaPrivileges, which resolves through Grants.Schema — global and
+// schema-scope facts only. Grants.Schema does not consult table-scope facts, unlike
+// Grants.Table (used by ValidateDestinationWritePermissions via tablesMissingPrivilege).
 //
 // The fixture is the realistic operator scenario: a DBA who has already created
 // archiver_job by hand and granted INSERT on that one table. GoArchive still

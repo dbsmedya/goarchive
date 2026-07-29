@@ -130,6 +130,33 @@ func TestUnexpectedFactsError(t *testing.T) {
 	}
 }
 
+// TestPrivilegeOffendersReportsStateNotWording proves the stage branches on the typed
+// PrivilegeFact — including the exact GrantState — rather than on message text, and
+// that every non-GrantPresent state is surfaced (deviation D1 / invariant I2).
+func TestPrivilegeOffendersReportsStateNotWording(t *testing.T) {
+	findings := []validations.Finding{
+		{Check: validations.IDSchemaPrivileges, Facts: validations.PrivilegeFact{
+			Schema: "jobs", Privilege: validations.PrivilegeCreate, State: validations.GrantAbsent}},
+		{Check: validations.IDSchemaPrivileges, Facts: validations.PrivilegeFact{
+			Schema: "jobs", Privilege: validations.PrivilegeUpdate, State: validations.GrantUnconfirmed}},
+		{Check: validations.IDSchemaPrivileges, Facts: validations.PrivilegeFact{
+			Schema: "jobs", Privilege: validations.PrivilegeInsert, State: validations.GrantUnknown}},
+	}
+	got, err := privilegeOffenders("job_schema", findings)
+	if err != nil {
+		t.Fatalf("privilegeOffenders: %v", err)
+	}
+	want := []string{"CREATE(absent)", "UPDATE(unconfirmed)", "INSERT(unknown)"}
+	if len(got) != len(want) {
+		t.Fatalf("privilegeOffenders = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("privilegeOffenders = %v, want %v", got, want)
+		}
+	}
+}
+
 // TestTriggerOffendersDecoratesFirstTriggerPerTable proves the shared translation keeps
 // goarchive's "<table>(<trigger>)" shape, one entry per table.
 //

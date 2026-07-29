@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -2219,102 +2220,24 @@ func TestRoleGrantees(t *testing.T) {
 
 // ============================================================================
 // ValidateJobSchemaPermissions Tests
+//
+// Inspector.Grants owns six statements (CURRENT_USER, ENABLED_ROLES,
+// partial_revokes, global grants, schema grants, table grants). The stage no
+// longer issues its own privilege queries — it consumes the run-scoped
+// destGrants fact — so per-sequence sqlmock tests reproducing that library-
+// internal query order no longer apply here. Sequence-level coverage of
+// Inspector.Grants itself lives in the library; this file's contracts are the
+// cache/stage boundary (below) and the real-MySQL fixtures in
+// preflight_schema_integration_test.go and
+// characterization_permissions_integration_test.go.
 // ============================================================================
 
-func TestValidateJobSchemaPermissions_AllMissing(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
-
-	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
-	// Loop over ["CREATE","SELECT","INSERT","UPDATE"]: global+schema check per priv.
-	// CREATE: global=0, schema=0 -> missing
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	// SELECT: global=0, schema=0 -> missing
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	// INSERT: global=0, schema=0 -> missing
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	// UPDATE: global=0, schema=0 -> missing
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-
-	err = p.ValidateJobSchemaPermissions(context.Background())
-	if err == nil {
-		t.Fatal("expected missing-privilege error")
-	}
-	var pe *PreflightError
-	if !errors.As(err, &pe) || pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
-		t.Fatalf("expected JOB_SCHEMA_PERMISSION_CHECK PreflightError, got %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
-	}
-}
-
-func TestValidateJobSchemaPermissions_GlobalGrant(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
-
-	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
-	// CREATE at global level
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	// SELECT at global level
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	// INSERT at global level
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	// UPDATE at global level
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-
-	if err := p.ValidateJobSchemaPermissions(context.Background()); err != nil {
-		t.Fatalf("expected all privileges to pass with global grants, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
-	}
-}
-
-func TestValidateJobSchemaPermissions_SchemaGrant(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-
-	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
-
-	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
-	// For each privilege: global=0, then schema=1
-	for i := 0; i < 4; i++ {
-		mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-		mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	}
-
-	if err := p.ValidateJobSchemaPermissions(context.Background()); err != nil {
-		t.Fatalf("expected all privileges to pass with schema grants, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
-	}
-}
-
+// TestValidateJobSchemaPermissions_NilDestination proves the stage's own
+// destinationDB == nil guard returns before ever touching the run, so a nil run is
+// safe to pass here.
 func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
 	p := &PreflightChecker{logger: logger.NewDefault(), jobSchemaName: "goarchive"}
-	err := p.ValidateJobSchemaPermissions(context.Background())
+	err := p.ValidateJobSchemaPermissions(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil destination")
 	}
@@ -2323,56 +2246,86 @@ func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
 	}
 }
 
-// TestValidateJobSchemaPermissions_OnlyCreateMissing verifies that when a
-// grantee holds SELECT, INSERT, and UPDATE but not CREATE, the error message
-// lists only CREATE and includes the CREATE DATABASE hint.
-func TestValidateJobSchemaPermissions_OnlyCreateMissing(t *testing.T) {
+// TestValidateJobSchemaPermissionsInspectionErrorIsPlain proves a destGrants
+// inspection failure surfaces as a plain error carrying goarchive's own wrapper text,
+// never as a *PreflightError: a *PreflightError means "the schema is wrong", while
+// this means "we could not find out". The raw error contains neither "job_schema" nor
+// the wrapper text, so an unwrapped `return err` cannot pass this test.
+func TestValidateJobSchemaPermissionsInspectionErrorIsPlain(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
-	p := &PreflightChecker{logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb", jobSchemaName: "goarchive"}
+	wantErr := errors.New("grants failed")
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), destinationDB: db,
+		destinationDBName: "destdb", jobSchemaName: "jobs",
+	}
+	run := &preflightRun{
+		checker: p, dstGrantsErr: wantErr, dstGrantsLoaded: true,
+	}
 
-	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"u"}).AddRow("svc@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE\\(\\)").WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow("NONE"))
-	// CREATE: global=0, schema=0 -> missing
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	// SELECT: global=0, schema=1 -> present
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	// INSERT: global=0, schema=1 -> present
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-	// UPDATE: global=0, schema=1 -> present
-	mock.ExpectQuery("USER_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
-	mock.ExpectQuery("SCHEMA_PRIVILEGES").WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
-
-	err = p.ValidateJobSchemaPermissions(context.Background())
+	err = p.ValidateJobSchemaPermissions(context.Background(), run)
 	if err == nil {
-		t.Fatal("expected JOB_SCHEMA_PERMISSION_CHECK error, got nil")
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
 	}
 	var pe *PreflightError
-	if !errors.As(err, &pe) || pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
-		t.Fatalf("expected JOB_SCHEMA_PERMISSION_CHECK PreflightError, got %v", err)
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
 	}
-	msg := pe.Message
-	if !strings.Contains(msg, "CREATE") {
-		t.Errorf("expected message to mention CREATE, got: %s", msg)
+	if !strings.Contains(err.Error(), "preflight job_schema inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if !strings.Contains(msg, "CREATE DATABASE") {
-		t.Errorf("expected CREATE DATABASE hint in message, got: %s", msg)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
 	}
-	// Must NOT list privileges the user already holds
-	for _, held := range []string{"SELECT", "INSERT", "UPDATE"} {
-		if strings.Contains(msg, held) {
-			t.Errorf("message must not list already-held privilege %s, got: %s", held, msg)
+}
+
+// TestValidateJobSchemaPermissionsConsumesTheCachedFact proves the stage reads the
+// destGrants fact through the run's cache rather than bypassing it to query again.
+// An unpopulated validations.Grants{} is intentional: Grants.resolve returns
+// GrantUnknown when !g.populated, so D1 must return a JOB_SCHEMA_PERMISSION_CHECK
+// *PreflightError whose states include CREATE(unknown), SELECT(unknown),
+// INSERT(unknown), and UPDATE(unknown). If the stage bypassed the accessor and
+// queried again, sqlmock would return an unexpected-query inspection error and the
+// *PreflightError assertion below would fail.
+func TestValidateJobSchemaPermissionsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), destinationDB: db,
+		destinationDBName: "destdb", jobSchemaName: "jobs",
+	}
+	run := &preflightRun{
+		checker: p, dstGrants: validations.Grants{}, dstGrantsLoaded: true,
+	}
+
+	err = p.ValidateJobSchemaPermissions(context.Background(), run)
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
+	}
+	if pe.Check != "JOB_SCHEMA_PERMISSION_CHECK" {
+		t.Fatalf("Check = %q, want JOB_SCHEMA_PERMISSION_CHECK", pe.Check)
+	}
+	for _, want := range []string{
+		"CREATE(unknown)", "SELECT(unknown)", "INSERT(unknown)", "UPDATE(unknown)",
+	} {
+		if !strings.Contains(pe.Message, want) {
+			t.Errorf("message %q does not contain %q", pe.Message, want)
 		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
