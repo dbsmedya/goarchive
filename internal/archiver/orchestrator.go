@@ -242,7 +242,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
 	ctx = startup.runCtx
-	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
+	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.config.Source.Database, o.graph); err != nil {
 		return fail("failed to load root PK metadata: %w", err)
 	}
 

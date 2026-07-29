@@ -296,15 +296,6 @@ func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, run *prefl
 	return nil
 }
 
-func isIntegerRootPKType(dataType string) bool {
-	switch strings.ToLower(dataType) {
-	case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
-		return true
-	default:
-		return false
-	}
-}
-
 // ValidateSingleColumnPrimaryKey rejects participating tables whose PRIMARY KEY spans
 // more than one column, has no PRIMARY KEY, or whose PRIMARY KEY is not the configured
 // primary_key. GoArchive discovers, copies, verifies, and DELETES rows by a single PK

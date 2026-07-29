@@ -82,6 +82,12 @@ func getEnvInt(key string, defaultVal int) int {
 
 func TestExecute_EmptyResult(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -126,6 +132,12 @@ func TestExecute_EmptyResult(t *testing.T) {
 
 func TestExecute_CheckpointCallback(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test with batch size 1 to ensure callbacks
 	cfg.Processing.BatchSize = 1
 	jobCfg := &config.JobConfig{
@@ -177,6 +189,12 @@ func TestExecute_CheckpointCallback(t *testing.T) {
 
 func TestExecute_CheckpointCallbackError(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test with batch size 1
 	cfg.Processing.BatchSize = 1
 	jobCfg := &config.JobConfig{
@@ -225,6 +243,12 @@ func TestExecute_CheckpointCallbackError(t *testing.T) {
 
 func TestExecute_ContextCancellation(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -281,6 +305,12 @@ func TestExecute_ContextCancellation(t *testing.T) {
 
 func TestExecute_ArchiveResultStats(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -352,6 +382,12 @@ func TestExecute_ArchiveResultStats(t *testing.T) {
 
 func TestExecute_DurationCalculation(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
@@ -400,6 +436,12 @@ func TestExecute_DurationCalculation(t *testing.T) {
 
 func TestOrchestrator_FullWorkflow(t *testing.T) {
 	cfg := createTestConfig()
+	// createTestConfig's Source.Database ("test") does not match the schema
+	// realDBManager actually connects to. Before phase 018, loadRootPKMeta queried
+	// `TABLE_SCHEMA = DATABASE()` and this mismatch was invisible; Step 11's migration
+	// to Inspector.Columns queries by the schema NAME the orchestrator is configured
+	// with, so it must agree with the real connection here.
+	cfg.Source.Database = getEnv("TEST_SOURCE_DB", "sakila")
 	// Use sample database schema for integration test
 	jobCfg := &config.JobConfig{
 		RootTable:  "rental",
