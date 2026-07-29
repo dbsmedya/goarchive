@@ -157,6 +157,58 @@ func TestPrivilegeOffendersReportsStateNotWording(t *testing.T) {
 	}
 }
 
+// TestPrivilegeOffendersFailsClosed enforces the fail-closed rule and, critically, pins
+// WHICH helper reports each fault — modelled on TestTriggerOffendersFailsClosed above.
+//
+// There is no "empty facts slice" case here, unlike the trigger version: PrivilegeFact
+// is a struct, not a slice, so a failed type assertion always yields a well-formed zero
+// value (validations.PrivilegeFact{}) rather than something a length check could catch.
+// The wrong-facts-type case is therefore the only way to reach unexpectedFactsError
+// here, and it is the load-bearing one: deleting the `fact, ok := ...` type assertion
+// and using f.Facts directly would panic instead of failing closed with a plain error,
+// and this case is what catches that.
+func TestPrivilegeOffendersFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		finding    validations.Finding
+		wantPrefix string
+	}{
+		{
+			name:       "unknown_check_id",
+			finding:    validations.Finding{Check: "SOMETHING_NEW"},
+			wantPrefix: "PREFLIGHT_UNKNOWN_FINDING",
+		},
+		{
+			name: "wrong_facts_type",
+			finding: validations.Finding{
+				Check: validations.IDSchemaPrivileges,
+				Facts: "not-a-PrivilegeFact",
+			},
+			wantPrefix: "PREFLIGHT_UNEXPECTED_FACTS",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := privilegeOffenders("job_schema", []validations.Finding{tc.finding})
+			if err == nil {
+				t.Fatalf("must abort, got offenders %v and nil error", got)
+			}
+			var pe *PreflightError
+			if errors.As(err, &pe) {
+				t.Fatalf("fail-closed aborts are plain errors, got *PreflightError: %v", pe)
+			}
+			if !strings.HasPrefix(err.Error(), tc.wantPrefix) {
+				t.Fatalf("wrong helper reported this fault: want prefix %q, got: %v",
+					tc.wantPrefix, err)
+			}
+			if !strings.Contains(err.Error(), "job_schema") {
+				t.Fatalf("error must name the stage, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestTriggerOffendersDecoratesFirstTriggerPerTable proves the shared translation keeps
 // goarchive's "<table>(<trigger>)" shape, one entry per table.
 //

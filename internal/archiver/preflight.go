@@ -1209,8 +1209,8 @@ func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context, run
 		Check: "JOB_SCHEMA_PERMISSION_CHECK",
 		Message: fmt.Sprintf(
 			"destination account lacks provable %s on tracking schema %q (states: %s). "+
-				"GoArchive 2.0 requires each privilege to be provable for the object: grant it "+
-				"directly to the account rather than through a role (DBA must: %s)",
+				"GoArchive 2.0 requires each privilege to be provable for the object: grant each "+
+				"missing privilege directly to the account at schema scope (DBA must: %s)",
 			strings.Join(missing, ", "), p.jobSchemaName, strings.Join(offenders, ", "), hint),
 	}
 }

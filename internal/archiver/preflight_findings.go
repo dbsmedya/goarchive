@@ -171,7 +171,14 @@ func judgePrimaryKeyShape(facts []validations.PKInfo, expected map[string]string
 	return nil
 }
 
-// privilegeOffenders converts privilege findings into "PRIVILEGE(state)" entries.
+// privilegeOffenders converts privilege findings into offender entries. A schema-scoped
+// finding (Table == "") formats as "PRIVILEGE(state)", e.g. "CREATE(absent)". A
+// table-scoped finding (Table != "") formats as "TABLE(state)" instead, e.g.
+// "orders(absent)" — the privilege name is deliberately dropped there because
+// PreflightError.Tables is the established table-name surface for goarchive's other
+// checks, and each downstream table-privilege check (e.g. DEST_WRITE_PERMISSION_CHECK)
+// tests exactly one privilege, already named in its own Message. This asymmetry is
+// intentional and must not change.
 //
 // Deviation D1 / invariant I2: a privilege check passes only on GrantPresent. Every
 // other state — GrantAbsent, GrantUnconfirmed, GrantUnknown — fails closed, and the
