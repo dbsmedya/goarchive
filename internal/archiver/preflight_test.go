@@ -207,13 +207,18 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			AddRow("orders", "BASE TABLE", "MyISAM"). // Not allowed!
 			AddRow("order_items", "BASE TABLE", "InnoDB"))
 
-	// Primary key column existence checks: each configured PK ("id") exists with
-	// the exact same case, so the lookup returns the matching column name.
-	for i := 0; i < 3; i++ {
-		mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-			WithArgs("testdb", sqlmock.AnyArg(), "id").
-			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
-	}
+	// Primary key column existence check: each configured PK ("id") exists with the
+	// exact same case in the general column fact. Graph.AllNodes() ranges over a map,
+	// so the trailing bind args (one per requested table, after the schema) are
+	// nondeterministic for this three-node graph — WithArgs is deliberately omitted
+	// (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("users", "id", 1, "bigint", "bigint unsigned", "").
+			AddRow("orders", "id", 1, "bigint", "bigint", "").
+			AddRow("order_items", "id", 1, "bigint", "bigint", ""))
 	// PK shape + root PK type now share ONE memoized Inspector.PrimaryKeys fact, so a
 	// single query covers positions 3 and 4. Root is "users" and must be integer, or
 	// position 4 aborts before the storage-engine check under test.
@@ -246,20 +251,29 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
-	g := createPreflightTestGraph()
+	// Minimal graph containing users and orders (phase 018, Step 7b): the table set
+	// now comes from run.tables (= graph.AllNodes()), so the mocked column fact must
+	// cover exactly these two tables.
+	g := graph.NewGraph("users", "id")
+	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.SetPK("orders", "id")
+	g.AddEdge("users", "orders")
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
-	// orders has no "id" column at all: the lookup returns no rows.
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "orders", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
+	// orders has no "id" column at all: its column fact names a different column.
+	// Graph.AllNodes() ranges over a map, so the trailing bind args are
+	// nondeterministic for this two-node graph — WithArgs is deliberately omitted
+	// (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("users", "id", 1, "bigint", "bigint", "").
+			AddRow("orders", "order_num", 1, "bigint", "bigint", ""))
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"users", "orders"})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected PK column validation error")
 	}
@@ -274,15 +288,29 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 }
 
 func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
-	db, _, _ := sqlmock.New()
+	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
-	g := createPreflightTestGraph()
+	// A configured root plus an unconfigured "legacy" child. NewGraph always
+	// configures its root, so the unconfigured table is added with AddNode and no
+	// SetPK (phase 018, Step 7b).
+	g := graph.NewGraph("users", "id")
 	g.AddNode("legacy", &graph.Node{Name: "legacy"})
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	err := checker.ValidatePrimaryKeyColumns(context.Background(), []string{"legacy"})
+	// The column fact is now fetched unconditionally for every graph table, even
+	// though "legacy" is rejected without ever consulting its columns — so a Columns
+	// expectation covering the configured root must still be registered, or the
+	// stage returns a plain inspection error instead of *PreflightError. Graph.AllNodes()
+	// ranges over a map, so the trailing bind args are nondeterministic for this
+	// two-node graph — WithArgs is deliberately omitted (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("users", "id", 1, "bigint", "bigint", ""))
+
+	err := checker.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected explicit PK mapping error")
 	}
@@ -310,13 +338,15 @@ func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// MySQL's information_schema.COLUMNS collates case-insensitively, so a lookup
-	// for "LOG_ID" returns the real column name "log_id".
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "events", "LOG_ID").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("log_id"))
+	// MySQL's information_schema.COLUMNS collates case-insensitively, so the real
+	// column comes back as "log_id" even though the configured key is "LOG_ID".
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("testdb", "events").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("events", "log_id", 1, "bigint", "bigint", ""))
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"events"})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected case-mismatch validation error, got nil")
 	}
@@ -340,6 +370,89 @@ func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
 	}
 	if strings.Contains(msg, "over-match") {
 		t.Errorf("case-mismatch error should not use the data-loss over-match wording, got: %s", msg)
+	}
+}
+
+// TestValidatePrimaryKeyColumnsInspectionErrorIsPlain proves a failed column-fact fetch
+// surfaces as a PLAIN error, never a *PreflightError. A *PreflightError means "the
+// schema is wrong"; this means "we could not find out".
+//
+// The assertion is on goarchive's WRAPPER text, not the bare word "columns": the
+// library's own op name for this call is literally "columns", so the raw *ObjectError
+// already contains that substring. Asserting only the bare word would pass against an
+// unwrapped `return err` — a plain error that is not a *PreflightError either, but not
+// what this phase's DELIBERATE TEXT CHANGE (Step 6) actually produces. "pk_columns" is
+// safe: the raw error does not contain that string.
+func TestValidatePrimaryKeyColumnsInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("query failed")
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(p))
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight pk_columns inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected errors.Is to reach the original error, got: %v", err)
+	}
+}
+
+// TestValidatePrimaryKeyColumnsConsumesTheCachedFact proves the stage reads the run's
+// memoized column fact rather than fetching its own, which is the standing
+// non-negotiable ("goarchive must never re-query information_schema for a fact the
+// library answers").
+//
+// Exactly ONE expectation is registered and the explicit pre-load consumes it. A stage
+// that ignored `run` and built its own Inspector would issue a second query, receive
+// "all expectations were already fulfilled", and return that as a plain inspection
+// error — failing the *PreflightError assertion below. mock.ExpectationsWereMet() would
+// NOT catch this: the single expectation is consumed either way. The verdict
+// discriminates, not the expectation bookkeeping.
+func TestValidatePrimaryKeyColumnsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "note", 1, "varchar", "varchar(64)", ""))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.sourceColumns(context.Background()); err != nil {
+		t.Fatalf("pre-load of the column fact failed: %v", err)
+	}
+
+	err = p.ValidatePrimaryKeyColumns(context.Background(), run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "PK_COLUMN_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
 	}
 }
 

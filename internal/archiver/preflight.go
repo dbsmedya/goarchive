@@ -4,7 +4,6 @@ package archiver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -135,7 +134,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	// Validate configured PK columns exist and are explicitly defined.
-	if err := p.ValidatePrimaryKeyColumns(ctx, tables); err != nil {
+	if err := p.ValidatePrimaryKeyColumns(ctx, run); err != nil {
 		return err
 	}
 
@@ -1367,73 +1366,21 @@ func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbNa
 	return columns, nil
 }
 
-// ValidatePrimaryKeyColumns checks that each table has an explicitly configured
-// PK and that the configured PK column exists in the source table with the
-// EXACT same name, including letter case.
-//
-// Column names are matched case-sensitively on purpose. MySQL's
-// information_schema.COLUMNS collates COLUMN_NAME case-insensitively
-// (utf8mb3_tolower_ci), so a plain `COLUMN_NAME = ?` lookup would treat
-// "LOG_ID", "log_id", and "Log_Id" as equal and let a mis-cased primary_key
-// slip through here — only to be caught later by PRIMARY_KEY_CHECK, whose
-// data-loss-flavored "over-match and delete rows" wording is confusing for what
-// is really just a letter-case typo. We therefore fetch the real column name
-// (which carries its true case) and compare it in Go, reporting a mere casing
-// difference with its own clear message (PK_COLUMN_CASE_CHECK).
-func (p *PreflightChecker) ValidatePrimaryKeyColumns(ctx context.Context, tables []string) error {
+// ValidatePrimaryKeyColumns checks that each table has an explicitly configured PK and
+// that the configured PK column exists in the source table with the EXACT same name,
+// including letter case. See judgePrimaryKeyColumns for the full rule and its rationale.
+func (p *PreflightChecker) ValidatePrimaryKeyColumns(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking primary key column definitions...")
 
-	// COLUMN_NAME = ? matches case-insensitively (see doc comment above); the
-	// SELECT returns the column's actual stored name so we can compare case in Go.
-	const query = `
-		SELECT COLUMN_NAME
-		FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME = ?
-		AND COLUMN_NAME = ?`
-
-	var missing []string
-	var caseIssues []string
-	for _, table := range tables {
-		if !p.graph.HasPK(table) {
-			missing = append(missing, fmt.Sprintf("%s(primary key must be explicitly configured; implicit default to 'id' is not allowed)", table))
-			continue
-		}
-
-		pkColumn := p.graph.GetPK(table)
-		var actualColumn string
-		err := p.db.QueryRowContext(ctx, query, p.sourceDBName, table, pkColumn).Scan(&actualColumn)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			// No column matches even case-insensitively: it genuinely does not exist.
-			missing = append(missing, fmt.Sprintf("%s(%s)", table, pkColumn))
-		case err != nil:
-			return fmt.Errorf("failed to validate primary key column for %s.%s: %w", table, pkColumn, err)
-		case actualColumn != pkColumn:
-			// A column exists but its name differs only in letter case. Column
-			// names are case-sensitive here; the configured value must match exactly.
-			caseIssues = append(caseIssues, fmt.Sprintf("%s(configured primary_key %q but the column is named %q)", table, pkColumn, actualColumn))
-		}
+	facts, err := run.sourceColumns(ctx)
+	if err != nil {
+		return inspectionError("pk_columns", err)
+	}
+	if err := judgePrimaryKeyColumns(columnNamesByTable(facts), run.expectedPKs(), run.graphTables()); err != nil {
+		return err
 	}
 
-	// Report the case mismatch first: it is the subtle, easy-to-miss failure and
-	// its guidance (fix the casing) is different from a truly-missing column.
-	if len(caseIssues) > 0 {
-		return &PreflightError{
-			Check:   "PK_COLUMN_CASE_CHECK",
-			Message: "Configured primary_key does not match the database column name exactly. Column names are case-sensitive (e.g. log_id, LOG_ID and Log_Id are different) — set primary_key to the exact case used in the database schema",
-			Tables:  caseIssues,
-		}
-	}
-	if len(missing) > 0 {
-		return &PreflightError{
-			Check:   "PK_COLUMN_CHECK",
-			Message: "Configured primary key columns not found in the source table",
-			Tables:  missing,
-		}
-	}
-
-	p.logger.Debugf("Primary key column check PASSED (%d tables)", len(tables))
+	p.logger.Debugf("Primary key column check PASSED (%d tables)", len(run.graphTables()))
 	return nil
 }
 

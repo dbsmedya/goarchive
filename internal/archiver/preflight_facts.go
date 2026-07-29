@@ -55,6 +55,10 @@ type preflightRun struct {
 	pksErr    error
 	pksLoaded bool
 
+	srcColumns       []validations.TableColumns
+	srcColumnsErr    error
+	srcColumnsLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -164,6 +168,38 @@ func (r *preflightRun) expectedPKs() map[string]string {
 		if r.checker.graph.HasPK(table) {
 			out[table] = r.checker.graph.GetPK(table)
 		}
+	}
+	return out
+}
+
+// sourceColumns returns every column of every graph table, with the server's exact
+// spelling, fetched on first use. Both the value and any error are memoized, for the
+// same reason sourceTables does it: one broken connection must not produce two
+// different verdicts within a run.
+//
+// The complete fact is cached, not a name-only projection: ColumnInfo also carries
+// DataType, Unsigned, Invisible and Generated, and a later phase needing any of those
+// must not have to re-query. Columns returns slices.Clone'd values, so this is already
+// detached.
+func (r *preflightRun) sourceColumns(ctx context.Context) ([]validations.TableColumns, error) {
+	if !r.srcColumnsLoaded {
+		r.srcColumns, r.srcColumnsErr = r.srcInspector.Columns(ctx, r.tables)
+		r.srcColumnsLoaded = true
+	}
+	return r.srcColumns, r.srcColumnsErr
+}
+
+// columnNamesByTable projects the column fact down to what the PK-identity policy
+// needs. It lives at the stage/policy boundary, NOT in the accessor, so the cache stays
+// lossless while judgePrimaryKeyColumns stays a pure function over plain Go values.
+func columnNamesByTable(facts []validations.TableColumns) map[string][]string {
+	out := make(map[string][]string, len(facts))
+	for _, fact := range facts {
+		names := make([]string, 0, len(fact.Columns))
+		for _, col := range fact.Columns {
+			names = append(names, col.Name)
+		}
+		out[fact.Table] = names
 	}
 	return out
 }

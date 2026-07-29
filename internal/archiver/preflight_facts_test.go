@@ -568,6 +568,84 @@ func TestPreflightRunMemoizesPrimaryKeysErrors(t *testing.T) {
 	}
 }
 
+// TestPreflightRunMemoizesSourceColumns proves the column fact is fetched once and the
+// same value is returned on a second call.
+func TestPreflightRunMemoizesSourceColumns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.sourceColumns(context.Background())
+	if err != nil {
+		t.Fatalf("first sourceColumns: %v", err)
+	}
+	second, err := run.sourceColumns(context.Background())
+	if err != nil {
+		t.Fatalf("second sourceColumns: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Table != second[0].Table {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected Columns query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesSourceColumnsErrors proves a failed fetch is memoized too. The
+// identity assertion (errors.Is(secondErr, firstErr)) is what makes this non-vacuous:
+// asserting only that both errors are non-nil passes against a build with no
+// memoization at all, because a consumed sqlmock expectation still returns an error on
+// the next call.
+func TestPreflightRunMemoizesSourceColumnsErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.sourceColumns(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.sourceColumns(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected Columns query was not observed: %v", err)
+	}
+}
+
 // TestPreflightRunRootPKInfoSelectsByRootName proves rootPKInfo selects the root's fact
 // BY NAME, not by position. The cache is pre-populated with the root fact SECOND and no
 // sqlmock expectation is registered, so an implementation that indexed facts[0] would

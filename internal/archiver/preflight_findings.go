@@ -171,6 +171,101 @@ func judgePrimaryKeyShape(facts []validations.PKInfo, expected map[string]string
 	return nil
 }
 
+// asciiFoldEqual reports whether two identifiers differ only by ASCII letter case.
+// Non-ASCII bytes must match exactly, which fails safe: a difference GoArchive cannot
+// classify is treated as a genuine difference rather than as a mere casing slip.
+func asciiFoldEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// judgePrimaryKeyColumns applies goarchive's configured-primary_key identity policy.
+//
+// It answers three questions in the order ValidatePrimaryKeyColumns used in 1.8:
+//
+//  1. is a primary_key configured at all?          -> PK_COLUMN_CHECK
+//  2. does a column with that EXACT name exist?    -> pass
+//  3. does one differ only by ASCII letter case?   -> PK_COLUMN_CASE_CHECK
+//     otherwise                                    -> PK_COLUMN_CHECK
+//
+// Case issues are reported ahead of missing columns because a casing slip is the subtle
+// failure and its guidance ("fix the casing") differs from a truly-absent column's.
+//
+// The case comparison deliberately scans EVERY column of the table, not only
+// primary-key columns: information_schema.COLUMNS.COLUMN_NAME collates
+// case-insensitively (utf8mb3_tolower_ci), so 1.8's lookup matched any column, and
+// preserving that requires the same breadth. The library's CheckPKNameCase inspects PK
+// columns only and is therefore NOT used here.
+func judgePrimaryKeyColumns(
+	columnsByTable map[string][]string,
+	expected map[string]string,
+	graphTables []string,
+) error {
+	var missing []string
+	var caseIssues []string
+
+	for _, table := range graphTables {
+		pkColumn, configured := expected[table]
+		if !configured {
+			missing = append(missing, fmt.Sprintf(
+				"%s(primary key must be explicitly configured; implicit default to 'id' is not allowed)", table))
+			continue
+		}
+
+		cols := columnsByTable[table]
+		exact := false
+		var caseMatch string
+		for _, col := range cols {
+			if col == pkColumn {
+				exact = true
+				break
+			}
+			if caseMatch == "" && asciiFoldEqual(col, pkColumn) {
+				caseMatch = col
+			}
+		}
+		switch {
+		case exact:
+			// ok
+		case caseMatch != "":
+			caseIssues = append(caseIssues, fmt.Sprintf(
+				"%s(configured primary_key %q but the column is named %q)", table, pkColumn, caseMatch))
+		default:
+			missing = append(missing, fmt.Sprintf("%s(%s)", table, pkColumn))
+		}
+	}
+
+	if len(caseIssues) > 0 {
+		return &PreflightError{
+			Check:   "PK_COLUMN_CASE_CHECK",
+			Message: "Configured primary_key does not match the database column name exactly. Column names are case-sensitive (e.g. log_id, LOG_ID and Log_Id are different) — set primary_key to the exact case used in the database schema",
+			Tables:  caseIssues,
+		}
+	}
+	if len(missing) > 0 {
+		return &PreflightError{
+			Check:   "PK_COLUMN_CHECK",
+			Message: "Configured primary key columns not found in the source table",
+			Tables:  missing,
+		}
+	}
+	return nil
+}
+
 // triggerOffenders converts trigger findings into goarchive's one-entry-per-table
 // "<table>(<trigger>)" decoration. The library sorts each table's triggers by firing
 // order (BEFORE before AFTER) and then by name, so element [0] is the deterministic
