@@ -22,7 +22,7 @@ import (
 // Disposable MySQL account support for the characterization suite.
 //
 // Permission checks cannot be characterized as root: a root connection holds
-// every privilege at global scope, so tablesMissingPrivilege short-circuits and
+// every privilege at global scope, so every global row resolves to GrantPresent and
 // every check trivially passes. These helpers create precisely-scoped throwaway
 // accounts and open *sql.DB handles as them.
 //

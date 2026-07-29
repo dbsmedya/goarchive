@@ -17,12 +17,11 @@ import (
 // privilege globally and a global grant satisfies all three checks — as root they are
 // vacuous.
 //
-// The MECHANISM now differs per check, and will until phase 021. JOB_SCHEMA and
-// DEST_WRITE resolve the run-cached Grants fact (CheckSchemaPrivileges and
-// CheckTablePrivileges), where a global row evaluates GrantPresent as long as
-// @@global.partial_revokes is off — which is how these containers run. SOURCE_DELETE
-// still uses 1.8's tablesMissingPrivilege, which returns immediately on a global hit.
-// Either way the conclusion for these fixtures is the same: don't test as root.
+// The MECHANISM is uniform across all three checks since phase 021: each resolves the
+// run-cached Grants fact. JOB_SCHEMA goes through CheckSchemaPrivileges; DEST_WRITE and
+// SOURCE_DELETE go through CheckTablePrivileges. A global row evaluates GrantPresent as
+// long as @@global.partial_revokes is off — which is how these containers run. The
+// conclusion for these fixtures is unchanged: don't test as root.
 //
 // RELEVANT PART OF THE FIXED CHECK ORDER (RunWithProfile, preflight.go:138-240).
 // Each test's assertion is only meaningful if the checks BEFORE the asserted one
@@ -328,10 +327,12 @@ func TestCharacterizationSourceDeletePermission(t *testing.T) {
 	}
 }
 
-// TestCharacterizationGlobalPrivilegeShortCircuit pins today's short-circuit: a
-// GLOBAL grant satisfies the per-table check and tablesMissingPrivilege returns
-// immediately, without consulting SCHEMA_PRIVILEGES or TABLE_PRIVILEGES
-// (preflight.go:1390-1392).
+// TestCharacterizationGlobalPrivilegeShortCircuit pins the global-grant pass: a GLOBAL
+// DELETE row is sufficient on its own. Since phase 021 that verdict comes from the
+// run-cached Grants fact — CheckTablePrivileges resolves a global row to GrantPresent
+// while @@global.partial_revokes is off. Before it, 1.8's tablesMissingPrivilege
+// short-circuited on the global hit without consulting SCHEMA_PRIVILEGES or
+// TABLE_PRIVILEGES.
 //
 // The account is the SAME as the test above with DELETE added globally, and the
 // grant shape is read back to prove the pass cannot come from anywhere else: the
