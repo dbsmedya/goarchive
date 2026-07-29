@@ -50,3 +50,42 @@ func TestGrantsReadAndReleaseUnderSingleConnection(t *testing.T) {
 			"held across another query. It must be released immediately after Inspector.Grants returns")
 	}
 }
+
+// TestSourceGrantsReadAndReleaseUnderSingleConnection is the source-side counterpart
+// to TestGrantsReadAndReleaseUnderSingleConnection. It belongs here because
+// sourceGrants first exists in this phase (021).
+func TestSourceGrantsReadAndReleaseUnderSingleConnection(t *testing.T) {
+	_, runCtx := SetupIntegrationTest(t)
+	f := newChrFixture(t, runCtx)
+	const ddl = "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB"
+	f.ExecSource(t, runCtx, ddl)
+	f.ExecDest(t, runCtx, ddl)
+
+	// TWO global grants, for two different checks — see the note under this test.
+	srcAcct := chrCreateAccount(t, runCtx, f.SourceDB, "source",
+		"GRANT PROCESS ON *.* TO {{ACCOUNT}}",
+		"GRANT SELECT ON *.* TO {{ACCOUNT}}",
+		"GRANT DELETE ON `"+f.SourceSchema+"`.* TO {{ACCOUNT}}")
+	srcDB := chrOpenAs(t, srcAcct, f.SourceSchema)
+	srcDB.SetMaxOpenConns(1)
+
+	// Construct on the test goroutine: CheckerAs may call t.Fatalf. Keep f.DestDB as
+	// the fixture's unconstrained admin pool; cleanup uses it to drop the account and
+	// schema. Only the restricted source pool is the one-slot subject of this proof.
+	c := f.CheckerAs(t, graph.NewGraph("orders", "id"), srcDB, f.DestDB)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- chrRun(t, runCtx, c, chrCommands[0], false)
+	}()
+
+	watchdog := time.NewTimer(60 * time.Second)
+	defer watchdog.Stop()
+	select {
+	case err := <-done:
+		chrAssertPasses(t, err)
+	case <-watchdog.C:
+		t.Fatal("preflight deadlocked with a one-connection source pool: the grants " +
+			"Conn must be released before the next source query")
+	}
+}

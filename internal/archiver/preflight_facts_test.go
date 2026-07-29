@@ -741,6 +741,46 @@ func TestPreflightRunMemoizesDestGrantsErrors(t *testing.T) {
 	}
 }
 
+// TestPreflightRunMemoizesSourceGrantsErrors proves a failed sourceGrants fetch is
+// memoized. Mirrors TestPreflightRunMemoizesDestGrantsErrors; only the checker's
+// source fields and the accessor under test differ.
+//
+// errors.Is(secondErr, wantErr) catches memoization removal, because a retried query
+// has no sqlmock expectation left and returns sqlmock's own "all expectations already
+// fulfilled" error instead of wantErr. errors.Is(secondErr, firstErr) additionally
+// catches an implementation that re-derives the same underlying cause but wraps it
+// into a fresh error value on every accessor call.
+func TestPreflightRunMemoizesSourceGrantsErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("grants failed")
+	mock.ExpectQuery("SELECT CURRENT_USER\\(\\)").WillReturnError(wantErr)
+
+	p := &PreflightChecker{db: db, sourceDBName: "sourcedb"}
+	run := &preflightRun{checker: p}
+
+	_, firstErr := run.sourceGrants(context.Background())
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.sourceGrants(context.Background())
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected failing grants query was not observed: %v", err)
+	}
+}
+
 // TestPreflightRunExpectedPKsOmitsUnconfiguredTables proves expectedPKs omits a table
 // with no configured primary_key rather than defaulting it to "id". Graph.GetPK
 // defaults to "id" when unset, so an implementation that dropped the HasPK guard would
