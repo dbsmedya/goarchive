@@ -255,9 +255,12 @@ func TestPreflightRunIsNotStoredOnChecker(t *testing.T) {
 	}
 }
 
-// TestPreflightRunMemoizesInvisibleColumns proves the fact is fetched exactly once even
-// when several stages ask for it. Only one expectation is registered, so an unmemoized
-// second call re-queries and gets "all expectations were already fulfilled".
+// TestPreflightRunMemoizesInvisibleColumns proves invisibleColumns is now a PROJECTION
+// over sourceColumns (P1 correction): only ONE Columns-shaped expectation is
+// registered, and both calls are satisfied from it — there is no separate
+// InvisibleColumns query left to issue. A single row set carries one invisible column
+// ("note", EXTRA = "INVISIBLE") and one visible column ("id"), so the derivation must
+// also prove it filters correctly, not just that it memoizes.
 func TestPreflightRunMemoizesInvisibleColumns(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -265,9 +268,13 @@ func TestPreflightRunMemoizesInvisibleColumns(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
-			AddRow("orders", "note"))
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("orders", "id", 1, "bigint", "bigint", "").
+			AddRow("orders", "note", 2, "varchar", "varchar(64)", "INVISIBLE"))
 
 	g := graph.NewGraph("orders", "id")
 	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
@@ -287,12 +294,17 @@ func TestPreflightRunMemoizesInvisibleColumns(t *testing.T) {
 	if len(first) != 1 || len(second) != 1 || first[0].Table != second[0].Table {
 		t.Fatalf("memoized value differs: %v vs %v", first, second)
 	}
+	if len(first[0].Columns) != 1 || first[0].Columns[0] != "note" {
+		t.Fatalf("expected only the invisible column \"note\", got %v", first[0].Columns)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expected invisible-column query was not observed: %v", err)
+		t.Fatalf("expected exactly one Columns query, got: %v", err)
 	}
 }
 
-// TestPreflightRunMemoizesInvisibleColumnsErrors proves a failed fetch is memoized too.
+// TestPreflightRunMemoizesInvisibleColumnsErrors proves a failed fetch is memoized too,
+// via the underlying sourceColumns fact (P1 correction): only ONE Columns-shaped
+// expectation is registered.
 //
 // The identity assertion (errors.Is(secondErr, firstErr)) is what makes this
 // non-vacuous. Asserting only that both errors are non-nil passes with memoization
@@ -307,7 +319,9 @@ func TestPreflightRunMemoizesInvisibleColumnsErrors(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	wantErr := errors.New("boom")
-	mock.ExpectQuery("information_schema.COLUMNS").WillReturnError(wantErr)
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnError(wantErr)
 
 	g := graph.NewGraph("orders", "id")
 	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
@@ -329,7 +343,7 @@ func TestPreflightRunMemoizesInvisibleColumnsErrors(t *testing.T) {
 			firstErr, secondErr)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expected invisible-column query was not observed: %v", err)
+		t.Fatalf("expected exactly one Columns query, got: %v", err)
 	}
 }
 

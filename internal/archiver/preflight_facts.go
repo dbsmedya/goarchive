@@ -39,10 +39,6 @@ type preflightRun struct {
 	dstTablesErr    error
 	dstTablesLoaded bool
 
-	invisible       []validations.InvisibleColumns
-	invisibleErr    error
-	invisibleLoaded bool
-
 	srcDelTriggers       []validations.TriggerInfo
 	srcDelTriggersErr    error
 	srcDelTriggersLoaded bool
@@ -105,16 +101,36 @@ func (r *preflightRun) destTables(ctx context.Context) ([]validations.TableInfo,
 }
 
 // invisibleColumns returns one fact per graph table that has at least one INVISIBLE
-// column, fetched on first use. Tables without invisible columns are absent from the
-// result, so an empty slice means "none". Both the value and any error are memoized, for
-// the same reason sourceTables does it: one broken connection must not produce two
-// different verdicts within a run.
+// column. Tables without invisible columns are absent from the result, so an empty
+// slice means "none".
+//
+// This is a PROJECTION over sourceColumns, not a second query: ColumnInfo.Invisible
+// already carries the same predicate Inspector.InvisibleColumns used
+// (parseColumnExtra's case-insensitive "INVISIBLE" substring check on EXTRA, matching
+// the SQL EXTRA LIKE '%INVISIBLE%' the library used before), in the same table and
+// column order (request order, then ORDINAL_POSITION). Re-querying would violate the
+// standing non-negotiable ("never re-query a fact the library answers") and could
+// observe different schema state than position 2 already acquired. Deriving from the
+// cache means invisibleColumns inherits sourceColumns' memoization for free: a second
+// call here costs nothing and cannot see a different answer.
 func (r *preflightRun) invisibleColumns(ctx context.Context) ([]validations.InvisibleColumns, error) {
-	if !r.invisibleLoaded {
-		r.invisible, r.invisibleErr = r.srcInspector.InvisibleColumns(ctx, r.tables)
-		r.invisibleLoaded = true
+	facts, err := r.sourceColumns(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return r.invisible, r.invisibleErr
+	var out []validations.InvisibleColumns
+	for _, fact := range facts {
+		var cols []string
+		for _, col := range fact.Columns {
+			if col.Invisible {
+				cols = append(cols, col.Name)
+			}
+		}
+		if len(cols) > 0 {
+			out = append(out, validations.InvisibleColumns{Table: fact.Table, Columns: cols})
+		}
+	}
+	return out, nil
 }
 
 // sourceDeleteTriggers returns DELETE triggers on the graph tables, fetched on first

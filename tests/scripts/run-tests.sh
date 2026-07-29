@@ -424,10 +424,13 @@ ensure_destination_schema() {
     return 0
 }
 
-# Run specific Sakila test. First argument is the test number.
-# Tests 06-10 are expected to succeed (archive runs to completion).
-# Tests 01-05 are expected to FAIL preflight with a documented error category
-# and are only run when --sakila-examples is set.
+# Run specific Sakila test. First argument is the test number. There are four:
+#   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
+#   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
+#   03  Payment batch             -> working archive
+#   04  rental -> payment         -> working archive
+# Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
+# is set; tests 03-04 are working archives (mode=working) and run to completion.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
