@@ -242,3 +242,94 @@ func TestJudgePrimaryKeyShapePasses(t *testing.T) {
 		t.Fatalf("expected pass, got %v", err)
 	}
 }
+
+// TestJudgePrimaryKeyColumnsMissing pins PK_COLUMN_CHECK: the configured column does
+// not exist in the table under any casing.
+func TestJudgePrimaryKeyColumnsMissing(t *testing.T) {
+	cols := map[string][]string{"orders": {"id", "note"}}
+	err := judgePrimaryKeyColumns(cols, map[string]string{"orders": "order_id"}, []string{"orders"})
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "PK_COLUMN_CHECK" || pe.Tables[0] != "orders(order_id)" {
+		t.Fatalf("Check=%q Tables=%v", pe.Check, pe.Tables)
+	}
+}
+
+// TestJudgePrimaryKeyColumnsCaseOnly pins PK_COLUMN_CASE_CHECK: a column exists whose
+// name differs only by ASCII letter case.
+func TestJudgePrimaryKeyColumnsCaseOnly(t *testing.T) {
+	cols := map[string][]string{"orders": {"Order_Id", "note"}}
+	err := judgePrimaryKeyColumns(cols, map[string]string{"orders": "order_id"}, []string{"orders"})
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "PK_COLUMN_CASE_CHECK" {
+		t.Fatalf("Check = %q, want PK_COLUMN_CASE_CHECK", pe.Check)
+	}
+	if !strings.Contains(pe.Tables[0], `"order_id"`) || !strings.Contains(pe.Tables[0], `"Order_Id"`) {
+		t.Fatalf("Tables[0] must name both spellings: %q", pe.Tables[0])
+	}
+}
+
+// TestJudgePrimaryKeyColumnsCaseOnlyOnNonPKColumn is the case the library's
+// CheckPKNameCase CANNOT answer, and the reason issue C must return every column: the
+// case-only match is against a column that is NOT the primary key. 1.8 reports
+// PK_COLUMN_CASE_CHECK here, and 2.0 must too.
+func TestJudgePrimaryKeyColumnsCaseOnlyOnNonPKColumn(t *testing.T) {
+	cols := map[string][]string{"orders": {"id", "Ref_No"}}
+	err := judgePrimaryKeyColumns(cols, map[string]string{"orders": "ref_no"}, []string{"orders"})
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "PK_COLUMN_CASE_CHECK" {
+		t.Fatalf("Check = %q — a case-only match on a NON-PK column must still be PK_COLUMN_CASE_CHECK", pe.Check)
+	}
+}
+
+// TestJudgePrimaryKeyColumnsCaseBeatsMissing pins the intra-validator ordering
+// (ValidatePrimaryKeyColumns reports caseIssues before missing): the case issue is reported ahead of a genuinely missing column
+// on another table.
+func TestJudgePrimaryKeyColumnsCaseBeatsMissing(t *testing.T) {
+	cols := map[string][]string{
+		"orders": {"Order_Id"},
+		"lines":  {"id"},
+	}
+	expected := map[string]string{"orders": "order_id", "lines": "no_such_column"}
+	err := judgePrimaryKeyColumns(cols, expected, []string{"orders", "lines"})
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) || pe.Check != "PK_COLUMN_CASE_CHECK" {
+		t.Fatalf("expected PK_COLUMN_CASE_CHECK first, got %v", err)
+	}
+}
+
+// TestJudgePrimaryKeyColumnsUnconfigured pins the other PK_COLUMN_CHECK path: a graph
+// table with no configured primary_key at all.
+func TestJudgePrimaryKeyColumnsUnconfigured(t *testing.T) {
+	cols := map[string][]string{"orders": {"id"}, "lines": {"id"}}
+	expected := map[string]string{"orders": "id"} // lines deliberately absent
+	err := judgePrimaryKeyColumns(cols, expected, []string{"orders", "lines"})
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) || pe.Check != "PK_COLUMN_CHECK" {
+		t.Fatalf("expected PK_COLUMN_CHECK, got %v", err)
+	}
+	if !strings.Contains(pe.Tables[0], "explicitly configured") {
+		t.Fatalf("Tables[0] must explain that the key must be configured: %q", pe.Tables[0])
+	}
+}
+
+// TestJudgePrimaryKeyColumnsPasses is the negative control.
+func TestJudgePrimaryKeyColumnsPasses(t *testing.T) {
+	cols := map[string][]string{"orders": {"id", "note"}}
+	if err := judgePrimaryKeyColumns(cols, map[string]string{"orders": "id"}, []string{"orders"}); err != nil {
+		t.Fatalf("expected pass, got %v", err)
+	}
+}

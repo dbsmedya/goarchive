@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	_ "github.com/go-sql-driver/mysql"
@@ -78,7 +79,7 @@ func TestIntegrationPKColumnCase_Rejected(t *testing.T) {
 	defer dropPKCaseTable(ctx, sourceDB)
 	createPKCaseTable(t, ctx, sourceDB)
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{pkCaseTable})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected case-mismatched primary_key to be rejected, got nil")
 	}
@@ -108,7 +109,7 @@ func TestIntegrationPKColumnCase_MixedCaseRejected(t *testing.T) {
 	defer dropPKCaseTable(ctx, sourceDB)
 	createPKCaseTable(t, ctx, sourceDB)
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{pkCaseTable})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected mixed-case primary_key to be rejected, got nil")
 	}
@@ -128,7 +129,7 @@ func TestIntegrationPKColumnCase_ExactMatchPasses(t *testing.T) {
 	defer dropPKCaseTable(ctx, sourceDB)
 	createPKCaseTable(t, ctx, sourceDB)
 
-	if err := checker.ValidatePrimaryKeyColumns(ctx, []string{pkCaseTable}); err != nil {
+	if err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected exact-case primary_key to pass, got: %v", err)
 	}
 }
@@ -145,7 +146,7 @@ func TestIntegrationPKColumn_MissingRejected(t *testing.T) {
 	defer dropPKCaseTable(ctx, sourceDB)
 	createPKCaseTable(t, ctx, sourceDB)
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{pkCaseTable})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected non-existent primary_key to be rejected, got nil")
 	}
@@ -155,5 +156,56 @@ func TestIntegrationPKColumn_MissingRejected(t *testing.T) {
 	}
 	if pfErr.Check != "PK_COLUMN_CHECK" {
 		t.Fatalf("expected PK_COLUMN_CHECK, got %q (%v)", pfErr.Check, err)
+	}
+}
+
+// TestCharacterizationPKColumnCaseOnNonPKColumn pins the breadth of
+// PK_COLUMN_CASE_CHECK: the case-only match is against a column that is NOT the
+// primary key. 1.8 reported PK_COLUMN_CASE_CHECK here because its lookup was not
+// PK-restricted; 2.0 preserves that via the general column fact (upstream issue C).
+func TestCharacterizationPKColumnCaseOnNonPKColumn(t *testing.T) {
+	_, ctx := SetupIntegrationTest(t)
+	f := newChrFixture(t, ctx)
+
+	// Ref_No is UNSIGNED deliberately: it makes the fixture depend on the v0.6.0 fact
+	// rather than only on v0.5.0's column names. See the unsigned assertion below.
+	const ddl = "CREATE TABLE orders (id bigint NOT NULL, Ref_No bigint unsigned NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB"
+	f.ExecSource(t, ctx, ddl)
+	f.ExecDest(t, ctx, ddl)
+
+	// Also pin ColumnInfo.Unsigned directly (phase 018, Step 8): the chrCommands loop
+	// below only exercises the *name* half of the fact and would pass unmodified
+	// against v0.5.0. Driving Inspector.Columns against the same fixture and asserting
+	// Ref_No comes back Unsigned == true covers the v0.6.0 requirement with a test,
+	// not only with go.mod. This is the behaviour Step 11 depends on.
+	inspector := validations.NewInspector(f.SourceDB, f.SourceSchema)
+	cols, err := inspector.Columns(ctx, []string{"orders"})
+	if err != nil {
+		t.Fatalf("Inspector.Columns: %v", err)
+	}
+	var found bool
+	for _, tc := range cols {
+		if tc.Table != "orders" {
+			continue
+		}
+		for _, col := range tc.Columns {
+			if col.Name == "Ref_No" {
+				found = true
+				if !col.Unsigned {
+					t.Fatalf("Ref_No must be reported Unsigned == true, got %+v", col)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Ref_No column not found in Inspector.Columns result: %+v", cols)
+	}
+
+	for _, cmd := range chrCommands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			g := graph.NewGraph("orders", "ref_no") // case-only match on a non-PK column
+			err := chrRun(t, ctx, f.Checker(t, g), cmd, false)
+			chrAssertCheck(t, err, "PK_COLUMN_CASE_CHECK", []string{"orders"})
+		})
 	}
 }

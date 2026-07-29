@@ -207,13 +207,18 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 			AddRow("orders", "BASE TABLE", "MyISAM"). // Not allowed!
 			AddRow("order_items", "BASE TABLE", "InnoDB"))
 
-	// Primary key column existence checks: each configured PK ("id") exists with
-	// the exact same case, so the lookup returns the matching column name.
-	for i := 0; i < 3; i++ {
-		mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-			WithArgs("testdb", sqlmock.AnyArg(), "id").
-			WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
-	}
+	// Primary key column existence check: each configured PK ("id") exists with the
+	// exact same case in the general column fact. Graph.AllNodes() ranges over a map,
+	// so the trailing bind args (one per requested table, after the schema) are
+	// nondeterministic for this three-node graph — WithArgs is deliberately omitted
+	// (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("users", "id", 1, "bigint", "bigint unsigned", "").
+			AddRow("orders", "id", 1, "bigint", "bigint", "").
+			AddRow("order_items", "id", 1, "bigint", "bigint", ""))
 	// PK shape + root PK type now share ONE memoized Inspector.PrimaryKeys fact, so a
 	// single query covers positions 3 and 4. Root is "users" and must be integer, or
 	// position 4 aborts before the storage-engine check under test.
@@ -246,20 +251,29 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
-	g := createPreflightTestGraph()
+	// Minimal graph containing users and orders (phase 018, Step 7b): the table set
+	// now comes from run.tables (= graph.AllNodes()), so the mocked column fact must
+	// cover exactly these two tables.
+	g := graph.NewGraph("users", "id")
+	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-N"})
+	g.SetPK("orders", "id")
+	g.AddEdge("users", "orders")
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("id"))
-	// orders has no "id" column at all: the lookup returns no rows.
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "orders", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}))
+	// orders has no "id" column at all: its column fact names a different column.
+	// Graph.AllNodes() ranges over a map, so the trailing bind args are
+	// nondeterministic for this two-node graph — WithArgs is deliberately omitted
+	// (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("users", "id", 1, "bigint", "bigint", "").
+			AddRow("orders", "order_num", 1, "bigint", "bigint", ""))
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"users", "orders"})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected PK column validation error")
 	}
@@ -274,15 +288,29 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 }
 
 func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
-	db, _, _ := sqlmock.New()
+	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
-	g := createPreflightTestGraph()
+	// A configured root plus an unconfigured "legacy" child. NewGraph always
+	// configures its root, so the unconfigured table is added with AddNode and no
+	// SetPK (phase 018, Step 7b).
+	g := graph.NewGraph("users", "id")
 	g.AddNode("legacy", &graph.Node{Name: "legacy"})
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	err := checker.ValidatePrimaryKeyColumns(context.Background(), []string{"legacy"})
+	// The column fact is now fetched unconditionally for every graph table, even
+	// though "legacy" is rejected without ever consulting its columns — so a Columns
+	// expectation covering the configured root must still be registered, or the
+	// stage returns a plain inspection error instead of *PreflightError. Graph.AllNodes()
+	// ranges over a map, so the trailing bind args are nondeterministic for this
+	// two-node graph — WithArgs is deliberately omitted (phase 018, Step 7b).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("users", "id", 1, "bigint", "bigint", ""))
+
+	err := checker.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected explicit PK mapping error")
 	}
@@ -310,13 +338,15 @@ func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// MySQL's information_schema.COLUMNS collates case-insensitively, so a lookup
-	// for "LOG_ID" returns the real column name "log_id".
-	mock.ExpectQuery("SELECT COLUMN_NAME FROM information_schema.COLUMNS").
-		WithArgs("testdb", "events", "LOG_ID").
-		WillReturnRows(sqlmock.NewRows([]string{"COLUMN_NAME"}).AddRow("log_id"))
+	// MySQL's information_schema.COLUMNS collates case-insensitively, so the real
+	// column comes back as "log_id" even though the configured key is "LOG_ID".
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("testdb", "events").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("events", "log_id", 1, "bigint", "bigint", ""))
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, []string{"events"})
+	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected case-mismatch validation error, got nil")
 	}
@@ -340,6 +370,89 @@ func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
 	}
 	if strings.Contains(msg, "over-match") {
 		t.Errorf("case-mismatch error should not use the data-loss over-match wording, got: %s", msg)
+	}
+}
+
+// TestValidatePrimaryKeyColumnsInspectionErrorIsPlain proves a failed column-fact fetch
+// surfaces as a PLAIN error, never a *PreflightError. A *PreflightError means "the
+// schema is wrong"; this means "we could not find out".
+//
+// The assertion is on goarchive's WRAPPER text, not the bare word "columns": the
+// library's own op name for this call is literally "columns", so the raw *ObjectError
+// already contains that substring. Asserting only the bare word would pass against an
+// unwrapped `return err` — a plain error that is not a *PreflightError either, but not
+// what this phase's DELIBERATE TEXT CHANGE (Step 6) actually produces. "pk_columns" is
+// safe: the raw error does not contain that string.
+func TestValidatePrimaryKeyColumnsInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("query failed")
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	err = p.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(p))
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight pk_columns inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected errors.Is to reach the original error, got: %v", err)
+	}
+}
+
+// TestValidatePrimaryKeyColumnsConsumesTheCachedFact proves the stage reads the run's
+// memoized column fact rather than fetching its own, which is the standing
+// non-negotiable ("goarchive must never re-query information_schema for a fact the
+// library answers").
+//
+// Exactly ONE expectation is registered and the explicit pre-load consumes it. A stage
+// that ignored `run` and built its own Inspector would issue a second query, receive
+// "all expectations were already fulfilled", and return that as a plain inspection
+// error — failing the *PreflightError assertion below. mock.ExpectationsWereMet() would
+// NOT catch this: the single expectation is consumed either way. The verdict
+// discriminates, not the expectation bookkeeping.
+func TestValidatePrimaryKeyColumnsConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "note", 1, "varchar", "varchar(64)", ""))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.sourceColumns(context.Background()); err != nil {
+		t.Fatalf("pre-load of the column fact failed: %v", err)
+	}
+
+	err = p.ValidatePrimaryKeyColumns(context.Background(), run)
+
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the CACHED fact, got %T: %v", err, err)
+	}
+	if pe.Check != "PK_COLUMN_CHECK" {
+		t.Fatalf("Check = %q", pe.Check)
 	}
 }
 
@@ -2273,11 +2386,14 @@ func TestValidateNoInvisibleColumns_Rejected(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
 	ctx := context.Background()
 
-	// The check's query filters EXTRA LIKE '%INVISIBLE%', so it only ever
-	// returns invisible columns.
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
-			AddRow("orders", "secret_payload"))
+	// P1 correction (phase 018 review): the check now derives from the general column
+	// fact instead of its own InvisibleColumns query. createPreflightTestGraph is a
+	// three-node graph, so Graph.AllNodes()'s map order makes the trailing bind args
+	// nondeterministic — WithArgs is deliberately omitted.
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "secret_payload", 1, "varchar", "varchar(64)", "INVISIBLE"))
 
 	err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker))
 	if err == nil {
@@ -2307,8 +2423,12 @@ func TestValidateNoInvisibleColumns_Success(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}))
+	// P1 correction (phase 018 review): Columns-shaped fact, no invisible columns
+	// anywhere. Three-node graph — WithArgs omitted for the same reason as above.
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
 
 	if err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected no error when no invisible columns are present, got: %v", err)
@@ -2342,11 +2462,18 @@ func TestValidateNoInvisibleColumnsFansOutPerColumn(t *testing.T) {
 	// order, so the within-table assertion below genuinely fails if anything sorts the
 	// columns. With alphabetically-ordered names the assertion could not tell the two
 	// apart and would pin nothing.
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
-			AddRow("order_lines", "hidden").
-			AddRow("orders", "zeta").
-			AddRow("orders", "alpha"))
+	//
+	// P1 correction (phase 018 review): Columns-shaped fact (six columns, EXTRA =
+	// "INVISIBLE" on all three rows) instead of the retired InvisibleColumns query.
+	// This is a two-node graph, so Graph.AllNodes()'s map order still makes the
+	// trailing bind args nondeterministic — WithArgs is deliberately omitted.
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).
+			AddRow("order_lines", "hidden", 1, "varchar", "varchar(64)", "INVISIBLE").
+			AddRow("orders", "zeta", 1, "varchar", "varchar(64)", "INVISIBLE").
+			AddRow("orders", "alpha", 2, "varchar", "varchar(64)", "INVISIBLE"))
 
 	// AddNode is REQUIRED. AddEdgeWithMeta only records the edge in Children/Parents; it
 	// does NOT register the node, so without this the child never reaches AllNodes(),
@@ -2421,8 +2548,13 @@ func TestValidateNoInvisibleColumnsPasses(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}))
+	// P1 correction (phase 018 review): Columns-shaped fact, no invisible columns.
+	// Single-table graph, so the bind args are deterministic.
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
 
 	g := graph.NewGraph("orders", "id")
 	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
@@ -2454,7 +2586,11 @@ func TestValidateNoInvisibleColumnsInspectionErrorIsPlain(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("information_schema.COLUMNS").
+	// P1 correction (phase 018 review): the fetch now goes through Columns, but the
+	// stage's OWN wrapper text ("preflight invisible_columns inspection failed") is
+	// unchanged and must keep passing unamended (phase 015 pinned this string).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
 		WillReturnError(errors.New("query failed"))
 
 	g := graph.NewGraph("orders", "id")
@@ -2494,9 +2630,13 @@ func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	mock.ExpectQuery("information_schema.COLUMNS").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME"}).
-			AddRow("orders", "note"))
+	// P1 correction (phase 018 review): Columns-shaped fact, EXTRA = "INVISIBLE" on
+	// "note".
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "note", 1, "varchar", "varchar(64)", "INVISIBLE"))
 
 	g := graph.NewGraph("orders", "id")
 	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
@@ -2517,6 +2657,62 @@ func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
 	}
 	if len(pe.Tables) != 1 || pe.Tables[0] != "orders.note" {
 		t.Fatalf("Tables = %v, want [orders.note]", pe.Tables)
+	}
+}
+
+// TestValidateNoInvisibleColumnsConsumesSourceColumnsFact is the cross-fact test the
+// P1 correction (phase 018 review) requires: it proves position 6
+// (ValidateNoInvisibleColumns) shares position 2's Columns fact rather than issuing a
+// second query. Pre-loading via sourceColumns — not invisibleColumns — mimics the real
+// RunWithProfile flow, where ValidatePrimaryKeyColumns (position 2) is what actually
+// populates the cache first.
+//
+// Exactly ONE Columns expectation is registered and it must be enough: a stage or
+// accessor that still issued its own query would receive "all expectations were
+// already fulfilled" and return a plain inspection error, failing the "no error"
+// assertion below. mock.ExpectationsWereMet() alone would not catch this — the single
+// expectation is consumed either way — so the verdict (no error at all) is what
+// discriminates.
+func TestValidateNoInvisibleColumnsConsumesSourceColumnsFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("srcdb", "orders").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+
+	run := newPreflightRun(p)
+	if _, err := run.sourceColumns(context.Background()); err != nil {
+		t.Fatalf("pre-load of the column fact failed: %v", err)
+	}
+
+	// The accessor's contract is that a table with NO invisible columns is absent from
+	// the result, so an empty slice means "none". Assert it here, on a fixture whose
+	// only table is clean: without the len(cols) > 0 filter the derivation would emit
+	// {Table: "orders", Columns: nil}. Nothing downstream would notice — the stage
+	// guards on len(offenders) > 0 and an empty Columns slice fans out to zero
+	// offenders — so this is the only assertion that holds the filter in place.
+	inv, err := run.invisibleColumns(context.Background())
+	if err != nil {
+		t.Fatalf("invisibleColumns from the cached fact: %v", err)
+	}
+	if len(inv) != 0 {
+		t.Fatalf("a table with no invisible columns must be absent from the result, got %v", inv)
+	}
+
+	if err := p.ValidateNoInvisibleColumns(context.Background(), run); err != nil {
+		t.Fatalf("expected pass using the already-cached column fact, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected exactly one Columns query total, got: %v", err)
 	}
 }
 

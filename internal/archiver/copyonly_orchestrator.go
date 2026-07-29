@@ -156,7 +156,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
 	ctx = startup.runCtx
-	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.graph); err != nil {
+	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.config.Source.Database, o.graph); err != nil {
 		return fail("failed to load root PK metadata: %w", err)
 	}
 	shouldResume, err := resumeMgr.ShouldResume(ctx, o.jobName)

@@ -305,11 +305,15 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows([]string{"RELEASE_LOCK"}).AddRow(int64(1)))
 
 	// loadRootPKMeta returns a non-integer root PK type, forcing a deterministic
-	// post-Running failure with the documented ROOT_PK_TYPE_UNSUPPORTED category.
-	mock.ExpectQuery("SELECT DATA_TYPE, COLUMN_TYPE\\s+FROM information_schema.COLUMNS").
-		WithArgs("users", "id").
-		WillReturnRows(sqlmock.NewRows([]string{"DATA_TYPE", "COLUMN_TYPE"}).
-			AddRow("varchar", "varchar(36)"))
+	// post-Running failure with the documented ROOT_PK_TYPE_UNSUPPORTED category. After
+	// phase 018's migration to Inspector.Columns, the query is the six-column
+	// projection and the schema leads the bind args ("test" is createTestConfig's
+	// Source.Database).
+	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
+		WithArgs("test", "users").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
+		}).AddRow("users", "id", 1, "varchar", "varchar(36)", ""))
 
 	// Cleanup must write JobStatusFailed (not Idle) because Execute returned an error.
 	mock.ExpectExec("UPDATE .*archiver_job` SET job_status").

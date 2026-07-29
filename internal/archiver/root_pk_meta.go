@@ -6,32 +6,89 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/graph"
 )
 
-func loadRootPKMeta(ctx context.Context, sourceDB *sql.DB, g *graph.Graph) error {
+// isIntegerRootPKType reports whether dataType (information_schema.COLUMNS.DATA_TYPE,
+// e.g. "bigint") is one of GoArchive's supported integer root primary-key types.
+//
+// This stays goarchive policy over a library fact rather than a library call:
+// validations.ColumnInfo carries DataType and Unsigned but no IsInteger, and the
+// library's own integer classifier is unexported. loadRootPKMeta is this helper's only
+// remaining consumer (phase 018), which is why it lives here rather than in preflight.go.
+func isIntegerRootPKType(dataType string) bool {
+	switch strings.ToLower(dataType) {
+	case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
+		return true
+	default:
+		return false
+	}
+}
+
+// loadRootPKMeta records the root primary key column's MySQL data type and signedness
+// for the batch pipeline's checkpoint arithmetic. It runs for commands that skip
+// preflight, so it must validate the CONFIGURED column — not the table's actual PRIMARY
+// KEY, which nothing here has proven is the same column.
+//
+// The column is matched in TWO passes: first exact Name == configured primary_key, and
+// only if none matches, an ASCII case-fold match. This preserves 1.8's
+// `COLUMN_NAME = ?` lookup, which collated case-insensitively
+// (utf8mb3_tolower_ci) — a configured "log_id" found the server's "LOG_ID" and the skip
+// path accepted it. Normal preflight still rejects that config at position 2 with
+// PK_COLUMN_CASE_CHECK; this path only preserves what 1.8 did when the operator opted
+// out of that check with --skip-validate-preflight.
+func loadRootPKMeta(ctx context.Context, sourceDB *sql.DB, sourceDBName string, g *graph.Graph) error {
 	if sourceDB == nil {
 		return fmt.Errorf("source database is nil")
 	}
 	if g == nil {
 		return fmt.Errorf("graph is nil")
 	}
+	if sourceDBName == "" {
+		return fmt.Errorf("source database name is required")
+	}
 	rootTable := g.Root
 	rootPK := g.GetPK(rootTable)
-	const query = `
-		SELECT DATA_TYPE, COLUMN_TYPE
-		FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = DATABASE()
-		  AND TABLE_NAME = ?
-		  AND COLUMN_NAME = ?
-	`
-	var dataType, columnType string
-	if err := sourceDB.QueryRowContext(ctx, query, rootTable, rootPK).Scan(&dataType, &columnType); err != nil {
+
+	inspector := validations.NewInspector(sourceDB, sourceDBName)
+	facts, err := inspector.Columns(ctx, []string{rootTable})
+	if err != nil {
 		return fmt.Errorf("loadRootPKMeta: %w", err)
 	}
-	if !isIntegerRootPKType(dataType) {
-		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT)", rootTable, rootPK, dataType)
+
+	var columns []validations.ColumnInfo
+	for _, fact := range facts {
+		if fact.Table == rootTable {
+			columns = fact.Columns
+			break
+		}
 	}
-	g.SetRootPKMeta(strings.ToLower(dataType), strings.Contains(strings.ToLower(columnType), "unsigned"))
+
+	var col *validations.ColumnInfo
+	for i := range columns {
+		if columns[i].Name == rootPK {
+			col = &columns[i]
+			break
+		}
+	}
+	if col == nil {
+		for i := range columns {
+			if asciiFoldEqual(columns[i].Name, rootPK) {
+				col = &columns[i]
+				break
+			}
+		}
+	}
+	if col == nil {
+		// Naming both the table and the column is an improvement this phase adds. 1.8
+		// returned "loadRootPKMeta: sql: no rows in result set", naming neither.
+		return fmt.Errorf("loadRootPKMeta: column %q not found in table %q", rootPK, rootTable)
+	}
+
+	if !isIntegerRootPKType(col.DataType) {
+		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT)", rootTable, rootPK, col.DataType)
+	}
+	g.SetRootPKMeta(strings.ToLower(col.DataType), col.Unsigned)
 	return nil
 }
