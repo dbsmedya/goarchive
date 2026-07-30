@@ -103,7 +103,7 @@ func TestIntegrationSchemaCompatibility_RelaxedDestination(t *testing.T) {
 		t.Fatalf("failed to create destination table: %v", err)
 	}
 
-	if err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable}); err != nil {
+	if err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected relaxed destination schema to pass, got: %v", err)
 	}
 }
@@ -138,7 +138,7 @@ func TestIntegrationSchemaCompatibility_StricterDestinationRejected(t *testing.T
 		}
 		defer func() { _, _ = destDB.ExecContext(ctx, "DROP TABLE IF EXISTS "+schemaRelaxTable) }()
 
-		err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable})
+		err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
 		if err == nil {
 			t.Fatal("expected primary key mismatch error, got nil")
 		}
@@ -159,7 +159,7 @@ func TestIntegrationSchemaCompatibility_StricterDestinationRejected(t *testing.T
 		}
 		defer func() { _, _ = destDB.ExecContext(ctx, "DROP TABLE IF EXISTS "+schemaRelaxTable) }()
 
-		err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable})
+		err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
 		if err == nil {
 			t.Fatal("expected unique index error, got nil")
 		}
@@ -198,7 +198,7 @@ func TestIntegrationSchemaCompatibility_CharsetMismatch(t *testing.T) {
 		t.Fatalf("failed to create destination table: %v", err)
 	}
 
-	err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable})
+	err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("expected charset mismatch error under count verification, got nil")
 	}
@@ -207,7 +207,7 @@ func TestIntegrationSchemaCompatibility_CharsetMismatch(t *testing.T) {
 	}
 
 	checker.SetVerification(config.VerificationConfig{Method: "sha256"})
-	if err := checker.ValidateDestinationSchemaCompatibility(ctx, []string{schemaRelaxTable}); err != nil {
+	if err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker)); err != nil {
 		t.Fatalf("expected charset mismatch to pass under sha256 verification, got: %v", err)
 	}
 }

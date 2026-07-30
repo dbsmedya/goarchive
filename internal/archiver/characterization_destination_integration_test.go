@@ -176,7 +176,12 @@ func TestCharacterizationDestSchemaAggregatesAcrossTables(t *testing.T) {
 
 // TestCharacterizationDestSchemaFirstOffenderPerTable pins the within-table rule: a
 // table with TWO incompatible columns yields exactly ONE Tables entry, for the FIRST
-// offending column in ordinal order (the `break` at preflight.go:1189).
+// offending column in ordinal order.
+//
+// The decoration format changed in phase 028 (authorized by phase 006 Ambiguity 2 /
+// spec §1.1): the 1.8 TableSpec-less comparison named the ordinal ("position 2"); the
+// TableSpec/DiffSpecs evaluator names the column instead, since a SpecDiff carries the
+// column name, not its ordinal position — the column name is strictly more useful anyway.
 func TestCharacterizationDestSchemaFirstOffenderPerTable(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -191,8 +196,8 @@ func TestCharacterizationDestSchemaFirstOffenderPerTable(t *testing.T) {
 	if len(pe.Tables) != 1 {
 		t.Fatalf("expected exactly 1 Tables entry (first offender per table), got %d: %v", len(pe.Tables), pe.Tables)
 	}
-	if !strings.Contains(pe.Tables[0], "position 2") {
-		t.Fatalf("expected the FIRST offending column (ordinal 2) to be reported, got %q", pe.Tables[0])
+	if !strings.Contains(pe.Tables[0], "column a") {
+		t.Fatalf("expected the FIRST offending column (a, ordinal 2) to be reported, got %q", pe.Tables[0])
 	}
 }
 
