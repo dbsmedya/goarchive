@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+	"github.com/dbsmedya/goarchive/internal/graph"
 )
 
 // TestFindingsToPreflightErrorMapsExpectedCheck proves a matching finding becomes a
@@ -477,5 +478,114 @@ func TestUnindexedFKColumnsRejectsWrongFactsType(t *testing.T) {
 				t.Fatalf("error must name the stage, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestReconcileInternalFKsNoEdge pins the "no graph edge" discrepancy.
+func TestReconcileInternalFKsNoEdge(t *testing.T) {
+	g := graph.NewGraph("orders", "id")
+	g.SetPK("order_lines", "id")
+	g.AddNode("order_lines", nil)
+
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_ol_o", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentTable: "orders", ParentColumns: []string{"id"},
+	}}
+	got := reconcileInternalFKs(fks, g)
+	if len(got) != 1 {
+		t.Fatalf("reconcileInternalFKs = %v, want 1 discrepancy", got)
+	}
+	if !strings.Contains(got[0], "no graph edge") {
+		t.Fatalf("discrepancy must say why: %q", got[0])
+	}
+}
+
+// TestReconcileInternalFKsColumnMismatch pins the "FK column mismatch" discrepancy.
+func TestReconcileInternalFKsColumnMismatch(t *testing.T) {
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	g.SetPK("order_lines", "id")
+	g.AddEdgeWithMeta("orders", "order_lines", "alt_id", "id", "")
+
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_ol_o", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentTable: "orders", ParentColumns: []string{"id"},
+	}}
+	got := reconcileInternalFKs(fks, g)
+	if len(got) != 1 || !strings.Contains(got[0], "FK column mismatch") {
+		t.Fatalf("reconcileInternalFKs = %v", got)
+	}
+}
+
+// TestReconcileInternalFKsReferenceMismatch pins the "reference column mismatch"
+// discrepancy: the DB references a column that is not the configured parent PK.
+func TestReconcileInternalFKsReferenceMismatch(t *testing.T) {
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	g.SetPK("order_lines", "id")
+	g.AddEdgeWithMeta("orders", "order_lines", "order_id", "id", "")
+
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_ol_o", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentTable: "orders", ParentColumns: []string{"legacy_id"},
+	}}
+	got := reconcileInternalFKs(fks, g)
+	if len(got) != 1 || !strings.Contains(got[0], "reference column mismatch") {
+		t.Fatalf("reconcileInternalFKs = %v", got)
+	}
+}
+
+// TestReconcileInternalFKsCompositeIsRejected pins the composite-FK decision: a graph
+// edge carries exactly one foreign_key, so a multi-column foreign key between two graph
+// tables cannot be represented and is reported as a discrepancy. 1.8 reached the same
+// FATAL outcome by accident (one information_schema row per column, at least one of
+// which mismatched); 2.0 says so explicitly.
+//
+// The edge below MATCHES on its single column, so the composite guard is the only thing
+// that can produce a discrepancy here — the test cannot pass for the wrong reason.
+func TestReconcileInternalFKsCompositeIsRejected(t *testing.T) {
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	g.SetPK("order_lines", "id")
+	g.AddEdgeWithMeta("orders", "order_lines", "order_id", "id", "")
+
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_ol_o", ChildTable: "order_lines",
+		ChildColumns: []string{"order_id", "tenant_id"},
+		ParentTable:  "orders", ParentColumns: []string{"id", "tenant_id"},
+	}}
+	got := reconcileInternalFKs(fks, g)
+	if len(got) != 1 || !strings.Contains(got[0], "multi-column foreign key") {
+		t.Fatalf("reconcileInternalFKs = %v", got)
+	}
+}
+
+// TestReconcileInternalFKsSelfReferenceSkipped pins the 1.8 exemption for
+// self-referencing constraints (e.g. category.parent_id -> category.id). No edge exists,
+// so without the exemption this would report "no graph edge".
+func TestReconcileInternalFKsSelfReferenceSkipped(t *testing.T) {
+	g := graph.NewGraph("category", "id")
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_self", ChildTable: "category", ChildColumns: []string{"parent_id"},
+		ParentTable: "category", ParentColumns: []string{"id"},
+	}}
+	if got := reconcileInternalFKs(fks, g); len(got) != 0 {
+		t.Fatalf("self-referencing FK must be skipped, got %v", got)
+	}
+}
+
+// TestReconcileInternalFKsMatching is the negative control.
+func TestReconcileInternalFKsMatching(t *testing.T) {
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	g.SetPK("order_lines", "id")
+	g.AddEdgeWithMeta("orders", "order_lines", "order_id", "id", "")
+
+	fks := []validations.ForeignKey{{
+		ConstraintName: "fk_ol_o", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentTable: "orders", ParentColumns: []string{"id"},
+	}}
+	if got := reconcileInternalFKs(fks, g); len(got) != 0 {
+		t.Fatalf("matching configuration must produce no discrepancy, got %v", got)
 	}
 }

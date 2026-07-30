@@ -207,7 +207,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	// INTERNAL_FK_COVERAGE: Validate all internal FK relationships match graph edges
-	if err := p.ValidateInternalFKCoverage(ctx); err != nil {
+	if err := p.ValidateInternalFKCoverage(ctx, run); err != nil {
 		return err
 	}
 
@@ -518,13 +518,6 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context, run *p
 	return nil
 }
 
-// inGraph reports whether (schema, table) is a node in the archive graph. Graph
-// nodes always live in the source schema, so a same-named table in another
-// schema is NOT in the graph.
-func (p *PreflightChecker) inGraph(schema, table string, set map[string]bool) bool {
-	return schema == p.sourceDBName && set[table]
-}
-
 // getForeignKeys retrieves all foreign key constraints for tables in the graph.
 func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResult, error) {
 	if p.fkCacheLoaded {
@@ -788,75 +781,34 @@ func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context, run *
 	}
 }
 
-// ValidateInternalFKCoverage checks that all FK relationships between tables
-// within the graph are properly represented as graph edges with matching columns.
+// ValidateInternalFKCoverage checks that all FK relationships between tables within the
+// graph are properly represented as graph edges with matching columns.
 //
-// This prevents delete failures (Error 1451) caused by missing relation nesting
-// in the configuration. For example, if the DB has item_shipments.item_id -> order_items.item_id
-// but the config puts item_shipments as a sibling of order_items instead of a child.
-func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context) error {
+// This prevents delete failures (Error 1451) caused by missing relation nesting in the
+// configuration — for example a DB constraint item_shipments.item_id -> order_items.item_id
+// while the config puts item_shipments as a SIBLING of order_items rather than a child.
+//
+// This is a goarchive-only check: it reconciles library facts against goarchive's own
+// graph model, which the library has no view of.
+func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking internal FK coverage...")
 
-	graphTables := p.graph.AllNodes()
-	graphTableSet := make(map[string]bool, len(graphTables))
-	for _, t := range graphTables {
-		graphTableSet[t] = true
-	}
-
-	fks, err := p.getForeignKeys(ctx)
+	result, err := run.fkWithin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query foreign keys: %w", err)
+		return inspectionError("internal_fk_coverage", err)
 	}
 
-	var messages []string
-	for _, fk := range fks {
-		// Only check FKs where BOTH tables are in the graph
-		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) ||
-			!p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) {
-			continue
-		}
-
-		// Skip self-referencing FKs (e.g., category.parent_id -> category.id)
-		if fk.Table == fk.ReferencedTable {
-			continue
-		}
-
-		edgeMeta := p.graph.GetEdgeMeta(fk.ReferencedTable, fk.Table)
-
-		if edgeMeta == nil {
-			messages = append(messages, fmt.Sprintf(
-				"  - %s.%s -> %s.%s (constraint: %s) [no graph edge]",
-				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
-			))
-			continue
-		}
-
-		if edgeMeta.ForeignKey != fk.Column {
-			messages = append(messages, fmt.Sprintf(
-				"  - %s.%s -> %s.%s (constraint: %s) [FK column mismatch: config has '%s', DB has '%s']",
-				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
-				edgeMeta.ForeignKey, fk.Column,
-			))
-			continue
-		}
-
-		parentPK := p.graph.GetPK(fk.ReferencedTable)
-		if parentPK != fk.ReferencedColumn {
-			messages = append(messages, fmt.Sprintf(
-				"  - %s.%s -> %s.%s (constraint: %s) [reference column mismatch: config PK is '%s', DB references '%s']",
-				fk.Table, fk.Column, fk.ReferencedTable, fk.ReferencedColumn, fk.ConstraintName,
-				parentPK, fk.ReferencedColumn,
-			))
-		}
-	}
-
+	messages := reconcileInternalFKs(result.Keys, p.graph)
 	if len(messages) > 0 {
+		// Fact order follows the request order, which is Graph.AllNodes() — a map range.
+		// Sort so an operator comparing two runs of the same failing config sees the same
+		// report. Phase 025 fixed the identical defect in ValidateForeignKeyCoverage.
+		sort.Strings(messages)
 		return &PreflightError{
 			Check: "INTERNAL_FK_COVERAGE",
 			Message: fmt.Sprintf(
 				"Internal FK relationships not matching configuration:\n%s\n\nHint: Ensure child tables are nested under their parent in the relations configuration, with matching foreign_key and primary_key values.",
-				strings.Join(messages, "\n"),
-			),
+				strings.Join(messages, "\n")),
 		}
 	}
 

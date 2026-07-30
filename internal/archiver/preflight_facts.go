@@ -72,6 +72,10 @@ type preflightRun struct {
 	fkInErr    error
 	fkInLoaded bool
 
+	fkWi       validations.ForeignKeyResult
+	fkWiErr    error
+	fkWiLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -337,4 +341,14 @@ func (r *preflightRun) fkIncoming(ctx context.Context) (validations.ForeignKeyRe
 		r.fkInLoaded = true
 	}
 	return r.fkIn, r.fkInErr
+}
+
+// fkWithin returns constraints with BOTH endpoints in the graph — the set
+// INTERNAL_FK_COVERAGE reconciles against the relations configuration.
+func (r *preflightRun) fkWithin(ctx context.Context) (validations.ForeignKeyResult, error) {
+	if !r.fkWiLoaded {
+		r.fkWi, r.fkWiErr = r.srcInspector.ForeignKeys(ctx, validations.Within(r.tables...))
+		r.fkWiLoaded = true
+	}
+	return r.fkWi, r.fkWiErr
 }

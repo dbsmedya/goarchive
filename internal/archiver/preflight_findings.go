@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+
+	"github.com/dbsmedya/goarchive/internal/graph"
 )
 
 // findingsToPreflightError converts the findings whose Check equals want into one
@@ -12,7 +14,7 @@ import (
 //
 // Findings whose Check is NOT want are ignored here on purpose: a stage that can
 // receive more than one kind must partition them itself and call this once per kind,
-// then reject anything left over with unexpectedFindingError. See phase 026's
+// then reject anything left over with unexpectedFindingError. See phase 025's
 // FK_CLOSURE handling for the worked example.
 func findingsToPreflightError(
 	id, message string,
@@ -381,4 +383,58 @@ func triggerOffenders(stage string, findings []validations.Finding) ([]string, e
 		out = append(out, triggers[0].Table+"("+triggers[0].Name+")")
 	}
 	return out, nil
+}
+
+// reconcileInternalFKs compares foreign keys whose child AND parent are both graph
+// tables against the relations configuration, returning one line per discrepancy in
+// fact order.
+//
+// The caller must supply facts from ForeignKeys(ctx, Within(graphTables...)) — the
+// selector is the both-endpoints-in-graph filter, so no additional filtering happens
+// here. Callers that need a stable message order must sort; fact order follows the
+// request order, which is Graph.AllNodes() and therefore map-ranged.
+func reconcileInternalFKs(fks []validations.ForeignKey, g *graph.Graph) []string {
+	var messages []string
+	for _, fk := range fks {
+		// Self-referencing FKs (e.g. category.parent_id -> category.id) are not graph
+		// edges and never were.
+		if fk.ChildTable == fk.ParentTable {
+			continue
+		}
+
+		// A graph edge carries exactly one foreign_key and one reference column, so a
+		// multi-column constraint between two graph tables cannot be represented. 1.8
+		// rejected these too, as a side effect of reading one information_schema row per
+		// constraint column; 2.0 states the reason.
+		if len(fk.ChildColumns) != 1 || len(fk.ParentColumns) != 1 {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s -> %s (constraint: %s) [multi-column foreign key: %v -> %v; GoArchive relations model a single foreign_key/primary_key pair per edge]",
+				fk.ChildTable, fk.ParentTable, fk.ConstraintName, fk.ChildColumns, fk.ParentColumns))
+			continue
+		}
+		childColumn := fk.ChildColumns[0]
+		parentColumn := fk.ParentColumns[0]
+
+		edgeMeta := g.GetEdgeMeta(fk.ParentTable, fk.ChildTable)
+		if edgeMeta == nil {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [no graph edge]",
+				fk.ChildTable, childColumn, fk.ParentTable, parentColumn, fk.ConstraintName))
+			continue
+		}
+		if edgeMeta.ForeignKey != childColumn {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [FK column mismatch: config has '%s', DB has '%s']",
+				fk.ChildTable, childColumn, fk.ParentTable, parentColumn, fk.ConstraintName,
+				edgeMeta.ForeignKey, childColumn))
+			continue
+		}
+		if parentPK := g.GetPK(fk.ParentTable); parentPK != parentColumn {
+			messages = append(messages, fmt.Sprintf(
+				"  - %s.%s -> %s.%s (constraint: %s) [reference column mismatch: config PK is '%s', DB references '%s']",
+				fk.ChildTable, childColumn, fk.ParentTable, parentColumn, fk.ConstraintName,
+				parentPK, parentColumn))
+		}
+	}
+	return messages
 }

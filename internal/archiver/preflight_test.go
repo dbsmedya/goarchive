@@ -1871,6 +1871,9 @@ func TestValidateForeignKeyCoverageConsumesTheCachedFact(t *testing.T) {
 // ValidateInternalFKCoverage Tests
 // ============================================================================
 
+// TestValidateInternalFKCoverage_FlatConfigMissingNesting is also the explicit
+// contract-3 proof: the preloaded fact plus ZERO registered sqlmock expectations
+// proves the stage judges the cached fkWithin fact rather than issuing its own query.
 func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -1890,18 +1893,20 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 
 	// DB reports an FK from item_shipments.item_id -> order_items.item_id
 	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items)
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "item_shipments", "fk_ship_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+			{ConstraintName: "fk_ship_orders", ChildTable: "item_shipments", ChildColumns: []string{"order_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected INTERNAL_FK_COVERAGE error for flat config with nested DB FK")
 	}
@@ -1918,6 +1923,9 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	}
 	if !strings.Contains(preflightErr.Error(), "no graph edge") {
 		t.Fatalf("expected 'no graph edge' reason, got: %v", preflightErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -1937,19 +1945,23 @@ func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error for properly nested config, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -1967,16 +1979,16 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected error for FK column mismatch")
 	}
@@ -1994,6 +2006,9 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 	if !strings.Contains(preflightErr.Error(), "DB has 'customer_id'") {
 		t.Fatalf("expected DB column in error, got: %v", preflightErr)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
 func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
@@ -2010,16 +2025,16 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "line_items", "fk_line_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_line_orders", ChildTable: "line_items", ChildColumns: []string{"order_id"},
+				ParentTable: "orders", ParentColumns: []string{"id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected error for reference column mismatch")
 	}
@@ -2037,8 +2052,15 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 	if !strings.Contains(preflightErr.Error(), "DB references 'id'") {
 		t.Fatalf("expected DB reference in error, got: %v", preflightErr)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
+// TestValidateInternalFKCoverage_NoInternalFKs preloads an EMPTY ForeignKeyResult, not
+// an external/out-of-graph foreign key. fkWithin is defined as the both-endpoints-in-graph
+// set, so seeding it with a key the Within selector could never return would violate the
+// accessor's own fact contract and test a state that cannot occur.
 func TestValidateInternalFKCoverage_NoInternalFKs(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -2047,17 +2069,18 @@ func TestValidateInternalFKCoverage_NoInternalFKs(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	// Only external FKs returned - no internal ones between graph tables
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "external_table", "fk_ext", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi:       validations.ForeignKeyResult{},
+		fkWiLoaded: true,
+	}
 
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error when no internal FKs exist, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2071,21 +2094,28 @@ func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
 	// Self-referencing FK: categories.parent_id -> categories.id
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "categories", "fk_cat_parent", "parent_id", "testdb", "categories", "id", "SET NULL", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_cat_parent", ChildTable: "categories", ChildColumns: []string{"parent_id"},
+				ParentTable: "categories", ParentColumns: []string{"id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error for self-referencing FK, got: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
+// TestValidateInternalFKCoverage_MultipleFailures is also the sort proof. Facts are
+// supplied payments-first; sorted output must put item_shipments first ("  - i" <
+// "  - p"). Asserting the exact adjacent block is what fails if the sort is removed —
+// two independent strings.Contains checks would not.
 func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -2105,18 +2135,22 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
+	// Facts are supplied payments-first, then item_shipments, then order_items (the
+	// third matches its edge and yields no line, exactly as in the 1.8 fixture).
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+				ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		}},
+		fkWiLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.ValidateInternalFKCoverage(context.Background())
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected error for multiple failures")
 	}
@@ -2126,12 +2160,50 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 		t.Fatalf("expected PreflightError, got %T", err)
 	}
 
-	errMsg := preflightErr.Error()
-	if !strings.Contains(errMsg, "no graph edge") {
-		t.Fatalf("expected 'no graph edge' for item_shipments, got: %v", preflightErr)
+	wantBlock := "  - item_shipments.item_id -> order_items.item_id (constraint: fk_ship_items) [no graph edge]\n" +
+		"  - payments.customer_id -> orders.order_id (constraint: fk_pay_orders) [FK column mismatch: config has 'wrong_col', DB has 'customer_id']"
+	if !strings.Contains(preflightErr.Error(), wantBlock) {
+		t.Fatalf("discrepancies must appear sorted; got:\n%s", preflightErr.Error())
 	}
-	if !strings.Contains(errMsg, "FK column mismatch") {
-		t.Fatalf("expected 'FK column mismatch' for payments, got: %v", preflightErr)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
+}
+
+// TestValidateInternalFKCoverageInspectionErrorIsPlain — contract 2. A memoized
+// fkWithin error must surface as a PLAIN error carrying goarchive's
+// "internal_fk_coverage" inspection wrapper, never a *PreflightError.
+func TestValidateInternalFKCoverageInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("fk fetch failed")
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkWiErr: wantErr, fkWiLoaded: true,
+	}
+
+	err = checker.ValidateInternalFKCoverage(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight internal_fk_coverage inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
 	}
 }
 
