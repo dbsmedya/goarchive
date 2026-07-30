@@ -746,7 +746,7 @@ run_unit_tests() {
         GO_TEST_ARGS="./..."
     fi
     
-    go test $go_test_opts -run '^Test[^(Integration|Orchestrator_FailFast|Orchestrator_Full|Execute_|Real)].*' $GO_TEST_ARGS 2>&1 || true
+    go test $go_test_opts -run '^Test[^(Integration|Orchestrator_FailFast|Orchestrator_Full|Execute_|Real)].*' $GO_TEST_ARGS 2>&1
 }
 
 # Run Go integration tests
@@ -810,7 +810,7 @@ main() {
         run_fmt_check || exit 1
         run_lint_check || exit 1
         run_integration_tests
-        exit 0
+        exit $?
     fi
     
     # Run Go unit tests
@@ -818,7 +818,7 @@ main() {
         run_fmt_check || exit 1
         run_lint_check || exit 1
         run_unit_tests
-        exit 0
+        exit $?
     fi
     
     # Default: run all Go tests
