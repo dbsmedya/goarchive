@@ -22,11 +22,17 @@ import (
 // source DELETE can then cascade (or SET NULL) into rows GoArchive never copied
 // or verified.
 //
-// The regression: getForeignKeys anchors its metadata query on the *child*
-// table's schema (`kcu.TABLE_SCHEMA = sourceDBName`), so a constraint DEFINED IN
-// ANOTHER SCHEMA that references an in-graph table is never seen, and coverage
-// silently passes. MySQL permits a table in one database to reference a table in
-// another, and ON DELETE CASCADE will then delete matching child rows.
+// The original 1.8 regression: the now-deleted getForeignKeys anchored its
+// metadata query on the *child* table's schema (`kcu.TABLE_SCHEMA = sourceDBName`),
+// so a constraint DEFINED IN ANOTHER SCHEMA that referenced an in-graph table was
+// never seen, and coverage silently passed. MySQL permits a table in one database
+// to reference a table in another, and ON DELETE CASCADE will then delete matching
+// child rows.
+//
+// Coverage is now answered by the library's IncomingTo selector, which anchors on
+// the PARENT table (phase 025); getForeignKeys itself went in phase 027. These
+// tests stay as the behavioural guard: they assert the outcome, not the mechanism,
+// so they keep proving the cross-schema case is caught however it is implemented.
 //
 // sqlmock cannot reproduce this — it needs real information_schema metadata for a
 // genuine cross-schema constraint, so these live against MySQL.

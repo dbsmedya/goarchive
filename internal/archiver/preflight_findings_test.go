@@ -589,3 +589,112 @@ func TestReconcileInternalFKsMatching(t *testing.T) {
 		t.Fatalf("matching configuration must produce no discrepancy, got %v", got)
 	}
 }
+
+// TestDedupeCascadeEdgesCollapsesWithinGraphConstraints proves the deduplication spec
+// §3.5 requires. A constraint whose child AND parent are both graph tables appears in
+// both the IncomingTo and OutgoingFrom results; without dedup it would be warned twice.
+func TestDedupeCascadeEdgesCollapsesWithinGraphConstraints(t *testing.T) {
+	shared := validations.ForeignKey{
+		ConstraintName: "fk_ol_o",
+		ChildSchema:    "srcdb", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentSchema: "srcdb", ParentTable: "orders", ParentColumns: []string{"id"},
+		OnDelete: "CASCADE",
+	}
+	external := validations.ForeignKey{
+		ConstraintName: "fk_audit",
+		ChildSchema:    "other", ChildTable: "audit", ChildColumns: []string{"order_id"},
+		ParentSchema: "srcdb", ParentTable: "orders", ParentColumns: []string{"id"},
+		OnDelete: "CASCADE",
+	}
+
+	incoming := validations.CheckCascadeRules([]validations.ForeignKey{shared, external})
+	outgoing := validations.CheckCascadeRules([]validations.ForeignKey{shared})
+
+	got, err := dedupeCascadeEdges("cascade", incoming, outgoing)
+	if err != nil {
+		t.Fatalf("dedupeCascadeEdges: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("dedupeCascadeEdges = %v, want 2 distinct constraints", got)
+	}
+	// First-seen order, NOT sorted — the helper is order-preserving by contract.
+	if got[0] != "srcdb.order_lines.order_id->srcdb.orders.id" {
+		t.Fatalf("got[0] = %q", got[0])
+	}
+	if got[1] != "other.audit.order_id->srcdb.orders.id" {
+		t.Fatalf("got[1] = %q", got[1])
+	}
+}
+
+// TestDedupeCascadeEdgesKeyIsChildSideTriple proves the dedup key is
+// (ChildSchema, ChildTable, ConstraintName): two constraints sharing a name but living
+// on different child tables are distinct and both reported.
+func TestDedupeCascadeEdgesKeyIsChildSideTriple(t *testing.T) {
+	a := validations.ForeignKey{
+		ConstraintName: "fk_parent",
+		ChildSchema:    "srcdb", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentSchema: "srcdb", ParentTable: "orders", ParentColumns: []string{"id"},
+		OnDelete: "CASCADE",
+	}
+	b := a
+	b.ChildTable = "items"
+
+	got, err := dedupeCascadeEdges("cascade", validations.CheckCascadeRules([]validations.ForeignKey{a, b}))
+	if err != nil {
+		t.Fatalf("dedupeCascadeEdges: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("dedupeCascadeEdges = %v, want both constraints", got)
+	}
+}
+
+// TestDedupeCascadeEdgesRejectsUnknownCheck enforces the fail-closed rule on the check id.
+//
+// unexpectedFindingError's actual prefix is PREFLIGHT_UNKNOWN_FINDING (preflight_findings.go),
+// as asserted by every other consumer of that helper in this file; the plan text for this
+// test cited PREFLIGHT_UNEXPECTED_FINDING, which does not match production behaviour.
+func TestDedupeCascadeEdgesRejectsUnknownCheck(t *testing.T) {
+	_, err := dedupeCascadeEdges("cascade", []validations.Finding{{Check: "SOMETHING_NEW"}})
+	if err == nil {
+		t.Fatal("an unrecognised finding must abort preflight")
+	}
+	if !strings.Contains(err.Error(), "PREFLIGHT_UNKNOWN_FINDING") {
+		t.Fatalf("wrong error shape: %v", err)
+	}
+}
+
+// TestDedupeCascadeEdgesRejectsWrongFactsType enforces the fail-closed rule on the facts
+// payload, in both shapes that matter.
+//
+// The *validations.ForeignKey case is the load-bearing one: the library sets
+// Facts: *key — BY VALUE — so a pointer assertion compiles cleanly and then fails at
+// runtime for every finding. That is a live regression risk every time this helper is
+// edited, not a hypothetical one. The plainly-wrong type is the ordinary guard.
+func TestDedupeCascadeEdgesRejectsWrongFactsType(t *testing.T) {
+	fk := validations.ForeignKey{
+		ConstraintName: "fk_ol_o",
+		ChildSchema:    "srcdb", ChildTable: "order_lines", ChildColumns: []string{"order_id"},
+		ParentSchema: "srcdb", ParentTable: "orders", ParentColumns: []string{"id"},
+		OnDelete: "CASCADE",
+	}
+
+	for _, tc := range []struct {
+		name  string
+		facts any
+	}{
+		{"plainly wrong type", "not a foreign key"},
+		{"pointer instead of value", &fk},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := dedupeCascadeEdges("cascade", []validations.Finding{
+				{Check: validations.IDCascadeRules, Facts: tc.facts},
+			})
+			if err == nil {
+				t.Fatal("an unrecognised facts payload must abort preflight")
+			}
+			if !strings.Contains(err.Error(), "PREFLIGHT_UNEXPECTED_FACTS") {
+				t.Fatalf("wrong error shape: %v", err)
+			}
+		})
+	}
+}

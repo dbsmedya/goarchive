@@ -32,22 +32,6 @@ func (e *PreflightError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Check, e.Message)
 }
 
-// ForeignKeyResult holds foreign key constraint information.
-//
-// GA-P4-F3-T3: FK index check
-// GA-P4-F3-T6: CASCADE rule warning
-type ForeignKeyResult struct {
-	TableSchema           string
-	Table                 string
-	ConstraintName        string
-	Column                string
-	ReferencedTableSchema string
-	ReferencedTable       string
-	ReferencedColumn      string
-	OnDelete              string // CASCADE, SET NULL, RESTRICT, etc.
-	OnUpdate              string
-}
-
 // PreflightProfile selects the subset of checks needed for a command.
 type PreflightProfile int
 
@@ -68,8 +52,6 @@ type PreflightChecker struct {
 	jobSchemaName     string
 	graph             *graph.Graph
 	logger            *logger.Logger
-	fkCache           []ForeignKeyResult
-	fkCacheLoaded     bool
 	verification      config.VerificationConfig
 }
 
@@ -230,7 +212,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		}
 
 		// GA-P4-F3-T6: CASCADE rule warning
-		if err := p.WarnCascadeRules(ctx); err != nil {
+		if err := p.WarnCascadeRules(ctx, run); err != nil {
 			return err
 		}
 	}
@@ -518,87 +500,6 @@ func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context, run *p
 	return nil
 }
 
-// getForeignKeys retrieves all foreign key constraints for tables in the graph.
-func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResult, error) {
-	if p.fkCacheLoaded {
-		return p.fkCache, nil
-	}
-
-	tables := p.graph.AllNodes()
-
-	const query = `
-		SELECT
-			kcu.TABLE_SCHEMA,
-			kcu.TABLE_NAME,
-			kcu.CONSTRAINT_NAME,
-			kcu.COLUMN_NAME,
-			kcu.REFERENCED_TABLE_SCHEMA,
-			kcu.REFERENCED_TABLE_NAME,
-			kcu.REFERENCED_COLUMN_NAME,
-			rc.DELETE_RULE,
-			rc.UPDATE_RULE
-		FROM information_schema.KEY_COLUMN_USAGE kcu
-		JOIN information_schema.REFERENTIAL_CONSTRAINTS rc
-			ON kcu.CONSTRAINT_NAME = rc.CONSTRAINT_NAME
-			AND kcu.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-		WHERE kcu.REFERENCED_TABLE_NAME IS NOT NULL
-		AND (
-			(kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME IN (?))
-			OR (kcu.REFERENCED_TABLE_SCHEMA = ? AND kcu.REFERENCED_TABLE_NAME IN (?))
-		)`
-
-	// Build placeholders
-	placeholders := make([]string, len(tables))
-	for i := range tables {
-		placeholders[i] = "?"
-	}
-	// Arg order matches placeholder order: branch-1 schema+tables, branch-2 schema+tables.
-	args := make([]interface{}, 0, 2*(len(tables)+1))
-	args = append(args, p.sourceDBName)
-	for _, table := range tables {
-		args = append(args, table)
-	}
-	args = append(args, p.sourceDBName)
-	for _, table := range tables {
-		args = append(args, table)
-	}
-
-	fullQuery := strings.Replace(query, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-	fullQuery = strings.Replace(fullQuery, "(?)", "("+strings.Join(placeholders, ",")+")", 1)
-
-	rows, err := p.db.QueryContext(ctx, fullQuery, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var results []ForeignKeyResult
-	for rows.Next() {
-		var fk ForeignKeyResult
-		if err := rows.Scan(
-			&fk.TableSchema, &fk.Table, &fk.ConstraintName, &fk.Column,
-			&fk.ReferencedTableSchema, &fk.ReferencedTable, &fk.ReferencedColumn,
-			&fk.OnDelete, &fk.OnUpdate,
-		); err != nil {
-			return nil, err
-		}
-
-		results = append(results, fk)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	p.fkCache = results
-	p.fkCacheLoaded = true
-	return results, nil
-}
-
 // ValidateTriggers checks for DELETE triggers on source tables.
 //
 // GA-P4-F3-T4: DELETE trigger detection
@@ -637,25 +538,39 @@ func (p *PreflightChecker) ValidateTriggers(ctx context.Context, run *preflightR
 	}
 }
 
-// WarnCascadeRules warns about ON DELETE CASCADE rules that may cause unexpected deletions.
+// WarnCascadeRules warns about ON DELETE CASCADE rules that may cause unexpected
+// deletions. It is a WARNING, never a failure — cascade is legitimate design, and the
+// operator is the one who knows whether it is intended here.
+//
+// The edge set is the union of the incoming and outgoing fetches, deduplicated by the
+// child-side constraint triple: a constraint with both endpoints in the graph appears in
+// both results (spec §3.5). Both facts were already acquired by earlier stages, so this
+// stage issues no query.
 //
 // GA-P4-F3-T6: CASCADE rule warning
-func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
+func (p *PreflightChecker) WarnCascadeRules(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking for CASCADE rules...")
 
-	fks, err := p.getForeignKeys(ctx)
+	incoming, err := run.fkIncoming(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get foreign keys: %w", err)
+		return inspectionError("cascade", err)
+	}
+	outgoing, err := run.fkOutgoing(ctx)
+	if err != nil {
+		return inspectionError("cascade", err)
 	}
 
-	var cascadeRules []string
-	for _, fk := range fks {
-		if fk.OnDelete == "CASCADE" {
-			cascadeRules = append(cascadeRules, fmt.Sprintf("%s.%s.%s->%s.%s.%s",
-				fk.TableSchema, fk.Table, fk.Column,
-				fk.ReferencedTableSchema, fk.ReferencedTable, fk.ReferencedColumn))
-		}
+	cascadeRules, err := dedupeCascadeEdges("cascade",
+		validations.CheckCascadeRules(incoming.Keys),
+		validations.CheckCascadeRules(outgoing.Keys))
+	if err != nil {
+		return err
 	}
+
+	// Both fetches are ordered by Graph.AllNodes(), which is a map range, so the union's
+	// order varies run to run. Sort so an operator comparing two runs of the same schema
+	// sees the same warning. Phases 025 and 026 fixed the identical defect.
+	sort.Strings(cascadeRules)
 
 	if len(cascadeRules) > 0 {
 		// GA-P4-F3-T6: This is a WARNING, not an error
