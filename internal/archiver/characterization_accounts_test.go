@@ -43,9 +43,13 @@ type chrAccount struct {
 	Addr     string // host:port of the server the account lives on
 }
 
-// Identity renders the account as MySQL's quoted 'user'@'host' identity, which
-// is also the GRANTEE spelling used by the information_schema privilege tables
-// (see formatGrantee, preflight.go:1219).
+// Identity renders the account as MySQL's quoted 'user'@'host' identity. Before phase
+// 025 deleted it, this shape also matched preflight.go's formatGrantee helper, which
+// compared it against the information_schema.USER_PRIVILEGES GRANTEE spelling as part
+// of the 1.8 global-SELECT visibility proof. That mechanism is gone — deviation D2
+// replaces it with the library's PROCESS-gated InnoDB registry read — so this is now
+// purely a readable account identity for test/debugging output, not a privilege-table
+// lookup key.
 func (a chrAccount) Identity() string {
 	return "'" + a.User + "'@'" + a.Host + "'"
 }

@@ -1617,6 +1617,10 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	}
 }
 
+// TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict preloads the
+// run's fkIn fact directly (Step 5's cached-fact pattern) rather than mocking SQL:
+// ValidateForeignKeyCoverage now reads validations.ForeignKeyResult via
+// run.fkIncoming, not the deleted raw information_schema query.
 func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -1624,16 +1628,21 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn: validations.ForeignKeyResult{
+			Keys: []validations.ForeignKey{
+				{ConstraintName: "fk_ext_orders_1", ChildSchema: "testdb", ChildTable: "external_cascade",
+					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "CASCADE"},
+				{ConstraintName: "fk_ext_orders_2", ChildSchema: "testdb", ChildTable: "external_restrict",
+					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
+			},
+			Visibility: validations.VisibilityComplete,
+		},
+		fkInLoaded: true,
+	}
 
-	mock.ExpectQuery("SELECT\\s+kcu\\.TABLE_SCHEMA,").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"table_schema", "table_name", "constraint_name", "column_name",
-			"referenced_table_schema", "referenced_table_name", "referenced_column_name", "delete_rule", "update_rule",
-		}).
-			AddRow("testdb", "external_cascade", "fk_ext_orders_1", "order_id", "testdb", "orders", "id", "CASCADE", "RESTRICT").
-			AddRow("testdb", "external_restrict", "fk_ext_orders_2", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	err := checker.ValidateForeignKeyCoverage(context.Background())
+	err := checker.ValidateForeignKeyCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected FK coverage error for uncovered references")
 	}
@@ -1651,12 +1660,15 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 	if !strings.Contains(preflightErr.Error(), "ON DELETE RESTRICT") {
 		t.Fatalf("expected RESTRICT rule in error message, got: %v", preflightErr)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
 // TestValidateForeignKeyCoverage_CrossSchemaSameNameChild proves an out-of-graph
 // child in ANOTHER schema that happens to share a name with a graph table
 // (otherdb.orders vs in-graph orders) is still flagged: membership must be
-// schema-aware, not bare-name.
+// schema-aware, not bare-name. Preloads the run's fkIn fact directly, same as above.
 func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -1666,15 +1678,19 @@ func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 	ctx := context.Background()
 
 	// otherdb.orders (out-of-graph) references in-graph testdb.users.
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE",
-		}).AddRow("otherdb", "orders", "fk_other_users", "user_id",
-			"testdb", "users", "id", "CASCADE", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn: validations.ForeignKeyResult{
+			Keys: []validations.ForeignKey{
+				{ConstraintName: "fk_other_users", ChildSchema: "otherdb", ChildTable: "orders",
+					ParentSchema: "testdb", ParentTable: "users", OnDelete: "CASCADE"},
+			},
+			Visibility: validations.VisibilityComplete,
+		},
+		fkInLoaded: true,
+	}
 
-	err := checker.ValidateForeignKeyCoverage(ctx)
+	err := checker.ValidateForeignKeyCoverage(ctx, run)
 	if err == nil {
 		t.Fatal("expected FK_COVERAGE_CHECK for same-name cross-schema child, got nil")
 	}
@@ -1684,47 +1700,170 @@ func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 	if !strings.Contains(err.Error(), "otherdb") {
 		t.Fatalf("expected error to qualify the child schema, got: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
 // ============================================================================
 // ValidateForeignKeyMetadataVisibility Tests
 // ============================================================================
 
-func TestValidateForeignKeyMetadataVisibility_NoGlobalSelect(t *testing.T) {
+// TestValidateForeignKeyMetadataVisibilityInspectionErrorIsPlain — contract 2. A
+// memoized fkIncoming error must surface as a PLAIN error carrying goarchive's
+// "fk_metadata_visibility" inspection wrapper, never a *PreflightError.
+func TestValidateForeignKeyMetadataVisibilityInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("fk fetch failed")
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkInErr: wantErr, fkInLoaded: true,
+	}
+
+	err = checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight fk_metadata_visibility inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact — contract 3, and the
+// Step 6 rewrite of the deleted TestValidateForeignKeyMetadataVisibility_NoGlobalSelect:
+// deviation D2 replaced the 1.8 global-SELECT mechanism that test exercised through
+// sqlmock rows with the library's typed completeness proof. Preloading fkIn/fkInLoaded
+// with VisibilityUnconfirmed and a non-empty tables slice (CheckFKClosure returns nil,
+// vacuously, for an empty target) and registering ZERO sqlmock expectations proves the
+// stage judges the cached fact, not a fresh query.
+func TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
-	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn:       validations.ForeignKeyResult{Visibility: validations.VisibilityUnconfirmed},
+		fkInLoaded: true,
+	}
 
-	mock.ExpectQuery("SELECT CURRENT_USER").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("app@%"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
-	mock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-
-	err := checker.ValidateForeignKeyMetadataVisibility(context.Background())
+	err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
 	if err == nil {
-		t.Fatal("expected FK_COVERAGE_VISIBILITY_CHECK when account lacks global SELECT, got nil")
+		t.Fatal("expected FK_COVERAGE_VISIBILITY_CHECK when visibility is unconfirmed, got nil")
 	}
 	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_VISIBILITY_CHECK" {
 		t.Fatalf("expected FK_COVERAGE_VISIBILITY_CHECK, got: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
 }
 
-func TestValidateForeignKeyMetadataVisibility_GlobalSelectPasses(t *testing.T) {
+// TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete is Step 6's
+// positive counterpart: VisibilityComplete preloaded, zero sqlmock expectations.
+func TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
-	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn:       validations.ForeignKeyResult{Visibility: validations.VisibilityComplete},
+		fkInLoaded: true,
+	}
 
-	mock.ExpectQuery("SELECT CURRENT_USER").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_USER()"}).AddRow("root@localhost"))
-	mock.ExpectQuery("SELECT CURRENT_ROLE").
-		WillReturnRows(sqlmock.NewRows([]string{"CURRENT_ROLE()"}).AddRow("NONE"))
-	mock.ExpectQuery("FROM information_schema.USER_PRIVILEGES").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	if err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run); err != nil {
+		t.Fatalf("expected pass with VisibilityComplete, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
+}
 
-	if err := checker.ValidateForeignKeyMetadataVisibility(context.Background()); err != nil {
-		t.Fatalf("expected pass with global SELECT, got: %v", err)
+// TestValidateForeignKeyCoverageInspectionErrorIsPlain — contract 2. A memoized
+// fkIncoming error must surface as a PLAIN error carrying goarchive's "fk_coverage"
+// inspection wrapper, never a *PreflightError.
+func TestValidateForeignKeyCoverageInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("fk fetch failed")
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkInErr: wantErr, fkInLoaded: true,
+	}
+
+	err = checker.ValidateForeignKeyCoverage(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight fk_coverage inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateForeignKeyCoverageConsumesTheCachedFact — contract 3. Preload fkIn with
+// ONE external-child key and fkInLoaded, registering NO sqlmock expectation: a stage
+// that re-queried would get no match, return a plain error, and fail the
+// *PreflightError assertion below.
+func TestValidateForeignKeyCoverageConsumesTheCachedFact(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn: validations.ForeignKeyResult{
+			Keys: []validations.ForeignKey{
+				{ConstraintName: "fk_ext_orders", ChildSchema: "testdb", ChildTable: "external_child",
+					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
+			},
+			Visibility: validations.VisibilityComplete,
+		},
+		fkInLoaded: true,
+	}
+
+	err := checker.ValidateForeignKeyCoverage(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected FK_COVERAGE_CHECK for the uncovered external child, got nil")
+	}
+	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_CHECK" {
+		t.Fatalf("expected FK_COVERAGE_CHECK, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2324,44 +2463,6 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 // ============================================================================
 // Source DELETE Privilege Tests (Task 6)
 // ============================================================================
-
-// ============================================================================
-// Grantee Resolution Helper Tests (Task 4)
-// ============================================================================
-
-func TestFormatGrantee(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"archiver@10.0.0.5", "'archiver'@'10.0.0.5'"},
-		{"root@%", "'root'@'%'"},
-		// Embedded quote NOT escaped — verified on MySQL 8.4: the GRANTEE
-		// column concatenates quotes around the raw name without doubling.
-		{"o'brien@%", "'o'brien'@'%'"},
-	}
-	for _, tt := range tests {
-		if got := formatGrantee(tt.in); got != tt.want {
-			t.Errorf("formatGrantee(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestRoleGrantees(t *testing.T) {
-	got := roleGrantees("`app_writer`@`%`, `auditor`@`localhost`")
-	want := []string{"'app_writer'@'%'", "'auditor'@'localhost'"}
-	if len(got) != len(want) {
-		t.Fatalf("roleGrantees returned %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("role %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-	if r := roleGrantees("NONE"); len(r) != 0 {
-		t.Errorf("roleGrantees(NONE) = %v, want empty", r)
-	}
-	if r := roleGrantees(""); len(r) != 0 {
-		t.Errorf("roleGrantees(\"\") = %v, want empty", r)
-	}
-}
 
 // ============================================================================
 // ValidateJobSchemaPermissions Tests

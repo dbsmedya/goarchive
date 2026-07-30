@@ -120,7 +120,7 @@ func TestIntegrationFKCoverage_CrossSchemaIncoming_Rejected(t *testing.T) {
 				t.Fatalf("failed to create preflight checker: %v", err)
 			}
 
-			err = checker.ValidateForeignKeyCoverage(ctx)
+			err = checker.ValidateForeignKeyCoverage(ctx, newPreflightRun(checker))
 			if err == nil {
 				t.Fatalf("ON DELETE %s: expected FK_COVERAGE_CHECK to reject the cross-schema "+
 					"incoming FK, got nil — an external cascade would delete uncopied rows", deleteRule)

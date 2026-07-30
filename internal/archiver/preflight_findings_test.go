@@ -365,6 +365,74 @@ func TestUnindexedFKColumnsRejectsUnknownCheck(t *testing.T) {
 	}
 }
 
+// TestPartitionClosureFindingsSplitsByFactsType proves the happy-path split: a
+// ForeignKey-typed finding becomes an external-edge entry and a MetadataVisibility-typed
+// finding becomes a visibility entry, both under the single IDFKClosure check id.
+func TestPartitionClosureFindingsSplitsByFactsType(t *testing.T) {
+	extFK := validations.ForeignKey{ConstraintName: "fk_ext", ChildTable: "audit_log", ParentTable: "orders"}
+	findings := []validations.Finding{
+		{Check: validations.IDFKClosure, Facts: extFK},
+		{Check: validations.IDFKClosure, Facts: validations.VisibilityUnconfirmed},
+	}
+
+	external, visibility, err := partitionClosureFindings(findings)
+	if err != nil {
+		t.Fatalf("partitionClosureFindings: %v", err)
+	}
+	if len(external) != 1 || external[0].ConstraintName != "fk_ext" {
+		t.Fatalf("external = %v, want one ForeignKey fk_ext", external)
+	}
+	if len(visibility) != 1 || visibility[0] != validations.VisibilityUnconfirmed {
+		t.Fatalf("visibility = %v, want one VisibilityUnconfirmed", visibility)
+	}
+}
+
+// TestPartitionClosureFindingsRejectsUnknownCheck proves an unrecognised Finding.Check
+// aborts rather than being silently skipped — a dropped finding is a check that stopped
+// running (spec §2).
+func TestPartitionClosureFindingsRejectsUnknownCheck(t *testing.T) {
+	external, visibility, err := partitionClosureFindings(
+		[]validations.Finding{{Check: "SOMETHING_NEW"}})
+	if err == nil {
+		t.Fatalf("must abort, got external=%v visibility=%v and nil error", external, visibility)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("fail-closed abort must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.HasPrefix(err.Error(), "PREFLIGHT_UNKNOWN_FINDING") {
+		t.Fatalf("wrong helper reported this fault, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "fk_closure") {
+		t.Fatalf("error must name the stage, got: %v", err)
+	}
+}
+
+// TestPartitionClosureFindingsRejectsWrongFactsType proves a RECOGNISED check arriving
+// with a Facts payload that is neither ForeignKey nor MetadataVisibility aborts via
+// unexpectedFactsError. The default arm must name BOTH accepted types, since either is
+// valid for FK_CLOSURE.
+func TestPartitionClosureFindingsRejectsWrongFactsType(t *testing.T) {
+	external, visibility, err := partitionClosureFindings([]validations.Finding{
+		{Check: validations.IDFKClosure, Facts: "not-a-ForeignKey-or-MetadataVisibility"},
+	})
+	if err == nil {
+		t.Fatalf("must abort, got external=%v visibility=%v and nil error", external, visibility)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("fail-closed abort must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.HasPrefix(err.Error(), "PREFLIGHT_UNEXPECTED_FACTS") {
+		t.Fatalf("wrong helper reported this fault, got: %v", err)
+	}
+	for _, want := range []string{"fk_closure", "validations.ForeignKey", "validations.MetadataVisibility"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must mention %q, got: %v", want, err)
+		}
+	}
+}
+
 // TestUnindexedFKColumnsRejectsWrongFactsType proves a RECOGNISED check arriving with an
 // unexpected Facts payload aborts via unexpectedFactsError. Facts holds ForeignKey BY
 // VALUE, so a pointer payload is wrong too — assert that case specifically, because a
