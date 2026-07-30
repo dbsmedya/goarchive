@@ -1082,3 +1082,147 @@ func TestPreflightRunFKIncomingUsesIncomingSelector(t *testing.T) {
 		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
 	}
 }
+
+// TestPreflightRunMemoizesFKWithin proves the within-graph FK fetch happens once per
+// run. Only the INNODB_FOREIGN expectation is registered: the library tries that
+// registry first and returns without touching the information_schema fallback when it
+// succeeds, so a single expectation is the whole primary path. A second query of any
+// kind would therefore go unmatched and surface as an error.
+func TestPreflightRunMemoizesFKWithin(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("INNODB_FOREIGN AS f").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ID", "FOR_NAME", "REF_NAME", "N_COLS", "TYPE",
+			"FOR_COL_NAME", "REF_COL_NAME", "POS",
+		}).AddRow("srcdb/fk_ol_o", "srcdb/order_lines", "srcdb/orders", 1, 0, "order_id", "id", 1))
+
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.fkWithin(context.Background())
+	if err != nil {
+		t.Fatalf("first fkWithin: %v", err)
+	}
+	second, err := run.fkWithin(context.Background())
+	if err != nil {
+		t.Fatalf("second fkWithin: %v", err)
+	}
+	if len(first.Keys) != 1 || len(second.Keys) != 1 || first.Keys[0].ConstraintName != second.Keys[0].ConstraintName {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesFKWithinErrors proves a failed fetch is memoized too. Both
+// sources must be made to fail — the library falls back to information_schema on any
+// primary error and only reports failure when both fail, joining the causes — so two
+// expectations are registered and errors.Is against wantErr holds through errors.Join.
+//
+// The identity assertion (errors.Is(secondErr, firstErr)) is what makes this non-vacuous:
+// asserting only that both errors are non-nil passes against a build with no memoization
+// at all, because a consumed sqlmock expectation still returns an error on the next call.
+func TestPreflightRunMemoizesFKWithinErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("INNODB_FOREIGN AS f").WillReturnError(wantErr)
+	mock.ExpectQuery("KEY_COLUMN_USAGE AS kcu").WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.fkWithin(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.fkWithin(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected FK queries were not observed: %v", err)
+	}
+}
+
+// TestPreflightRunFKWithinUsesWithinSelector pins the selector as the property it
+// asserts. The two mutants die by DIFFERENT mechanisms, and neither alone is enough:
+//
+//   - Within -> OutgoingFrom: NOT detectable by query shape. Both issue the identical
+//     "f.FOR_NAME IN (...)" predicate (library fact 1); they differ only in the
+//     post-parse filter. The FIXTURE kills this one: two constraints share the child
+//     order_lines, one with an in-graph parent (orders) and one with an out-of-graph
+//     parent (audit_log). Within keeps one; OutgoingFrom keeps both, failing len == 1.
+//
+//   - Within -> IncomingTo: NOT detectable by the length assertion. IncomingTo matches
+//     on the PARENT table, so on this same fixture it also returns exactly one key
+//     (the orders-parented constraint) and would satisfy len == 1. The QUERY PIN kills
+//     this one: IncomingTo predicates on "f.REF_NAME IN", which the `f\.FOR_NAME IN`
+//     expectation does not match, so the call falls through to an unexpected
+//     information_schema query and surfaces as an error.
+//
+// Remove either mechanism and one mutant survives.
+func TestPreflightRunFKWithinUsesWithinSelector(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery(`f\.FOR_NAME IN`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ID", "FOR_NAME", "REF_NAME", "N_COLS", "TYPE",
+			"FOR_COL_NAME", "REF_COL_NAME", "POS",
+		}).
+			AddRow("srcdb/fk_ol_o", "srcdb/order_lines", "srcdb/orders", 1, 0, "order_id", "id", 1).
+			AddRow("srcdb/fk_ol_a", "srcdb/order_lines", "srcdb/audit_log", 1, 0, "audit_id", "id", 1))
+
+	// BOTH tables must be real nodes: AddEdgeWithMeta alone does not register a node,
+	// so AllNodes() — and therefore r.tables — would omit order_lines entirely.
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("order_lines", nil)
+
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	result, err := run.fkWithin(context.Background())
+	if err != nil {
+		t.Fatalf("fkWithin: %v", err)
+	}
+	if len(result.Keys) != 1 {
+		t.Fatalf("Within must keep only the in-graph-parent constraint, got %d: %v",
+			len(result.Keys), result.Keys)
+	}
+	if result.Keys[0].ParentTable != "orders" {
+		t.Fatalf("surviving key must be the orders-parented one, got %+v", result.Keys[0])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
+	}
+}
