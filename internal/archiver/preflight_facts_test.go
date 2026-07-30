@@ -893,9 +893,16 @@ func TestPreflightRunMemoizesFKOutgoingErrors(t *testing.T) {
 	}
 }
 
-// TestPreflightRunFKOutgoingUsesOutgoingSelector pins the selector, which the memoization
-// tests cannot: a single-constraint fixture is returned identically by all three
-// selectors, so those tests pass under a mutated selector.
+// TestPreflightRunFKOutgoingUsesOutgoingSelector pins the selector as the property it
+// asserts, rather than as a side effect of its fixture.
+//
+// TestPreflightRunMemoizesFKOutgoing does happen to fail under a mutated selector too —
+// its constraint's parent (users) is outside the graph, so Within filters it out and
+// IncomingTo never matches it, and both leave Keys empty against a len(Keys) == 1 check.
+// But that is incidental to what it asserts. Adding the parent to that test's graph, or
+// any other ordinary fixture edit, would silently remove the discrimination with no test
+// failing and no reviewer prompted to look. This test makes the property explicit and
+// keeps it pinned across such edits.
 //
 // The fixture is one constraint whose CHILD is in the graph and whose PARENT is not
 // (same schema, so only graph membership differs). Per foreignKeyMatchesSelector:
