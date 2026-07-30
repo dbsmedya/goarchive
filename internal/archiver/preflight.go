@@ -211,6 +211,14 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		return err
 	}
 
+	// SOURCE_SELECT_PERMISSION_CHECK (deviation D4, invariant I3): every command reads
+	// source rows or estimates from them, so this runs for ALL profiles — deliberately
+	// OUTSIDE the delete-capable block below. Its position is fixed by spec §3.2: after
+	// INTERNAL_FK_COVERAGE and immediately before the conditional delete-permission slot.
+	if err := p.ValidateSourceSelectPermissions(ctx, run); err != nil {
+		return err
+	}
+
 	if profile == PreflightProfileFull || profile == PreflightProfileSourceOnly {
 		if err := p.ValidateSourceDeletePermissions(ctx, run); err != nil {
 			return err
@@ -1244,6 +1252,46 @@ func (p *PreflightChecker) hasGlobalPrivilege(ctx context.Context, db *sql.DB, g
 		return false, fmt.Errorf("failed to check global %s privilege: %w", priv, err)
 	}
 	return count > 0, nil
+}
+
+// ValidateSourceSelectPermissions checks the source account can SELECT from every graph
+// table.
+//
+// Deviation D4 (spec §4), invariant I3 (spec §3.2). GoArchive 1.8 never validated source
+// read permission: a PROCESS+DELETE-only account passed preflight and failed mid-run,
+// after the job row and per-job log table had already been created. Every command reads
+// source data or estimates from it, so this check applies to ALL FIVE commands — unlike
+// SOURCE_DELETE_PERMISSION_CHECK, which stays profile-dependent.
+//
+// The rule is invariant I2's: only GrantPresent passes. The Grants value is the one
+// already cached for this run (phase 021); no additional query is issued.
+func (p *PreflightChecker) ValidateSourceSelectPermissions(ctx context.Context, run *preflightRun) error {
+	p.logger.Debug("Checking source select permissions...")
+
+	grants, err := run.sourceGrants(ctx)
+	if err != nil {
+		return inspectionError("source_select", err)
+	}
+
+	findings := validations.CheckTablePrivileges(
+		grants, p.sourceDBName, run.graphTables(), validations.PrivilegeSelect)
+	offenders, err := privilegeOffenders("source_select", findings)
+	if err != nil {
+		return err
+	}
+	if len(offenders) > 0 {
+		return &PreflightError{
+			Check: "SOURCE_SELECT_PERMISSION_CHECK",
+			Message: "Source account lacks provable SELECT privilege on required tables. " +
+				"Every GoArchive command reads source rows or estimates from them, so this is " +
+				"checked before any work starts. Grant it directly to the account " +
+				"(GRANT SELECT ON <schema>.* TO <user>)",
+			Tables: offenders,
+		}
+	}
+
+	p.logger.Debug("Source select permission check PASSED")
+	return nil
 }
 
 // ValidateSourceDeletePermissions checks the source account can DELETE from all graph

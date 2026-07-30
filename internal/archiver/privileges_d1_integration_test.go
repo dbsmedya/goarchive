@@ -105,8 +105,17 @@ func TestD1PartialRevokesGlobalGrantFailsDirectGrantPasses(t *testing.T) {
 	dstDB := chrOpenAs(t, dstAcct, f.DestSchema)
 
 	t.Run("global_only_fails", func(t *testing.T) {
+		// SELECT is granted DIRECTLY at schema scope (in addition to the global grant)
+		// so SOURCE_SELECT_PERMISSION_CHECK (phase 022, D4) resolves GrantPresent and
+		// does not mask the DELETE verdict this subtest exists to pin: DELETE stays
+		// global-only, so under partial revokes it is still GrantUnconfirmed and
+		// SOURCE_DELETE_PERMISSION_CHECK still fires. Without this addition,
+		// SOURCE_SELECT_PERMISSION_CHECK would fire first (it now runs before
+		// SOURCE_DELETE_PERMISSION_CHECK), which is D4 working as designed but would
+		// invalidate this subtest's original DELETE-specific assertion.
 		acct := chrCreateAccount(t, ctx, f.SourceDB, "source",
-			"GRANT PROCESS, SELECT, DELETE ON *.* TO {{ACCOUNT}}")
+			"GRANT PROCESS, SELECT, DELETE ON *.* TO {{ACCOUNT}}",
+			"GRANT SELECT ON `"+f.SourceSchema+"`.* TO {{ACCOUNT}}")
 		c := f.CheckerAs(t, graph.NewGraph("orders", "id"), chrOpenAs(t, acct, f.SourceSchema), dstDB)
 		err := chrRun(t, ctx, c, chrCommands[1], false)
 		chrAssertCheck(t, err, "SOURCE_DELETE_PERMISSION_CHECK", []string{"orders"})
