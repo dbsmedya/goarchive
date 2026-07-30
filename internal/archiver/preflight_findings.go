@@ -206,6 +206,29 @@ func privilegeOffenders(stage string, findings []validations.Finding) ([]string,
 	return out, nil
 }
 
+// unindexedFKColumns converts FK-index findings into goarchive's "<table>.<column>"
+// entries, one per child column.
+//
+// 1.8 read information_schema.KEY_COLUMN_USAGE, which returns one row per constraint
+// COLUMN, so a two-column foreign key produced two entries. validations.ForeignKey
+// carries ChildColumns as a slice, so the fan-out is explicit here to preserve that.
+func unindexedFKColumns(stage string, findings []validations.Finding) ([]string, error) {
+	var out []string
+	for _, f := range findings {
+		if f.Check != validations.IDFKIndexed {
+			return nil, unexpectedFindingError(stage, f)
+		}
+		fk, ok := f.Facts.(validations.ForeignKey)
+		if !ok {
+			return nil, unexpectedFactsError(stage, f, "validations.ForeignKey")
+		}
+		for _, col := range fk.ChildColumns {
+			out = append(out, fk.ChildTable+"."+col)
+		}
+	}
+	return out, nil
+}
+
 // asciiFoldEqual reports whether two identifiers differ only by ASCII letter case.
 // Non-ASCII bytes must match exactly, which fails safe: a difference GoArchive cannot
 // classify is treated as a genuine difference rather than as a mere casing slip.

@@ -315,3 +315,99 @@ func TestTriggerOffendersFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+// TestUnindexedFKColumnsReportsChildColumns proves the migrated check keeps the
+// "<table>.<column>" Tables shape. A composite foreign key yields one entry per child
+// column, matching 1.8, where information_schema returned one row per column.
+// CheckFKIndexed preserves input order, so the expected order is the input order.
+func TestUnindexedFKColumnsReportsChildColumns(t *testing.T) {
+	fks := []validations.ForeignKey{
+		{ConstraintName: "fk_a", ChildSchema: "srcdb", ChildTable: "order_lines",
+			ChildColumns: []string{"order_id"}, ParentTable: "orders", Indexed: false},
+		{ConstraintName: "fk_b", ChildSchema: "srcdb", ChildTable: "items",
+			ChildColumns: []string{"a", "b"}, ParentTable: "orders", Indexed: false},
+		{ConstraintName: "fk_c", ChildSchema: "srcdb", ChildTable: "ok",
+			ChildColumns: []string{"x"}, ParentTable: "orders", Indexed: true},
+	}
+	got, err := unindexedFKColumns("fk_index", validations.CheckFKIndexed(fks))
+	if err != nil {
+		t.Fatalf("unindexedFKColumns: %v", err)
+	}
+	want := []string{"order_lines.order_id", "items.a", "items.b"}
+	if len(got) != len(want) {
+		t.Fatalf("unindexedFKColumns = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unindexedFKColumns = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestUnindexedFKColumnsRejectsUnknownCheck proves an unrecognised Finding.Check aborts
+// rather than being silently skipped — a dropped finding is a check that stopped running
+// (spec §2). The error must be plain, never a *PreflightError: it reports that this build
+// is out of date, not that the schema is wrong.
+func TestUnindexedFKColumnsRejectsUnknownCheck(t *testing.T) {
+	got, err := unindexedFKColumns("fk_index", []validations.Finding{{Check: "SOMETHING_NEW"}})
+	if err == nil {
+		t.Fatalf("must abort, got columns %v and nil error", got)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("fail-closed abort must be a plain error, got *PreflightError: %v", pe)
+	}
+	if !strings.HasPrefix(err.Error(), "PREFLIGHT_UNKNOWN_FINDING") {
+		t.Fatalf("wrong helper reported this fault, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "fk_index") {
+		t.Fatalf("error must name the stage, got: %v", err)
+	}
+}
+
+// TestUnindexedFKColumnsRejectsWrongFactsType proves a RECOGNISED check arriving with an
+// unexpected Facts payload aborts via unexpectedFactsError. Facts holds ForeignKey BY
+// VALUE, so a pointer payload is wrong too — assert that case specifically, because a
+// value-vs-pointer slip is silent: every finding would be rejected at runtime while the
+// happy-path test above, which builds findings through CheckFKIndexed, still passes.
+func TestUnindexedFKColumnsRejectsWrongFactsType(t *testing.T) {
+	fk := validations.ForeignKey{ChildTable: "order_lines", ChildColumns: []string{"order_id"}}
+	cases := []struct {
+		name    string
+		finding validations.Finding
+	}{
+		{
+			name: "wrong_type",
+			finding: validations.Finding{
+				Check: validations.IDFKIndexed,
+				Facts: "not-a-ForeignKey",
+			},
+		},
+		{
+			name: "pointer_instead_of_value",
+			finding: validations.Finding{
+				Check: validations.IDFKIndexed,
+				Facts: &fk,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := unindexedFKColumns("fk_index", []validations.Finding{tc.finding})
+			if err == nil {
+				t.Fatalf("must abort, got columns %v and nil error", got)
+			}
+			var pe *PreflightError
+			if errors.As(err, &pe) {
+				t.Fatalf("fail-closed abort must be a plain error, got *PreflightError: %v", pe)
+			}
+			if !strings.HasPrefix(err.Error(), "PREFLIGHT_UNEXPECTED_FACTS") {
+				t.Fatalf("wrong helper reported this fault, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "fk_index") {
+				t.Fatalf("error must name the stage, got: %v", err)
+			}
+		})
+	}
+}
