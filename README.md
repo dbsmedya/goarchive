@@ -104,7 +104,7 @@ GoArchive also operates under deliberate constraints — single-column primary k
 | Document | Covers |
 |----------|--------|
 | [Configuration](docs/README_CONFIGURATION.md) | Every config block, option, default, and precedence rule |
-| [Validation & Preflight](docs/README_VALIDATION.md) | All 19 preflight checks, what fails and how to fix it |
+| [Validation & Preflight](docs/README_VALIDATION.md) | All 20 preflight checks, what fails and how to fix it |
 | [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, the global `SELECT` requirement |
 | [Limitations](docs/README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions |
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
@@ -384,7 +384,7 @@ make e2e-setup            # bootstrap + Sakila end-to-end suite
 
 Complete end-to-end archive, purge, and copy-only workflows:
 - Dependency graph + topological copy / reverse-topological delete order
-- 19 preflight checks: storage engine, primary key shape, invisible columns, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
+- 20 preflight checks: storage engine, primary key shape, invisible columns, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
 - Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
 - Advisory locks serialize job-name execution across all three commands
 - Replication lag monitor (pauses batches when replica lag exceeds threshold)

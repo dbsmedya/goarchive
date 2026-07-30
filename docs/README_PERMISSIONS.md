@@ -34,6 +34,12 @@ recipes.
 `copy-only` never deletes from source, so it does not require source `DELETE`.
 Every other command does.
 
+Source `SELECT` on every participating table is validated by
+`SOURCE_SELECT_PERMISSION_CHECK` for all five commands — see
+[Validation & Preflight](README_VALIDATION.md). The privilege must be provable for the
+object: a grant held only through an active role, or a bare global grant while
+`@@global.partial_revokes` is enabled, is reported as unconfirmed and fails closed.
+
 ### Why `CREATE` on the tracking schema
 
 `CREATE` is a **runtime** requirement, not a one-time setup step. GoArchive

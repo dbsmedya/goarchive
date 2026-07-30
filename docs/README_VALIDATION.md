@@ -59,7 +59,7 @@ GoArchive selects one of three profiles per command:
 
 ## Which checks run for which command
 
-19 named checks exist. ✅ = enforced, ❌ = not run.
+20 named checks exist. ✅ = enforced, ❌ = not run.
 
 | Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
 |-------|:---------:|:-------:|:-----------:|:---------:|:----------:|
@@ -80,6 +80,7 @@ GoArchive selects one of three profiles per command:
 | `FK_COVERAGE_VISIBILITY_CHECK` | ✅ | ✅ | **❌** | ✅ | ✅ |
 | `FK_COVERAGE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `INTERNAL_FK_COVERAGE` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
 
@@ -331,6 +332,36 @@ connected account's own privilege rows.
 The destination account needs `INSERT` on every participating table. Verified up
 front because otherwise the failure lands mid-run, after copy has already
 committed rows.
+
+### `SOURCE_SELECT_PERMISSION_CHECK`
+
+**New in 2.0.** Fails when the source account cannot be *proven* to hold `SELECT` on a
+participating table.
+
+Every GoArchive command reads source rows or estimates from them, so this check runs for
+all five commands — unlike `SOURCE_DELETE_PERMISSION_CHECK`, which only applies to the
+commands that delete.
+
+GoArchive 1.8 never validated source read permission. An account holding `PROCESS` and
+`DELETE` but not `SELECT` passed preflight and then failed part-way through the run,
+after the tracking row and per-job log table had already been created. 2.0 catches it
+before any work starts.
+
+**The privilege must be provable for the object.** A grant held only through an active
+role, or a bare global grant while `@@global.partial_revokes` is enabled, is reported as
+*unconfirmed* and fails closed. See [Permissions](README_PERMISSIONS.md) for the
+recommended grant recipe.
+
+**Fix:**
+
+```sql
+GRANT SELECT ON `<source_schema>`.* TO '<user>'@'<host>';
+```
+
+**Note on a related failure:** if the account has *no* privilege at all on the source
+schema, MySQL hides the schema from `information_schema` entirely and you will see
+`TABLE_EXISTENCE_CHECK` instead. `SOURCE_SELECT_PERMISSION_CHECK` catches the partial
+case — the account can see the tables but cannot read them.
 
 ### `SOURCE_DELETE_PERMISSION_CHECK`
 

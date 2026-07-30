@@ -19,7 +19,7 @@ import (
 // properties that only exist BETWEEN checks, which a strangler migration is
 // most likely to break silently:
 //
-//  1. The applicability matrix at docs/README_VALIDATION.md:64-84 (19 checks x
+//  1. The applicability matrix at docs/README_VALIDATION.md:64-85 (20 checks x
 //     5 commands), turned into a table-driven test so a phase that accidentally
 //     moves a check into or out of a profile fails loudly.
 //  2. Abort-on-first-failure ordering: when a fixture carries several
@@ -178,7 +178,7 @@ func chrCheckOrderIndex(t *testing.T, id string) int {
 }
 
 // chrMatrixRow declares, for one check ID, which commands must report it when its
-// fixture is applied. It mirrors docs/README_VALIDATION.md:64-84 exactly.
+// fixture is applied. It mirrors docs/README_VALIDATION.md:64-85 exactly.
 type chrMatrixRow struct {
 	ID string
 	// Applies lists the command names that MUST report ID for this row's fixture.
@@ -187,13 +187,12 @@ type chrMatrixRow struct {
 	Applies []string
 	// Fixture prepares the schemas and returns the graph to run against.
 	Fixture func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph
-	// Restricted, when non-nil, would return the source and destination pools to run
-	// as, for a permission or visibility row. It is declared but NOT YET CONSULTED:
-	// no row in chrMatrix sets it, and the runner (TestCharacterizationApplicabilityMatrix)
-	// never reads it — every fixture below still runs as the fixture admin pools.
-	// Phase 023 Step 6 wires it in ("Phase 010 declared the field but never used it").
-	// The field is kept now because it is sanctioned and claimed by that downstream
-	// phase; it is not dead code to be removed here.
+	// Restricted, when non-nil, returns the source and destination pools to run as, for
+	// a permission or visibility row. The runner (TestCharacterizationApplicabilityMatrix)
+	// consults it: a non-nil value opens the checker against the returned pools instead
+	// of the fixture admin pools. SOURCE_SELECT_PERMISSION_CHECK is the first row to set
+	// it (phase 023). A nil value (every other row today) means "run as the fixture admin
+	// pools" — the prior behaviour is preserved for rows that don't need restriction.
 	Restricted func(t *testing.T, ctx context.Context, f *chrFixture) (src, dst *sql.DB)
 }
 
@@ -371,6 +370,36 @@ var chrMatrix = []chrMatrixRow{
 			return graph.NewGraph("orders", "id")
 		},
 	},
+	{
+		ID:      "SOURCE_SELECT_PERMISSION_CHECK",
+		Applies: chrAll,
+		Fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
+			f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+			f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+			return graph.NewGraph("orders", "id")
+		},
+		Restricted: func(t *testing.T, ctx context.Context, f *chrFixture) (*sql.DB, *sql.DB) {
+			// Construction (B) from phase 022's "reachability problem" — the ONLY shape
+			// that reaches SOURCE_SELECT on all five commands before phase 025.
+			//
+			// Applies is chrAll, and four of those five commands enforce FK visibility,
+			// which until phase 025 is 1.8 code demanding GLOBAL SELECT
+			// (ValidateForeignKeyMetadataVisibility, via hasGlobalPrivilege). So:
+			// partial revokes ON + a bare
+			// GLOBAL SELECT row. 1.8's check sees the global row and passes at position
+			// 13; the library resolves object-level SELECT to GrantUnconfirmed, so this
+			// check fails closed at 16. DELETE is granted DIRECTLY so SOURCE_DELETE (17)
+			// would pass and cannot be mistaken for the failure under test.
+			srcSelectPartialRevokes(t, ctx, f.SourceDB)
+			src := chrCreateAccount(t, ctx, f.SourceDB, "source",
+				"GRANT PROCESS ON *.* TO {{ACCOUNT}}",
+				"GRANT SELECT ON *.* TO {{ACCOUNT}}",
+				"GRANT DELETE ON `"+f.SourceSchema+"`.* TO {{ACCOUNT}}")
+			dst := chrCreateAccount(t, ctx, f.DestDB, "destination",
+				"GRANT CREATE, SELECT, INSERT, UPDATE ON `"+f.DestSchema+"`.* TO {{ACCOUNT}}")
+			return chrOpenAs(t, src, f.SourceSchema), chrOpenAs(t, dst, f.DestSchema)
+		},
+	},
 }
 
 // Rows deliberately omitted from chrMatrix, with their reason:
@@ -386,33 +415,25 @@ var chrMatrix = []chrMatrixRow{
 //   - JOB_SCHEMA_PERMISSION_CHECK, DEST_WRITE_PERMISSION_CHECK,
 //     SOURCE_DELETE_PERMISSION_CHECK, FK_COVERAGE_VISIBILITY_CHECK — they need
 //     restricted accounts, which phases 008 and 009 already assert across all five
-//     commands. Adding a Restricted hook here would duplicate that work. The field
-//     is declared on chrMatrixRow for phase 023 (Step 6) to wire in, if that
-//     duplication is ever worth removing — as things stand today the runner
-//     (TestCharacterizationApplicabilityMatrix) does not read Restricted at all, so
-//     setting it on a row here would have no effect until that phase lands.
-//   - SOURCE_SELECT_PERMISSION_CHECK — TEMPORARY omission, phase 022 (D4). The check
-//     is new in this phase and already needs a restricted account, exactly like the
-//     row above; phase 022's own integration tests
-//     (source_select_permission_integration_test.go) assert it across all five
-//     commands, so adding a Restricted-based chrMatrix row here would duplicate that
-//     work with no new coverage. Phase 023 adds the real chrMatrix row (and the
-//     docs/README_VALIDATION.md entry) and removes this omission entry at that point.
+//     commands. Adding a Restricted hook here would duplicate that work. The
+//     Restricted hook is now wired into the runner (phase 023, Step 6) and in use by
+//     SOURCE_SELECT_PERMISSION_CHECK below, so these four rows could be added the
+//     same way if the duplication with phases 008/009 is ever worth removing — that
+//     remains a choice for a future phase, not a limitation of the mechanism.
 //
 // Every omission must stay listed here. A row that silently disappears is exactly
 // the drift this suite exists to catch.
 //
-// Cross-checked mechanically against docs/README_VALIDATION.md:64-84 (Step 7): the
-// 13 IDs in chrMatrix plus these 7 omitted IDs total exactly the 20 check IDs
-// RunWithProfile now emits (deviation D4, phase 022) — one ahead of the 19 rows the
-// published table lists, because publication is phase 023's job, not this phase's.
-// Every row's Applies matches the doc's ✅/❌ columns exactly for the 19 checks the
-// doc already covers. No documentation discrepancy was found; see the PR description
-// for the row-by-row cross-check.
+// Cross-checked mechanically against docs/README_VALIDATION.md:64-85 (Step 7): the
+// 14 IDs in chrMatrix plus these 6 omitted IDs total exactly the 20 check IDs
+// RunWithProfile now emits (deviation D4; the check added by phase 022, published by
+// phase 023). Every row's Applies matches the doc's ✅/❌ columns exactly for all 20
+// checks the doc now covers. No documentation discrepancy was found; see the PR
+// description for the row-by-row cross-check.
 
 // TestCharacterizationApplicabilityMatrix asserts, for each row, that the listed
 // commands report the row's ID and the unlisted commands do NOT. It is the executable
-// form of the table in docs/README_VALIDATION.md:64-84.
+// form of the table in docs/README_VALIDATION.md:64-85.
 func TestCharacterizationApplicabilityMatrix(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 
@@ -422,7 +443,15 @@ func TestCharacterizationApplicabilityMatrix(t *testing.T) {
 				t.Run(cmd.Name, func(t *testing.T) {
 					f := newChrFixture(t, ctx)
 					g := row.Fixture(t, ctx, f)
-					err := chrRun(t, ctx, f.Checker(t, g), cmd, false)
+
+					var c *PreflightChecker
+					if row.Restricted != nil {
+						src, dst := row.Restricted(t, ctx, f)
+						c = f.CheckerAs(t, g, src, dst)
+					} else {
+						c = f.Checker(t, g)
+					}
+					err := chrRun(t, ctx, c, cmd, false)
 
 					if chrContains(row.Applies, cmd.Name) {
 						chrAssertCheck(t, err, row.ID, nil)
