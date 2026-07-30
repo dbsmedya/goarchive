@@ -9,6 +9,10 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
@@ -780,24 +784,30 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// FK query with CASCADE
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "CASCADE", "RESTRICT").
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "CASCADE", "RESTRICT"))
-
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024 —
-	// Indexed arrives with the fact from the migrated FK_INDEX_CHECK path; the three
-	// unmigrated getForeignKeys consumers, including this one, never read it).
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
+				ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
+				ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
+		}},
+		fkOut: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
+				ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
+				ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
+		}},
+		fkInLoaded: true, fkOutLoaded: true,
+	}
 
 	// Should not error, just warn
-	err := checker.WarnCascadeRules(ctx)
+	err := checker.WarnCascadeRules(ctx, run)
 
 	if err != nil {
 		t.Fatalf("WarnCascadeRules should not error: %v", err)
+	}
+	// No query is expected: WarnCascadeRules consumes only the preloaded facts.
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded facts: %v", err)
 	}
 }
 
@@ -810,40 +820,157 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// FK query without CASCADE
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
+				ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
+				ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
+		}},
+		fkOut: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
+				ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
+				ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
+		}},
+		fkInLoaded: true, fkOutLoaded: true,
+	}
 
-	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
-
-	err := checker.WarnCascadeRules(ctx)
+	err := checker.WarnCascadeRules(ctx, run)
 
 	if err != nil {
 		t.Fatalf("WarnCascadeRules failed: %v", err)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded facts: %v", err)
+	}
 }
 
-func TestWarnCascadeRules_QueryError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
+// TestWarnCascadeRulesInspectionErrorIsPlain — contract 2, both branches. A memoized
+// fetch error must surface as a PLAIN error carrying goarchive's "cascade" inspection
+// wrapper, never a *PreflightError.
+//
+// Both cases are exercised because the two branches are byte-identical: a build that
+// wrapped only the incoming error would still pass a test that checked only the
+// incoming error. The outgoing case must preload a SUCCESSFUL incoming fact, or the
+// stage returns at the first branch and never reaches the second.
+//
+// In production neither branch is reachable — both facts are memoized by earlier
+// unconditional stages, so a fetch error aborts the run long before this point. They are
+// defensive, and this test is what keeps them correct.
+func TestWarnCascadeRulesInspectionErrorIsPlain(t *testing.T) {
+	wantErr := errors.New("fk fetch failed")
+
+	for _, tc := range []struct {
+		name string
+		run  func(c *PreflightChecker, g *graph.Graph) *preflightRun
+	}{
+		{"incoming", func(c *PreflightChecker, g *graph.Graph) *preflightRun {
+			return &preflightRun{checker: c, tables: g.AllNodes(),
+				fkInErr: wantErr, fkInLoaded: true}
+		}},
+		{"outgoing", func(c *PreflightChecker, g *graph.Graph) *preflightRun {
+			return &preflightRun{checker: c, tables: g.AllNodes(),
+				fkIn: validations.ForeignKeyResult{}, fkInLoaded: true,
+				fkOutErr: wantErr, fkOutLoaded: true}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			g := createPreflightTestGraph()
+			checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+
+			err = checker.WarnCascadeRules(context.Background(), tc.run(checker, g))
+			if err == nil {
+				t.Fatal("expected an inspection error, got nil")
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+			}
+			var pe *PreflightError
+			if errors.As(err, &pe) {
+				t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+			}
+			if !strings.Contains(err.Error(), "preflight cascade inspection failed") {
+				t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("stage queried despite the preloaded facts: %v", err)
+			}
+		})
+	}
+}
+
+// TestWarnCascadeRulesSortsTheUnion is the sort proof, and the fixture is arranged so it
+// is also the stage-level dedup proof AND the only test that observes the union's SECOND
+// operand. Three properties, one fixture, each independently falsifiable:
+//
+//		incoming = [zebra, middle]      outgoing = [middle, alpha]
+//		first-seen union, deduped       = zebra, middle, alpha   (3)
+//		sorted                          = alpha, middle, zebra   (3)
+//
+//	  - remove sort.Strings  -> order is zebra, middle, alpha        -> FAILS
+//	  - remove the dedup     -> middle appears twice, count 4        -> FAILS
+//	  - drop the outgoing set-> alpha disappears, count 2            -> FAILS
+//
+// That third one matters: `middle` is deliberately the ONLY constraint present in both
+// sets. If every outgoing constraint were also incoming — the arrangement an earlier
+// revision used — passing one set or two would be indistinguishable, and the union's
+// second argument would be untested everywhere in the suite.
+//
+// Asserting the exact rendered slice is what makes all three fail; independent substring
+// checks would not.
+func TestWarnCascadeRulesSortsTheUnion(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
 	defer func() { _ = db.Close() }()
 
+	cascade := func(name, child string) validations.ForeignKey {
+		return validations.ForeignKey{
+			ConstraintName: name, ChildSchema: "srcdb", ChildTable: child,
+			ChildColumns: []string{"oid"}, ParentSchema: "srcdb", ParentTable: "orders",
+			ParentColumns: []string{"id"}, OnDelete: "CASCADE",
+		}
+	}
+	zebra, middle, alpha := cascade("fk_z", "zebra"), cascade("fk_m", "middle"), cascade("fk_a", "alpha")
+
+	core, recorded := observer.New(zapcore.DebugLevel)
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnError(errors.New("query failed"))
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		fkIn:       validations.ForeignKeyResult{Keys: []validations.ForeignKey{zebra, middle}},
+		fkOut:      validations.ForeignKeyResult{Keys: []validations.ForeignKey{middle, alpha}},
+		fkInLoaded: true, fkOutLoaded: true,
+	}
 
-	err := checker.WarnCascadeRules(ctx)
+	if err := checker.WarnCascadeRules(context.Background(), run); err != nil {
+		t.Fatalf("WarnCascadeRules: %v", err)
+	}
 
-	if err == nil {
-		t.Error("Expected error for query failure")
+	const want = "ON DELETE CASCADE rules detected (3): " +
+		"[srcdb.alpha.oid->srcdb.orders.id srcdb.middle.oid->srcdb.orders.id " +
+		"srcdb.zebra.oid->srcdb.orders.id]"
+	var found bool
+	for _, entry := range recorded.FilterLevelExact(zapcore.WarnLevel).All() {
+		if entry.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want %q; warnings were: %v",
+			want, recorded.FilterLevelExact(zapcore.WarnLevel).All())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded facts: %v", err)
 	}
 }
 

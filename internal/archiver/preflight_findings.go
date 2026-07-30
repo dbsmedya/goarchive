@@ -385,6 +385,56 @@ func triggerOffenders(stage string, findings []validations.Finding) ([]string, e
 	return out, nil
 }
 
+// dedupeCascadeEdges formats the ON DELETE CASCADE edges from one or more finding sets,
+// reporting each constraint exactly once.
+//
+// The deduplication is required by the three-selector design (spec §3.5): a constraint
+// whose child and parent are BOTH graph tables is returned by the IncomingTo fetch AND
+// by the OutgoingFrom fetch, so the naive union double-reports every in-graph cascade.
+// The key is (ChildSchema, ChildTable, ConstraintName) — the child-side triple, because
+// a constraint belongs to its child table and that triple is unique per constraint in
+// MySQL.
+//
+// Order is first-seen and therefore STABLE RELATIVE TO ITS INPUTS. It is deliberately
+// not sorted here: the helper stays order-preserving and testable, and the caller sorts
+// for operator-facing output (the fetches themselves are map-ordered — see
+// WarnCascadeRules).
+func dedupeCascadeEdges(stage string, findingSets ...[]validations.Finding) ([]string, error) {
+	type key struct{ schema, table, constraint string }
+
+	seen := make(map[key]struct{})
+	var out []string
+
+	for _, findings := range findingSets {
+		for _, f := range findings {
+			if f.Check != validations.IDCascadeRules {
+				return nil, unexpectedFindingError(stage, f)
+			}
+			fk, ok := f.Facts.(validations.ForeignKey)
+			if !ok {
+				return nil, unexpectedFactsError(stage, f, "validations.ForeignKey")
+			}
+			k := key{fk.ChildSchema, fk.ChildTable, fk.ConstraintName}
+			if _, dup := seen[k]; dup {
+				continue
+			}
+			seen[k] = struct{}{}
+
+			childCol, parentCol := "", ""
+			if len(fk.ChildColumns) > 0 {
+				childCol = fk.ChildColumns[0]
+			}
+			if len(fk.ParentColumns) > 0 {
+				parentCol = fk.ParentColumns[0]
+			}
+			out = append(out, fmt.Sprintf("%s.%s.%s->%s.%s.%s",
+				fk.ChildSchema, fk.ChildTable, childCol,
+				fk.ParentSchema, fk.ParentTable, parentCol))
+		}
+	}
+	return out, nil
+}
+
 // reconcileInternalFKs compares foreign keys whose child AND parent are both graph
 // tables against the relations configuration, returning one line per discrepancy in
 // fact order.

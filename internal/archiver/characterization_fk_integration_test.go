@@ -619,3 +619,33 @@ func TestCharacterizationCascadeWarning(t *testing.T) {
 		}
 	})
 }
+
+// TestCascadeWarningReportsEachConstraintOnce guards the spec §3.5 deduplication: an
+// in-graph CASCADE edge is returned by BOTH the IncomingTo and OutgoingFrom fetches and
+// must still be warned about exactly once. This is a NEW assertion about a NEW risk (the
+// three-selector union), not an amendment of phase 009's characterization — that test
+// asserts only that a warning is present, which cannot distinguish one report from two.
+func TestCascadeWarningReportsEachConstraintOnce(t *testing.T) {
+	_, ctx := SetupIntegrationTest(t)
+	f := newChrFixture(t, ctx)
+
+	f.ExecSource(t, ctx, chrOrdersDDL)
+	f.ExecSource(t, ctx, chrCascadeLinesDDL)
+	f.ExecDest(t, ctx, chrOrdersDDL)
+	f.ExecDest(t, ctx, chrCascadeLinesDDL)
+
+	chrAssertPasses(t, chrRun(t, ctx, f.Checker(t, chrTwoTableGraph()), chrCommands[0], false))
+
+	var cascadeLines int
+	for _, msg := range f.WarnMessages() {
+		if strings.Contains(msg, "ON DELETE CASCADE rules detected") {
+			cascadeLines++
+			if !strings.Contains(msg, "(1)") {
+				t.Fatalf("the in-graph constraint must be reported ONCE; got: %s", msg)
+			}
+		}
+	}
+	if cascadeLines != 1 {
+		t.Fatalf("expected exactly one CASCADE summary warning, got %d", cascadeLines)
+	}
+}
