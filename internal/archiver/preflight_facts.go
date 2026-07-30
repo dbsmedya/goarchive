@@ -64,6 +64,10 @@ type preflightRun struct {
 	srcGrantsErr    error
 	srcGrantsLoaded bool
 
+	fkOut       validations.ForeignKeyResult
+	fkOutErr    error
+	fkOutLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -301,4 +305,20 @@ func (r *preflightRun) sourceGrants(ctx context.Context) (validations.Grants, er
 		r.srcGrantsLoaded = true
 	}
 	return r.srcGrants, r.srcGrantsErr
+}
+
+// fkOutgoing returns constraints whose CHILD is a graph table — the set FK_INDEX_CHECK
+// judges, matching 1.8's in-graph-child filter. The selector IS the filter: OutgoingFrom
+// already restricts to in-graph children, which is why the migrated check carries no
+// manual graph-membership loop (spec §3.5).
+//
+// ForeignKeyResult.Visibility is deliberately not consulted by this fact's only consumer;
+// see Ambiguity 2. Completeness is enforced on the INCOMING fetch (phase 025), where it
+// is the whole question.
+func (r *preflightRun) fkOutgoing(ctx context.Context) (validations.ForeignKeyResult, error) {
+	if !r.fkOutLoaded {
+		r.fkOut, r.fkOutErr = r.srcInspector.ForeignKeys(ctx, validations.OutgoingFrom(r.tables...))
+		r.fkOutLoaded = true
+	}
+	return r.fkOut, r.fkOutErr
 }

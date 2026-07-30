@@ -626,41 +626,27 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 
 // ============================================================================
 // ValidateForeignKeyIndexes Tests
+//
+// Phase 024 migrates this validator onto run.fkOutgoing + validations.CheckFKIndexed.
+// TestValidateForeignKeyIndexes_Success is RETIRED, not rewritten: it asserted only
+// "no error", which TestValidateForeignKeyIndexesConsumesTheCachedFact's sibling
+// contract (below) — proving the stage reads the memoized fact rather than querying —
+// makes redundant once the query-plumbing details it exercised (the old
+// KEY_COLUMN_USAGE + per-column STATISTICS shape) no longer exist.
+//
+// TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild is also RETIRED (deliberate scope
+// reduction, Ambiguity 3): it guarded 1.8's manual in-graph filter, which no longer
+// exists. OutgoingFrom IS the filter now — the selector cannot return an out-of-graph
+// child — and TestPreflightRunFKOutgoingUsesOutgoingSelector (preflight_facts_test.go)
+// pins exactly that, more strongly, because it also fails under a mutated selector,
+// which the retired test did not.
 // ============================================================================
 
-func TestValidateForeignKeyIndexes_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// FK query
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT").
-			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	// Index checks - both columns have indexes
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WithArgs("testdb", "orders", "user_id").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WithArgs("testdb", "order_items", "order_id").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	err := checker.ValidateForeignKeyIndexes(ctx)
-
-	if err != nil {
-		t.Fatalf("ValidateForeignKeyIndexes failed: %v", err)
-	}
-}
-
+// TestValidateForeignKeyIndexes_Unindexed rewrites the old query-level test against the
+// new pipeline. The primary INNODB_FOREIGN path always sets Indexed:true by
+// construction, so provoking Indexed:false requires the full fallback: primary fails,
+// KEY_COLUMN_USAGE succeeds, and the STATISTICS supporting-index query returns no rows
+// for the child table (so foreignKeyColumnsIndexed has no candidate to match).
 func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
@@ -670,22 +656,22 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 	ctx := context.Background()
 
-	// FK query - only one FK to simplify test
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
+	mock.ExpectQuery("INNODB_FOREIGN AS f").WillReturnError(errors.New("PROCESS denied"))
+	mock.ExpectQuery("KEY_COLUMN_USAGE AS kcu").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
 			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
+			"DELETE_RULE", "UPDATE_RULE", "ORDINAL_POSITION",
+		}).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT", 1))
+	mock.ExpectQuery("information_schema.STATISTICS").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_SCHEMA", "TABLE_NAME", "INDEX_NAME", "COLUMN_NAME", "SEQ_IN_INDEX",
+		})) // no supporting index rows for orders.user_id
 
-	// Index checks - user_id has no index
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(0))
-
-	err := checker.ValidateForeignKeyIndexes(ctx)
+	err := checker.ValidateForeignKeyIndexes(ctx, newPreflightRun(checker))
 
 	if err == nil {
-		t.Error("Expected error for unindexed FK")
+		t.Fatal("Expected error for unindexed FK")
 	}
 
 	preflightErr, ok := err.(*PreflightError)
@@ -696,39 +682,9 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	if preflightErr.Check != "FK_INDEX_CHECK" {
 		t.Errorf("Expected check 'FK_INDEX_CHECK', got %s", preflightErr.Check)
 	}
-}
-
-// TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild guards the .ayder/002
-// fix: an FK whose child table is OUTSIDE the graph must not trip
-// FK_INDEX_CHECK, even though getForeignKeys leaves its Indexed at the zero
-// value (false). Flagging it would be a false positive and would shadow the
-// real FK_COVERAGE_CHECK error.
-func TestValidateForeignKeyIndexes_IgnoresOutOfGraphChild(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph() // graph = {users, orders, order_items}
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// FK query returns one out-of-graph child (audit_log) referencing an
-	// in-graph parent (orders). getForeignKeys does NOT index-check it, so its
-	// Indexed stays false.
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "audit_log", "fk_audit_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
-
-	// No isColumnIndexed query is expected: audit_log is out of graph, so
-	// getForeignKeys skips the index lookup entirely.
-
-	if err := checker.ValidateForeignKeyIndexes(ctx); err != nil {
-		t.Fatalf("expected no FK_INDEX_CHECK error for out-of-graph child, got: %v", err)
+	if len(preflightErr.Tables) != 1 || preflightErr.Tables[0] != "orders.user_id" {
+		t.Errorf("Expected Tables = [orders.user_id], got %v", preflightErr.Tables)
 	}
-
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
@@ -833,11 +789,9 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "CASCADE", "RESTRICT").
 			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "CASCADE", "RESTRICT"))
 
-	// Index checks
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024 —
+	// Indexed arrives with the fact from the migrated FK_INDEX_CHECK path; the three
+	// unmigrated getForeignKeys consumers, including this one, never read it).
 
 	// Should not error, just warn
 	err := checker.WarnCascadeRules(ctx)
@@ -865,11 +819,7 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT").
 			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
-	// Index checks
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.WarnCascadeRules(ctx)
 
@@ -1551,6 +1501,91 @@ func TestValidateSourceSelectPermissionsConsumesTheCachedFact(t *testing.T) {
 	}
 }
 
+// TestValidateForeignKeyIndexesInspectionErrorIsPlain — contract 2. Preload fkOutErr /
+// fkOutLoaded so no query is issued, then assert the returned error wraps the cause,
+// carries goarchive's own wrapper text, and is NOT a *PreflightError. Mirrors
+// TestValidateSourceSelectPermissionsInspectionErrorIsPlain; only the stage word and the
+// validator differ.
+func TestValidateForeignKeyIndexesInspectionErrorIsPlain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("fk fetch failed")
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
+	}
+	run := &preflightRun{
+		checker: p, tables: []string{"orders"},
+		fkOutErr: wantErr, fkOutLoaded: true,
+	}
+
+	err = p.ValidateForeignKeyIndexes(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight fk_index inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateForeignKeyIndexesConsumesTheCachedFact — contract 3. Preload fkOut with an
+// UNINDEXED constraint and set fkOutLoaded, registering NO sqlmock expectation: a stage
+// that re-queried would get no match, return a plain error, and fail the *PreflightError
+// assertion below.
+//
+// The preloaded fact must have Indexed:false and a non-empty ChildColumns. An indexed or
+// empty fact yields no findings, and the test would pass vacuously against a stage that
+// never consulted the fact at all.
+func TestValidateForeignKeyIndexesConsumesTheCachedFact(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	p := &PreflightChecker{
+		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
+	}
+	run := &preflightRun{
+		checker: p, tables: []string{"order_lines"},
+		fkOut: validations.ForeignKeyResult{
+			Keys: []validations.ForeignKey{{
+				ConstraintName: "fk_ol_o", ChildSchema: "sourcedb", ChildTable: "order_lines",
+				ChildColumns: []string{"order_id"}, ParentTable: "orders", Indexed: false,
+			}},
+		},
+		fkOutLoaded: true,
+	}
+
+	err = p.ValidateForeignKeyIndexes(context.Background(), run)
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
+	}
+	if pe.Check != "FK_INDEX_CHECK" {
+		t.Fatalf("Check = %q, want FK_INDEX_CHECK", pe.Check)
+	}
+	if len(pe.Tables) != 1 || pe.Tables[0] != "order_lines.order_id" {
+		t.Fatalf("Tables = %v, want [order_lines.order_id]", pe.Tables)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+	}
+}
+
 func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 	sourceDB, _, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -1725,10 +1760,7 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 			AddRow("testdb", "item_shipments", "fk_ship_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
 			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
 
-	// isColumnIndexed queries for each in-graph FK row
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err == nil {
@@ -1774,9 +1806,7 @@ func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
 			AddRow("testdb", "order_items", "fk_items_orders", "order_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT").
 			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT"))
 
-	// isColumnIndexed for each in-graph FK row
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err != nil {
@@ -1805,8 +1835,7 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 		}).
 			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
 
-	// isColumnIndexed for payments (in graph)
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err == nil {
@@ -1849,8 +1878,7 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 		}).
 			AddRow("testdb", "line_items", "fk_line_orders", "order_id", "testdb", "orders", "id", "RESTRICT", "RESTRICT"))
 
-	// isColumnIndexed for line_items (in graph)
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err == nil {
@@ -1911,8 +1939,7 @@ func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
 		}).
 			AddRow("testdb", "categories", "fk_cat_parent", "parent_id", "testdb", "categories", "id", "SET NULL", "RESTRICT"))
 
-	// isColumnIndexed for categories (in graph)
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err != nil {
@@ -1948,10 +1975,7 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 			AddRow("testdb", "item_shipments", "fk_ship_items", "item_id", "testdb", "order_items", "item_id", "RESTRICT", "RESTRICT").
 			AddRow("testdb", "payments", "fk_pay_orders", "customer_id", "testdb", "orders", "order_id", "RESTRICT", "RESTRICT"))
 
-	// isColumnIndexed for each in-graph FK row
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	// No index-check query is expected: getForeignKeys no longer issues one (phase 024).
 
 	err := checker.ValidateInternalFKCoverage(context.Background())
 	if err == nil {
@@ -2213,40 +2237,6 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error for cancelled context")
-	}
-}
-
-// ============================================================================
-// isColumnIndexed Tests (via ValidateForeignKeyIndexes)
-// ============================================================================
-
-func TestIsColumnIndexed_True(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
-
-	// FK query
-	mock.ExpectQuery("SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE"},
-		).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT"))
-
-	// Index exists
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.STATISTICS").
-		WithArgs("testdb", "orders", "user_id").
-		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
-
-	// Test via ValidateForeignKeyIndexes (should pass since column is indexed)
-	err := checker.ValidateForeignKeyIndexes(ctx)
-
-	if err != nil {
-		t.Fatalf("Expected no error for indexed column: %v", err)
 	}
 }
 

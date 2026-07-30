@@ -45,7 +45,6 @@ type ForeignKeyResult struct {
 	ReferencedColumn      string
 	OnDelete              string // CASCADE, SET NULL, RESTRICT, etc.
 	OnUpdate              string
-	Indexed               bool // Whether the FK column has an index
 }
 
 // PreflightProfile selects the subset of checks needed for a command.
@@ -187,7 +186,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	}
 
 	// GA-P4-F3-T3: FK index check
-	if err := p.ValidateForeignKeyIndexes(ctx); err != nil {
+	if err := p.ValidateForeignKeyIndexes(ctx, run); err != nil {
 		return err
 	}
 
@@ -482,47 +481,39 @@ func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, run *
 	return nil
 }
 
-// ValidateForeignKeyIndexes checks that all foreign key columns have indexes.
+// ValidateForeignKeyIndexes checks that every in-graph child table's foreign key has the
+// supporting leftmost-prefix index MySQL guarantees for registered InnoDB constraints.
+//
+// A finding here means the facts did not come from a conforming InnoDB source, so in
+// practice this check cannot fire against a real server — MySQL creates the index with
+// the constraint and refuses to drop it, and the authoritative INNODB_FOREIGN path marks
+// registered constraints indexed by construction. It is kept because the guarantee is
+// exactly what the delete phase's performance depends on, and because losing the check
+// would silently remove the assertion. See the unit tests for its behaviour on synthetic
+// facts, and Ambiguity 1 for why no end-to-end fixture exists.
 //
 // GA-P4-F3-T3: FK index check
-func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context) error {
+func (p *PreflightChecker) ValidateForeignKeyIndexes(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking foreign key indexes...")
 
-	// Get all foreign keys from the database
-	fks, err := p.getForeignKeys(ctx)
+	result, err := run.fkOutgoing(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get foreign keys: %w", err)
+		return inspectionError("fk_index", err)
 	}
 
-	// FK index checks apply only to child tables in the graph. getForeignKeys
-	// only computes fk.Indexed for in-graph children (out-of-graph children keep
-	// the zero value false), so flagging out-of-graph children here would be a
-	// false positive — and would shadow FK_COVERAGE_CHECK, which is the real,
-	// more actionable error for an out-of-graph table referencing the graph.
-	graphTableSet := make(map[string]bool)
-	for _, t := range p.graph.AllNodes() {
-		graphTableSet[t] = true
+	unindexed, err := unindexedFKColumns("fk_index", validations.CheckFKIndexed(result.Keys))
+	if err != nil {
+		return err
 	}
-
-	var unindexedFKs []string
-	for _, fk := range fks {
-		if !p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
-			continue
-		}
-		if !fk.Indexed {
-			unindexedFKs = append(unindexedFKs, fmt.Sprintf("%s.%s", fk.Table, fk.Column))
-		}
-	}
-
-	if len(unindexedFKs) > 0 {
+	if len(unindexed) > 0 {
 		return &PreflightError{
 			Check:   "FK_INDEX_CHECK",
 			Message: "Foreign key columns without indexes (will cause slow deletes). Add indexes with: CREATE INDEX idx_fk ON table(column)",
-			Tables:  unindexedFKs,
+			Tables:  unindexed,
 		}
 	}
 
-	p.logger.Debugf("FK index check PASSED (%d foreign keys verified)", len(fks))
+	p.logger.Debugf("FK index check PASSED (%d foreign keys verified)", len(result.Keys))
 	return nil
 }
 
@@ -540,10 +531,6 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 	}
 
 	tables := p.graph.AllNodes()
-	graphTableSet := make(map[string]bool, len(tables))
-	for _, table := range tables {
-		graphTableSet[table] = true
-	}
 
 	const query = `
 		SELECT
@@ -606,14 +593,6 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 			return nil, err
 		}
 
-		// FK index checks apply only to tables in the graph.
-		if p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
-			fk.Indexed, err = p.isColumnIndexed(ctx, fk.Table, fk.Column)
-			if err != nil {
-				return nil, fmt.Errorf("failed to check index for %s.%s: %w", fk.Table, fk.Column, err)
-			}
-		}
-
 		results = append(results, fk)
 	}
 
@@ -624,24 +603,6 @@ func (p *PreflightChecker) getForeignKeys(ctx context.Context) ([]ForeignKeyResu
 	p.fkCache = results
 	p.fkCacheLoaded = true
 	return results, nil
-}
-
-// isColumnIndexed checks if a column has an index.
-func (p *PreflightChecker) isColumnIndexed(ctx context.Context, table, column string) (bool, error) {
-	const query = `
-		SELECT COUNT(*)
-		FROM information_schema.STATISTICS
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME = ?
-		AND COLUMN_NAME = ?`
-
-	var count int
-	err := p.db.QueryRowContext(ctx, query, p.sourceDBName, table, column).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-
-	return count > 0, nil
 }
 
 // ValidateTriggers checks for DELETE triggers on source tables.
