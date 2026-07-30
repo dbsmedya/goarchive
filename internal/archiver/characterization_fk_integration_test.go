@@ -382,14 +382,18 @@ func TestCharacterizationFixtureRecoversExternalSchemaResidue(t *testing.T) {
 }
 
 // TestCharacterizationFKCoverageVisibility pins FK_COVERAGE_VISIBILITY_CHECK and the
-// documented copy-only asymmetry: an account WITHOUT global SELECT fails closed for
-// archive, purge, dry-run and validate, but copy-only is EXEMPT and proceeds.
+// documented copy-only asymmetry: an account without PROCESS fails closed for archive,
+// purge, dry-run and validate, but copy-only is EXEMPT and proceeds.
 //
-// This is deviation D2's amendment target, and PHASE 025 owns that amendment — not
-// phase 026. Phase 025 is titled "(D2)" and states "This phase lands D2"; phase 026's
-// non-negotiables require the characterization suite to stay green and UNAMENDED.
-// Phase 025 replaces the global-SELECT proof with the library's PROCESS-gated
-// VisibilityComplete proof.
+// Deviation D2 (spec §4): the completeness proof is now the library's PROCESS-gated
+// InnoDB registry read (VisibilityComplete), replacing 1.8's global-SELECT check. This
+// fixture's account holds schema-scoped SELECT + DELETE only, and no PROCESS, so it
+// still fails the check — under 1.8 for want of global SELECT, under D2 for want of
+// PROCESS. The fixture happens to fail under BOTH regimes, which is why this test's
+// assertions are UNCHANGED by D2; only the reason the account fails moves. Sweep-verified
+// for this revision. If a future fixture edit ever made this test pass instead, that
+// would BE D2's amendment and must be recorded here as "amended by D2, phase 025" and
+// called out in the PR — it is not the case today.
 //
 // The per-command applicability (copy-only exempt) must survive that change UNCHANGED
 // — only the proof mechanism moves, not which commands enforce the check. A phase-025

@@ -68,6 +68,10 @@ type preflightRun struct {
 	fkOutErr    error
 	fkOutLoaded bool
 
+	fkIn       validations.ForeignKeyResult
+	fkInErr    error
+	fkInLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -321,4 +325,16 @@ func (r *preflightRun) fkOutgoing(ctx context.Context) (validations.ForeignKeyRe
 		r.fkOutLoaded = true
 	}
 	return r.fkOut, r.fkOutErr
+}
+
+// fkIncoming returns constraints whose PARENT is a graph table — the set that can pull
+// rows out from outside the archive. Its ForeignKeyResult also carries the metadata
+// visibility proof, so FK_COVERAGE_VISIBILITY_CHECK and FK_COVERAGE_CHECK read facts and
+// proof from the same result (spec §3.5): they cannot disagree about what was seen.
+func (r *preflightRun) fkIncoming(ctx context.Context) (validations.ForeignKeyResult, error) {
+	if !r.fkInLoaded {
+		r.fkIn, r.fkInErr = r.srcInspector.ForeignKeys(ctx, validations.IncomingTo(r.tables...))
+		r.fkInLoaded = true
+	}
+	return r.fkIn, r.fkInErr
 }

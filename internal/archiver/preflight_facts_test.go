@@ -951,3 +951,134 @@ func TestPreflightRunFKOutgoingUsesOutgoingSelector(t *testing.T) {
 		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
 	}
 }
+
+// TestPreflightRunMemoizesFKIncoming proves the incoming FK fetch happens once per run.
+// Only the INNODB_FOREIGN expectation is registered: the library tries that registry
+// first and returns without touching the information_schema fallback when it succeeds,
+// so a single expectation is the whole primary path. A second query of any kind would
+// therefore go unmatched and surface as an error.
+func TestPreflightRunMemoizesFKIncoming(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("INNODB_FOREIGN AS f").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ID", "FOR_NAME", "REF_NAME", "N_COLS", "TYPE",
+			"FOR_COL_NAME", "REF_COL_NAME", "POS",
+		}).AddRow("srcdb/fk_users_orders", "srcdb/users", "srcdb/orders", 1, 0, "order_id", "id", 1))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	first, err := run.fkIncoming(context.Background())
+	if err != nil {
+		t.Fatalf("first fkIncoming: %v", err)
+	}
+	second, err := run.fkIncoming(context.Background())
+	if err != nil {
+		t.Fatalf("second fkIncoming: %v", err)
+	}
+	if len(first.Keys) != 1 || len(second.Keys) != 1 || first.Keys[0].ConstraintName != second.Keys[0].ConstraintName {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesFKIncomingErrors proves a failed fetch is memoized too. Both
+// sources must be made to fail — the library falls back to information_schema on any
+// primary error and only reports failure when both fail, joining the causes — so two
+// expectations are registered and errors.Is against wantErr holds through errors.Join.
+//
+// The identity assertion (errors.Is(secondErr, firstErr)) is what makes this non-vacuous:
+// asserting only that both errors are non-nil passes against a build with no memoization
+// at all, because a consumed sqlmock expectation still returns an error on the next call.
+func TestPreflightRunMemoizesFKIncomingErrors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	wantErr := errors.New("boom")
+	mock.ExpectQuery("INNODB_FOREIGN AS f").WillReturnError(wantErr)
+	mock.ExpectQuery("KEY_COLUMN_USAGE AS kcu").WillReturnError(wantErr)
+
+	g := graph.NewGraph("orders", "id")
+	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	run := newPreflightRun(p)
+	ctx := context.Background()
+
+	_, firstErr := run.fkIncoming(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.fkIncoming(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected FK queries were not observed: %v", err)
+	}
+}
+
+// TestPreflightRunFKIncomingUsesIncomingSelector pins the selector as the property it
+// asserts, rather than as a side effect of its fixture.
+//
+// The fixture is one constraint whose PARENT is in the graph and whose CHILD is not
+// (same schema, so only graph membership differs). Per foreignKeyMatchesSelector:
+//   - IncomingTo    → returned (matches on parent table)
+//   - OutgoingFrom  → filtered out (matches on child table, which is not "orders")
+//   - Within        → filtered out (requires the child table in the requested set too)
+//
+// The assertion is therefore that the key survives, with a non-empty Keys slice. The
+// query expectation is pinned to "f.REF_NAME IN" (the column IncomingTo queries on)
+// rather than left unconstrained, so a mutation to OutgoingFrom or Within (which query
+// "f.FOR_NAME IN" instead) goes unmatched and surfaces as an error, not a silently wrong
+// result. This is the discrimination the fkIncoming selector proof needs: an ordinary
+// fixture edit that happened to remove it would be incidental, not asserted — this test
+// makes it explicit and keeps it pinned.
+func TestPreflightRunFKIncomingUsesIncomingSelector(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery(`f\.REF_NAME IN`).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"ID", "FOR_NAME", "REF_NAME", "N_COLS", "TYPE",
+			"FOR_COL_NAME", "REF_COL_NAME", "POS",
+		}).AddRow("srcdb/fk_meta", "srcdb/audit_log", "srcdb/orders", 1, 0, "order_id", "id", 1))
+
+	g := graph.NewGraph("orders", "id")
+	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	if err != nil {
+		t.Fatalf("NewPreflightChecker: %v", err)
+	}
+
+	run := newPreflightRun(p)
+	result, err := run.fkIncoming(context.Background())
+	if err != nil {
+		t.Fatalf("fkIncoming: %v", err)
+	}
+	if len(result.Keys) == 0 {
+		t.Fatal("expected the audit_log->orders key to survive IncomingTo, got none")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
+	}
+}

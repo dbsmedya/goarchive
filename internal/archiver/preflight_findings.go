@@ -324,6 +324,42 @@ func judgePrimaryKeyColumns(
 	return nil
 }
 
+// partitionClosureFindings splits CheckFKClosure's output into its two flavours.
+//
+// The library emits both under Check == IDFKClosure and distinguishes them only by the
+// typed Facts payload: a ForeignKey means "an external child points into the target
+// set"; a MetadataVisibility means "discovery was not complete, so closure is
+// unprovable". GoArchive maps the first to FK_COVERAGE_CHECK and the second to
+// FK_COVERAGE_VISIBILITY_CHECK, which have DIFFERENT per-command applicability —
+// copy-only is exempt from the second and not from the first — so they must be
+// separated rather than reported as one error.
+//
+// An unrecognised check id or payload type aborts preflight (spec §2, fail closed).
+func partitionClosureFindings(findings []validations.Finding) (
+	[]validations.ForeignKey,
+	[]validations.MetadataVisibility,
+	error,
+) {
+	var external []validations.ForeignKey
+	var visibility []validations.MetadataVisibility
+
+	for _, f := range findings {
+		if f.Check != validations.IDFKClosure {
+			return nil, nil, unexpectedFindingError("fk_closure", f)
+		}
+		switch facts := f.Facts.(type) {
+		case validations.ForeignKey:
+			external = append(external, facts)
+		case validations.MetadataVisibility:
+			visibility = append(visibility, facts)
+		default:
+			return nil, nil, unexpectedFactsError(
+				"fk_closure", f, "validations.ForeignKey or validations.MetadataVisibility")
+		}
+	}
+	return external, visibility, nil
+}
+
 // triggerOffenders converts trigger findings into goarchive's one-entry-per-table
 // "<table>(<trigger>)" decoration. The library sorts each table's triggers by firing
 // order (BEFORE before AFTER) and then by name, so element [0] is the deterministic

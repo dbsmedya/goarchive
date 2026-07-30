@@ -44,9 +44,13 @@ import (
 //     check (1, 2, 8, 9, 10) running as root, so none of them can fire.
 //   - A test that restricts the SOURCE account leaves every destination-side
 //     check (3-7) running as root. Steps 1, 2 and 8 still run as the restricted
-//     account, so those fixtures grant SELECT globally — which also satisfies
-//     FK_COVERAGE_VISIBILITY_CHECK (step 8), the only other check that inspects
-//     privileges on the source.
+//     account, so those fixtures grant SELECT globally for the structural reads
+//     (1, 2) AND, since deviation D2 (phase 025), PROCESS globally so
+//     FK_COVERAGE_VISIBILITY_CHECK (step 8) — the only other check that inspects
+//     privileges on the source — also clears. Before D2 the SELECT grant alone
+//     satisfied step 8 too (1.8's global-SELECT proof); it no longer does, so
+//     every SOURCE-restricted fixture below now grants PROCESS as well, purely to
+//     keep reaching the SAME assertion it always has — this is not an amendment.
 //   - JOB_SCHEMA (3) strictly precedes DEST_WRITE (6) and requires INSERT at
 //     SCHEMA scope on the tracking schema with NO per-table fallback. In the
 //     default fixture the tracking schema IS the destination schema, so any grant
@@ -294,11 +298,14 @@ func TestCharacterizationDestWriteTableScopeSatisfies(t *testing.T) {
 // which runs only under PreflightProfileFull and PreflightProfileSourceOnly —
 // archive, purge and validate. copy-only and dry-run PASS the identical fixture.
 //
-// The account holds SELECT globally, which is load-bearing twice over: it lets the
-// earlier source-side structural checks read information_schema, and it satisfies
-// FK_COVERAGE_VISIBILITY_CHECK (step 8) — the only other privilege-sensitive source
-// check, and the one that would otherwise fire first for archive/purge/dry-run/
-// validate and mask this assertion entirely.
+// The account holds SELECT globally, which lets the earlier source-side structural
+// checks read information_schema, and — since deviation D2 (phase 025) — PROCESS
+// globally, which is what now satisfies FK_COVERAGE_VISIBILITY_CHECK (step 8): the
+// only other privilege-sensitive source check, and the one that would otherwise fire
+// first for archive/purge/dry-run/validate and mask this assertion entirely. Before
+// D2 the SELECT grant alone cleared step 8 too (1.8's global-SELECT proof); the
+// PROCESS grant below exists purely to keep reaching the SAME SOURCE_DELETE
+// assertion this test has always pinned — this is a fixture fix, not an amendment.
 func TestCharacterizationSourceDeletePermission(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -306,6 +313,7 @@ func TestCharacterizationSourceDeletePermission(t *testing.T) {
 	f.ExecDest(t, ctx, chrPermDDL)
 
 	acct := chrCreateAccount(t, ctx, f.SourceDB, "source",
+		"GRANT PROCESS ON *.* TO {{ACCOUNT}}",
 		"GRANT SELECT ON *.* TO {{ACCOUNT}}")
 	sourceAsAcct := chrOpenAs(t, acct, f.SourceSchema)
 
@@ -345,6 +353,12 @@ func TestCharacterizationSourceDeletePermission(t *testing.T) {
 // this assertion — it ADDS TestD1PartialRevokesGlobalGrantFailsDirectGrantPasses,
 // which turns partial_revokes ON and is where the behaviour D1 changes becomes
 // observable. A phase-021 diff that touches this assertion is a REGRESSION.
+//
+// Since deviation D2 (phase 025) the account also holds PROCESS globally, for the
+// same reason TestCharacterizationSourceDeletePermission above does: without it,
+// FK_COVERAGE_VISIBILITY_CHECK (step 8) now fires first for every command that
+// enforces it and this test's ALL-FIVE-PASS assertion would never be reached. This
+// is a fixture fix to keep the same assertion, not an amendment.
 func TestCharacterizationGlobalPrivilegeShortCircuit(t *testing.T) {
 	_, ctx := SetupIntegrationTest(t)
 	f := newChrFixture(t, ctx)
@@ -352,6 +366,7 @@ func TestCharacterizationGlobalPrivilegeShortCircuit(t *testing.T) {
 	f.ExecDest(t, ctx, chrPermDDL)
 
 	acct := chrCreateAccount(t, ctx, f.SourceDB, "source",
+		"GRANT PROCESS ON *.* TO {{ACCOUNT}}",
 		"GRANT SELECT, DELETE ON *.* TO {{ACCOUNT}}")
 	sourceAsAcct := chrOpenAs(t, acct, f.SourceSchema)
 

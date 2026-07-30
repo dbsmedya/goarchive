@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
@@ -194,14 +195,14 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// constraints in every schema. Fail closed before relying on it — except for
 	// copy-only, which never deletes from source (no external cascade can fire).
 	if enforceFKVisibility {
-		if err := p.ValidateForeignKeyMetadataVisibility(ctx); err != nil {
+		if err := p.ValidateForeignKeyMetadataVisibility(ctx, run); err != nil {
 			return err
 		}
 	}
 
 	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
 	// This MUST be checked before triggers - missing relations are a bigger problem
-	if err := p.ValidateForeignKeyCoverage(ctx); err != nil {
+	if err := p.ValidateForeignKeyCoverage(ctx, run); err != nil {
 		return err
 	}
 
@@ -674,108 +675,117 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context) error {
 	return nil
 }
 
-// ValidateForeignKeyMetadataVisibility fails closed when the source account
-// cannot be guaranteed to see foreign keys defined in OTHER schemas. MySQL only
-// exposes a constraint in information_schema.KEY_COLUMN_USAGE to an account with
-// some privilege on the constraint's (child) table, and a schema the account has
-// no privilege on is entirely invisible (not even listed in SCHEMATA). So a
-// global SELECT is the only privilege that guarantees FK_COVERAGE_CHECK saw every
-// incoming cross-schema foreign key.
-func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Context) error {
+// ValidateForeignKeyMetadataVisibility fails closed when foreign-key discovery cannot be
+// proven complete.
+//
+// Deviation D2 (spec §4), invariant I1 (spec §3.1). The proof is the success of the
+// library's PROCESS-gated InnoDB registry query, reported as VisibilityComplete on the
+// same ForeignKeyResult that supplies the coverage facts — so the facts and the proof
+// that they are complete can never disagree.
+//
+// This judges CheckFKClosure's VISIBILITY-flavoured finding rather than reading
+// result.Visibility directly. Both would agree today, and the direct read is shorter — but
+// the typed finding is the contract the design fixes (spec §3.1), and going through
+// partitionClosureFindings is what makes an unrecognised future payload abort instead of
+// being silently ignored. CheckFKClosure is pure computation over the already-memoized
+// fact, so calling it here AND in coverage costs no extra I/O.
+//
+// This replaces 1.8's global-SELECT reasoning, which was a latent false-pass: while
+// @@global.partial_revokes is enabled, a global SELECT row does not guarantee every
+// schema is readable, so an incoming cross-schema foreign key could be invisible to an
+// account that 1.8 accepted.
+//
+// I1 requires EFFECTIVE process privilege, not direct provenance: statement success is
+// the proof, so a role-held PROCESS is exactly as safe. GoArchive therefore does not
+// inspect PROCESS through Grants at all.
+func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking FK metadata visibility...")
-	grantees, err := p.currentGrantees(ctx, p.db)
+
+	result, err := run.fkIncoming(ctx)
+	if err != nil {
+		return inspectionError("fk_metadata_visibility", err)
+	}
+
+	_, visibility, err := partitionClosureFindings(
+		validations.CheckFKClosure(result, p.sourceDBName, run.graphTables()))
 	if err != nil {
 		return err
 	}
-	ok, err := p.hasGlobalPrivilege(ctx, p.db, grantees, "SELECT")
-	if err != nil {
-		return err
+	if len(visibility) == 0 {
+		p.logger.Debug("FK metadata visibility check PASSED (InnoDB metadata registry readable)")
+		return nil
 	}
-	if !ok {
-		return &PreflightError{
-			Check: "FK_COVERAGE_VISIBILITY_CHECK",
-			Message: fmt.Sprintf("source account %s lacks a global SELECT privilege, so GoArchive cannot "+
-				"verify there are no foreign keys in other schemas referencing the archive graph (an external "+
-				"ON DELETE CASCADE/SET NULL would delete or mutate uncopied rows). Grant server-wide visibility "+
-				"(GRANT SELECT ON *.* TO <user>) or run preflight as an account that has it.", grantees[0]),
-		}
+
+	return &PreflightError{
+		Check: "FK_COVERAGE_VISIBILITY_CHECK",
+		Message: fmt.Sprintf(
+			"foreign-key metadata completeness is not established (state: %s), so GoArchive cannot "+
+				"verify there are no foreign keys in other schemas referencing the archive graph "+
+				"(an external ON DELETE CASCADE/SET NULL would delete or mutate uncopied rows). "+
+				"GoArchive 2.0 proves completeness by reading the InnoDB metadata registry, which "+
+				"requires the PROCESS privilege: GRANT PROCESS ON *.* TO <user>. A role-held "+
+				"PROCESS is equally acceptable — the proof is that the read succeeded",
+			visibility[0]),
 	}
-	p.logger.Debug("FK metadata visibility check PASSED (global SELECT present)")
-	return nil
 }
 
-// ValidateForeignKeyCoverage checks that all foreign key constraints referencing
-// tables in the graph are covered by relations in the configuration.
+// ValidateForeignKeyCoverage checks that no table outside the graph holds a foreign key
+// into a graph table. Any uncovered FK is fatal regardless of ON DELETE rule
+// (CASCADE/RESTRICT/NO ACTION/SET NULL) — a cross-schema child cannot be represented in
+// the graph, because identifiers forbid schema.table.
 //
-// This prevents unsafe delete behavior when a table outside the graph has an FK
-// constraint to a table inside the graph. Any uncovered FK is treated as fatal,
-// regardless of ON DELETE rule (CASCADE/RESTRICT/NO ACTION/SET NULL).
-//
-// Precondition: coverage is only trustworthy when the connected account can see
-// constraints in every schema. Production callers reach this via RunWithProfile,
-// which runs ValidateForeignKeyMetadataVisibility (FK_COVERAGE_VISIBILITY_CHECK)
-// first for delete-capable commands. Calling this directly (as some tests do)
-// bypasses that guarantee.
-func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context) error {
+// This judges only the external-edge flavour of CheckFKClosure's output. The visibility
+// flavour is judged by ValidateForeignKeyMetadataVisibility, which runs first and which
+// copy-only skips — see partitionClosureFindings.
+func (p *PreflightChecker) ValidateForeignKeyCoverage(ctx context.Context, run *preflightRun) error {
 	p.logger.Debug("Checking foreign key coverage...")
 
-	// Get all tables in the graph
-	graphTables := p.graph.AllNodes()
-	graphTableSet := make(map[string]bool)
-	for _, t := range graphTables {
-		graphTableSet[t] = true
-	}
-
-	fks, err := p.getForeignKeys(ctx)
+	result, err := run.fkIncoming(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query FK coverage: %w", err)
+		return inspectionError("fk_coverage", err)
 	}
 
-	type uncoveredFK struct {
-		Table           string
-		Constraint      string
-		Column          string
-		ReferencedTable string
-		OnDelete        string
+	external, _, err := partitionClosureFindings(
+		validations.CheckFKClosure(result, p.sourceDBName, run.graphTables()))
+	if err != nil {
+		return err
 	}
-	var uncovered []uncoveredFK
-	for _, fk := range fks {
-		if p.inGraph(fk.ReferencedTableSchema, fk.ReferencedTable, graphTableSet) &&
-			!p.inGraph(fk.TableSchema, fk.Table, graphTableSet) {
-			uncovered = append(uncovered, uncoveredFK{
-				Table:           fk.TableSchema + "." + fk.Table,
-				Constraint:      fk.ConstraintName,
-				Column:          fk.Column,
-				ReferencedTable: fk.ReferencedTable,
-				OnDelete:        fk.OnDelete,
-			})
-		}
+	if len(external) == 0 {
+		p.logger.Debug("Foreign key coverage check complete (all FKs covered)")
+		return nil
 	}
 
-	if len(uncovered) > 0 {
-		// Group by referenced table for better readability
-		byRefTable := make(map[string][]uncoveredFK)
-		for _, fk := range uncovered {
-			byRefTable[fk.ReferencedTable] = append(byRefTable[fk.ReferencedTable], fk)
-		}
-
-		var messages []string
-		for refTable, fks := range byRefTable {
-			var childTables []string
-			for _, fk := range fks {
-				childTables = append(childTables, fmt.Sprintf("%s (ON DELETE %s)", fk.Table, fk.OnDelete))
-			}
-			messages = append(messages, fmt.Sprintf("  - %s is referenced by: %v", refTable, childTables))
-		}
-
-		return &PreflightError{
-			Check:   "FK_COVERAGE_CHECK",
-			Message: fmt.Sprintf("Foreign key constraints not covered by relations (fatal for any ON DELETE rule):\n%s", strings.Join(messages, "\n")),
+	// Group consecutive findings by ParentTable into "  - <parent> is referenced by:
+	// […]" lines. CheckFKClosure returns findings in requested-parent order, and the
+	// requested order is run.graphTables() -> Graph.AllNodes(), which ranges over a
+	// map — so findings for one parent are still consecutive, but the order of the
+	// groups varies run to run. Sorting the assembled lines is what makes the message
+	// deterministic; without it, a multi-parent message would vary exactly as in 1.8.
+	var lines []string
+	var current string
+	var children []string
+	flush := func() {
+		if current != "" {
+			lines = append(lines, fmt.Sprintf("  - %s is referenced by: %v", current, children))
 		}
 	}
+	for _, fk := range external {
+		if fk.ParentTable != current {
+			flush()
+			current = fk.ParentTable
+			children = nil
+		}
+		children = append(children, fmt.Sprintf("%s.%s (ON DELETE %s)", fk.ChildSchema, fk.ChildTable, fk.OnDelete))
+	}
+	flush()
+	sort.Strings(lines)
 
-	p.logger.Debug("Foreign key coverage check complete (all FKs covered)")
-	return nil
+	return &PreflightError{
+		Check: "FK_COVERAGE_CHECK",
+		Message: fmt.Sprintf(
+			"Foreign key constraints not covered by relations (fatal for any ON DELETE rule):\n%s",
+			strings.Join(lines, "\n")),
+	}
 }
 
 // ValidateInternalFKCoverage checks that all FK relationships between tables
@@ -1033,62 +1043,6 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 	return nil
 }
 
-// formatGrantee converts CURRENT_USER() output (user@host) into the quoted
-// GRANTEE format used by information_schema privilege tables ('user'@'host').
-// Verified against MySQL 8.4: the GRANTEE column is built by plain
-// concatenation of quotes around the raw name — embedded single quotes are
-// NOT escaped (user o'brien appears as 'o'brien'@'%'), so none are added here.
-func formatGrantee(currentUser string) string {
-	quote := func(s string) string { return "'" + s + "'" }
-	at := strings.LastIndex(currentUser, "@")
-	if at < 0 {
-		return quote(currentUser) + "@'%'"
-	}
-	return quote(currentUser[:at]) + "@" + quote(currentUser[at+1:])
-}
-
-// roleGrantees converts CURRENT_ROLE() output (`r1`@`%`,`r2`@`host` or NONE)
-// into GRANTEE-format strings. Privilege grants held via active roles do not
-// appear under the user's own GRANTEE in information_schema.
-func roleGrantees(currentRole string) []string {
-	currentRole = strings.TrimSpace(currentRole)
-	if currentRole == "" || strings.EqualFold(currentRole, "NONE") {
-		return nil
-	}
-	var grantees []string
-	for _, role := range strings.Split(currentRole, ",") {
-		role = strings.TrimSpace(role)
-		if role == "" {
-			continue
-		}
-		grantees = append(grantees, strings.ReplaceAll(role, "`", "'"))
-	}
-	return grantees
-}
-
-// currentGrantees returns the GRANTEE strings to match in privilege tables:
-// the authenticated account plus any active roles. CURRENT_ROLE() exists on
-// all supported MySQL versions (8.0+); an error there is real and fails
-// preflight rather than being ignored — missing roles would false-fail the
-// privilege checks anyway. Only directly activated roles are listed;
-// privileges held via roles granted to roles (nested) are not detected and
-// will conservatively fail the check.
-func (p *PreflightChecker) currentGrantees(ctx context.Context, db *sql.DB) ([]string, error) {
-	var user string
-	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&user); err != nil {
-		return nil, fmt.Errorf("failed to resolve CURRENT_USER(): %w", err)
-	}
-	grantees := []string{formatGrantee(user)}
-	var role sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&role); err != nil {
-		return nil, fmt.Errorf("failed to resolve CURRENT_ROLE(): %w", err)
-	}
-	if role.Valid {
-		grantees = append(grantees, roleGrantees(role.String)...)
-	}
-	return grantees, nil
-}
-
 // ValidateDestinationWritePermissions checks that the connected destination account
 // holds INSERT on every graph table.
 //
@@ -1194,25 +1148,6 @@ func (p *PreflightChecker) ValidateJobSchemaPermissions(ctx context.Context, run
 				"missing privilege directly to the account at schema scope (DBA must: %s)",
 			strings.Join(missing, ", "), p.jobSchemaName, strings.Join(offenders, ", "), hint),
 	}
-}
-
-// hasGlobalPrivilege reports whether any grantee holds priv at global scope
-// (information_schema.USER_PRIVILEGES). GRANT ALL is expanded by MySQL into
-// individual PRIVILEGE_TYPE rows, so matching the specific type covers it.
-func (p *PreflightChecker) hasGlobalPrivilege(ctx context.Context, db *sql.DB, grantees []string, priv string) (bool, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(grantees)), ",")
-	args := make([]interface{}, 0, len(grantees)+1)
-	for _, g := range grantees {
-		args = append(args, g)
-	}
-	args = append(args, priv)
-	q := fmt.Sprintf(`SELECT COUNT(*) FROM information_schema.USER_PRIVILEGES
-		WHERE GRANTEE IN (%s) AND PRIVILEGE_TYPE = ?`, placeholders)
-	var count int
-	if err := db.QueryRowContext(ctx, q, args...).Scan(&count); err != nil {
-		return false, fmt.Errorf("failed to check global %s privilege: %w", priv, err)
-	}
-	return count > 0, nil
 }
 
 // ValidateSourceSelectPermissions checks the source account can SELECT from every graph

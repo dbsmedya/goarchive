@@ -380,16 +380,30 @@ var chrMatrix = []chrMatrixRow{
 		},
 		Restricted: func(t *testing.T, ctx context.Context, f *chrFixture) (*sql.DB, *sql.DB) {
 			// Construction (B) from phase 022's "reachability problem" — the ONLY shape
-			// that reaches SOURCE_SELECT on all five commands before phase 025.
+			// that reaches SOURCE_SELECT on all five commands.
 			//
-			// Applies is chrAll, and four of those five commands enforce FK visibility,
-			// which until phase 025 is 1.8 code demanding GLOBAL SELECT
-			// (ValidateForeignKeyMetadataVisibility, via hasGlobalPrivilege). So:
-			// partial revokes ON + a bare
-			// GLOBAL SELECT row. 1.8's check sees the global row and passes at position
-			// 13; the library resolves object-level SELECT to GrantUnconfirmed, so this
-			// check fails closed at 16. DELETE is granted DIRECTLY so SOURCE_DELETE (17)
+			// Applies is chrAll, and four of those five commands enforce FK visibility
+			// (FK_COVERAGE_VISIBILITY_CHECK, position 14/15) ahead of SOURCE_SELECT
+			// (position 16). Under deviation D2 (phase 025) that check's completeness
+			// proof is the library's PROCESS-gated InnoDB registry read, so this hook
+			// grants PROCESS directly — that grant is why the run gets past visibility
+			// and actually reaches SOURCE_SELECT for all five commands, not four.
+			//
+			// The partial-revokes + bare-global-SELECT combination below is retained
+			// deliberately, independent of the PROCESS grant: under
+			// @@global.partial_revokes a global SELECT row does not prove object-level
+			// SELECT, so the library resolves it to GrantUnconfirmed rather than
+			// GrantPresent — and GrantUnconfirmed, not GrantAbsent, is the verdict this
+			// row exercises at position 16 (deviation D1 / invariant I2: only
+			// GrantPresent passes). DELETE is granted DIRECTLY so SOURCE_DELETE (17)
 			// would pass and cannot be mistaken for the failure under test.
+			//
+			// Historical context only: before phase 025, FK visibility was 1.8 code
+			// demanding a GLOBAL SELECT privilege (ValidateForeignKeyMetadataVisibility,
+			// via the now-deleted hasGlobalPrivilege). That old mechanism read the same
+			// global SELECT row this fixture grants and passed at position 13 — so this
+			// construction reached SOURCE_SELECT even before phase 025, for a different
+			// reason than it does now.
 			srcSelectPartialRevokes(t, ctx, f.SourceDB)
 			src := chrCreateAccount(t, ctx, f.SourceDB, "source",
 				"GRANT PROCESS ON *.* TO {{ACCOUNT}}",

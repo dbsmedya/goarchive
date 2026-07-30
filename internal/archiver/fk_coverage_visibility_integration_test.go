@@ -27,6 +27,16 @@ func sourceDBConfig(setup *IntegrationTestSetup) (DatabaseConfig, bool) {
 // "coverage passed" from ValidateForeignKeyCoverage — then proves
 // ValidateForeignKeyMetadataVisibility fails closed so RunWithProfile never
 // reaches copy/delete.
+//
+// Under deviation D2 the blind spot survives for a different reason than 1.8's: the
+// limited account holds no PROCESS, so the library's PROCESS-gated InnoDB registry read
+// fails and it falls back to information_schema.KEY_COLUMN_USAGE, which simply cannot
+// see the row in the schema the account has no privilege on — the fallback succeeds
+// (VisibilityUnconfirmed) with zero matching keys, so ValidateForeignKeyCoverage, which
+// only judges the external-edge flavour, finds nothing and falsely passes exactly as
+// before. Both calls below share ONE *preflightRun, so the coverage facts and the
+// completeness verdict come from a single cached fkIncoming fetch rather than two
+// independent ones — proving they cannot disagree about what was seen (spec §3.5).
 func TestIntegrationFKCoverageVisibility_HiddenCrossSchemaFK_FailsClosed(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
 	defer setup.Close()
@@ -70,25 +80,31 @@ func TestIntegrationFKCoverageVisibility_HiddenCrossSchemaFK_FailsClosed(t *test
 
 	// Blind-spot precondition: coverage alone CANNOT see the cross-schema child,
 	// so it falsely passes for the limited account. This is exactly the metadata
-	// hole the visibility guard exists to close.
-	if err := checker.ValidateForeignKeyCoverage(ctx); err != nil {
+	// hole the visibility guard exists to close. Both calls share the SAME run so
+	// the second reuses the first's memoized fkIncoming fetch.
+	run := newPreflightRun(checker)
+	if err := checker.ValidateForeignKeyCoverage(ctx, run); err != nil {
 		t.Fatalf("blind-spot precondition: expected coverage to falsely pass for the limited account "+
 			"(it cannot see the cross-schema FK), got: %v", err)
 	}
 
 	// The guard: fail closed.
-	err = checker.ValidateForeignKeyMetadataVisibility(ctx)
+	err = checker.ValidateForeignKeyMetadataVisibility(ctx, run)
 	if err == nil {
-		t.Fatal("expected FK_COVERAGE_VISIBILITY_CHECK to fail closed for account without global SELECT, got nil")
+		t.Fatal("expected FK_COVERAGE_VISIBILITY_CHECK to fail closed for an account without PROCESS, got nil")
 	}
 	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_VISIBILITY_CHECK" {
 		t.Fatalf("expected FK_COVERAGE_VISIBILITY_CHECK, got: %v", err)
 	}
 }
 
-// TestIntegrationFKCoverageVisibility_GlobalSelect_Passes is the positive control:
-// the root account used by the suite has global privileges and passes.
-func TestIntegrationFKCoverageVisibility_GlobalSelect_Passes(t *testing.T) {
+// TestIntegrationFKCoverageVisibility_PROCESSPrivilegedAccount_Passes is the positive
+// control. It still passes — but under deviation D2 that is because the suite's root
+// account holds PROCESS, letting the library's PROCESS-gated InnoDB registry read
+// succeed, NOT because of global SELECT as the pre-025 name claimed. Renamed because
+// under D2 the old name (TestIntegrationFKCoverageVisibility_GlobalSelect_Passes) is
+// actively false: global SELECT no longer has anything to do with why this passes.
+func TestIntegrationFKCoverageVisibility_PROCESSPrivilegedAccount_Passes(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
 	defer setup.Close()
 
@@ -103,7 +119,7 @@ func TestIntegrationFKCoverageVisibility_GlobalSelect_Passes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new checker: %v", err)
 	}
-	if err := checker.ValidateForeignKeyMetadataVisibility(ctx); err != nil {
-		t.Fatalf("expected global-privileged account to pass, got: %v", err)
+	if err := checker.ValidateForeignKeyMetadataVisibility(ctx, newPreflightRun(checker)); err != nil {
+		t.Fatalf("expected PROCESS-privileged account to pass, got: %v", err)
 	}
 }
