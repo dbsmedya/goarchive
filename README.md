@@ -383,6 +383,8 @@ make e2e-setup            # bootstrap + Sakila end-to-end suite
 
 ⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.** It covers the preflight-enforced hard constraints, what the dependency model cannot express, and the operational cautions (memory growth on deep graphs, copy-transaction scope, `--force` semantics, partial deletes after interruption).
 
+Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md).
+
 ### What's Included in Community
 
 Complete end-to-end archive, purge, and copy-only workflows:

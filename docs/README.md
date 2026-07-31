@@ -12,6 +12,7 @@ Detailed specifications for GoArchive. Start at the
 | [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning, pausing, crash recovery and resume semantics |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
 | [Testing](README_TESTING.md) | Test layers and how to run them |
+| [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
 
 ## Elsewhere in the repository
 
