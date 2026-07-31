@@ -3,8 +3,11 @@ package archiver
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"strings"
+	"sort"
+
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 )
 
 // shouldUseStrictInsert decides whether the copy phase must use a plain INSERT
@@ -35,48 +38,48 @@ func shouldUseStrictInsert(method string, skipVerification, destHasUniqueIndex b
 // INSERT IGNORE can silently drop a row that collides on such an index — a
 // silent partial copy that would precede a source delete.
 //
-// This deliberately uses information_schema.STATISTICS (full index definitions)
-// rather than the per-column COLUMN_KEY, so a COMPOSITE unique index is detected
-// too (review P1-2). It runs in the orchestrator rather than preflight so it is
-// enforced even when preflight is skipped with --skip-validate-preflight.
+// The index fact comes from validations.TableSpec(WithIndexes), which reports full index
+// definitions, so a COMPOSITE unique index is detected too (review P1-2). It runs in the
+// orchestrator rather than preflight so it is enforced even when preflight is skipped
+// with --skip-validate-preflight.
 func destinationSecondaryUniqueIndexes(ctx context.Context, db *sql.DB, schema string, tables []string) ([]string, error) {
 	if db == nil || schema == "" || len(tables) == 0 {
 		return nil, nil
 	}
 
-	placeholders := make([]string, len(tables))
-	args := make([]interface{}, 0, len(tables)+1)
-	args = append(args, schema)
-	for i, t := range tables {
-		placeholders[i] = "?"
-		args = append(args, t)
-	}
-
-	query := fmt.Sprintf(`
-		SELECT DISTINCT TABLE_NAME, INDEX_NAME
-		FROM information_schema.STATISTICS
-		WHERE TABLE_SCHEMA = ?
-		  AND TABLE_NAME IN (%s)
-		  AND NON_UNIQUE = 0
-		  AND INDEX_NAME <> 'PRIMARY'
-		ORDER BY TABLE_NAME, INDEX_NAME`, strings.Join(placeholders, ", "))
-
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to inspect destination unique indexes: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
+	inspector := validations.NewInspector(db, schema)
 
 	var found []string
-	for rows.Next() {
-		var table, index string
-		if err := rows.Scan(&table, &index); err != nil {
-			return nil, fmt.Errorf("failed to scan destination unique index row: %w", err)
+	for _, table := range tables {
+		spec, err := inspector.TableSpec(ctx, validations.Ref(schema, table), validations.WithIndexes())
+		if err != nil {
+			// An absent table, or an object that is not a base table, carries no unique
+			// index for INSERT IGNORE to collide on. 1.8 read information_schema
+			// .STATISTICS and got no rows for either shape; skipping reproduces that
+			// outcome exactly.
+			//
+			// This is load-bearing, not defensive tidiness: the only caller that can
+			// reach a missing destination table here is a run started with
+			// --skip-validate-preflight, and that flag means "bypass preflight", not
+			// "abort at startup for a new reason". Every other error still propagates.
+			if errors.Is(err, validations.ErrTableNotFound) ||
+				errors.Is(err, validations.ErrUnsupportedTableType) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to inspect destination unique indexes: %w", err)
 		}
-		found = append(found, fmt.Sprintf("%s.%s", table, index))
+		for _, idx := range spec.Indexes {
+			if idx.Unique && idx.Name != "PRIMARY" {
+				found = append(found, fmt.Sprintf("%s.%s", table, idx.Name))
+			}
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating destination unique indexes: %w", err)
-	}
+
+	// 1.8 ordered by TABLE_NAME, INDEX_NAME in SQL. TableSpec orders indexes within one
+	// table, but nothing orders across the per-table loop, so sort explicitly. Callers use
+	// this list two ways: len(...) > 0 decides strict insert (order-independent) and
+	// strings.Join(...) builds a log line (order-visible), so this affects diagnostics
+	// only — an output improvement inside decision section 1.1, outside ledger scope.
+	sort.Strings(found)
 	return found, nil
 }

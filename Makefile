@@ -135,7 +135,7 @@ lint:
 
 # Run all checks (CI-style)
 .PHONY: check
-check: fmt-check vet test-ci build
+check: fmt-check vet consumer-policy test-ci build
 	@echo "All checks passed!"
 
 # Full CI pipeline simulation
@@ -166,6 +166,11 @@ deadcode: ## Fail if the production binary carries unreachable functions
 		exit 1; \
 	fi; \
 	echo "deadcode: clean"
+
+.PHONY: consumer-policy
+consumer-policy: ## Fail if GoArchive queries information_schema directly (spec §2)
+	@go test ./internal/archiver/ -run TestNoResidualInformationSchemaQueries -count=1 \
+		&& echo "consumer-policy: clean"
 
 # Integration test configuration
 INTEGRATION_CONFIG_DIR := internal/archiver

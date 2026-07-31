@@ -74,10 +74,10 @@ func TestResumeManager_InitializeTables_Success(t *testing.T) {
 
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	// Legacy probe: archiver_job does not yet exist (fresh schema).
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	// Legacy probe: archiver_job does not yet exist (fresh schema). PrimaryKeys is
+	// never reached — checkLegacySchema returns before consulting it.
+	mock.ExpectQuery("information_schema").WithArgs("testdb").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	// Create archiver_job only (per-job log table is created later).
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -130,9 +130,8 @@ func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
 	// Legacy probe (fresh schema), then job table creation failure.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectQuery("information_schema").WithArgs("testdb").
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnError(assert.AnError)
 
 	ctx := context.Background()
@@ -143,26 +142,65 @@ func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestResumeManager_InitializeTables_LegacyShapeRejected(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
+// TestResumeManager_CheckLegacySchema_Shapes covers checkLegacySchema's preserved 1.8
+// leniency (RULED B3): a composite key containing "id" and a case-insensitive "id" both
+// still pass, exactly as they did against 1.8's COLUMN_KEY='PRI' predicate. Row shapes
+// match what validations.Inspector.PrimaryKeys scans (TABLE_NAME, COLUMN_NAME, DATA_TYPE,
+// COLUMN_TYPE, one row per primary-key column) — the SELECT list itself is not asserted,
+// per the consumer-policy rule (goarchive does not encode the library's private SQL).
+func TestResumeManager_CheckLegacySchema_Shapes(t *testing.T) {
+	pkCols := func(cols ...string) *sqlmock.Rows {
+		rows := sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE"})
+		for _, col := range cols {
+			rows.AddRow("archiver_job", col, "bigint", "bigint unsigned")
+		}
+		return rows
+	}
 
-	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
+	cases := []struct {
+		name    string
+		pkRows  *sqlmock.Rows
+		wantErr string // "" means InitializeTables must pass
+	}{
+		{"new shape: single-column id PK", pkCols("id"), ""},
+		{"composite key containing id passes (1.8 leniency 1)", pkCols("id", "job_name"), ""},
+		{"uppercase ID passes case-insensitively (1.8 leniency 2)", pkCols("ID"), ""},
+		{"old shape: job_name is the PK, no id at all", pkCols("job_name"),
+			"legacy GoArchive tracking tables detected"},
+		{"partially migrated: id exists but job_name is still PK", pkCols("job_name"),
+			"legacy GoArchive tracking tables detected"},
+	}
 
-	// archiver_job exists but lacks the new integer id PRIMARY KEY -> legacy.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.columns").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, _ := sqlmock.New()
+			defer func() { _ = db.Close() }()
 
-	ctx := context.Background()
-	err := rm.InitializeTables(ctx)
+			rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "legacy GoArchive tracking tables detected")
-	assert.NoError(t, mock.ExpectationsWereMet())
+			// archiver_job already exists.
+			mock.ExpectQuery("information_schema").WithArgs("testdb").
+				WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
+					AddRow("archiver_job", "BASE TABLE", "InnoDB"))
+			mock.ExpectQuery("information_schema").WithArgs("testdb").
+				WillReturnRows(tc.pkRows)
+			if tc.wantErr == "" {
+				mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").
+					WillReturnResult(sqlmock.NewResult(0, 0))
+			}
+
+			ctx := context.Background()
+			err := rm.InitializeTables(ctx)
+
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
 
 func TestResumeManager_UpdateJobStatus_Success(t *testing.T) {

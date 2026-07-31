@@ -457,6 +457,110 @@ func assertRootSet(t *testing.T, db *sql.DB, label string, wantRoots ...int64) {
 }
 
 // ============================================================================
+// destinationSecondaryUniqueIndexes real-DB coverage (phase 032, Step 10c)
+// ============================================================================
+
+// TestDestinationSecondaryUniqueIndexes_Integration proves, against a real server, the
+// behaviour a goarchive unit test must not encode as a mocked SQL string (consumer-policy
+// rule, RULED F3): index discovery via validations.TableSpec(WithIndexes), the
+// missing-table and view skips (RULED B2 — 1.8's information_schema.STATISTICS query
+// returned zero rows for either shape, so this function must reproduce that outcome
+// exactly), and cross-table ordering (M9).
+//
+// Probe indexes are added over (id, <other column>) — trivially unique because id is
+// already the primary key — so the test needs no carefully-crafted data.
+func TestDestinationSecondaryUniqueIndexes_Integration(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	_, destDB := resumeScenarioDBs(t, setup)
+	schema := getDestSchema(setup)
+
+	addProbeUniqueIndex := func(t *testing.T, table, index, columns string) {
+		t.Helper()
+		addStmt := fmt.Sprintf("ALTER TABLE %s ADD UNIQUE INDEX %s (%s)",
+			sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(index), columns)
+		if _, err := destDB.ExecContext(ctx, addStmt); err != nil {
+			t.Fatalf("add probe unique index %s.%s: %v", table, index, err)
+		}
+		t.Cleanup(func() {
+			dropStmt := fmt.Sprintf("ALTER TABLE %s DROP INDEX %s",
+				sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(index))
+			if _, err := destDB.ExecContext(context.Background(), dropStmt); err != nil {
+				t.Logf("cleanup: drop probe index %s.%s: %v", table, index, err)
+			}
+		})
+	}
+
+	// "orders" and "order_items" each get a probe unique index; "order_payments" is
+	// left alone as the "PRIMARY KEY only" control. order_items < orders
+	// lexicographically ('_' < 's'), which is exploited by the ordering subtest below.
+	addProbeUniqueIndex(t, "orders", "uq_probe_orders", "id, customer_id")
+	addProbeUniqueIndex(t, "order_items", "uq_probe_items", "id, order_id")
+
+	t.Run("index discovery: reported with a secondary unique index, absent with only PRIMARY KEY", func(t *testing.T) {
+		found, err := destinationSecondaryUniqueIndexes(ctx, destDB, schema,
+			[]string{"orders", "order_items", "order_payments"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"order_items.uq_probe_items", "orders.uq_probe_orders"}
+		if fmt.Sprint(found) != fmt.Sprint(want) {
+			t.Fatalf("got %v, want %v", found, want)
+		}
+	})
+
+	t.Run("missing table is skipped, not an error", func(t *testing.T) {
+		found, err := destinationSecondaryUniqueIndexes(ctx, destDB, schema,
+			[]string{"orders", "does_not_exist_probe_table"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"orders.uq_probe_orders"}
+		if fmt.Sprint(found) != fmt.Sprint(want) {
+			t.Fatalf("got %v, want %v", found, want)
+		}
+	})
+
+	t.Run("view is skipped, not an error", func(t *testing.T) {
+		const viewName = "probe_view_for_strict_insert"
+		if _, err := destDB.ExecContext(ctx, fmt.Sprintf(
+			"CREATE OR REPLACE VIEW %s AS SELECT id FROM orders", sqlutil.QuoteIdentifier(viewName)),
+		); err != nil {
+			t.Fatalf("create probe view: %v", err)
+		}
+		t.Cleanup(func() {
+			if _, err := destDB.ExecContext(context.Background(),
+				"DROP VIEW IF EXISTS "+sqlutil.QuoteIdentifier(viewName)); err != nil {
+				t.Logf("cleanup: drop probe view: %v", err)
+			}
+		})
+
+		found, err := destinationSecondaryUniqueIndexes(ctx, destDB, schema, []string{"orders", viewName})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"orders.uq_probe_orders"}
+		if fmt.Sprint(found) != fmt.Sprint(want) {
+			t.Fatalf("got %v, want %v", found, want)
+		}
+	})
+
+	t.Run("cross-table ordering", func(t *testing.T) {
+		// Requested in the OPPOSITE of lexical order: without sort.Strings the
+		// per-table loop would emit "orders.*" (first in the input) before
+		// "order_items.*", which is not sorted.
+		found, err := destinationSecondaryUniqueIndexes(ctx, destDB, schema, []string{"orders", "order_items"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"order_items.uq_probe_items", "orders.uq_probe_orders"}
+		if fmt.Sprint(found) != fmt.Sprint(want) {
+			t.Fatalf("got %v, want %v (sorted)", found, want)
+		}
+	})
+}
+
+// ============================================================================
 // The scenarios
 // ============================================================================
 

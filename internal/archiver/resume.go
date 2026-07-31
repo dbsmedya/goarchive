@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
 
@@ -178,28 +179,46 @@ func (r *ResumeManager) createLogTableSQL() string {
 // checkLegacySchema rejects pre-1.2.x tracking tables (archiver_job without the
 // new integer id PK). Replaces the old in-place ALTER migrations.
 func (r *ResumeManager) checkLegacySchema(ctx context.Context) error {
-	var tableCount int
-	if err := r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = 'archiver_job'",
-		r.jobSchema,
-	).Scan(&tableCount); err != nil {
+	inspector := validations.NewInspector(r.db, r.jobSchema)
+
+	found, err := inspector.Tables(ctx, []string{"archiver_job"})
+	if err != nil {
 		return fmt.Errorf("failed to probe for legacy archiver_job: %w", err)
 	}
-	if tableCount == 0 {
+	if len(found) == 0 {
 		return nil // fresh schema
 	}
-	// New-shape requires `id` to exist AND be the PRIMARY KEY. This single
-	// COLUMN_KEY='PRI' check rejects BOTH "lacks id" (old job_name-PK shape)
-	// and the partially-migrated "has id but job_name is still PK" shape
-	// (id present but COLUMN_KEY != 'PRI').
-	var idPKCount int
-	if err := r.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = 'archiver_job' AND column_name = 'id' AND column_key = 'PRI'",
-		r.jobSchema,
-	).Scan(&idPKCount); err != nil {
+
+	pks, err := inspector.PrimaryKeys(ctx, []string{"archiver_job"})
+	if err != nil {
 		return fmt.Errorf("failed to probe legacy archiver_job columns: %w", err)
 	}
-	if idPKCount == 0 {
+
+	// The predicate is 1.8's, reproduced deliberately: does `id` PARTICIPATE in the
+	// PRIMARY KEY? 1.8 asked information_schema for COLUMN_KEY='PRI' on a column named
+	// `id`, which MySQL reports for EVERY member of a composite key and matches
+	// case-insensitively. PKInfo is exact on both counts, so the leniency lives here, in
+	// goarchive policy over the library's fact — NOT in a goarchive query.
+	//
+	// Tightening this to "single-column PRIMARY KEY named exactly id" would reject an
+	// archiver_job that passes today, which is a pass/fail change and needs a ledger
+	// deviation (design section 4, ledger scope). An audit phase does not introduce one.
+	//
+	// This still rejects both shapes it was written for: the old job_name-PK table (no
+	// `id` in the key at all) and the partially-migrated table where `id` exists as a
+	// plain column while job_name remains the PRIMARY KEY (`id` is not in Columns).
+	idInPrimaryKey := false
+	for _, pk := range pks {
+		if pk.Kind == validations.PKNone {
+			continue
+		}
+		for _, col := range pk.Columns {
+			if strings.EqualFold(col, "id") {
+				idInPrimaryKey = true
+			}
+		}
+	}
+	if !idInPrimaryKey {
 		return fmt.Errorf(
 			"legacy GoArchive tracking tables detected in schema %q (archiver_job lacks the new 'id' column).\n"+
 				"This release reshapes tracking tables and is not state-compatible with prior versions.\n"+
