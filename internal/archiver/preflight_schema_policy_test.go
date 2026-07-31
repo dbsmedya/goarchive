@@ -623,3 +623,248 @@ func TestDisposeDiffIndexUnconfirmedFailsClosed(t *testing.T) {
 		t.Fatalf("the abort must name the diff kind: %v", err)
 	}
 }
+
+func uniqueIdx(name string, parts ...validations.IndexPart) validations.IndexSpec {
+	return validations.IndexSpec{Name: name, Unique: true, Type: "BTREE", Visible: true, Parts: parts}
+}
+
+func strCol(ordinal int, name, charset, collation string) validations.ColumnSpec {
+	c := specCol(ordinal, name, "varchar(64)")
+	c.Charset, c.Collation = charset, collation
+	return c
+}
+
+// d3Pair builds a table whose source and destination differ only in their unique indexes.
+func d3Pair(cols []validations.ColumnSpec, aIdx, bIdx []validations.IndexSpec) specPair {
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	return pairWithIndexes(cols, cols,
+		append([]validations.IndexSpec{primary}, aIdx...),
+		append([]validations.IndexSpec{primary}, bIdx...))
+}
+
+// GAP 1 — TestD3CompositeDestinationOnlyIsFatal.
+// UNIQUE(a,b) on the destination only. COLUMN_KEY reported MUL for `a`, so 1.8 passed it.
+func TestD3CompositeDestinationOnlyIsFatal(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), specCol(2, "a", "int"), specCol(3, "b", "int")}
+	pair := d3Pair(cols, nil, []validations.IndexSpec{
+		uniqueIdx("uq_ab", validations.IndexPart{Column: "a"}, validations.IndexPart{Column: "b"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("a destination-only composite UNIQUE must be fatal (INSERT IGNORE silently skips)")
+	}
+}
+
+// GAP 2 — TestD3PrefixDifferenceIsFatal.
+// Source UNIQUE(email), destination UNIQUE(email(10)). Both reported UNI, so 1.8 passed it.
+func TestD3PrefixDifferenceIsFatal(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email", SubPart: 10})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("a prefix difference changes the uniqueness predicate and must be fatal")
+	}
+}
+
+// GAP 3 — TestD3FunctionalDestinationOnlyIsFatal.
+// Destination-only UNIQUE((lower(email))). No column part, so COLUMN_KEY stayed empty.
+func TestD3FunctionalDestinationOnlyIsFatal(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols, nil, []validations.IndexSpec{
+		uniqueIdx("uq_lower", validations.IndexPart{Expression: "lower(`email`)"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("a destination-only functional UNIQUE must be fatal")
+	}
+}
+
+// GAP 4 — TestD3CollationDifferenceIsFatalRegardlessOfVerification.
+// Same UNIQUE(email) topology, looser destination collation. 1.8 warned only.
+func TestD3CollationDifferenceIsFatalRegardlessOfVerification(t *testing.T) {
+	aCols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	bCols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_0900_ai_ci")}
+
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	idx := uniqueIdx("uq_email", validations.IndexPart{Column: "email"})
+	pair := pairWithIndexes(aCols, bCols,
+		[]validations.IndexSpec{primary, idx}, []validations.IndexSpec{primary, idx})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("a collation-loosened destination UNIQUE collides rows the source held " +
+			"distinct and must be fatal, regardless of verification mode")
+	}
+}
+
+// GUARD 1 — TestD3RenamedEquivalentIndexPasses. The index NAME is ignored.
+func TestD3RenamedEquivalentIndexPasses(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_email_src", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{uniqueIdx("uq_email_dst", validations.IndexPart{Column: "email"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("renaming an equivalent index must not false-fail, got: %s", reason)
+	}
+}
+
+// GUARD 2 — TestD3PartOrderIsIgnored. UNIQUE(a,b) and UNIQUE(b,a) enforce the same
+// row-uniqueness predicate and are equivalent by declared intent.
+func TestD3PartOrderIsIgnored(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), specCol(2, "a", "int"), specCol(3, "b", "int")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq1",
+			validations.IndexPart{Column: "a"}, validations.IndexPart{Column: "b"})},
+		[]validations.IndexSpec{uniqueIdx("uq2",
+			validations.IndexPart{Column: "b"}, validations.IndexPart{Column: "a"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("part order must be ignored, got: %s", reason)
+	}
+}
+
+// GUARD 3 — TestD3DescendingIsIgnored. Direction does not change the predicate.
+func TestD3DescendingIsIgnored(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Column: "email", Descending: true})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("index direction must be ignored, got: %s", reason)
+	}
+}
+
+// GUARD 4 — TestD3SourceOnlyUniqueIsAllowed. A looser destination is always fine.
+func TestD3SourceOnlyUniqueIsAllowed(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		nil)
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("a source-only unique index is allowed, got: %s", reason)
+	}
+}
+
+// GUARD 5 — TestD3PrimaryIsNotJudgedHere. PRIMARY is a unique index, but its equality is
+// the absolute invariant's job (phase 029); judging it twice would produce two different
+// messages for one defect.
+func TestD3PrimaryIsNotJudgedHere(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "alt", "bigint")}
+	pair := pairWithIndexes(cols, cols,
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "alt"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("PRIMARY is judged by checkAbsoluteInvariants, not here; got: %s", reason)
+	}
+}
+
+// FUNCTIONAL — TestD3FunctionalMatchAllowedOnlyInACleanColumnEnvironment.
+// IndexPart cannot expose an expression's RESULT collation, so an identical expression
+// text is accepted only when the table has no charset/collation diff on any column.
+func TestD3FunctionalMatchAllowedOnlyInACleanColumnEnvironment(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	idx := uniqueIdx("uq_lower", validations.IndexPart{Expression: "lower(`email`)"})
+	pair := d3Pair(cols, []validations.IndexSpec{idx}, []validations.IndexSpec{idx})
+
+	t.Run("clean_environment_passes", func(t *testing.T) {
+		if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+			t.Fatalf("identical expression text in a diff-free table is accepted, got: %s", reason)
+		}
+	})
+
+	t.Run("collation_diff_anywhere_makes_it_fatal", func(t *testing.T) {
+		diffs := []validations.SpecDiff{
+			{Kind: validations.ColumnCollationMismatch, Column: "unrelated", A: "x", B: "y"},
+		}
+		if reason := checkDestinationUniqueness(pair, diffs); reason == "" {
+			t.Fatal("a charset/collation diff anywhere in the table removes the only available " +
+				"proof that the expression's equality semantics match; it must be fatal")
+		}
+	})
+}
+
+// KIND TAG — TestD3ColumnAndExpressionPartsDoNotCollide.
+//
+// The part signature is prefixed "col|" or "expr|". Without BOTH tags a column part and an
+// expression part of the same text render identically, and a destination UNIQUE(x) would
+// be silently accepted as equivalent to a source UNIQUE((x)). The two enforce different
+// predicates: one indexes the stored value, the other the expression's result.
+//
+// The column here is deliberately an INT, so columnCollation returns "" and the collation
+// element cannot be what separates the two signatures — the kind tag has to be.
+//
+// (Phase 029 shipped exactly this defect in primaryPartSignature and it took external
+// review to find, because the original test compared two texts that already differed.)
+func TestD3ColumnAndExpressionPartsDoNotCollide(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "x", "int")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_expr", validations.IndexPart{Expression: "x"})},
+		[]validations.IndexSpec{uniqueIdx("uq_col", validations.IndexPart{Column: "x"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("a destination COLUMN unique must not match a source EXPRESSION unique of the " +
+			"same text; they enforce different predicates")
+	}
+}
+
+// WIRING — TestSchemaCompatD3IsWiredIntoTheEvaluator.
+//
+// Every TestD3* test above calls checkDestinationUniqueness DIRECTLY and therefore cannot
+// detect the call site being deleted from evaluateSchemaCompatibility. This is the only
+// unit test that can. (Phase 029 needed the identical companion for its invariants.)
+func TestSchemaCompatD3IsWiredIntoTheEvaluator(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols, nil,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})})
+
+	v, err := evaluateSchemaCompatibility(pair, true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal == "" {
+		t.Fatal("checkDestinationUniqueness is not wired into evaluateSchemaCompatibility")
+	}
+	if !strings.Contains(v.Fatal, "unique index") {
+		t.Fatalf("expected the D3 reason, got: %s", v.Fatal)
+	}
+}
+
+// ORDERING — TestSchemaCompatD3PrecedesColumnDispositions.
+//
+// Step 3 places D3 BEFORE the column-disposition loop deliberately: a destination unique
+// index the source lacks is a data-loss hazard, and its message is more actionable than a
+// column-level one on the same table. Nothing else pins that ordering — with D3 moved
+// after the loop this table still fails, just with the type-mismatch message.
+func TestSchemaCompatD3PrecedesColumnDispositions(t *testing.T) {
+	aCols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	bCols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	bCols[1].Type, bCols[1].NormalizedType = "varchar(128)", "varchar(128)" // also a type mismatch
+
+	pair := d3Pair(aCols, nil,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})})
+	pair.B.Columns = bCols
+
+	v, err := evaluateSchemaCompatibility(pair, true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if !strings.Contains(v.Fatal, "unique index") {
+		t.Fatalf("D3 must be reported ahead of the column disposition, got: %s", v.Fatal)
+	}
+}

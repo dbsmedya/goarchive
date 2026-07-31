@@ -75,8 +75,18 @@ func evaluateSchemaCompatibility(pair specPair, charsetStrict bool) (schemaVerdi
 		return verdict, nil
 	}
 
+	diffs := validations.DiffSpecs(pair.A, pair.B)
+
+	// D3 before the column dispositions: a destination unique index the source lacks is
+	// a data-loss hazard, and its message is more actionable than a charset advisory on
+	// the same column.
+	if reason := checkDestinationUniqueness(pair, diffs); reason != "" {
+		verdict.Fatal = reason
+		return verdict, nil
+	}
+
 	warnedCharset := make(map[string]bool)
-	for _, diff := range validations.DiffSpecs(pair.A, pair.B) {
+	for _, diff := range diffs {
 		fatal, err := disposeDiff(diff, charsetStrict, warnedCharset)
 		if err != nil {
 			return schemaVerdict{}, err
@@ -361,4 +371,116 @@ func checkAbsoluteInvariants(pair specPair) (string, error) {
 	}
 
 	return "", nil
+}
+
+// isFunctionalIndex reports whether any key part indexes an expression rather than a
+// column. A part indexes either a column or an expression, never both.
+func isFunctionalIndex(idx validations.IndexSpec) bool {
+	for _, part := range idx.Parts {
+		if part.Column == "" && part.Expression != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// columnCollation returns the collation of the named column, or "" when the column is
+// not a string type or is not present.
+func columnCollation(spec validations.TableSpec, column string) string {
+	for _, col := range spec.Columns {
+		if col.Name == column {
+			return col.Collation
+		}
+	}
+	return ""
+}
+
+// uniquenessSignature renders the uniqueness predicate one unique index enforces
+// (deviation D3, spec §3.3).
+//
+// A part signature is (kind, identity, prefix, collation):
+//
+//   - identity is the exact column name, or the server-rewritten expression text
+//   - prefix is IndexPart.SubPart; zero means the whole value, so UNIQUE(email(10)) and
+//     UNIQUE(email) are DIFFERENT signatures
+//   - collation is the indexed column's collation, empty for non-string columns and for
+//     functional parts. Uniqueness is collation-dependent: the same UNIQUE(email)
+//     topology under a case/accent-insensitive destination collation collides rows that
+//     are distinct under a binary source collation, and INSERT IGNORE silently skips one
+//
+// Descending is ignored (direction does not change the predicate), the index name is
+// ignored, and part order is ignored — UNIQUE(a,b) and UNIQUE(b,a) enforce the same
+// row-uniqueness predicate — which is why the parts are sorted before joining.
+func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) string {
+	parts := make([]string, 0, len(idx.Parts))
+	for _, part := range idx.Parts {
+		if part.Column != "" {
+			parts = append(parts, fmt.Sprintf("col|%s|%d|%s",
+				part.Column, part.SubPart, columnCollation(spec, part.Column)))
+			continue
+		}
+		// Functional part: no result collation is exposed, so the collation element is
+		// deliberately empty and the conservative rule in checkDestinationUniqueness
+		// compensates.
+		parts = append(parts, fmt.Sprintf("expr|%s|%d|", part.Expression, part.SubPart))
+	}
+	slices.Sort(parts)
+	return strings.Join(parts, "&&")
+}
+
+// checkDestinationUniqueness applies deviation D3: a destination unique index whose
+// uniqueness signature has no exactly-equal counterpart among the source's unique
+// signatures is fatal, because INSERT IGNORE would silently skip rows the source holds
+// as distinct.
+//
+// PRIMARY is excluded — its equality is checkAbsoluteInvariants' job, and judging it
+// twice would produce two different messages for one defect.
+//
+// Conservative functional rule: IndexPart does not expose an expression's RESULT
+// collation, so a destination functional unique index is accepted only when its
+// expression text matches a source functional unique EXACTLY and the table has no
+// ColumnCharsetMismatch or ColumnCollationMismatch diff on any column — an identical
+// column environment is the only available proof that the expression's equality
+// semantics match.
+//
+// diffs is DiffSpecs' output for this pair; pass nil when there are none.
+func checkDestinationUniqueness(pair specPair, diffs []validations.SpecDiff) string {
+	sourceSignatures := make(map[string]struct{})
+	for _, idx := range pair.A.Indexes {
+		if !idx.Unique || idx.Name == "PRIMARY" {
+			continue
+		}
+		sourceSignatures[uniquenessSignature(idx, pair.A)] = struct{}{}
+	}
+
+	columnEnvironmentClean := true
+	for _, diff := range diffs {
+		if diff.Kind == validations.ColumnCharsetMismatch || diff.Kind == validations.ColumnCollationMismatch {
+			columnEnvironmentClean = false
+			break
+		}
+	}
+
+	for _, idx := range pair.B.Indexes {
+		if !idx.Unique || idx.Name == "PRIMARY" {
+			continue
+		}
+		signature := uniquenessSignature(idx, pair.B)
+		if _, ok := sourceSignatures[signature]; !ok {
+			return fmt.Sprintf(
+				"%s(destination unique index %q has no equivalent on the source (signature %s); "+
+					"INSERT IGNORE would silently skip rows the source holds as distinct. Drop the "+
+					"destination unique index, or add an equivalent one to the source)",
+				pair.Table, idx.Name, signature)
+		}
+		if isFunctionalIndex(idx) && !columnEnvironmentClean {
+			return fmt.Sprintf(
+				"%s(destination functional unique index %q matches a source expression textually, but "+
+					"the table has a column charset or collation difference, so GoArchive cannot prove "+
+					"the expression's equality semantics match. Align the column charsets and collations, "+
+					"or drop the destination index)",
+				pair.Table, idx.Name)
+		}
+	}
+	return ""
 }

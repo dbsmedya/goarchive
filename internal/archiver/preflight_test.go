@@ -1111,18 +1111,19 @@ func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
 //
 //   - destination missing PK, and destination-only unique index: INDEX-level concepts
 //     TableSpec/DiffSpecs represents through Indexes, not a per-column COLUMN_KEY
-//     projection. Phase 028's evaluator deliberately does not judge index diffs yet (see
-//     preflight_schema_policy.go's IndexAbsent/IndexUniquenessMismatch cases) — the
-//     destination-PK invariant lands in phase 029, D3's unique-index signature in phase
-//     030. Do not try to make these pass here; that coverage is intentionally absent from
-//     the unit suite until then (it is red today at the integration/characterization
-//     layer: TestIntegrationSchemaCompatibility_StricterDestinationRejected).
+//     projection, so they do not fit this table-driven column-matrix fixture. Both are
+//     now covered elsewhere: destination missing PK by phase 029's
+//     TestAbsoluteInvariantPrimaryKeyMustMatch (all four violation shapes) and
+//     TestCharacterizationDestSchemaMissingPKFails; destination-only unique constraints
+//     by this phase's TestD3* family in preflight_schema_policy_test.go and the four
+//     _FatalUnderD3 characterizations in characterization_unique_index_integration_test.go.
 //   - destination-only generated column: rule 6 (the destination-generated invariant) is
 //     an ABSOLUTE invariant judged independently of any SpecDiff (1.8 rejected it even
 //     when the source was identically generated, which emits no diff at all).
 //     ColumnGeneratedMismatch is deliberately ignored by disposeDiff today, subsumed by
-//     phase 029's invariant — ported at the characterization layer as the deliberately-red
-//     TestCharacterizationDestSchemaGeneratedDestinationFails, not here.
+//     phase 029's invariant — covered by TestAbsoluteInvariantDestinationGeneratedIsFatal
+//     and, at the characterization layer, TestCharacterizationDestSchemaGeneratedDestinationFails,
+//     not here.
 //   - destination may drop/add a secondary index, and destination may drop a unique
 //     index: also INDEX-level concepts with no ColumnSpec representation at all (no
 //     COLUMN_KEY equivalent). Already covered end-to-end against real MySQL metadata by
