@@ -184,6 +184,48 @@ specs, implementation plans, and architectural decisions — **MUST** be written
 - `docs/` is reserved exclusively for published user-facing documentation.
   Never place a plan, spec, decision record, review, or session note there.
 
+### RULE: search that corpus with RAG first, grep second
+
+The `.ayder/superpowers_*/` tree is large, heavily cross-referenced, and full of prose
+that restates the same decision in different words. **Query it with the
+`md-superpowers-search` MCP engine
+(`mcp__dbs-vector__search_md_superpowers_search`) before reaching for `grep`.** Fall
+back to `grep` when the engine is unavailable, when you already know the exact file, or
+when you need a literal identifier or an exhaustive count — grep is still the right tool
+for "every call site of `X`".
+
+**Why the order matters.** Grep answers *which files contain this token*; the corpus's
+real failure mode is *two documents that agree in tokens and disagree in meaning*. Both
+defects found this way were invisible to grep:
+
+- A phase plan whose **Interfaces** section carried a corrected signature while its
+  **Step 2** code block still held the version the fix replaced — and Step 2 is what an
+  implementing agent copies.
+- `INDEX.md`'s trap register asserting in prose that three plans were cleared of a trap,
+  while its own rows showed only one of them had been. Grep listed `INDEX.md` as
+  containing the token; only reading the passage showed the claim was false.
+
+Both are the same class: **a correction applied to some siblings but summarized as
+applied to all.** After correcting anything in a plan, query the corrected concept and
+read every returned chunk for the pre-correction wording.
+
+**Two properties of the engine that will mislead you if you assume otherwise:**
+
+- **`similarity` is not a relevance signal.** An off-domain query returned goarchive
+  phase plans at 0.83 — above several genuinely relevant hits. The corpus sits in a
+  narrow 0.77–0.89 band. **Never** use `min_similarity` as a relevance gate, and never
+  conclude "the corpus lacks this" from a low score. Judge by reading the chunk. This is
+  a model property, not a tuning gap: the same model was calibrated and found **no safe
+  floor**, so do not re-open calibration before the plans freeze at phase 037.
+- **`source_filter` takes a full stored path, a trailing fragment (`specs/api.md`,
+  `api.md`), or a directory (`specs`)** — not globs, and not a *leading* fragment
+  (`phase-030` fails; the full filename works). A filter that matches nothing returns an
+  explicit diagnostic saying no search ran. That is **not** evidence about the corpus.
+
+An empty result is a low-confidence signal about one attempt, never proof the corpus is
+silent. Re-query with different wording, or fall back to grep, before concluding
+anything.
+
 ## Behavior & Gotchas
 
 Non-obvious current behavior and the rationale behind it. (Chronological "what
