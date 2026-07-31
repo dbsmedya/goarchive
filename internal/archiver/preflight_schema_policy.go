@@ -91,6 +91,12 @@ func evaluateSchemaCompatibility(pair specPair, charsetStrict bool) (schemaVerdi
 		if err != nil {
 			return schemaVerdict{}, err
 		}
+		// Per-table half of spec §3.3's declared evaluation order: only the FIRST fatal
+		// diff is recorded (verdict.Fatal == "" guards re-assignment), but the loop does
+		// NOT stop there — it keeps appending warnings from every later diff. That is what
+		// makes a fatal table's Warnings slice non-empty, and is why the CALLER
+		// (ValidateDestinationSchemaCompatibility, preflight.go) must itself discard a
+		// fatal table's warnings rather than relying on this function to withhold them.
 		switch {
 		case fatal != nil && fatal.fatalReason != "":
 			if verdict.Fatal == "" {
