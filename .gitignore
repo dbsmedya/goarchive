@@ -66,5 +66,9 @@ tests/sakila-db/
 *~
 .DS_Store
 
+# Local MCP server configuration — machine-specific absolute paths and local
+# service endpoints, not shared project state.
+.mcp.json
+
 # OS files
 Thumbs.db

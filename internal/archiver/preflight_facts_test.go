@@ -1226,3 +1226,123 @@ func TestPreflightRunFKWithinUsesWithinSelector(t *testing.T) {
 		t.Fatalf("expected INNODB_FOREIGN query was not observed: %v", err)
 	}
 }
+
+// mockTableSpecRows registers the three sqlmock expectations Inspector.TableSpec issues
+// under WithIndexes() — table metadata, columns, then indexes — with a minimal
+// one-column, one-PRIMARY-index shape sufficient for tableSpecs' memoization proof.
+func mockTableSpecRows(mock sqlmock.Sqlmock, schema, table string) {
+	mock.ExpectQuery(`FROM information_schema\.TABLES AS t`).
+		WithArgs(schema, table).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_SCHEMA", "TABLE_NAME", "TABLE_TYPE", "ENGINE",
+			"CHARACTER_SET_NAME", "TABLE_COLLATION", "TABLE_COMMENT",
+		}).AddRow(schema, table, "BASE TABLE", "InnoDB", "utf8mb4", "utf8mb4_0900_ai_ci", ""))
+
+	mock.ExpectQuery(`FROM information_schema\.COLUMNS`).
+		WithArgs(schema, table).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_SCHEMA", "TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION",
+			"COLUMN_TYPE", "IS_NULLABLE", "CHARACTER_SET_NAME", "COLLATION_NAME",
+			"COLUMN_DEFAULT", "EXTRA", "GENERATION_EXPRESSION",
+		}).AddRow(schema, table, "id", 1, "bigint", "NO", nil, nil, nil, "", ""))
+
+	mock.ExpectQuery(`FROM information_schema\.STATISTICS`).
+		WithArgs(schema, table).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"TABLE_SCHEMA", "TABLE_NAME", "INDEX_NAME", "SEQ_IN_INDEX",
+			"COLUMN_NAME", "SUB_PART", "COLLATION", "EXPRESSION",
+			"NON_UNIQUE", "INDEX_TYPE", "IS_VISIBLE",
+		}).AddRow(schema, table, "PRIMARY", 1, "id", nil, nil, nil, 0, "BTREE", "YES"))
+}
+
+// TestPreflightRunMemoizesTableSpecs proves tableSpecs fetches each side's TableSpec
+// exactly once per graph table, even though a single table costs TWO TableSpec calls
+// (source then destination), each issuing three queries under WithIndexes().
+func TestPreflightRunMemoizesTableSpecs(t *testing.T) {
+	srcDB, srcMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	mockTableSpecRows(srcMock, "srcdb", "orders")
+	mockTableSpecRows(dstMock, "dstdb", "orders")
+
+	run := newPreflightRun(chrDestCheckerForFacts(t, srcDB, dstDB))
+
+	first, err := run.tableSpecs(context.Background())
+	if err != nil {
+		t.Fatalf("first tableSpecs: %v", err)
+	}
+	second, err := run.tableSpecs(context.Background())
+	if err != nil {
+		t.Fatalf("second tableSpecs: %v", err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Table != second[0].Table {
+		t.Fatalf("memoized value differs: %v vs %v", first, second)
+	}
+	if !first[0].A.Captured.Has(validations.SectionIndexes) || !first[0].B.Captured.Has(validations.SectionIndexes) {
+		t.Fatalf("both sides must capture indexes: %+v", first[0])
+	}
+	if err := srcMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected source TableSpec queries were not observed: %v", err)
+	}
+	if err := dstMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected destination TableSpec queries were not observed: %v", err)
+	}
+}
+
+// TestPreflightRunMemoizesTableSpecsErrors proves a failed fetch is memoized too. The
+// SOURCE side's first query (resolveTable) is made to fail, so the destination side is
+// never reached — tableSpecs' per-table loop returns as soon as the source TableSpec call
+// errors, which is also why only a single expectation is needed on the source mock and
+// none at all on the destination mock.
+//
+// The identity assertion (errors.Is(secondErr, firstErr)) is what makes this non-vacuous:
+// asserting only that both errors are non-nil passes against a build with no memoization
+// at all, because a consumed sqlmock expectation still returns an error on the next call.
+func TestPreflightRunMemoizesTableSpecsErrors(t *testing.T) {
+	srcDB, srcMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = srcDB.Close() }()
+	dstDB, dstMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = dstDB.Close() }()
+
+	wantErr := errors.New("boom")
+	srcMock.ExpectQuery(`FROM information_schema\.TABLES AS t`).
+		WithArgs("srcdb", "orders").
+		WillReturnError(wantErr)
+
+	run := newPreflightRun(chrDestCheckerForFacts(t, srcDB, dstDB))
+	ctx := context.Background()
+
+	_, firstErr := run.tableSpecs(ctx)
+	if !errors.Is(firstErr, wantErr) {
+		t.Fatalf("first call must wrap %v, got %v", wantErr, firstErr)
+	}
+	_, secondErr := run.tableSpecs(ctx)
+	if !errors.Is(secondErr, wantErr) {
+		t.Fatalf("second call must return the memoized error wrapping %v, got %v",
+			wantErr, secondErr)
+	}
+	if !errors.Is(secondErr, firstErr) {
+		t.Fatalf("second call returned a different error: first=%v second=%v",
+			firstErr, secondErr)
+	}
+	if err := srcMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected source TableSpec query was not observed: %v", err)
+	}
+	if err := dstMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("the destination call must never be reached: %v", err)
+	}
+}

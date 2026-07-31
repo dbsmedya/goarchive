@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -108,7 +107,6 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// Facts are acquired per stage and memoized for this run only (spec §2). The run
 	// is discarded when this function returns and is never stored on the checker.
 	run := newPreflightRun(p)
-	tables := run.graphTables()
 
 	// GA-P4-F3-T2: Table existence check
 	if err := p.ValidateTablesExist(ctx, run); err != nil {
@@ -157,7 +155,7 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 		if err := p.ValidateDestinationTablesExist(ctx, run); err != nil {
 			return err
 		}
-		if err := p.ValidateDestinationSchemaCompatibility(ctx, tables); err != nil {
+		if err := p.ValidateDestinationSchemaCompatibility(ctx, run); err != nil {
 			return err
 		}
 		if err := p.ValidateDestinationWritePermissions(ctx, run); err != nil {
@@ -731,18 +729,6 @@ func (p *PreflightChecker) ValidateInternalFKCoverage(ctx context.Context, run *
 	return nil
 }
 
-// ColumnDefinition represents column metadata used for schema compatibility checks.
-type ColumnDefinition struct {
-	OrdinalPosition int
-	ColumnName      string
-	ColumnType      string
-	IsNullable      string
-	ColumnKey       string
-	Extra           string
-	CharacterSet    string // empty for non-string columns
-	Collation       string // empty for non-string columns
-}
-
 // ValidateDestinationTablesExist checks that all graph tables exist in destination DB
 // and are base tables.
 func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, run *preflightRun) error {
@@ -788,113 +774,38 @@ func (p *PreflightChecker) ValidateDestinationTablesExist(ctx context.Context, r
 	return nil
 }
 
-// columnIncompatibility reports why a destination column cannot receive copies
-// of the source column, or "" when compatible. The destination may be more
-// permissive than the source — secondary indexes dropped, auto_increment and
-// default generation removed, NULLs allowed — because the copy inserts explicit
-// values for every column and never relies on destination defaults or indexes.
-// It must not be stricter: the primary key is required for INSERT IGNORE
-// idempotency during crash recovery, and extra constraints (NOT NULL, unique
-// indexes, destination generated columns) would reject or silently skip rows.
-// Generated-column rule is destination-only: if the destination column is
-// generated, MySQL rejects explicit inserts with Error 3105 even under INSERT
-// IGNORE. A source-generated column writing into a plain destination column is
-// fine — SELECT materialises the value and the destination accepts it.
-// charsetStrict controls whether a charset mismatch is fatal (true) or only
-// a warning (false, used when sha256 verification will catch any corruption).
-func columnIncompatibility(s, d ColumnDefinition, charsetStrict bool) string {
-	if s.ColumnName != d.ColumnName {
-		return "column name mismatch"
-	}
-	if normalizeColumnType(s.ColumnType) != normalizeColumnType(d.ColumnType) {
-		return "column type mismatch"
-	}
-	if s.IsNullable == "YES" && d.IsNullable == "NO" {
-		return "destination is NOT NULL but source allows NULL"
-	}
-	if (s.ColumnKey == "PRI") != (d.ColumnKey == "PRI") {
-		return "primary key mismatch (destination must keep the source primary key for idempotent resume)"
-	}
-	if d.ColumnKey == "UNI" && s.ColumnKey != "UNI" {
-		return "destination has a unique index the source lacks (INSERT IGNORE would silently skip rows)"
-	}
-	if isGeneratedColumn(d.Extra) {
-		return "destination column is generated (copy inserts explicit values for every column; MySQL rejects them with Error 3105 even under INSERT IGNORE)"
-	}
-	if charsetStrict && s.CharacterSet != d.CharacterSet {
-		return fmt.Sprintf("character set mismatch (source=%s, destination=%s): copying can silently transliterate or truncate text and count verification cannot detect it; align charsets or use sha256 verification",
-			s.CharacterSet, d.CharacterSet)
-	}
-	return ""
-}
-
-func isGeneratedColumn(extra string) bool {
-	return strings.Contains(extra, "VIRTUAL GENERATED") || strings.Contains(extra, "STORED GENERATED")
-}
-
-// intDisplayWidthRe matches the deprecated integer display width — the
-// parenthesized digit count following an integer type keyword, e.g. the "(20)"
-// in "bigint(20)" or "int(10) unsigned". Anchored at the start so it never
-// touches the genuinely-semantic precision of varchar(255), decimal(10,2), etc.
-var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|integer|bigint)\(\d+\)`)
-
-// normalizeColumnType strips the integer display width so columns differing only
-// by it compare equal — "bigint(20)" and "bigint" are the same type. The width
-// has always been cosmetic (it never affected storage or value range) and MySQL
-// 8.0.17+ no longer reports it, so a schema dumped from an older server would
-// otherwise false-fail against an identical 8.0.17+ destination. unsigned and
-// zerofill are preserved because they do change the value range.
-func normalizeColumnType(t string) string {
-	return intDisplayWidthRe.ReplaceAllString(strings.TrimSpace(t), "$1")
-}
-
-// ValidateDestinationSchemaCompatibility ensures destination tables can receive
-// copies of the source tables: identical column names, order, and types, with
-// the same primary key. The destination is allowed to drop secondary indexes,
-// auto_increment, and column defaults, and to relax NOT NULL — see
-// columnIncompatibility for the exact rules.
-func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Context, tables []string) error {
+// ValidateDestinationSchemaCompatibility ensures destination tables can receive copies of
+// the source tables. The destination is allowed to be LOOSER than the source — dropped
+// secondary indexes, auto_increment, defaults, ON UPDATE, relaxed NOT NULL — but never
+// STRICTER. See evaluateSchemaCompatibility for the full disposition table.
+//
+// Fatality aggregates ACROSS tables: one error reports every incompatible table rather
+// than aborting on the first.
+func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Context, run *preflightRun) error {
 	if p.destinationDB == nil {
 		return fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	p.logger.Debug("Checking destination schema compatibility...")
 
-	var incompatible []string
-	for _, table := range tables {
-		sourceColumns, err := p.getTableColumns(ctx, p.db, p.sourceDBName, table)
-		if err != nil {
-			return fmt.Errorf("failed to read source schema for %s: %w", table, err)
-		}
-		destColumns, err := p.getTableColumns(ctx, p.destinationDB, p.destinationDBName, table)
-		if err != nil {
-			return fmt.Errorf("failed to read destination schema for %s: %w", table, err)
-		}
+	pairs, err := run.tableSpecs(ctx)
+	if err != nil {
+		return inspectionError("destination_schema_compatibility", err)
+	}
 
-		if len(sourceColumns) != len(destColumns) {
-			incompatible = append(incompatible, fmt.Sprintf("%s(column count mismatch: source=%d destination=%d)", table, len(sourceColumns), len(destColumns)))
+	charsetStrict := p.charsetMismatchFatal()
+	var incompatible []string
+	var warnings []string
+	for _, pair := range pairs {
+		verdict, err := evaluateSchemaCompatibility(pair, charsetStrict)
+		if err != nil {
+			return err
+		}
+		if verdict.Fatal != "" {
+			incompatible = append(incompatible, verdict.Fatal)
 			continue
 		}
-
-		charsetStrict := p.charsetMismatchFatal()
-		for i := range sourceColumns {
-			s := sourceColumns[i]
-			d := destColumns[i]
-			if reason := columnIncompatibility(s, d, charsetStrict); reason != "" {
-				incompatible = append(incompatible, fmt.Sprintf("%s(position %d: %s; source=%s %s nullable=%s key=%s extra=%s, destination=%s %s nullable=%s key=%s extra=%s)",
-					table, s.OrdinalPosition, reason,
-					s.ColumnName, s.ColumnType, s.IsNullable, s.ColumnKey, s.Extra,
-					d.ColumnName, d.ColumnType, d.IsNullable, d.ColumnKey, d.Extra))
-				break
-			}
-			// Emit advisory warnings for charset/collation differences that are
-			// not fatal in this run (non-strict path: sha256 verification active).
-			if s.CharacterSet != d.CharacterSet {
-				p.logger.Warnf("Table %s column %s: charset differs (source=%s destination=%s); sha256 verification will fail before delete if data is altered",
-					table, s.ColumnName, s.CharacterSet, d.CharacterSet)
-			} else if s.Collation != d.Collation {
-				p.logger.Warnf("Table %s column %s: collation differs (source=%s destination=%s); stored bytes are identical but comparisons/sorting may differ in the archive",
-					table, s.ColumnName, s.Collation, d.Collation)
-			}
+		for _, w := range verdict.Warnings {
+			warnings = append(warnings, "Table "+pair.Table+" "+w)
 		}
 	}
 
@@ -904,6 +815,9 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 			Message: "Source and destination schemas are incompatible",
 			Tables:  incompatible,
 		}
+	}
+	for _, w := range warnings {
+		p.logger.Warn(w)
 	}
 
 	p.logger.Debug("Destination schema compatibility check PASSED")
@@ -1089,47 +1003,6 @@ func (p *PreflightChecker) ValidateSourceDeletePermissions(ctx context.Context, 
 
 	p.logger.Debug("Source delete permission check PASSED")
 	return nil
-}
-
-func (p *PreflightChecker) getTableColumns(ctx context.Context, db *sql.DB, dbName, table string) ([]ColumnDefinition, error) {
-	const query = `
-		SELECT
-			ORDINAL_POSITION,
-			COLUMN_NAME,
-			COLUMN_TYPE,
-			IS_NULLABLE,
-			COLUMN_KEY,
-			EXTRA,
-			COALESCE(CHARACTER_SET_NAME, ''),
-			COALESCE(COLLATION_NAME, '')
-		FROM information_schema.COLUMNS
-		WHERE TABLE_SCHEMA = ?
-		AND TABLE_NAME = ?
-		ORDER BY ORDINAL_POSITION`
-
-	rows, err := db.QueryContext(ctx, query, dbName, table)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			p.logger.Warnf("Failed to close rows: %v", err)
-		}
-	}()
-
-	var columns []ColumnDefinition
-	for rows.Next() {
-		var col ColumnDefinition
-		if err := rows.Scan(&col.OrdinalPosition, &col.ColumnName, &col.ColumnType, &col.IsNullable, &col.ColumnKey, &col.Extra, &col.CharacterSet, &col.Collation); err != nil {
-			return nil, err
-		}
-		columns = append(columns, col)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return columns, nil
 }
 
 // ValidatePrimaryKeyColumns checks that each table has an explicitly configured PK and

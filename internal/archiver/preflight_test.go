@@ -3,7 +3,6 @@ package archiver
 
 import (
 	"context"
-	"database/sql/driver"
 	"errors"
 	"strings"
 	"testing"
@@ -1029,40 +1028,36 @@ func TestValidateDestinationTablesExist_MissingTables(t *testing.T) {
 	}
 }
 
-func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
-	sourceDB, sourceMock, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
-	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
-
-	sourceRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
-		AddRow(1, "id", "bigint(20)", "NO", "PRI", "", "", "").
-		AddRow(2, "name", "varchar(255)", "YES", "", "", "", "")
-	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
-		WithArgs("sourcedb", "users").
-		WillReturnRows(sourceRows)
-
-	destRows := sqlmock.NewRows([]string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE", "COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}).
-		AddRow(1, "id", "bigint(20)", "NO", "PRI", "", "", "").
-		AddRow(2, "name", "varchar(100)", "YES", "", "", "", "") // mismatch
-	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
-		WithArgs("destdb", "users").
-		WillReturnRows(destRows)
-
-	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
-	if err == nil {
-		t.Fatal("expected destination schema compatibility error")
+// specColT is a terse ColumnSpec builder mirroring specCol, kept separate so this
+// file's fixtures do not depend on preflight_schema_policy_test.go's internals.
+func specColT(ordinal int, name, colType string) validations.ColumnSpec {
+	return validations.ColumnSpec{
+		Name: name, Ordinal: ordinal, Type: colType, NormalizedType: colType,
+		Generated: validations.GeneratedNone,
 	}
 }
 
-// runSchemaCompatibilityCheck wires sqlmock source/destination column rows for
-// a single "users" table and returns the check result.
-func runSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols [][]driverValue) error {
+// preloadedSchemaSpecPair builds a specPair for table "users" with a PRIMARY index on
+// "id" on both sides, so it clears the primary-key shape every fixture needs.
+func preloadedSchemaSpecPair(a, b []validations.ColumnSpec) specPair {
+	primary := validations.IndexSpec{
+		Name: "PRIMARY", Unique: true, Type: "BTREE", Visible: true,
+		Parts: []validations.IndexPart{{Column: "id"}},
+	}
+	return specPair{
+		Table: "users",
+		A: validations.TableSpec{Schema: "sourcedb", Table: "users", Columns: a,
+			Indexes: []validations.IndexSpec{primary}, Captured: validations.SectionIndexes},
+		B: validations.TableSpec{Schema: "destdb", Table: "users", Columns: b,
+			Indexes: []validations.IndexSpec{primary}, Captured: validations.SectionIndexes},
+	}
+}
+
+// runPreloadedSchemaCompatibilityCheck preloads run.specs with one table's spec pair and
+// calls the stage. No sqlmock expectations are registered on either pool: tableSpecs is
+// the fact acquisition boundary now, so a mismatch case exercises evaluateSchemaCompatibility
+// through the real stage without touching a database at all.
+func runPreloadedSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols []validations.ColumnSpec) error {
 	t.Helper()
 	sourceDB, sourceMock, _ := sqlmock.New()
 	defer func() { _ = sourceDB.Close() }()
@@ -1074,247 +1069,179 @@ func runSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols [][]driverVa
 	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
 	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 
-	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
-		"COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}
-	sourceRows := sqlmock.NewRows(columns)
-	for _, row := range sourceCols {
-		sourceRows.AddRow(row...)
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
+		specsLoaded: true,
 	}
-	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
-		WithArgs("sourcedb", "users").
-		WillReturnRows(sourceRows)
 
-	destRows := sqlmock.NewRows(columns)
-	for _, row := range destCols {
-		destRows.AddRow(row...)
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	if serr := sourceMock.ExpectationsWereMet(); serr != nil {
+		t.Fatalf("stage queried the source despite the preloaded fact: %v", serr)
 	}
-	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").
-		WithArgs("destdb", "users").
-		WillReturnRows(destRows)
-
-	return checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
+	if derr := destMock.ExpectationsWereMet(); derr != nil {
+		t.Fatalf("stage queried the destination despite the preloaded fact: %v", derr)
+	}
+	return err
 }
 
-type driverValue = driver.Value
+// TestValidateDestinationSchemaCompatibility_Mismatch proves the stage surfaces a
+// DEST_SCHEMA_COMPATIBILITY_CHECK error from a cached spec pair that disagrees. The fact
+// is preloaded directly: tableSpecs, not this stage, now owns fetching TableSpec, so the
+// "SELECT ORDINAL_POSITION" sqlmock model this test used to wire no longer applies.
+func TestValidateDestinationSchemaCompatibility_Mismatch(t *testing.T) {
+	sourceCols := []validations.ColumnSpec{
+		specColT(1, "id", "bigint"),
+		specColT(2, "name", "varchar(255)"),
+	}
+	destCols := []validations.ColumnSpec{
+		specColT(1, "id", "bigint"),
+		specColT(2, "name", "varchar(100)"), // mismatch
+	}
 
+	err := runPreloadedSchemaCompatibilityCheck(t, sourceCols, destCols)
+	if err == nil {
+		t.Fatal("expected destination schema compatibility error")
+	}
+}
+
+// TestValidateDestinationSchemaCompatibility_RelaxedDestination ports the 1.8
+// column-comparison matrix onto specPair fixtures. Several 1.8 cases move on rather than
+// being ported as-is, and none of the moved cases are silently dropped:
+//
+//   - destination missing PK, and destination-only unique index: INDEX-level concepts
+//     TableSpec/DiffSpecs represents through Indexes, not a per-column COLUMN_KEY
+//     projection, so they do not fit this table-driven column-matrix fixture. Both are
+//     now covered elsewhere: destination missing PK by phase 029's
+//     TestAbsoluteInvariantPrimaryKeyMustMatch (all four violation shapes) and
+//     TestCharacterizationDestSchemaMissingPKFails; destination-only unique constraints
+//     by this phase's TestD3* family in preflight_schema_policy_test.go and the four
+//     _FatalUnderD3 characterizations in characterization_unique_index_integration_test.go.
+//   - destination-only generated column: rule 6 (the destination-generated invariant) is
+//     an ABSOLUTE invariant judged independently of any SpecDiff (1.8 rejected it even
+//     when the source was identically generated, which emits no diff at all).
+//     ColumnGeneratedMismatch is deliberately ignored by disposeDiff today, subsumed by
+//     phase 029's invariant — covered by TestAbsoluteInvariantDestinationGeneratedIsFatal
+//     and, at the characterization layer, TestCharacterizationDestSchemaGeneratedDestinationFails,
+//     not here.
+//   - destination may drop/add a secondary index, and destination may drop a unique
+//     index: also INDEX-level concepts with no ColumnSpec representation at all (no
+//     COLUMN_KEY equivalent). Already covered end-to-end against real MySQL metadata by
+//     TestCharacterizationDestSchemaLooserDestinationPasses and the GAP1-4 /
+//     Renamed/SourceOnly cases in characterization_unique_index_integration_test.go.
+//   - integer display width and unsigned: column-level, but already covered by
+//     TestSchemaCompatOrdinaryDisplayWidthEmitsNoDiff / TestSchemaCompatUnsignedIsNotIgnored
+//     (preflight_schema_policy_test.go), so not duplicated here.
 func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T) {
 	tests := []struct {
 		name       string
-		sourceCols [][]driverValue
-		destCols   [][]driverValue
+		sourceCols []validations.ColumnSpec
+		destCols   []validations.ColumnSpec
 		wantErr    bool
 	}{
 		{
-			name: "destination may drop secondary index",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
-				{2, "aiErrorId", "bigint", "YES", "MUL", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
-				{2, "aiErrorId", "bigint", "YES", "", "", "", ""},
-			},
-			wantErr: false,
-		},
-		{
-			name: "destination may add secondary index",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "MUL", "", "", ""},
-			},
-			wantErr: false,
-		},
-		{
-			name: "destination may drop unique index",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "email", "varchar(255)", "NO", "UNI", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "email", "varchar(255)", "NO", "", "", "", ""},
-			},
-			wantErr: false,
-		},
-		{
 			name: "destination may drop auto_increment",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				withAutoIncrement(specColT(1, "id", "bigint")),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
 			},
 			wantErr: false,
 		},
 		{
 			name: "destination may drop DEFAULT_GENERATED and on update",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "updated_at", "timestamp", "NO", "", "DEFAULT_GENERATED on update CURRENT_TIMESTAMP", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withDefaultAndOnUpdate(specColT(2, "updated_at", "timestamp")),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "updated_at", "timestamp", "NO", "", "", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "updated_at", "timestamp"),
 			},
 			wantErr: false,
 		},
 		{
 			name: "destination may be more permissive about NULLs",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "NO", "", "", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "name", "varchar(255)"),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withNullable(specColT(2, "name", "varchar(255)")),
 			},
 			wantErr: false,
 		},
 		{
-			name: "destination missing primary key is rejected",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "", "", "", ""},
-			},
-			wantErr: true,
-		},
-		{
 			name: "destination stricter NULLability is rejected",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withNullable(specColT(2, "name", "varchar(255)")),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "NO", "", "", "", ""},
-			},
-			wantErr: true,
-		},
-		{
-			name: "destination-only unique index is rejected",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "email", "varchar(255)", "NO", "", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "email", "varchar(255)", "NO", "UNI", "", "", ""},
-			},
-			wantErr: true,
-		},
-		{
-			name: "destination-only generated column is rejected",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
-			},
-			wantErr: true,
-		},
-		{
-			name: "generated column on both sides is rejected (copy cannot insert into it)",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "name", "varchar(255)"),
 			},
 			wantErr: true,
 		},
 		{
 			name: "source generated column with plain destination is allowed",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "STORED GENERATED", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withStoredGenerated(specColT(2, "total", "decimal(10,2)")),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "total", "decimal(10,2)", "YES", "", "", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "total", "decimal(10,2)"),
 			},
 			wantErr: false,
 		},
 		{
 			name: "column type mismatch is rejected",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "", ""},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "name", "varchar(255)"),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(100)", "YES", "", "", "", ""},
-			},
-			wantErr: true,
-		},
-		{
-			// MySQL < 8.0.17 reports bigint(20); 8.0.17+ reports bigint. The
-			// display width is cosmetic, so these must compare equal.
-			name: "integer display width difference is allowed",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint(20)", "NO", "PRI", "auto_increment", "", ""},
-				{2, "qty", "int(11)", "YES", "", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "auto_increment", "", ""},
-				{2, "qty", "int", "YES", "", "", "", ""},
-			},
-			wantErr: false,
-		},
-		{
-			// unsigned changes the value range, so width normalization must not
-			// erase it: int(10) unsigned vs int must still mismatch.
-			name: "unsigned difference is still rejected despite width",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "qty", "int(10) unsigned", "YES", "", "", "", ""},
-			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "qty", "int", "YES", "", "", "", ""},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				specColT(2, "name", "varchar(100)"),
 			},
 			wantErr: true,
 		},
 		{
 			name: "charset mismatch is rejected under count verification",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "utf8mb4", "utf8mb4_0900_ai_ci"),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "latin1", "latin1_swedish_ci"},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "latin1", "latin1_swedish_ci"),
 			},
 			wantErr: true,
 		},
 		{
 			name: "collation-only mismatch is allowed (warn only)",
-			sourceCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "utf8mb4", "utf8mb4_0900_ai_ci"),
 			},
-			destCols: [][]driverValue{
-				{1, "id", "bigint", "NO", "PRI", "", "", ""},
-				{2, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_general_ci"},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "utf8mb4", "utf8mb4_general_ci"),
 			},
 			wantErr: false,
 		},
 		{
 			name: "identical charsets pass",
-			sourceCols: [][]driverValue{
-				{1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			sourceCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "utf8mb4", "utf8mb4_0900_ai_ci"),
 			},
-			destCols: [][]driverValue{
-				{1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci"},
+			destCols: []validations.ColumnSpec{
+				specColT(1, "id", "bigint"),
+				withCharset(specColT(2, "name", "varchar(255)"), "utf8mb4", "utf8mb4_0900_ai_ci"),
 			},
 			wantErr: false,
 		},
@@ -1322,7 +1249,7 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runSchemaCompatibilityCheck(t, tt.sourceCols, tt.destCols)
+			err := runPreloadedSchemaCompatibilityCheck(t, tt.sourceCols, tt.destCols)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected schema compatibility error, got nil")
 			}
@@ -1330,6 +1257,181 @@ func TestValidateDestinationSchemaCompatibility_RelaxedDestination(t *testing.T)
 				t.Fatalf("expected schemas to be compatible, got: %v", err)
 			}
 		})
+	}
+}
+
+func withAutoIncrement(c validations.ColumnSpec) validations.ColumnSpec {
+	c.AutoIncrement = true
+	return c
+}
+
+func withDefaultAndOnUpdate(c validations.ColumnSpec) validations.ColumnSpec {
+	def := "CURRENT_TIMESTAMP"
+	c.Default, c.DefaultIsExpression, c.OnUpdate = &def, true, true
+	return c
+}
+
+func withNullable(c validations.ColumnSpec) validations.ColumnSpec {
+	c.Nullable = true
+	return c
+}
+
+func withStoredGenerated(c validations.ColumnSpec) validations.ColumnSpec {
+	c.Generated = validations.GeneratedStored
+	return c
+}
+
+func withCharset(c validations.ColumnSpec, charset, collation string) validations.ColumnSpec {
+	c.Charset, c.Collation = charset, collation
+	return c
+}
+
+// TestValidateDestinationSchemaCompatibilityInspectionErrorIsPlain — contract 2. A
+// memoized tableSpecs error must surface as a PLAIN error carrying goarchive's
+// "destination_schema_compatibility" inspection wrapper, never a *PreflightError.
+func TestValidateDestinationSchemaCompatibilityInspectionErrorIsPlain(t *testing.T) {
+	sourceDB, sourceMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = destDB.Close() }()
+
+	wantErr := errors.New("table spec fetch failed")
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		specsErr: wantErr, specsLoaded: true,
+	}
+
+	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("inspection failure must be plain, got *PreflightError: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "preflight destination_schema_compatibility inspection failed") {
+		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
+	}
+	if err := sourceMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the source despite the preloaded error: %v", err)
+	}
+	if err := destMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the destination despite the preloaded error: %v", err)
+	}
+}
+
+// TestValidateDestinationSchemaCompatibilityConsumesCachedFact — contract 3. The stage
+// must consume the run's cached specs rather than issuing its own queries: zero sqlmock
+// expectations are registered on either pool, and the preloaded pair is deliberately
+// incompatible so the stage's own verdict, not an empty result, is what proves it ran.
+func TestValidateDestinationSchemaCompatibilityConsumesCachedFact(t *testing.T) {
+	sourceDB, sourceMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+
+	sourceCols := []validations.ColumnSpec{specColT(1, "id", "bigint"), specColT(2, "name", "varchar(255)")}
+	destCols := []validations.ColumnSpec{specColT(1, "id", "bigint"), specColT(2, "name", "varchar(100)")} // mismatch
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
+		specsLoaded: true,
+	}
+
+	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected the preloaded mismatch to surface as an error")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if pe.Check != "DEST_SCHEMA_COMPATIBILITY_CHECK" {
+		t.Fatalf("expected Check == DEST_SCHEMA_COMPATIBILITY_CHECK, got %q", pe.Check)
+	}
+	if err := sourceMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
+	}
+	if err := destMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
+	}
+}
+
+// TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailure proves the
+// stage propagates evaluateSchemaCompatibility's OWN error, not just its verdict: an
+// asymmetric index-capture (one side's TableSpec never captured indexes — the shape
+// tableSpecs is supposed to prevent) must abort preflight rather than silently pass. This
+// is the routed-through-the-stage counterpart to
+// TestSchemaCompatUncapturedIndexesAbortBeforeDiffSpecs, and is what actually catches a
+// stage that swallows evaluateSchemaCompatibility's error (`verdict, _ := evaluate...`).
+func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailure(t *testing.T) {
+	sourceDB, sourceMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = sourceDB.Close() }()
+	destDB, destMock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = destDB.Close() }()
+
+	g := createPreflightTestGraph()
+	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
+	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+
+	pair := preloadedSchemaSpecPair(
+		[]validations.ColumnSpec{specColT(1, "id", "bigint")},
+		[]validations.ColumnSpec{specColT(1, "id", "bigint")},
+	)
+	pair.B.Captured = 0 // destination side never captured indexes
+
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		specs: []specPair{pair}, specsLoaded: true,
+	}
+
+	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	if err == nil {
+		t.Fatal("expected the stage to abort on an inspection-integrity failure")
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatalf("an inspection-integrity abort must not be a *PreflightError, got: %v", pe)
+	}
+	if !strings.Contains(err.Error(), "did not capture its index section") {
+		t.Fatalf("abort must come from checkAbsoluteInvariants' Captured guard, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "IndexUnconfirmed") {
+		t.Fatalf("the guard must run before DiffSpecs; this came from the diff loop: %v", err)
+	}
+	if err := sourceMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
+	}
+	if err := destMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2598,7 +2700,6 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 	// Do NOT call ConfigureDestination - destinationDB stays nil
 
 	ctx := context.Background()
-	tables := []string{"users"}
 
 	err = checker.ValidateDestinationTablesExist(ctx, newPreflightRun(checker))
 	if err == nil {
@@ -2608,7 +2709,7 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 		t.Errorf("Unexpected error message: %v", err)
 	}
 
-	err = checker.ValidateDestinationSchemaCompatibility(ctx, tables)
+	err = checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("ValidateDestinationSchemaCompatibility should return error when destination is nil")
 	}
@@ -2644,18 +2745,27 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
 	checker.SetVerification(config.VerificationConfig{Method: "sha256", SkipVerification: false})
 
-	columns := []string{"ORDINAL_POSITION", "COLUMN_NAME", "COLUMN_TYPE", "IS_NULLABLE",
-		"COLUMN_KEY", "EXTRA", "CHARACTER_SET_NAME", "COLLATION_NAME"}
-	sourceRows := sqlmock.NewRows(columns).
-		AddRow(1, "name", "varchar(255)", "YES", "", "", "utf8mb4", "utf8mb4_0900_ai_ci")
-	sourceMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").WithArgs("sourcedb", "users").WillReturnRows(sourceRows)
-	destRows := sqlmock.NewRows(columns).
-		AddRow(1, "name", "varchar(255)", "YES", "", "", "latin1", "latin1_swedish_ci")
-	destMock.ExpectQuery("SELECT\\s+ORDINAL_POSITION,").WithArgs("destdb", "users").WillReturnRows(destRows)
+	sourceCols := []validations.ColumnSpec{
+		withCharset(specColT(1, "name", "varchar(255)"), "utf8mb4", "utf8mb4_0900_ai_ci"),
+	}
+	destCols := []validations.ColumnSpec{
+		withCharset(specColT(1, "name", "varchar(255)"), "latin1", "latin1_swedish_ci"),
+	}
+	run := &preflightRun{
+		checker: checker, tables: g.AllNodes(),
+		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
+		specsLoaded: true,
+	}
 
-	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), []string{"users"})
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 	if err != nil {
 		t.Fatalf("charset mismatch should be allowed (warn) under sha256 verification, got: %v", err)
+	}
+	if err := sourceMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
+	}
+	if err := destMock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
 	}
 }
 

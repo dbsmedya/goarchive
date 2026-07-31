@@ -76,6 +76,10 @@ type preflightRun struct {
 	fkWiErr    error
 	fkWiLoaded bool
 
+	specs       []specPair
+	specsErr    error
+	specsLoaded bool
+
 	checker *PreflightChecker
 }
 
@@ -351,4 +355,51 @@ func (r *preflightRun) fkWithin(ctx context.Context) (validations.ForeignKeyResu
 		r.fkWiLoaded = true
 	}
 	return r.fkWi, r.fkWiErr
+}
+
+// specPair holds one graph table's specification from both sides. Side A is the source,
+// side B is the destination — the argument order DiffSpecs uses, so a SideA diff always
+// means "the source lacks it".
+type specPair struct {
+	Table string
+	A     validations.TableSpec
+	B     validations.TableSpec
+}
+
+// tableSpecs captures both sides' specifications for every graph table, fetched on first
+// use.
+//
+// Capture options are fixed by spec §3.3: WithIndexes() on BOTH sides, and deliberately
+// NOT WithConstraints() or WithComment(). Constraints and comments therefore stay outside
+// comparison scope — silently ignored, exactly as the 1.8 column-only comparison did.
+// Capturing indexes symmetrically is what makes an IndexUnconfirmed diff mean "the
+// library could not look", which the evaluator treats as an inspection-integrity failure.
+func (r *preflightRun) tableSpecs(ctx context.Context) ([]specPair, error) {
+	if r.specsLoaded {
+		return r.specs, r.specsErr
+	}
+	r.specsLoaded = true
+	if r.dstInspector == nil {
+		r.specsErr = fmt.Errorf("destination database not configured; call ConfigureDestination first")
+		return nil, r.specsErr
+	}
+
+	pairs := make([]specPair, 0, len(r.tables))
+	for _, table := range r.tables {
+		a, err := r.srcInspector.TableSpec(ctx,
+			validations.Ref(r.checker.sourceDBName, table), validations.WithIndexes())
+		if err != nil {
+			r.specsErr = fmt.Errorf("source table %s: %w", table, err)
+			return nil, r.specsErr
+		}
+		b, err := r.dstInspector.TableSpec(ctx,
+			validations.Ref(r.checker.destinationDBName, table), validations.WithIndexes())
+		if err != nil {
+			r.specsErr = fmt.Errorf("destination table %s: %w", table, err)
+			return nil, r.specsErr
+		}
+		pairs = append(pairs, specPair{Table: table, A: a, B: b})
+	}
+	r.specs = pairs
+	return pairs, nil
 }
