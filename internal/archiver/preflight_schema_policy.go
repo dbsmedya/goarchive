@@ -410,22 +410,96 @@ func columnCollation(spec validations.TableSpec, column string) string {
 //
 // Descending is ignored (direction does not change the predicate), the index name is
 // ignored, and part order is ignored — UNIQUE(a,b) and UNIQUE(b,a) enforce the same
-// row-uniqueness predicate — which is why the parts are sorted before joining.
-func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) string {
-	parts := make([]string, 0, len(idx.Parts))
+// row-uniqueness predicate — which is why the parts are sorted.
+func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) []uniquePart {
+	parts := make([]uniquePart, 0, len(idx.Parts))
 	for _, part := range idx.Parts {
 		if part.Column != "" {
-			parts = append(parts, fmt.Sprintf("col|%s|%d|%s",
-				part.Column, part.SubPart, columnCollation(spec, part.Column)))
+			parts = append(parts, uniquePart{
+				Identity:  part.Column,
+				Prefix:    part.SubPart,
+				Collation: columnCollation(spec, part.Column),
+			})
 			continue
 		}
-		// Functional part: no result collation is exposed, so the collation element is
-		// deliberately empty and the conservative rule in checkDestinationUniqueness
-		// compensates.
-		parts = append(parts, fmt.Sprintf("expr|%s|%d|", part.Expression, part.SubPart))
+		// Functional part: no result collation is exposed, so Collation is deliberately
+		// empty and the conservative rule in checkDestinationUniqueness compensates.
+		parts = append(parts, uniquePart{
+			Expression: true,
+			Identity:   part.Expression,
+			Prefix:     part.SubPart,
+		})
 	}
-	slices.Sort(parts)
-	return strings.Join(parts, "&&")
+	slices.SortFunc(parts, compareUniqueParts)
+	return parts
+}
+
+// uniquePart is one key part's contribution to a uniqueness predicate.
+//
+// It is compared BY VALUE and must never be flattened into a delimited string for
+// comparison. MySQL permits any character inside a backtick-quoted identifier, including
+// whatever delimiters an encoding would pick, so a column can be named to forge another
+// signature's rendering. The first implementation of this file used
+// "col|<name>|<prefix>|<collation>" joined by "&&", and a single column named
+// `a|0|&&col|b` rendered exactly what a composite UNIQUE(a, b) rendered — so a STRICTER
+// destination unique index was accepted as equivalent, failing open on the precise silent
+// row loss D3 exists to prevent (found in review of PR #59; regression test
+// TestD3SignatureCannotBeForgedByAnIdentifier).
+//
+// formatSignature renders these for OPERATOR MESSAGES ONLY.
+type uniquePart struct {
+	Expression bool // Identity is an expression rather than a column name
+	Identity   string
+	Prefix     int
+	Collation  string
+}
+
+// compareUniqueParts orders parts deterministically so two equivalent indexes sort to the
+// same sequence regardless of declaration order.
+func compareUniqueParts(a, b uniquePart) int {
+	if a.Expression != b.Expression {
+		if a.Expression {
+			return 1
+		}
+		return -1
+	}
+	if c := strings.Compare(a.Identity, b.Identity); c != 0 {
+		return c
+	}
+	if a.Prefix != b.Prefix {
+		if a.Prefix < b.Prefix {
+			return -1
+		}
+		return 1
+	}
+	return strings.Compare(a.Collation, b.Collation)
+}
+
+// hasEquivalentSignature reports whether any source signature equals want element-wise.
+// A linear scan is right here: a table has a handful of unique indexes, and the whole
+// point is that no string key may stand in for the parts.
+func hasEquivalentSignature(sources [][]uniquePart, want []uniquePart) bool {
+	for _, candidate := range sources {
+		if slices.Equal(candidate, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// formatSignature renders a signature for an operator message. It is DISPLAY ONLY — never
+// compare these strings; see uniquePart.
+func formatSignature(parts []uniquePart) string {
+	rendered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		kind := "column"
+		if part.Expression {
+			kind = "expression"
+		}
+		rendered = append(rendered, fmt.Sprintf("%s %q prefix=%d collation=%q",
+			kind, part.Identity, part.Prefix, part.Collation))
+	}
+	return strings.Join(rendered, " + ")
 }
 
 // checkDestinationUniqueness applies deviation D3: a destination unique index whose
@@ -445,12 +519,12 @@ func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) 
 //
 // diffs is DiffSpecs' output for this pair; pass nil when there are none.
 func checkDestinationUniqueness(pair specPair, diffs []validations.SpecDiff) string {
-	sourceSignatures := make(map[string]struct{})
+	var sourceSignatures [][]uniquePart
 	for _, idx := range pair.A.Indexes {
 		if !idx.Unique || idx.Name == "PRIMARY" {
 			continue
 		}
-		sourceSignatures[uniquenessSignature(idx, pair.A)] = struct{}{}
+		sourceSignatures = append(sourceSignatures, uniquenessSignature(idx, pair.A))
 	}
 
 	columnEnvironmentClean := true
@@ -466,12 +540,12 @@ func checkDestinationUniqueness(pair specPair, diffs []validations.SpecDiff) str
 			continue
 		}
 		signature := uniquenessSignature(idx, pair.B)
-		if _, ok := sourceSignatures[signature]; !ok {
+		if !hasEquivalentSignature(sourceSignatures, signature) {
 			return fmt.Sprintf(
-				"%s(destination unique index %q has no equivalent on the source (signature %s); "+
+				"%s(destination unique index %q has no equivalent on the source (signature: %s); "+
 					"INSERT IGNORE would silently skip rows the source holds as distinct. Drop the "+
 					"destination unique index, or add an equivalent one to the source)",
-				pair.Table, idx.Name, signature)
+				pair.Table, idx.Name, formatSignature(signature))
 		}
 		if isFunctionalIndex(idx) && !columnEnvironmentClean {
 			return fmt.Sprintf(

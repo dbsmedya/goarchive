@@ -868,3 +868,39 @@ func TestSchemaCompatD3PrecedesColumnDispositions(t *testing.T) {
 		t.Fatalf("D3 must be reported ahead of the column disposition, got: %s", v.Fatal)
 	}
 }
+
+// TestD3SignatureCannotBeForgedByAnIdentifier is a REGRESSION test for a fail-open hole
+// found in external review of PR #59.
+//
+// The first implementation rendered each part as "col|<name>|<prefix>|<collation>" and
+// joined parts with "&&". MySQL permits any character inside a backtick-quoted identifier,
+// so a single column literally named `a|0|&&col|b` renders exactly what a two-part
+// signature over (a, b) renders:
+//
+//	source      UNIQUE(a, b)              -> "col|a|0|" + "&&" + "col|b|0|"
+//	destination UNIQUE(`a|0|&&col|b`)     -> "col|"     + "a|0|&&col|b" + "|0|"
+//
+// Byte-identical — so the destination's SINGLE-column unique was accepted as equivalent to
+// the source's COMPOSITE unique. It is not: a single-column unique is STRICTER, and
+// INSERT IGNORE would silently skip rows the source holds as distinct. That is the precise
+// failure D3 exists to prevent, so an ambiguous encoding fails open on D3's whole purpose.
+//
+// Signatures are compared as typed values now; there is no encoding to forge.
+func TestD3SignatureCannotBeForgedByAnIdentifier(t *testing.T) {
+	const forged = "a|0|&&col|b"
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"),
+		specCol(2, "a", "int"),
+		specCol(3, "b", "int"),
+		specCol(4, forged, "int"),
+	}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_ab",
+			validations.IndexPart{Column: "a"}, validations.IndexPart{Column: "b"})},
+		[]validations.IndexSpec{uniqueIdx("uq_forged", validations.IndexPart{Column: forged})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatalf("a destination UNIQUE(%q) must NOT match the source's composite UNIQUE(a, b); "+
+			"the signature encoding was forged", forged)
+	}
+}
