@@ -3,6 +3,7 @@ package archiver
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
@@ -60,8 +61,21 @@ func goarchiveTypesCompatible(a, b string) bool {
 // (preflight.go:1189) and the shape phase 006's characterization pins.
 func evaluateSchemaCompatibility(pair specPair, charsetStrict bool) (schemaVerdict, error) {
 	verdict := schemaVerdict{Table: pair.Table}
-	warnedCharset := make(map[string]bool)
 
+	// Absolute invariants first: they are diff-independent, cheaper than DiffSpecs, and
+	// their failures are the most actionable. Running them first is also what makes the
+	// Captured guard meaningful — after the diff loop it would be shadowed by
+	// disposeDiff's IndexUnconfirmed arm for the one-sided case.
+	reason, err := checkAbsoluteInvariants(pair)
+	if err != nil {
+		return schemaVerdict{}, err
+	}
+	if reason != "" {
+		verdict.Fatal = reason
+		return verdict, nil
+	}
+
+	warnedCharset := make(map[string]bool)
 	for _, diff := range validations.DiffSpecs(pair.A, pair.B) {
 		fatal, err := disposeDiff(diff, charsetStrict, warnedCharset)
 		if err != nil {
@@ -180,11 +194,13 @@ func disposeDiff(
 		// separately enforced by STORAGE_ENGINE_CHECK.
 		return nil, nil
 
-	// ---- inspection-integrity failure: aborts here, already ----------------------
-	// Phase 029 adds a SECOND, earlier guard — checkAbsoluteInvariants inspects
-	// TableSpec.Captured directly, before any diff is produced — so an uncaptured index
-	// section is rejected without relying on the library to emit this diff for it. This
-	// arm stays as the backstop for a spec pair that reaches DiffSpecs anyway.
+	// ---- inspection-integrity failure: defensive backstop --------------------------
+	// checkAbsoluteInvariants (phase 029) inspects TableSpec.Captured directly, BEFORE
+	// any diff is produced, and rejects a one-sided capture there. This arm is therefore
+	// UNREACHABLE through evaluateSchemaCompatibility. It is retained deliberately: it
+	// stays correct for a direct or future caller of disposeDiff, and it fails closed if
+	// the invariant is ever reordered or removed. TestDisposeDiffIndexUnconfirmedFailsClosed
+	// covers it directly, since no stage-level path can.
 	case validations.IndexUnconfirmed:
 		// The library emits this as SpecDiff{Kind, Side} with NO Column and NO Index
 		// (spec_diff.go:339-347). Report the SIDE — diff.Column would always render "".
@@ -217,4 +233,132 @@ func disposeDiff(
 				"Upgrade GoArchive or pin the validation library version this build was released against",
 			diff.Kind, diff.Column, diff.Index)
 	}
+}
+
+// primaryIndex returns the PRIMARY index of a spec. In MySQL a primary key is always
+// named PRIMARY (see the library's docs/COMPAT.md entry 13), so the name is the lookup.
+func primaryIndex(spec validations.TableSpec) (validations.IndexSpec, bool) {
+	for _, idx := range spec.Indexes {
+		if idx.Name == "PRIMARY" {
+			return idx, true
+		}
+	}
+	return validations.IndexSpec{}, false
+}
+
+// primaryPartSignature renders one PRIMARY key part for comparison.
+//
+// Only (column identity, prefix) participate. Descending is deliberately ignored:
+// direction does not affect INSERT IGNORE idempotency, and the 1.8 COLUMN_KEY-based
+// policy never observed it, so comparing full IndexPart values would introduce an
+// unintended new failure (spec §3.3, fourth review precision 6).
+//
+// The expression branch is unreachable today — MySQL does not permit functional PRIMARY
+// key parts — and is kept for TOTALITY, not for reuse. Phase 030's uniquenessSignature is
+// a separate function with a different encoding. Collapsing expression parts onto the
+// empty identity would make two DIFFERENT expressions produce the SAME signature and
+// compare equal: a silent false all-clear in exactly the case the code cannot otherwise
+// check.
+//
+// BOTH kinds are namespace-tagged, and tagging only one is not enough: with a bare column
+// identity, a column literally named `expr:email` and the expression `email` would both
+// render "(expr:email,0)". MySQL permits `:` in a backtick-quoted identifier, so that
+// column name is legal. Tag every branch, or the tag buys nothing.
+func primaryPartSignature(part validations.IndexPart) string {
+	identity := "col:" + part.Column
+	if part.Column == "" {
+		identity = "expr:" + part.Expression
+	}
+	return fmt.Sprintf("(%s,%d)", identity, part.SubPart)
+}
+
+// checkAbsoluteInvariants evaluates the diff-independent rules of spec §3.3.
+//
+// It returns a fatal reason ("" when clean), or an ERROR when the inspection itself
+// cannot be trusted — the two are different outcomes: a fatal reason says the schema is
+// wrong, an error says GoArchive could not determine whether it is.
+func checkAbsoluteInvariants(pair specPair) (string, error) {
+	// Inspection integrity. tableSpecs captures both sides WithIndexes(), so a spec
+	// reporting otherwise did not come from the capture this evaluator requires.
+	//
+	// This is STRICTLY STRONGER than the library's IndexUnconfirmed diff, which
+	// diffIndexes emits only when EXACTLY ONE side captured (spec_diff.go:339-347).
+	// When NEITHER side captured, diffIndexes returns nil and the pair would be silently
+	// judged compatible. Checking Captured directly closes that.
+	//
+	// The sides are an ordered slice, not a map: a map range would report a random side
+	// when both are uncaptured, making the message non-deterministic.
+	for _, side := range []struct {
+		name string
+		spec validations.TableSpec
+	}{{"source", pair.A}, {"destination", pair.B}} {
+		if !side.spec.Captured.Has(validations.SectionIndexes) {
+			return "", fmt.Errorf(
+				"PREFLIGHT_INSPECTION_INTEGRITY: %s spec for table %q did not capture its index "+
+					"section, so schema compatibility cannot be evaluated. Preflight fails closed",
+				side.name, pair.Table)
+		}
+	}
+
+	// Rule 1: any generated DESTINATION column is fatal, even when the source column is
+	// identically generated. The copy inserts explicit values for every column, and MySQL
+	// rejects an explicit insert into a generated column with Error 3105 — INSERT IGNORE
+	// included. A SOURCE-generated column writing into a plain destination column is
+	// fine: SELECT materialises the value.
+	//
+	// Only the DESTINATION is inspected, deliberately. A source column with an
+	// unpopulated Generated state cannot make the copy fail — SELECT reads whatever the
+	// server materialises either way — so it is not an integrity failure here.
+	for _, col := range pair.B.Columns {
+		switch col.Generated {
+		case validations.GeneratedVirtual, validations.GeneratedStored:
+			return fmt.Sprintf(
+				"%s(column %s: destination column is generated (%s); the copy inserts explicit values "+
+					"for every column and MySQL rejects them with Error 3105 even under INSERT IGNORE)",
+				pair.Table, col.Name, col.Generated), nil
+		case validations.GeneratedNone:
+			// Plain destination column.
+		default:
+			// GeneratedUnknown is the ZERO value of GeneratedKind, so this arm also
+			// catches a ColumnSpec whose Generated field was never populated.
+			return "", fmt.Errorf(
+				"PREFLIGHT_INSPECTION_INTEGRITY: destination column %s.%s has unpopulated or unknown generated state %v",
+				pair.Table, col.Name, col.Generated)
+		}
+	}
+
+	// Rule 2: the PRIMARY key part list must be identical, in order. INSERT IGNORE
+	// crash-recovery idempotency depends on the destination rejecting a re-inserted row
+	// by the same key the source identified it with.
+	aPrimary, aOK := primaryIndex(pair.A)
+	bPrimary, bOK := primaryIndex(pair.B)
+	switch {
+	case !aOK && !bOK:
+		// Neither side has one. Not this check's problem: PRIMARY_KEY_CHECK (position 3)
+		// already rejected a source table without a PRIMARY KEY.
+	case aOK != bOK:
+		return fmt.Sprintf(
+			"%s(primary key mismatch: the destination must keep the source primary key for idempotent resume; "+
+				"source has PRIMARY=%t, destination has PRIMARY=%t)", pair.Table, aOK, bOK), nil
+	default:
+		aSig := make([]string, 0, len(aPrimary.Parts))
+		for _, part := range aPrimary.Parts {
+			aSig = append(aSig, primaryPartSignature(part))
+		}
+		bSig := make([]string, 0, len(bPrimary.Parts))
+		for _, part := range bPrimary.Parts {
+			bSig = append(bSig, primaryPartSignature(part))
+		}
+		// Element-wise, not a joined string: concatenating signatures could in principle
+		// let a pathological expression forge a boundary. The joins below are for the
+		// operator message only.
+		if !slices.Equal(aSig, bSig) {
+			return fmt.Sprintf(
+				"%s(primary key mismatch: the destination must keep the source primary key for idempotent resume; "+
+					"source=%s, destination=%s)", pair.Table,
+				strings.Join(aSig, ""), strings.Join(bSig, "")), nil
+		}
+	}
+
+	return "", nil
 }

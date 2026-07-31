@@ -1383,8 +1383,8 @@ func TestValidateDestinationSchemaCompatibilityConsumesCachedFact(t *testing.T) 
 // asymmetric index-capture (one side's TableSpec never captured indexes — the shape
 // tableSpecs is supposed to prevent) must abort preflight rather than silently pass. This
 // is the routed-through-the-stage counterpart to
-// TestSchemaCompatIndexUnconfirmedAbortsPreflight, and is what actually catches a stage
-// that swallows evaluateSchemaCompatibility's error (`verdict, _ := evaluate...`).
+// TestSchemaCompatUncapturedIndexesAbortBeforeDiffSpecs, and is what actually catches a
+// stage that swallows evaluateSchemaCompatibility's error (`verdict, _ := evaluate...`).
 func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailure(t *testing.T) {
 	sourceDB, sourceMock, err := sqlmock.New()
 	if err != nil {
@@ -1420,8 +1420,11 @@ func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailur
 	if errors.As(err, &pe) {
 		t.Fatalf("an inspection-integrity abort must not be a *PreflightError, got: %v", pe)
 	}
-	if !strings.Contains(err.Error(), "IndexUnconfirmed") {
-		t.Fatalf("abort must name IndexUnconfirmed, got: %v", err)
+	if !strings.Contains(err.Error(), "did not capture its index section") {
+		t.Fatalf("abort must come from checkAbsoluteInvariants' Captured guard, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "IndexUnconfirmed") {
+		t.Fatalf("the guard must run before DiffSpecs; this came from the diff loop: %v", err)
 	}
 	if err := sourceMock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)

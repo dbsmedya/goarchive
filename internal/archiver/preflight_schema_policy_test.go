@@ -1,6 +1,7 @@
 package archiver
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -283,14 +284,15 @@ func TestSchemaCompatUnknownDiffKindFailsClosed(t *testing.T) {
 	}
 }
 
-// TestSchemaCompatIndexUnconfirmedAbortsPreflight covers the inspection-integrity guard
-// through a REAL DiffSpecs call (not a hand-built SpecDiff): breaking the symmetry
-// WithIndexes() is supposed to guarantee on both sides makes DiffSpecs itself emit
-// IndexUnconfirmed, and evaluateSchemaCompatibility must abort rather than silently treat
-// the pair as compatible. This is also the unit case mutants 5/6 (dropping WithIndexes()
-// from one side of tableSpecs) would reach if the fetch-level guard in
-// TestPreflightRunMemoizesTableSpecs were ever weakened.
-func TestSchemaCompatIndexUnconfirmedAbortsPreflight(t *testing.T) {
+// TestSchemaCompatUncapturedIndexesAbortBeforeDiffSpecs is the evaluator-level proof that
+// the Captured guard runs FIRST.
+//
+// Before phase 029 this pair reached DiffSpecs, which emitted IndexUnconfirmed, and
+// disposeDiff aborted on it. Now checkAbsoluteInvariants rejects the pair before DiffSpecs
+// is called at all. The negative assertion is the load-bearing one: if the invariant were
+// moved after the diff loop — or removed — the pair would still abort, but with
+// IndexUnconfirmed in the message, and only that assertion would notice.
+func TestSchemaCompatUncapturedIndexesAbortBeforeDiffSpecs(t *testing.T) {
 	cols := []validations.ColumnSpec{specCol(1, "id", "bigint")}
 	pair := pairOf(cols, cols)
 	pair.B.Captured = 0 // simulate the destination side never having captured indexes
@@ -299,7 +301,325 @@ func TestSchemaCompatIndexUnconfirmedAbortsPreflight(t *testing.T) {
 	if err == nil {
 		t.Fatal("an asymmetric index-capture must abort preflight, not silently pass")
 	}
+	if !strings.Contains(err.Error(), "did not capture its index section") {
+		t.Fatalf("abort must come from the Captured guard, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("abort must name the offending side, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "IndexUnconfirmed") {
+		t.Fatalf("the guard must run BEFORE DiffSpecs; this abort came from the diff loop: %v", err)
+	}
+}
+
+// pairWithIndexes builds a specPair with explicit index sections on both sides.
+func pairWithIndexes(
+	aCols, bCols []validations.ColumnSpec,
+	aIdx, bIdx []validations.IndexSpec,
+) specPair {
+	return specPair{
+		Table: "orders",
+		A: validations.TableSpec{Schema: "srcdb", Table: "orders", Columns: aCols,
+			Indexes: aIdx, Captured: validations.SectionIndexes},
+		B: validations.TableSpec{Schema: "dstdb", Table: "orders", Columns: bCols,
+			Indexes: bIdx, Captured: validations.SectionIndexes},
+	}
+}
+
+func primaryOn(parts ...validations.IndexPart) validations.IndexSpec {
+	return validations.IndexSpec{Name: "PRIMARY", Unique: true, Type: "BTREE", Visible: true, Parts: parts}
+}
+
+// TestAbsoluteInvariantDestinationGeneratedIsFatal covers the first rule, including the
+// case the spec calls out explicitly: the source column is IDENTICALLY generated and it
+// is still fatal, because the copy inserts explicit values for every column and MySQL
+// rejects them with Error 3105 even under INSERT IGNORE.
+func TestAbsoluteInvariantDestinationGeneratedIsFatal(t *testing.T) {
+	for _, kind := range []validations.GeneratedKind{validations.GeneratedVirtual, validations.GeneratedStored} {
+		t.Run(kind.String(), func(t *testing.T) {
+			gen := specCol(2, "doubled", "int")
+			gen.Generated, gen.GenerationExpr = kind, "(`amount` * 2)"
+
+			cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), gen}
+			pair := pairWithIndexes(cols, cols,
+				[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+				[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})})
+
+			reason, err := checkAbsoluteInvariants(pair)
+			if err != nil {
+				t.Fatalf("checkAbsoluteInvariants: %v", err)
+			}
+			if reason == "" {
+				t.Fatal("a generated DESTINATION column must be fatal even when the source matches")
+			}
+			if !strings.Contains(reason, "3105") {
+				t.Fatalf("the reason must name MySQL Error 3105: %q", reason)
+			}
+		})
+	}
+}
+
+// TestAbsoluteInvariantUnknownGeneratedAborts pins inspection integrity: GeneratedUnknown
+// is the ZERO value of GeneratedKind, so it means "the fact was never populated", not
+// "plain column". Accepting it would silently treat an unpopulated spec as safe.
+func TestAbsoluteInvariantUnknownGeneratedAborts(t *testing.T) {
+	unknown := specCol(2, "amount", "int")
+	unknown.Generated = validations.GeneratedUnknown
+	pair := pairWithIndexes(
+		[]validations.ColumnSpec{specCol(1, "id", "bigint"), unknown},
+		[]validations.ColumnSpec{specCol(1, "id", "bigint"), unknown},
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})})
+
+	if _, err := checkAbsoluteInvariants(pair); err == nil {
+		t.Fatal("GeneratedUnknown must abort as an unpopulated fact")
+	}
+}
+
+// TestAbsoluteInvariantSourceOnlyGeneratedIsAllowed covers the other direction: a
+// source-generated column writing into a plain destination column is fine, because
+// SELECT materialises the value.
+func TestAbsoluteInvariantSourceOnlyGeneratedIsAllowed(t *testing.T) {
+	gen := specCol(2, "doubled", "int")
+	gen.Generated, gen.GenerationExpr = validations.GeneratedStored, "(`amount` * 2)"
+	plain := specCol(2, "doubled", "int")
+
+	pair := pairWithIndexes(
+		[]validations.ColumnSpec{specCol(1, "id", "bigint"), gen},
+		[]validations.ColumnSpec{specCol(1, "id", "bigint"), plain},
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+		[]validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})})
+
+	reason, err := checkAbsoluteInvariants(pair)
+	if err != nil {
+		t.Fatalf("checkAbsoluteInvariants: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("source-only generated column is allowed, got: %s", reason)
+	}
+}
+
+// TestAbsoluteInvariantPrimaryKeyMustMatch covers the second rule in all four ways it
+// can be violated.
+func TestAbsoluteInvariantPrimaryKeyMustMatch(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "tenant_id", "int")}
+
+	cases := []struct {
+		name    string
+		aIdx    []validations.IndexSpec
+		bIdx    []validations.IndexSpec
+		wantBad bool
+	}{
+		{
+			name:    "identical",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			wantBad: false,
+		},
+		{
+			name:    "destination_missing_primary",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    nil,
+			wantBad: true,
+		},
+		{
+			name:    "different_column",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "tenant_id"})},
+			wantBad: true,
+		},
+		{
+			name: "different_order",
+			aIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "id"}, validations.IndexPart{Column: "tenant_id"})},
+			bIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "tenant_id"}, validations.IndexPart{Column: "id"})},
+			wantBad: true,
+		},
+		{
+			name:    "different_prefix",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id", SubPart: 10})},
+			wantBad: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, err := checkAbsoluteInvariants(pairWithIndexes(cols, cols, tc.aIdx, tc.bIdx))
+			if err != nil {
+				t.Fatalf("checkAbsoluteInvariants: %v", err)
+			}
+			if tc.wantBad && reason == "" {
+				t.Fatal("expected a fatal PRIMARY key mismatch")
+			}
+			if !tc.wantBad && reason != "" {
+				t.Fatalf("expected clean, got: %s", reason)
+			}
+		})
+	}
+}
+
+// TestAbsoluteInvariantPrimaryKeyIgnoresDescending is the fourth review's precision:
+// direction does not affect INSERT IGNORE idempotency, and the 1.8 COLUMN_KEY policy
+// never observed it, so comparing it would introduce a NEW failure.
+func TestAbsoluteInvariantPrimaryKeyIgnoresDescending(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint")}
+	aIdx := []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})}
+	bIdx := []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id", Descending: true})}
+
+	reason, err := checkAbsoluteInvariants(pairWithIndexes(cols, cols, aIdx, bIdx))
+	if err != nil {
+		t.Fatalf("checkAbsoluteInvariants: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("PRIMARY key direction must be ignored, got: %s", reason)
+	}
+}
+
+// TestAbsoluteInvariantUncapturedIndexesAborts covers the third rule: a spec that did not
+// capture its index section makes the whole evaluation untrustworthy, and that is an
+// engine error, not a schema verdict.
+func TestAbsoluteInvariantUncapturedIndexesAborts(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint")}
+	pair := specPair{
+		Table: "orders",
+		A: validations.TableSpec{Schema: "srcdb", Table: "orders", Columns: cols,
+			Indexes:  []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			Captured: validations.SectionIndexes},
+		B: validations.TableSpec{Schema: "dstdb", Table: "orders", Columns: cols}, // Captured == 0
+	}
+	_, err := checkAbsoluteInvariants(pair)
+	if err == nil {
+		t.Fatal("an uncaptured index section must abort preflight")
+	}
+	if !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("the abort must name the offending side: %v", err)
+	}
+	var pe *PreflightError
+	if errors.As(err, &pe) {
+		t.Fatal("an inspection-integrity failure must not be a *PreflightError")
+	}
+}
+
+// TestAbsoluteInvariantBothSidesUncapturedNamesSourceFirst pins two things at once.
+//
+// FIRST, the hole this rule exists to close: when NEITHER side captured indexes, the
+// library's diffIndexes returns nil rather than IndexUnconfirmed (sectionAgreement's
+// SideUnknown arm, spec_diff.go:339-347), so a pair like this is SILENTLY judged
+// compatible without the Captured guard. Nothing else in the suite covers that case.
+//
+// SECOND, attribution is deterministic: the sides are checked source-first from an
+// ordered slice, never a map range, so the reported side cannot vary between runs.
+func TestAbsoluteInvariantBothSidesUncapturedNamesSourceFirst(t *testing.T) {
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint")}
+	pair := specPair{
+		Table: "orders",
+		A:     validations.TableSpec{Schema: "srcdb", Table: "orders", Columns: cols},
+		B:     validations.TableSpec{Schema: "dstdb", Table: "orders", Columns: cols},
+	}
+	for i := 0; i < 20; i++ {
+		_, err := checkAbsoluteInvariants(pair)
+		if err == nil {
+			t.Fatal("both sides uncaptured must abort; DiffSpecs alone reports nothing here")
+		}
+		if !strings.Contains(err.Error(), "source") {
+			t.Fatalf("attribution must be deterministic and source-first, got: %v", err)
+		}
+	}
+}
+
+// TestPrimaryPartSignatureIsTotalAndCollisionResistant pins primaryPartSignature's
+// defensive contract directly, because no PRIMARY-key fixture can reach the expression
+// branch: MySQL does not permit functional primary key parts.
+//
+// The branch is kept anyway, and this is why: mapping every expression part to the empty
+// identity would make two DIFFERENT expressions compare EQUAL — a silent false all-clear
+// in the one place the code is least able to check itself. "Impossible today" is not a
+// reason to make the function non-total.
+func TestPrimaryPartSignatureIsTotalAndCollisionResistant(t *testing.T) {
+	t.Run("different_expressions_do_not_collide", func(t *testing.T) {
+		lower := primaryPartSignature(validations.IndexPart{Expression: "lower(`email`)"})
+		upper := primaryPartSignature(validations.IndexPart{Expression: "upper(`email`)"})
+		if lower == upper {
+			t.Fatalf("two different expressions collided on %q", lower)
+		}
+	})
+	// The namespace collision is only reachable when the column's own text can imitate the
+	// expression tag. Comparing Column:"email" against Expression:"email" does NOT test
+	// this — it passes against a bare column identity, because "email" and "expr:email"
+	// differ anyway. The real case is a column literally NAMED "expr:email", which MySQL
+	// permits inside a backtick-quoted identifier. That is what forces BOTH branches to be
+	// tagged rather than just the expression one.
+	t.Run("a_column_named_like_an_expression_tag_does_not_collide", func(t *testing.T) {
+		col := primaryPartSignature(validations.IndexPart{Column: "expr:email"})
+		expr := primaryPartSignature(validations.IndexPart{Expression: "email"})
+		if col == expr {
+			t.Fatalf("a column named %q collided with the expression %q on %s", "expr:email", "email", col)
+		}
+	})
+	t.Run("expression_prefix_length_participates", func(t *testing.T) {
+		whole := primaryPartSignature(validations.IndexPart{Expression: "lower(`email`)"})
+		prefixed := primaryPartSignature(validations.IndexPart{Expression: "lower(`email`)", SubPart: 10})
+		if whole == prefixed {
+			t.Fatalf("prefix length dropped out of the signature: %q", whole)
+		}
+	})
+	t.Run("column_prefix_length_participates", func(t *testing.T) {
+		whole := primaryPartSignature(validations.IndexPart{Column: "email"})
+		prefixed := primaryPartSignature(validations.IndexPart{Column: "email", SubPart: 10})
+		if whole == prefixed {
+			t.Fatalf("prefix length dropped out of the signature: %q", whole)
+		}
+	})
+	t.Run("descending_is_deliberately_ignored", func(t *testing.T) {
+		asc := primaryPartSignature(validations.IndexPart{Column: "id"})
+		desc := primaryPartSignature(validations.IndexPart{Column: "id", Descending: true})
+		if asc != desc {
+			t.Fatalf("direction must not participate: %q vs %q", asc, desc)
+		}
+	})
+}
+
+// TestSchemaCompatInvariantsRunBeforeDiffs is the ONLY unit test that can detect the
+// invariants not being wired into evaluateSchemaCompatibility. Every
+// TestAbsoluteInvariant* test above calls checkAbsoluteInvariants directly and would
+// still pass with the call site deleted.
+//
+// The fixture is deliberately one DiffSpecs reports as clean: source and destination are
+// IDENTICAL, both carrying the same generated column, so there is no
+// ColumnGeneratedMismatch to dispose of — and disposeDiff ignores that kind anyway. A
+// fatal verdict here can only come from the invariant.
+func TestSchemaCompatInvariantsRunBeforeDiffs(t *testing.T) {
+	gen := specCol(2, "doubled", "int")
+	gen.Generated, gen.GenerationExpr = validations.GeneratedStored, "(`amount` * 2)"
+	cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), gen}
+
+	v, err := evaluateSchemaCompatibility(pairOf(cols, cols), true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal == "" {
+		t.Fatal("checkAbsoluteInvariants is not wired into evaluateSchemaCompatibility")
+	}
+	if !strings.Contains(v.Fatal, "3105") {
+		t.Fatalf("expected the destination-generated reason, got: %s", v.Fatal)
+	}
+}
+
+// TestDisposeDiffIndexUnconfirmedFailsClosed keeps the defensive enum arm covered.
+//
+// After phase 029 that arm is UNREACHABLE through evaluateSchemaCompatibility — the
+// Captured guard rejects a one-sided capture before DiffSpecs runs — so it can only be
+// exercised by calling disposeDiff directly. Without this test the arm would ship
+// untested, and a later reader could delete it into the fail-closed default with a
+// misleading message.
+func TestDisposeDiffIndexUnconfirmedFailsClosed(t *testing.T) {
+	_, err := disposeDiff(
+		validations.SpecDiff{Kind: validations.IndexUnconfirmed, Side: validations.SideB}, true, nil)
+	if err == nil {
+		t.Fatal("IndexUnconfirmed must abort preflight")
+	}
 	if !strings.Contains(err.Error(), "IndexUnconfirmed") {
-		t.Fatalf("abort must name IndexUnconfirmed, got: %v", err)
+		t.Fatalf("the abort must name the diff kind: %v", err)
 	}
 }
