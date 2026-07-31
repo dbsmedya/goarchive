@@ -38,51 +38,12 @@ func TestShouldUseStrictInsert(t *testing.T) {
 	}
 }
 
-func TestDestinationSecondaryUniqueIndexes_Found(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("SELECT DISTINCT TABLE_NAME, INDEX_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME"}).
-			AddRow("orders", "uq_orders_ext_ref").
-			AddRow("orders", "uq_orders_code"))
-
-	got, err := destinationSecondaryUniqueIndexes(context.Background(), db, "destdb", []string{"orders", "customers"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 unique-index descriptors, got %v", got)
-	}
-	if got[0] != "orders.uq_orders_ext_ref" {
-		t.Errorf("unexpected descriptor: %s", got[0])
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
-	}
-}
-
-func TestDestinationSecondaryUniqueIndexes_None(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("SELECT DISTINCT TABLE_NAME, INDEX_NAME").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "INDEX_NAME"}))
-
-	got, err := destinationSecondaryUniqueIndexes(context.Background(), db, "destdb", []string{"orders"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("expected no descriptors, got %v", got)
-	}
-}
+// Index discovery (a table with a secondary unique index is reported; a table with only
+// a PRIMARY KEY is not), the missing-table and view skips, and cross-table ordering all
+// moved to real-DB coverage in pipeline_resume_integration_test.go: TableSpec issues
+// several queries per table, and a goarchive unit test must not encode that private SQL
+// (consumer-policy rule). The no-argument guards below are goarchive's own contract and
+// need no server.
 
 func TestDestinationSecondaryUniqueIndexes_NoArgsNoQuery(t *testing.T) {
 	db, mock, err := sqlmock.New()

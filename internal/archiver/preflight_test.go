@@ -170,10 +170,6 @@ func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
 	if err := checker.ValidateRootPKNumeric(context.Background(), newPreflightRun(checker)); err != nil {
 		t.Fatalf("ValidateRootPKNumeric: %v", err)
 	}
-	dataType, unsigned, ok := g.GetRootPKMeta()
-	if !ok || dataType != "bigint" || !unsigned {
-		t.Fatalf("metadata: dataType=%q unsigned=%v ok=%v", dataType, unsigned, ok)
-	}
 
 	db2, mock2, _ := sqlmock.New()
 	defer func() { _ = db2.Close() }()
@@ -3454,50 +3450,73 @@ func TestValidateRootPKNumericInspectionErrorIsPlain(t *testing.T) {
 }
 
 // TestPKStagesShareOneCachedFact proves both PK stages consume a single run-level fact.
-// Exactly ONE PrimaryKeys expectation is registered, and the two stages run in sequence
-// exactly as RunWithProfile calls them (positions 3 and 4). A stage that built its own
-// Inspector would issue a second query, receive "all expectations were already
-// fulfilled", and fail here — which no other test in this phase would catch.
+// Exactly ONE PrimaryKeys expectation is registered per case, and the two stages run in
+// sequence exactly as RunWithProfile calls them (positions 3 and 4). A stage that built
+// its own Inspector would issue a second query, receive "all expectations were already
+// fulfilled", and fail here — which no other test catches.
 //
-// The GetRootPKMeta assertion is load-bearing: without it, a ValidateRootPKNumeric that
-// silently returned nil would still pass. It is also, with the rebuilt
-// TestPreflightChecker_ValidateRootPKNumeric, the ONLY coverage of that write-back --
-// make e2e cannot detect its deletion, because loadRootPKMeta runs afterwards on every
-// orchestrator path and overwrites the value before any production reader sees it.
+// The varchar case is what keeps this non-vacuous. ValidateSingleColumnPrimaryKey passes
+// on it (the key IS single-column) while ValidateRootPKNumeric must reject it, so the
+// second stage can only produce the right answer by reading the shared fact. Without that
+// case a ValidateRootPKNumeric that silently returned nil would pass: the sole expectation
+// is already consumed by the first stage.
+//
+// This replaces a GetRootPKMeta assertion that covered the graph write-back deleted in
+// phase 032. There is no write-back to assert on any more.
 func TestPKStagesShareOneCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("srcdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).AddRow("orders", "id", "bigint", "bigint unsigned"))
-
-	g := graph.NewGraph("orders", "id")
-	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
+	cases := []struct {
+		name       string
+		dataType   string
+		columnType string
+		wantErr    string // "" means the root-PK stage must pass
+	}{
+		{"integer key passes both stages", "bigint", "bigint unsigned", ""},
+		{"varchar key passes the shape stage and fails the root-PK stage",
+			"varchar", "varchar(36)", "ROOT_PK_TYPE_UNSUPPORTED"},
 	}
 
-	run := newPreflightRun(p)
-	ctx := context.Background()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			defer func() { _ = db.Close() }()
 
-	if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
-		t.Fatalf("shape stage must pass from the cached fact: %v", err)
-	}
-	if err := p.ValidateRootPKNumeric(ctx, run); err != nil {
-		t.Fatalf("root PK stage must pass from the SAME cached fact: %v", err)
-	}
+			mock.ExpectQuery("information_schema.STATISTICS AS s").
+				WithArgs("srcdb").
+				WillReturnRows(sqlmock.NewRows([]string{
+					"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
+				}).AddRow("orders", "id", tc.dataType, tc.columnType))
 
-	dataType, unsigned, ok := g.GetRootPKMeta()
-	if !ok || dataType != "bigint" || !unsigned {
-		t.Fatalf("root PK metadata: dataType=%q unsigned=%v ok=%v", dataType, unsigned, ok)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("the single PrimaryKeys expectation was not observed: %v", err)
+			g := graph.NewGraph("orders", "id")
+			p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+			if err != nil {
+				t.Fatalf("NewPreflightChecker: %v", err)
+			}
+
+			run := newPreflightRun(p)
+			ctx := context.Background()
+
+			if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
+				t.Fatalf("shape stage must pass from the cached fact: %v", err)
+			}
+
+			gotErr := p.ValidateRootPKNumeric(ctx, run)
+			switch tc.wantErr {
+			case "":
+				if gotErr != nil {
+					t.Fatalf("root PK stage must pass from the SAME cached fact: %v", gotErr)
+				}
+			default:
+				if gotErr == nil || !strings.Contains(gotErr.Error(), tc.wantErr) {
+					t.Fatalf("expected %s from the SAME cached fact, got %v", tc.wantErr, gotErr)
+				}
+			}
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("the single PrimaryKeys expectation was not observed: %v", err)
+			}
+		})
 	}
 }

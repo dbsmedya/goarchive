@@ -226,16 +226,11 @@ func (p *PreflightChecker) RunAllChecks(ctx context.Context, forceTriggers bool)
 	return p.RunWithProfile(ctx, PreflightProfileFull, forceTriggers, true)
 }
 
-// ValidateRootPKNumeric ensures the root table primary key is an integer type, and
-// records its type and signedness on the graph.
+// ValidateRootPKNumeric ensures the root table primary key is an integer type.
 //
-// The write-back preserves a 1.8 stage side effect (spec §2 "What stays"); it is NOT
-// what supplies the batch pipeline. Every production reader of the metadata
-// (batch_pipeline.go) runs after loadRootPKMeta, which is called by all three
-// orchestrators and unconditionally overwrites this value — so on the archive, purge and
-// copy-only paths this write has no reader, and validate/dry-run never read it at all.
-// It is kept because this phase is behaviour-preserving, not because anything consumes
-// it. Removing it is a dead-write cleanup and belongs in phase 032.
+// The graph metadata every production reader consumes is supplied by loadRootPKMeta,
+// which is called by all three orchestrators on every path that reads it; this stage
+// does not write it.
 //
 // The error shape is deliberately a PLAIN string-prefixed error rather than a
 // *PreflightError, preserving 1.8 behaviour (spec §2 "What stays"). Both prefixes are
@@ -274,13 +269,6 @@ func (p *PreflightChecker) ValidateRootPKNumeric(ctx context.Context, run *prefl
 		return fmt.Errorf("ROOT_PK_TYPE_UNSUPPORTED: root table %q has primary key %q of type %q. GoArchive Community edition only supports integer root primary keys (TINYINT through BIGINT). See README 'Known Limits & Caution'", rootTable, rootPKColumn, pk.DataType)
 	}
 
-	// SetRootPKMeta moves here from inside the validator's query (spec §6 slice 4): the
-	// fact is now acquired once by the run and written back explicitly at the call site.
-	// See the doc comment: this preserves the 1.8 stage side effect and is not the write
-	// the batch pipeline reads.
-	if p.graph != nil {
-		p.graph.SetRootPKMeta(strings.ToLower(pk.DataType), pk.Unsigned)
-	}
 	return nil
 }
 

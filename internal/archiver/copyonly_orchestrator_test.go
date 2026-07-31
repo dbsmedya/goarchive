@@ -199,10 +199,10 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: legacy probe (fresh) + CREATE archiver_job only.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
+	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
+	mock.ExpectQuery("information_schema").
 		WithArgs(cfg.Destination.EffectiveJobSchema()).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Root-table lock acquired for the startup critical section.
@@ -255,10 +255,10 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: legacy probe (fresh) + CREATE archiver_job only.
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM information_schema.tables").
+	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
+	mock.ExpectQuery("information_schema").
 		WithArgs(cfg.Destination.EffectiveJobSchema()).
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Root-table lock + heartbeat staleness + same-root concurrency check (all clean).
