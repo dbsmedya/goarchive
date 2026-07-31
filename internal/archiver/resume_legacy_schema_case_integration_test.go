@@ -21,7 +21,13 @@ import (
 // not disturb.
 func TestLegacyTrackingSchemaResolvesNameCaseExactly_Integration(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	// t.Cleanup, NOT `defer setup.Close()`. A deferred close runs when this function
+	// returns, which is BEFORE any t.Cleanup callback — so the table-drop cleanup below
+	// would execute against a closed pool, fail with "sql: database is closed", and have
+	// its error discarded, leaving Archiver_Job behind for every later test. Registering
+	// the close as a cleanup puts both on the same LIFO stack, so the drop (registered
+	// later) runs first.
+	t.Cleanup(setup.Close)
 
 	destDB, ok := setup.GetDB("destination")
 	if !ok {
