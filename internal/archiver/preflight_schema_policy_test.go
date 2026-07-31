@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -903,5 +904,113 @@ func TestD3SignatureCannotBeForgedByAnIdentifier(t *testing.T) {
 	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
 		t.Fatalf("a destination UNIQUE(%q) must NOT match the source's composite UNIQUE(a, b); "+
 			"the signature encoding was forged", forged)
+	}
+}
+
+// allPublishedDiffKinds is every SpecDiffKind this build has classified in disposeDiff.
+// SpecDiffUnknown is deliberately absent: it is the zero value and must hit the
+// fail-closed default. TestDisposeDiffFailsClosedOnUnclassifiedKinds asserts that.
+var allPublishedDiffKinds = []validations.SpecDiffKind{
+	validations.EngineMismatch,
+	validations.CharsetMismatch,
+	validations.CollationMismatch,
+	validations.CommentMismatch,
+	validations.CommentUnconfirmed,
+
+	validations.ColumnAbsent,
+	validations.ColumnTypeMismatch,
+	validations.ColumnNullabilityMismatch,
+	validations.ColumnCharsetMismatch,
+	validations.ColumnCollationMismatch,
+	validations.ColumnDefaultMismatch,
+	validations.ColumnOrderMismatch,
+	validations.ColumnVisibilityMismatch,
+	validations.ColumnGeneratedMismatch,
+	validations.ColumnGenerationExprMismatch,
+	validations.ColumnAutoIncrementMismatch,
+	validations.ColumnOnUpdateMismatch,
+
+	validations.IndexUnconfirmed,
+	validations.IndexAbsent,
+	validations.IndexPartsMismatch,
+	validations.IndexUniquenessMismatch,
+	validations.IndexTypeMismatch,
+	validations.IndexVisibilityMismatch,
+
+	validations.ConstraintUnconfirmed,
+	validations.ConstraintAbsent,
+	validations.ConstraintKindMismatch,
+	validations.CheckClauseMismatch,
+	validations.CheckEnforcementMismatch,
+	validations.ForeignKeyColumnsMismatch,
+	validations.ForeignKeyReferenceMismatch,
+	validations.ForeignKeyRuleMismatch,
+}
+
+// TestDisposeDiffClassifiesEveryPublishedKind proves goarchive has an explicit case for
+// every SpecDiffKind the pinned library publishes.
+//
+// "Classified" means disposeDiff does NOT return the PREFLIGHT_UNKNOWN_DIFF error. Some
+// kinds are classified AS an error (the constraint/comment family, which cannot occur
+// because those sections are not captured, and IndexUnconfirmed, which is an
+// inspection-integrity failure) — that is a decision, not a gap.
+//
+// The kill this test owns is narrow and specific: deleting a `case` label so a published
+// kind falls through to `default`. It deliberately does NOT check dispositions; the
+// per-kind policy tests own those.
+func TestDisposeDiffClassifiesEveryPublishedKind(t *testing.T) {
+	if got, want := len(allPublishedDiffKinds), 31; got != want {
+		t.Fatalf("the pinned library publishes %d classified kinds, the list has %d; "+
+			"reconcile against spec_diff.go rather than trimming the list", want, got)
+	}
+	for _, kind := range allPublishedDiffKinds {
+		t.Run(fmt.Sprintf("kind_%d", kind), func(t *testing.T) {
+			_, err := disposeDiff(
+				validations.SpecDiff{Kind: kind, Column: "c", Index: "i", A: "a", B: "b"},
+				true, map[string]bool{})
+			if err != nil && strings.Contains(err.Error(), "PREFLIGHT_UNKNOWN_DIFF") {
+				t.Fatalf("SpecDiffKind %d is unclassified; add an explicit case to disposeDiff", kind)
+			}
+		})
+	}
+}
+
+// TestDisposeDiffFailsClosedOnUnclassifiedKinds is the POSITIVE CONTROL for the guard
+// above, and the only test in the repository that reaches disposeDiff's `default` arm.
+//
+// Two things are broken without it, and neither turns any other test red:
+//
+//  1. Mutating `default:` to `return nil, nil` — the exact fail-open this phase exists to
+//     prevent — leaves the whole suite green, because every kind the guard iterates has an
+//     explicit case and so never enters `default`.
+//  2. The guard's sole kill mechanism is a substring match on the production error text.
+//     Reword that message and the guard silently matches nothing, forever, with nothing
+//     going red. This test pins the same substring from the other direction, so the two
+//     cannot drift apart unnoticed.
+//
+// This is NOT the enum-boundary probing rejected in Ambiguities #2. It infers no iota
+// range and asserts nothing about where the enum ends; it asserts that a value this build
+// has not classified is refused. SpecDiffUnknown covers the zero value a zero-initialised
+// struct produces; 200 covers a kind from a future library minor.
+func TestDisposeDiffFailsClosedOnUnclassifiedKinds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind validations.SpecDiffKind
+	}{
+		{"zero_value", validations.SpecDiffUnknown},
+		{"future_library_kind", validations.SpecDiffKind(200)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := disposeDiff(
+				validations.SpecDiff{Kind: tc.kind, Column: "c", Index: "i", A: "a", B: "b"},
+				true, map[string]bool{})
+			if err == nil {
+				t.Fatalf("SpecDiffKind %d must abort preflight, got disposition %+v and nil error; "+
+					"disposeDiff's default arm has been made fail-open", tc.kind, got)
+			}
+			if !strings.Contains(err.Error(), "PREFLIGHT_UNKNOWN_DIFF") {
+				t.Fatalf("expected the PREFLIGHT_UNKNOWN_DIFF error, got: %v", err)
+			}
+		})
 	}
 }

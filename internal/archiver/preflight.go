@@ -809,15 +809,27 @@ func (p *PreflightChecker) ValidateDestinationSchemaCompatibility(ctx context.Co
 		}
 	}
 
+	// Spec §3.3, declared evaluation order: fatal outcomes are determined for ALL tables
+	// first, then advisory warnings are emitted only for tables whose own verdict was
+	// non-fatal. A fatal on one table does not suppress an independent warning on another.
+	//
+	// The per-table half of that contract is the `continue` in the loop above, NOT this
+	// loop: evaluateSchemaCompatibility records the first fatal and keeps appending
+	// warnings from later diffs (preflight_schema_policy.go:94-102), so a fatal table's
+	// verdict really does carry advisories. Dropping the `continue` would leak them.
+	//
+	// This changes only WHICH advisory lines appear on runs that already fail fatally.
+	// No pass/fail outcome changes, so it is a permissible output improvement under spec
+	// §1.1 and deliberately NOT a ledger deviation (§4, ledger scope).
+	for _, w := range warnings {
+		p.logger.Warn(w)
+	}
 	if len(incompatible) > 0 {
 		return &PreflightError{
 			Check:   "DEST_SCHEMA_COMPATIBILITY_CHECK",
 			Message: "Source and destination schemas are incompatible",
 			Tables:  incompatible,
 		}
-	}
-	for _, w := range warnings {
-		p.logger.Warn(w)
 	}
 
 	p.logger.Debug("Destination schema compatibility check PASSED")
