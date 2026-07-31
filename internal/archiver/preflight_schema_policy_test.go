@@ -796,18 +796,19 @@ func TestD3FunctionalMatchAllowedOnlyInACleanColumnEnvironment(t *testing.T) {
 	})
 }
 
-// KIND TAG — TestD3ColumnAndExpressionPartsDoNotCollide.
+// KIND — TestD3ColumnAndExpressionPartsDoNotCollide.
 //
-// The part signature is prefixed "col|" or "expr|". Without BOTH tags a column part and an
-// expression part of the same text render identically, and a destination UNIQUE(x) would
-// be silently accepted as equivalent to a source UNIQUE((x)). The two enforce different
+// A part's kind is carried by uniquePart.Expression. Without it, a column part and an
+// expression part of the same text compare equal, and a destination UNIQUE(x) would be
+// silently accepted as equivalent to a source UNIQUE((x)). The two enforce different
 // predicates: one indexes the stored value, the other the expression's result.
 //
-// The column here is deliberately an INT, so columnCollation returns "" and the collation
-// element cannot be what separates the two signatures — the kind tag has to be.
+// The column here is deliberately an INT, so columnCollation returns "" and Identity is
+// the same text on both sides — the kind flag is the ONLY field that can separate them.
 //
-// (Phase 029 shipped exactly this defect in primaryPartSignature and it took external
-// review to find, because the original test compared two texts that already differed.)
+// (Phase 029 shipped the same class of defect in primaryPartSignature, and PR #59's review
+// found a worse one here: both are recorded in the plan. This test predates neither fix and
+// guards the property directly.)
 func TestD3ColumnAndExpressionPartsDoNotCollide(t *testing.T) {
 	cols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "x", "int")}
 	pair := d3Pair(cols,
