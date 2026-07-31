@@ -7,7 +7,7 @@ Detailed specifications for GoArchive. Start at the
 |----------|--------|
 | [Configuration](README_CONFIGURATION.md) | Every config block, option, default, and precedence rule; identifier rules; tracking tables |
 | [Validation & Preflight](README_VALIDATION.md) | All 20 preflight checks, the check-to-command matrix, schema compatibility rules, dry-run payload validation |
-| [Permissions](README_PERMISSIONS.md) | Privilege matrix, grant recipes, the global `SELECT` requirement, troubleshooting |
+| [Permissions](README_PERMISSIONS.md) | Privilege matrix, grant recipes, the invariants preflight enforces, troubleshooting |
 | [Limitations](README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions, trust model |
 | [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning, pausing, crash recovery and resume semantics |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |

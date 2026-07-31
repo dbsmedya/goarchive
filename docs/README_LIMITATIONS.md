@@ -25,6 +25,7 @@ of cold data**. It is not designed for hot, actively-transacting tables.
 
 - [Known Limits & Caution](#known-limits--caution)
   - [Hard constraints — rejected by preflight](#hard-constraints--rejected-by-preflight)
+  - [Privileges must be provable, not merely present (2.0)](#privileges-must-be-provable-not-merely-present-20)
   - [Model limitations](#model-limitations)
   - [Operational cautions](#operational-cautions)
 - [Trust model](#trust-model)
@@ -88,16 +89,17 @@ every `ON DELETE` rule (`FK_COVERAGE_CHECK`). See
 [Model limitations](#model-limitations) for why cross-schema children cannot be
 modelled at all.
 
-#### Cross-schema FK coverage requires a global-SELECT source account
+#### Cross-schema FK coverage requires `PROCESS` on the source account
 
-`FK_COVERAGE_VISIBILITY_CHECK` fails closed when the source account lacks
-`SELECT ON *.*`, because MySQL hides constraints and entire schemas from
-unprivileged accounts — making complete detection unprovable.
+`FK_COVERAGE_VISIBILITY_CHECK` fails closed unless InnoDB's foreign-key metadata registry
+can be read, which requires the `PROCESS` privilege — MySQL hides constraints and entire
+schemas from unprivileged accounts, so the `information_schema` fallback cannot prove
+complete detection.
 
-Enforced for `archive`, `purge`, `dry-run`, and `validate`; `copy-only` is
-exempt. **Upgrade impact:** a least-privilege account that ran cleanly before will
-now fail this check, even with no cross-schema foreign keys present. See
-[Permissions](README_PERMISSIONS.md#the-global-select-requirement).
+Enforced for `archive`, `purge`, `dry-run`, and `validate`; `copy-only` is exempt.
+**Upgrade impact:** an account that ran cleanly on 1.8 with a global `SELECT` and no
+`PROCESS` will now fail this check, even with no cross-schema foreign keys present. See
+[Permissions](README_PERMISSIONS.md).
 
 #### Destination schema must not be stricter than source
 
@@ -111,6 +113,19 @@ matrix in
 `archive` and `purge` refuse to run against source tables carrying DELETE
 triggers until you pass `--force-triggers`, having reviewed what those triggers
 do. See [Database triggers](#database-triggers) below.
+
+### Privileges must be provable, not merely present (2.0)
+
+GoArchive 2.0 passes a permission check only when the privilege is *established* for the
+object being checked. Two configurations that worked in 1.8 now fail:
+
+- **Privileges granted through a role.** MySQL does not expose a role's grant rows to the
+  account holding the role, so GoArchive cannot prove the privilege. Grant DML privileges
+  directly to the account GoArchive connects as. (`PROCESS` is exempt — see
+  [Permissions](README_PERMISSIONS.md).)
+- **A bare global grant under `@@global.partial_revokes`.** A global privilege row proves
+  nothing about a particular schema once partial revokes are enabled. Add a direct schema- or
+  table-level grant.
 
 ---
 

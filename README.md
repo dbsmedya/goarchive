@@ -105,7 +105,7 @@ GoArchive also operates under deliberate constraints — single-column primary k
 |----------|--------|
 | [Configuration](docs/README_CONFIGURATION.md) | Every config block, option, default, and precedence rule |
 | [Validation & Preflight](docs/README_VALIDATION.md) | All 20 preflight checks, what fails and how to fix it |
-| [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, the global `SELECT` requirement |
+| [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, what preflight actually enforces |
 | [Limitations](docs/README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions |
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
 | [Job Tracking Schema](docs/README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, safe cleanup |
@@ -359,7 +359,10 @@ GRANT SELECT, INSERT ON archive.* TO 'archiver'@'%';
 GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO 'archiver'@'%';
 ```
 
-📖 **The source account also needs a global `SELECT ON *.*`** for cross-schema foreign key visibility on `archive`, `purge`, `dry-run`, and `validate`. Full matrix, grant recipes for both `job_schema` layouts, and troubleshooting in **[Permissions](docs/README_PERMISSIONS.md)**.
+📖 **The source account also needs `PROCESS`** (`GRANT PROCESS ON *.* TO …`) for
+cross-schema foreign key visibility on `archive`, `purge`, `dry-run`, and
+`validate`. Full matrix, grant recipes for both `job_schema` layouts, and
+troubleshooting in **[Permissions](docs/README_PERMISSIONS.md)**.
 
 ## Testing
 

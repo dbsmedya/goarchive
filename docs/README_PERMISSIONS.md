@@ -12,11 +12,67 @@ recipes.
 
 ## Contents
 
+- [Recommended grant recipe](#recommended-grant-recipe)
+- [What preflight actually enforces](#what-preflight-actually-enforces)
 - [Privilege matrix](#privilege-matrix)
+- [Why roles are treated differently for PROCESS and for DML](#why-roles-are-treated-differently-for-process-and-for-dml)
 - [Grant recipes](#grant-recipes)
-- [The global SELECT requirement](#the-global-select-requirement)
-- [How privileges are verified](#how-privileges-are-verified)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Recommended grant recipe
+
+This is what to grant. It satisfies every invariant below on a server without
+`@@global.partial_revokes`.
+
+**Source account:**
+
+```sql
+GRANT PROCESS, SELECT ON *.* TO '<user>'@'<host>';
+GRANT DELETE ON `<source_schema>`.* TO '<user>'@'<host>';   -- archive, purge, and validate only
+```
+
+**Destination account:**
+
+```sql
+GRANT SELECT, INSERT ON `<destination_schema>`.* TO '<user>'@'<host>';
+GRANT CREATE, SELECT, INSERT, UPDATE ON `<job_schema>`.* TO '<user>'@'<host>';
+```
+
+`PROCESS` is server-wide by definition — MySQL has no narrower scope for it. `SELECT ON *.*`
+is recommended rather than required; a direct grant on the source schema also satisfies the
+invariant.
+
+---
+
+## What preflight actually enforces
+
+The recipe is a convenient way to satisfy three invariants. If your environment cannot use
+it — partial revokes, tightly scoped accounts, an existing role structure — these are the
+contracts to satisfy instead.
+
+### I1 — foreign-key metadata completeness
+
+`FK_COVERAGE_VISIBILITY_CHECK` requires that InnoDB's foreign-key metadata registry can be
+read, which requires **effective** `PROCESS`. Effective means the read succeeds; a role-held
+`PROCESS` qualifies. Applies to `archive`, `purge`, `dry-run` and `validate`; `copy-only` is
+exempt.
+
+### I2 — DML privileges must be provable per object
+
+`SOURCE_DELETE_PERMISSION_CHECK`, `DEST_WRITE_PERMISSION_CHECK` and
+`JOB_SCHEMA_PERMISSION_CHECK` pass only when the privilege is *established* for the specific
+object. A privilege held through a role, or a global grant while `@@global.partial_revokes`
+is enabled, is *unconfirmed* and fails closed.
+
+Under partial revokes, satisfy this with a direct schema- or table-level grant. The global
+grant in the recipe is the convenient path, not the only one.
+
+### I3 — source read permission
+
+`SOURCE_SELECT_PERMISSION_CHECK` requires provable `SELECT` on every participating table,
+for **all five commands** — every command reads source rows or estimates from them.
 
 ---
 
@@ -25,17 +81,21 @@ recipes.
 | Server | Privileges | Used for |
 |--------|-----------|----------|
 | **Source** | `SELECT`, `DELETE` | Reading rows and deleting archived rows |
-| **Source** | `SELECT ON *.*` (global) | Cross-schema foreign key visibility — see [below](#the-global-select-requirement) |
+| **Source** | `PROCESS` (global) | Foreign-key metadata completeness (I1) — required for `archive`, `purge`, `dry-run`, `validate`; not required for `copy-only` |
+| **Source** | `SELECT ON *.*` (global) | Convenient alternative to a per-schema `SELECT` grant (I3); not required if `SELECT` is already granted directly on the source schema |
 | **Destination** (data tables) | `SELECT`, `INSERT` | Copying rows into archive tables |
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job` and the per-job `archiver_job_log_<id>` tables |
 | **Tracking schema** (optional) | `DELETE`, `DROP` | DBA cleanup only. `DROP` is additionally needed for `TRUNCATE`. |
 | **Replica** (optional) | `REPLICATION CLIENT` | Lag monitoring via `SHOW REPLICA STATUS` |
 
-`copy-only` never deletes from source, so it does not require source `DELETE`.
-Every other command does.
+Source `DELETE` is required for `archive`, `purge`, and `validate` — `validate`
+enforces the privilege without deleting anything, so a `validate`-only run still
+needs the grant. It is **not** required for `dry-run` or `copy-only`: `dry-run`
+previews a delete without running this check, and `copy-only` never deletes from
+source at all.
 
 Source `SELECT` on every participating table is validated by
-`SOURCE_SELECT_PERMISSION_CHECK` for all five commands — see
+`SOURCE_SELECT_PERMISSION_CHECK` for all five commands (I3) — see
 [Validation & Preflight](README_VALIDATION.md). The privilege must be provable for the
 object: a grant held only through an active role, or a bare global grant while
 `@@global.partial_revokes` is enabled, is reported as unconfirmed and fails closed.
@@ -55,6 +115,25 @@ The optional `DELETE`/`DROP` grants are for maintenance only — see
 
 ---
 
+## Why roles are treated differently for PROCESS and for DML
+
+**A role-held `PROCESS` is accepted; a role-held DML privilege is not.** The reason is the
+kind of evidence available for each.
+
+`FK_COVERAGE_VISIBILITY_CHECK` (I1) proves completeness by successfully reading InnoDB's
+foreign-key metadata registry, which requires `PROCESS`. A role-held `PROCESS` produces that
+same successful read, so the proof holds regardless of whether the privilege reached the
+account directly or through a role.
+
+The DML checks (I2 — `SOURCE_DELETE_PERMISSION_CHECK`, `DEST_WRITE_PERMISSION_CHECK`,
+`JOB_SCHEMA_PERMISSION_CHECK`; and I3 — `SOURCE_SELECT_PERMISSION_CHECK`) have no equivalent
+proof available. MySQL does not expose a role's own grant rows to the account that holds the
+role, so GoArchive cannot confirm the privilege exists — only that it might. A privilege held
+only through an active role is therefore reported *unconfirmed* and fails closed. Grant DML
+privileges directly to the account GoArchive connects as.
+
+---
+
 ## Grant recipes
 
 ### Source
@@ -62,9 +141,9 @@ The optional `DELETE`/`DROP` grants are for maintenance only — see
 ```sql
 GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
 
--- Required for cross-schema FK visibility on archive/purge/dry-run/validate.
--- See "The global SELECT requirement" below.
-GRANT SELECT ON *.* TO 'archiver'@'%';
+-- Required for foreign-key metadata completeness (I1) on archive/purge/dry-run/validate.
+-- See "What preflight actually enforces" above.
+GRANT PROCESS ON *.* TO 'archiver'@'%';
 ```
 
 ### Destination — tracking tables in the destination database (default)
@@ -102,104 +181,6 @@ Only needed when `replica.enabled: true`.
 
 ---
 
-## The global SELECT requirement
-
-`FK_COVERAGE_VISIBILITY_CHECK` **hard-fails** when the source account lacks
-`SELECT ON *.*`. This is the least intuitive requirement GoArchive imposes, so
-the reasoning matters.
-
-### Why a schema-scoped grant is not enough
-
-GoArchive must prove that no table **outside** the archive graph holds a foreign
-key pointing **into** it. An external `ON DELETE CASCADE` or `SET NULL` would
-delete or mutate rows GoArchive never copied — silent data loss during the delete
-phase.
-
-MySQL makes that impossible to prove from a least-privilege account:
-
-1. A foreign key constraint appears in `information_schema` only to an account
-   with some privilege on the constraint's **child** table.
-2. A schema the account has no privilege on is **entirely invisible** — it does
-   not even appear in `SCHEMATA`.
-
-So an unprivileged account cannot distinguish "no external foreign keys exist"
-from "external foreign keys exist but I cannot see them". GoArchive fails closed
-rather than assuming the former.
-
-### Which commands enforce it
-
-| Command | Enforced | Reason |
-|---------|:--------:|--------|
-| `archive` | ✅ | Deletes from source |
-| `purge` | ✅ | Deletes from source |
-| `dry-run` | ✅ | Previews a delete |
-| `validate` | ✅ | Validates a delete-capable configuration |
-| `copy-only` | ❌ | Never deletes from source — no cascade can fire |
-
-`archive` and `purge` can bypass it with `--skip-validate-preflight`, which
-bypasses **all** preflight and is dangerous. `dry-run` and `validate` have no skip
-flag.
-
-The exemption for `copy-only` is from the **visibility** check only. `copy-only`
-still runs `FK_COVERAGE_CHECK`, so a `copy-only` run by a global-privileged
-account is still blocked by an uncovered cross-schema incoming foreign key.
-
-### Upgrade impact
-
-> An existing least-privilege source account that ran cleanly on an earlier
-> release **will now fail** this check on `archive`, `purge`, `dry-run`, and
-> `validate` — even when the schema contains no cross-schema foreign keys at all.
-> The check tests the account's privilege, not the schema's contents.
-
-Fix by granting global SELECT, or run preflight as an account that already holds
-it.
-
----
-
-## How privileges are verified
-
-Preflight verifies destination `INSERT`, source `DELETE`, and the tracking-schema
-privileges **up front** — these are precisely the failures that would otherwise
-surface mid-run, after copy has already committed rows.
-
-### Grantee resolution
-
-The check matches the **connected account**, resolved as:
-
-- `CURRENT_USER()`, converted to `information_schema` GRANTEE format
-  (`'user'@'host'`)
-- plus every **active role** from `CURRENT_ROLE()`
-
-### Scope resolution
-
-For each privilege, three scopes are consulted in order, and the first match
-wins:
-
-1. `information_schema.USER_PRIVILEGES` — global (`ON *.*`)
-2. `information_schema.SCHEMA_PRIVILEGES` — schema (`ON db.*`)
-3. `information_schema.TABLE_PRIVILEGES` — per table
-
-A global or schema-level grant therefore satisfies the check without any
-per-table grant. `GRANT ALL` works too — MySQL expands it into individual
-privilege rows.
-
-The tracking-schema check (`JOB_SCHEMA_PERMISSION_CHECK`) uses global and schema
-scope **only**, with no per-table fallback: the per-job tracking tables do not
-exist yet when preflight runs.
-
-### No extra privileges needed to run the checks
-
-Privilege introspection requires no additional grants. MySQL always exposes the
-connected account's own privilege rows in `information_schema`.
-
-### Known limitation: nested roles
-
-Only **directly activated** roles are detected. A privilege held through a role
-granted to another role is not visible to the check and will conservatively fail
-it. Grant the privilege directly, or activate the role that actually holds it.
-
----
-
 ## Troubleshooting
 
 **`JOB_SCHEMA_PERMISSION_CHECK: ... lacks CREATE, UPDATE on tracking schema`**
@@ -216,18 +197,31 @@ you believe are granted**
 
 Check three things: the grant targets the account `CURRENT_USER()` actually
 resolves to (not the one you connected *as*, if proxying or host-pattern matching
-is involved); the role holding it is activated and not nested; and the privilege
+is involved); the privilege is granted **directly** to the account rather than
+through any role — under I2, a role-held DML grant is always reported
+unconfirmed, whether or not the role is nested or activated; and the privilege
 is on the right schema — source `DELETE` and destination `INSERT` are separate
 grants on separate servers.
 
 **`FK_COVERAGE_VISIBILITY_CHECK` on a schema with no cross-schema foreign keys**
 
-Expected. The check tests the account's privilege, not the schema. Grant
-`SELECT ON *.*`, or use `copy-only`, which is exempt.
+Expected. The check tests whether foreign-key metadata completeness is
+provable, not the schema's contents. Grant `PROCESS`, or use `copy-only`, which
+is exempt.
 
 **Least-privilege deployments**
 
-Run preflight-enforcing commands (`validate`, `dry-run`) as a global-SELECT
-account, and keep the archive account narrower. The preflight and the run do not
-have to use the same account, as long as the account performing the run holds the
-privileges in the [matrix](#privilege-matrix).
+Running `validate` or `dry-run` from a separate, more-privileged account is
+**diagnostic only** — it tells you whether *that* account satisfies the
+invariants, not whether the account that will actually run `archive`, `purge`,
+or `copy-only` does. `archive`, `purge`, and `copy-only` each connect with their
+own configured account and **re-run preflight themselves at startup**
+(`cmd/goarchive/cmd/archive.go`, `purge.go`, `copyonly.go`); a prior `validate`
+result is not carried forward and grants the run nothing. The account that
+actually runs the command must itself satisfy every privilege in the
+[matrix](#privilege-matrix), including `PROCESS` where required.
+
+The only way to run a command without its own account holding these privileges
+is `--skip-validate-preflight`, which is **DANGEROUS** and bypasses every
+preflight check, not just the permission ones. `dry-run` and `validate` do not
+accept that flag at all.

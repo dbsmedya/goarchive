@@ -142,7 +142,7 @@ The published `docs/` set — keep these current when behavior changes:
 | `docs/README.md` | Index of the documentation set |
 | `docs/README_CONFIGURATION.md` | Every config block, option, default, precedence rule |
 | `docs/README_VALIDATION.md` | All 20 preflight checks + the check-to-command matrix |
-| `docs/README_PERMISSIONS.md` | Privilege matrix, grant recipes, global-SELECT requirement |
+| `docs/README_PERMISSIONS.md` | Privilege matrix, grant recipes, the invariants preflight enforces |
 | `docs/README_LIMITATIONS.md` | Hard constraints, model limits, operational cautions |
 | `docs/README_OPERATIONS.md` | Commands/flags, tuning, pausing, crash recovery, resume gates |
 | `docs/README_JOBS_SCHEMA.md` | Tracking table DDL, DBA maintenance, safe-truncate rules |
@@ -233,9 +233,10 @@ changed when" lives in git/GitHub; this section is present-tense current state.)
 
 ### Schema compatibility (`DEST_SCHEMA_COMPATIBILITY_CHECK`)
 
-Implemented in `internal/archiver/preflight.go` (`columnIncompatibility`).
-Direction-aware, not byte-identical — the destination may be *looser* than the
-source but never *stricter*:
+Implemented in `internal/archiver/preflight_schema_policy.go`
+(`evaluateSchemaCompatibility`; destination uniqueness is
+`checkDestinationUniqueness`). Direction-aware, not byte-identical — the
+destination may be *looser* than the source but never *stricter*:
 
 - **Allowed (destination looser):** drop secondary indexes (`MUL`/`UNI`),
   `auto_increment`, column defaults (`DEFAULT_GENERATED`, `ON UPDATE`), and relax
@@ -248,7 +249,10 @@ source but never *stricter*:
   name/type/count/order difference.
 - **Column charset mismatch:** fatal under count verification or when
   verification is skipped (silent transliteration risk), warning-only under a
-  sha256 verification that actually runs; collation-only mismatch always warns.
+  sha256 verification that actually runs; collation-only mismatch is fatal on a
+  column participating in a destination unique index (a looser destination
+  collation can collide rows the source's index kept distinct), warning
+  otherwise.
 - **Integer display width is normalized away** (`normalizeColumnType`):
   `bigint(20)` and `bigint` compare equal, since the width is cosmetic and MySQL
   8.0.17+ no longer reports it (a schema dumped from an older server would
@@ -257,9 +261,12 @@ source but never *stricter*:
 
 ### Preflight & permissions
 
-- Write-permission preflight matches the *connected* account (`CURRENT_USER()` +
-  active roles) across `USER_`/`SCHEMA_`/`TABLE_PRIVILEGES`, so global grants
-  don't false-fail. `SOURCE_DELETE_PERMISSION_CHECK` covers archive/purge.
+- Write-permission preflight matches the *connected* account (`CURRENT_USER()`).
+  A privilege must be *provable* for the specific object: one held only through
+  an active role, or via a bare global grant while `@@global.partial_revokes` is
+  enabled, is reported *unconfirmed* and fails closed — see
+  `docs/README_PERMISSIONS.md`. `SOURCE_DELETE_PERMISSION_CHECK` runs for
+  `archive`, `purge`, and `validate` (not `dry-run` or `copy-only`).
 - `JOB_SCHEMA_PERMISSION_CHECK` requires `CREATE` + `SELECT`/`INSERT`/`UPDATE` on
   the tracking schema (`destination.job_schema`).
 - Config identifiers (`root_table`, `primary_key`, relation `table`/`foreign_key`/
@@ -281,21 +288,24 @@ source but never *stricter*:
   detected and hard-fails for every ON DELETE rule (CASCADE/SET NULL/RESTRICT/NO
   ACTION). Cross-schema children cannot be represented in the graph (identifiers
   forbid `schema.table`), so any such incoming FK is fatal.
-- `FK_COVERAGE_VISIBILITY_CHECK` fails closed when the source account lacks a
-  **global SELECT** privilege. MySQL only exposes a constraint in
-  `information_schema` to an account privileged on the child table, and an
-  unprivileged schema is invisible even in `SCHEMATA`, so without global SELECT
-  the coverage check cannot prove it saw every incoming cross-schema FK. It is
-  enforced for the commands that delete from source or preview such a delete —
-  `archive`, `purge`, `dry-run`, and `validate` — and **skipped for `copy-only`**,
-  which never issues a source DELETE (no external cascade can fire). Run those
-  commands as an account with `SELECT ON *.*`. `archive` and `purge` can bypass
-  this check (and all preflight) with `--skip-validate-preflight` (DANGEROUS);
-  `dry-run` and `validate` have no skip flag and always enforce it. `copy-only`
-  also accepts the flag but is exempt from this check regardless — the exemption
-  is from the *visibility* check only: `copy-only` still runs `FK_COVERAGE_CHECK`,
-  so a `copy-only` run by a global-privileged account is still blocked by an
-  uncovered cross-schema incoming FK (`--skip-validate-preflight` bypasses it).
+- `FK_COVERAGE_VISIBILITY_CHECK` fails closed unless GoArchive can prove it saw
+  every incoming cross-schema FK. Completeness is proven by successfully reading
+  InnoDB's own foreign-key metadata registry, which requires **effective
+  `PROCESS`** (a role-held `PROCESS` counts — the proof is that the read
+  succeeded). If that read fails, discovery falls back to `information_schema`,
+  which only shows constraints on tables the account is privileged for, and the
+  state becomes `unconfirmed`; a state of `unknown` means no completeness proof
+  was populated at all — only `complete` passes. It is enforced for the commands
+  that delete from source or preview such a delete — `archive`, `purge`,
+  `dry-run`, and `validate` — and **skipped for `copy-only`**, which never issues
+  a source DELETE (no external cascade can fire). Run those commands as an
+  account with `PROCESS`. `archive` and `purge` can bypass this check (and all
+  preflight) with `--skip-validate-preflight` (DANGEROUS); `dry-run` and
+  `validate` have no skip flag and always enforce it. `copy-only` also accepts
+  the flag but is exempt from this check regardless — the exemption is from the
+  *visibility* check only: `copy-only` still runs `FK_COVERAGE_CHECK`, so a
+  `copy-only` run is still blocked by an uncovered cross-schema incoming FK
+  (`--skip-validate-preflight` bypasses it).
 - `INVISIBLE_COLUMN_CHECK` hard-fails if any participating (graph) table has an
   `INVISIBLE` column. Rows are copied with `SELECT *`, which MySQL omits invisible
   columns from, so their stored values would be silently dropped from the copy
