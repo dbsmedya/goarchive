@@ -377,7 +377,8 @@ make e2e-setup            # bootstrap + Sakila end-to-end suite
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.8.0-community` (stable for the scope below)
+- **Version**: `1.9.0-RC-community` (release-candidate series — **for testing**)
+- **Stable release**: `1.8.0-community` — use this for production. The 1.9.x RCs validate the [dbsgomysql integration](docs/README_dbsgomysql.md) ahead of 2.0.
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (sqlmock, no DB), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 

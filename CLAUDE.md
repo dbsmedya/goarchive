@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.8.0-community` (stable for single-operator workstation archival of cold data; see `docs/README_LIMITATIONS.md`).
+**Version**: `1.9.0-RC-community` — the release-candidate series validating the dbsgomysql integration ahead of 2.0 (see `docs/README_dbsgomysql.md`). The **stable** release is `1.8.0-community` (stable for single-operator workstation archival of cold data; see `docs/README_LIMITATIONS.md`).
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a separate product.
 
 ### Versioning (read before bumping the version)
@@ -15,6 +15,14 @@ GoArchive is a Go CLI tool for safely archiving MySQL relational data across ser
 The version string (e.g. `1.4.0-community`, with the `-community` edition suffix)
 is duplicated in several places. A bump MUST update **all** of these — a missed
 one ships mislabeled binaries:
+
+Release candidates keep the edition suffix and carry an `RC` marker before it:
+`1.9.0-RC-community`. Nothing in the repo parses the version — the workflows
+trigger on the `v*` glob and extract it with a prefix strip, and CI injects the
+literal `ci-test`. The only semver consumer is `docker/metadata-action`
+(`.github/workflows/docker.yml`), and every form above is a valid SemVer
+prerelease, which is also what makes `release.yml` mark the GitHub release a
+prerelease automatically (`prerelease: contains(VERSION, '-')`).
 
 | Location | What it controls |
 |----------|------------------|

@@ -13,6 +13,7 @@ Detailed specifications for GoArchive. Start at the
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
 | [Testing](README_TESTING.md) | Test layers and how to run them |
 | [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
+| [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
 
 ## Elsewhere in the repository
 
