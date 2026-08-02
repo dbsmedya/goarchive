@@ -907,48 +907,18 @@ func TestD3SignatureCannotBeForgedByAnIdentifier(t *testing.T) {
 	}
 }
 
-// allPublishedDiffKinds is every SpecDiffKind this build has classified in disposeDiff.
-// SpecDiffUnknown is deliberately absent: it is the zero value and must hit the
-// fail-closed default. TestDisposeDiffFailsClosedOnUnclassifiedKinds asserts that.
-var allPublishedDiffKinds = []validations.SpecDiffKind{
-	validations.EngineMismatch,
-	validations.CharsetMismatch,
-	validations.CollationMismatch,
-	validations.CommentMismatch,
-	validations.CommentUnconfirmed,
-
-	validations.ColumnAbsent,
-	validations.ColumnTypeMismatch,
-	validations.ColumnNullabilityMismatch,
-	validations.ColumnCharsetMismatch,
-	validations.ColumnCollationMismatch,
-	validations.ColumnDefaultMismatch,
-	validations.ColumnOrderMismatch,
-	validations.ColumnVisibilityMismatch,
-	validations.ColumnGeneratedMismatch,
-	validations.ColumnGenerationExprMismatch,
-	validations.ColumnAutoIncrementMismatch,
-	validations.ColumnOnUpdateMismatch,
-
-	validations.IndexUnconfirmed,
-	validations.IndexAbsent,
-	validations.IndexPartsMismatch,
-	validations.IndexUniquenessMismatch,
-	validations.IndexTypeMismatch,
-	validations.IndexVisibilityMismatch,
-
-	validations.ConstraintUnconfirmed,
-	validations.ConstraintAbsent,
-	validations.ConstraintKindMismatch,
-	validations.CheckClauseMismatch,
-	validations.CheckEnforcementMismatch,
-	validations.ForeignKeyColumnsMismatch,
-	validations.ForeignKeyReferenceMismatch,
-	validations.ForeignKeyRuleMismatch,
-}
-
 // TestDisposeDiffClassifiesEveryPublishedKind proves goarchive has an explicit case for
 // every SpecDiffKind the pinned library publishes.
+//
+// The vocabulary comes from validations.AllSpecDiffKinds(), not from a hand-copy here.
+// That accessor returns every NONZERO kind in declaration order, so SpecDiffUnknown is
+// excluded by construction — it is the zero value and must hit the fail-closed default,
+// which TestDisposeDiffFailsClosedOnUnclassifiedKinds asserts from the other side.
+//
+// Consuming the accessor is what makes a kind added by a future library minor fail HERE,
+// at bump time, instead of at run time in disposeDiff's default arm. A hand-copied list
+// cannot grow on its own, which is exactly why the one that used to live here could have
+// an entry deleted with nothing going red.
 //
 // "Classified" means disposeDiff does NOT return the PREFLIGHT_UNKNOWN_DIFF error. Some
 // kinds are classified AS an error (the constraint/comment family, which cannot occur
@@ -958,12 +928,20 @@ var allPublishedDiffKinds = []validations.SpecDiffKind{
 // The kill this test owns is narrow and specific: deleting a `case` label so a published
 // kind falls through to `default`. It deliberately does NOT check dispositions; the
 // per-kind policy tests own those.
+//
+// The len == 0 floor below is NOT redundant with the loop — do not delete it as noise.
+// Every assertion in this test lives inside t.Run, so an empty vocabulary makes the whole
+// test pass having executed nothing, reported as a bare `ok`. Measured, not assumed: with
+// the vocabulary forced empty this test exits 0 with zero subtests. The dropped
+// len(...) == 31 assertion provided that property too; only its count-pinning half became
+// obsolete when the hand-copy went away, which is why the floor asserts non-emptiness and
+// deliberately does NOT re-introduce a maintained number.
 func TestDisposeDiffClassifiesEveryPublishedKind(t *testing.T) {
-	if got, want := len(allPublishedDiffKinds), 31; got != want {
-		t.Fatalf("the pinned library publishes %d classified kinds, the list has %d; "+
-			"reconcile against spec_diff.go rather than trimming the list", want, got)
+	kinds := validations.AllSpecDiffKinds()
+	if len(kinds) == 0 {
+		t.Fatal("AllSpecDiffKinds() returned no kinds; this guard would pass vacuously")
 	}
-	for _, kind := range allPublishedDiffKinds {
+	for _, kind := range kinds {
 		t.Run(fmt.Sprintf("kind_%d", kind), func(t *testing.T) {
 			_, err := disposeDiff(
 				validations.SpecDiff{Kind: kind, Column: "c", Index: "i", A: "a", B: "b"},
