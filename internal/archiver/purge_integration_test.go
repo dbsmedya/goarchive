@@ -217,7 +217,7 @@ func TestPurge_FullCycle_Integration(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -269,7 +269,7 @@ func TestPurge_CrashRecovery_Integration(t *testing.T) {
 	}
 
 	setup, _ := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -349,7 +349,7 @@ func TestPurge_EmptyResultSet_Integration(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -411,7 +411,7 @@ func TestPurge_ContextCancellation_Integration(t *testing.T) {
 	}
 
 	setup, _ := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -494,7 +494,7 @@ func TestPurge_ResumeFromCheckpoint_Integration(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -572,7 +572,7 @@ func TestPurge_MultiLevelHierarchy_Integration(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -633,7 +633,7 @@ func TestPurge_JobTypeValidation_Integration(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearPurgeSource(t, setup)
 	sourceDB, _ := setup.GetDB("source")

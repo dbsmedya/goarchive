@@ -218,7 +218,7 @@ func TestIntegrationSchemaCompatibility_CharsetMismatch(t *testing.T) {
 // CREATE on the tracking schema.
 func TestIntegrationJobSchemaPermissions_MissingCreate(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	// Get root connection and destination config.
 	rootDB, ok := setup.GetDB("destination")

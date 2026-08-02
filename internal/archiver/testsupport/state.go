@@ -22,13 +22,13 @@ func CleanupArchiverState(t *testing.T, db *sql.DB, jobName string) {
 		if err == nil {
 			drop := fmt.Sprintf("DROP TABLE IF EXISTS `archiver_job_log_%d`", id)
 			if _, derr := db.ExecContext(ctx, drop); derr != nil {
-				t.Logf("CleanupArchiverState drop log table: %v", derr)
+				t.Errorf("CleanupArchiverState drop log table: %v", derr)
 			}
 		} else if err != sql.ErrNoRows {
-			t.Logf("CleanupArchiverState resolve id: %v", err)
+			t.Errorf("CleanupArchiverState resolve id: %v", err)
 		}
 		if _, err := db.ExecContext(ctx, "DELETE FROM archiver_job WHERE job_name = ?", jobName); err != nil {
-			t.Logf("CleanupArchiverState archiver_job: %v", err)
+			t.Errorf("CleanupArchiverState archiver_job: %v", err)
 		}
 	})
 }
