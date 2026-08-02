@@ -9,7 +9,7 @@ integration, and Sakila end-to-end (E2E) tests.
 |-----------|-------------|---------|
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archives that run to completion (tests 03–04) | `make e2e` |
+| **Sakila E2E (working)** | Archives that run to completion (tests 03–04) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
@@ -62,9 +62,27 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 ### 1. Environment configuration
 
 ```bash
-cp tests/dot.env tests/.env
-# Edit tests/.env and verify the settings
+cp tests/dot.env tests/.env      # optional — the runner creates it if absent
 ```
+
+`tests/.env` is gitignored, so a fresh clone has none. `run-tests.sh` creates it from the
+tracked `tests/dot.env` and says so; the template's defaults work against the containers
+`make test-up` starts, so nothing has to be edited. You also need **MySQL Shell**
+(`brew install mysql-shell`) — the runner checks for it up front and stops with install
+instructions if it is missing.
+
+`run-tests.sh` sources `tests/.env` for you. If you invoke `go test -tags=integration`
+**directly**, load it yourself first:
+
+```bash
+set -a; source tests/.env; set +a
+```
+
+Forgetting is safe in the sense that it cannot pass silently: the integration suites
+**fail** with a message naming the fix. They do not skip. A skipped suite prints `ok`
+and exits 0, which is indistinguishable from a green run unless you pass `-v` and read
+the `--- SKIP` lines — so the environment is proven once, up front, before any test
+runs.
 
 Default topology:
 - **Source** (db1): `127.0.0.1:3305/sakila`
@@ -105,17 +123,16 @@ destination starts empty (see the Overview note):
 ### Sakila E2E tests
 
 ```bash
-# Working tests (03–04) — archives run to completion
-make e2e                                                # short form
-./scripts/run-tests.sh --sakila --skip-docker           # explicit
+# The whole procedure — test-reset, then e2e-setup, then the tests (03–04)
+make e2e
 
-# Full bootstrap (docker + DB seed + working tests)
-make e2e-setup                                          # short form
-./scripts/run-tests.sh --setup --sakila                 # explicit
+# Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
+make e2e-examples
 
-# Validation demos (01–02) — preflight MUST fail
-make e2e-examples                                       # short form
-./scripts/run-tests.sh --sakila-examples --skip-docker  # explicit
+# The individual steps, if you know why you want one
+make test-reset                          # 1. destroy
+make e2e-setup                           # 2. rebuild + seed
+make e2e-tests-must-run-after-setup      # 3. run; refuses unless step 2 ran
 
 # Target a single test
 ./scripts/run-tests.sh --sakila -t 4                    # working rental→payment
@@ -156,11 +173,13 @@ CFG=tests/configs/test03_payment_batch.yaml
 
 # 5. Archive: copy → verify → delete. Logs progress to archiver_job and the
 #    per-job archiver_job_log_<id> table.
-./bin/goarchive archive --job archive-payment-rows --config "$CFG" --skip-verify
+#    Do NOT add --skip-verify: it disables the verify stage, so the source rows
+#    are deleted whether or not the copy landed.
+./bin/goarchive archive --job archive-payment-rows --config "$CFG"
 
-# Verify the destination received the rows
-mysqlsh --uri "root:$MYSQL_ROOT_PASSWORD@127.0.0.1:3307/sakila_archive" --sql \
-  -e "SELECT COUNT(*) FROM payment WHERE payment_id <= 2000;"
+# Confirm the destination received the rows
+tests/scripts/mysql-query.sh 3307 \
+  "SELECT COUNT(*) FROM sakila_archive.payment WHERE payment_id <= 2000;"
 ```
 
 ### Example: a demo that fails preflight (Test 01)
@@ -241,6 +260,42 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 
 A summary (`SAKILA INTEGRATION TEST SUMMARY`) is generated at the end with a
 `Passed: N / Failed: N` line.
+
+## Querying the test databases
+
+```bash
+tests/scripts/mysql-query.sh <port> "<sql>"      # 3305 source · 3307 archive · 3308 replica
+```
+
+Results on stdout, diagnostics on stderr. Exit 0 = ran, 1 = query failed, 2 = environment
+not loaded. So an empty stdout always means genuinely zero rows:
+
+```bash
+rows=$(tests/scripts/mysql-query.sh 3307 "SELECT job_name FROM goarchive_test.archiver_job;") || exit 1
+[ -z "$rows" ] && echo "clean"
+```
+
+**Prefer the wrapper over raw `mysqlsh`.** It passes `--no-defaults`, without which `mysqlsh`
+reads `~/.my.cnf` and can connect as whoever that file names when you forget the password —
+succeeding locally and failing in CI. Integration residue lives in **`goarchive_test`**;
+`sakila_archive` is the E2E destination.
+
+## Test result counts
+
+Every Go layer the runner executes reports:
+
+```
+[INFO] integration: PASS=1026 FAIL=0 SKIP=1 (go test exit 0)
+```
+
+and **fails when nothing ran**. `go test` prints `ok` and exits 0 for a `-run` pattern that
+matched no test, a missing build tag, or a suite where everything skipped — so a gate that
+only counts failures passes all three. The runner counts passes instead, which requires `-v`,
+so `-v` is always on internally; the full log prints only with `--verbose` or on failure.
+
+Skips are reported by name rather than swallowed. `MIN_PASS=<n>` requires at least n passing
+tests — inclusive, so `MIN_PASS=1026` accepts exactly 1026. It defaults to 1, which only
+catches a run that did nothing.
 
 ## Environment Variables
 

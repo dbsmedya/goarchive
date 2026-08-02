@@ -24,18 +24,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$TESTS_DIR")"
 
-# Source .env file if it exists
-if [ -f "$TESTS_DIR/.env" ]; then
-    set -a
-    source "$TESTS_DIR/.env"
-    set +a
-else
-    echo "ERROR: .env file not found at $TESTS_DIR/.env"
-    echo "Please copy dot.env to .env and configure it:"
-    echo "  cp $TESTS_DIR/dot.env $TESTS_DIR/.env"
-    echo "  nano $TESTS_DIR/.env"
+# mysqlsh is used by the setup path long before the E2E path checks for it, so
+# check here -- otherwise a machine without MySQL Shell fails ~450 lines later
+# with a bare "command not found" inside a connection retry loop.
+if ! command -v mysqlsh &> /dev/null; then
+    echo "ERROR: mysqlsh (MySQL Shell) is not installed or not in PATH."
+    echo ""
+    echo "  macOS:  brew install mysql-shell"
+    echo "  Other:  https://dev.mysql.com/downloads/shell/"
+    echo ""
+    echo "The test harness drives every database operation through mysqlsh, so"
+    echo "nothing below this point can work without it."
     exit 1
 fi
+
+# Source .env. On a fresh clone it does not exist -- tests/.env is gitignored --
+# so create it from the tracked template rather than making that a manual step.
+# tests/dot.env ships with working local defaults; nothing has to be edited.
+if [ ! -f "$TESTS_DIR/.env" ]; then
+    if [ ! -f "$TESTS_DIR/dot.env" ]; then
+        echo "ERROR: neither $TESTS_DIR/.env nor the template $TESTS_DIR/dot.env exists."
+        echo "The template is tracked in git; a clone should have it."
+        exit 1
+    fi
+    echo "NOTE: $TESTS_DIR/.env did not exist. Creating it from dot.env."
+    echo "      These are local test-container credentials. Edit the file if"
+    echo "      your setup differs; the defaults work with 'make test-up'."
+    cp "$TESTS_DIR/dot.env" "$TESTS_DIR/.env"
+fi
+
+set -a
+source "$TESTS_DIR/.env"
+set +a
 
 # Default SAKILA_DIR to the repo-relative path so mysqlsh scripts find the
 # Sakila SQL files regardless of the CWD mysqlsh launches in. Do not override
@@ -390,7 +410,7 @@ run_archive_job() {
     
     # STEP 3: Run actual archive
     log_info "[STEP 3/3] Executing archive..."
-    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --skip-verify --force-triggers 2>&1; then
+    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --force-triggers 2>&1; then
         log_error "Archive job failed"
         return 1
     fi
@@ -439,7 +459,6 @@ run_sakila_test() {
     local tables=""
     local mode=""                 # "working" or "example"
     local expected_error=""       # substring required in error when mode=example
-    local archive_flags="--skip-verify"
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -731,34 +750,100 @@ run_sakila_tests() {
     fi
 }
 
+# Run a Go test layer and REFUSE TO REPORT SUCCESS FOR A RUN THAT DID NOTHING.
+#
+# -v is not a preference here. Without it `go test` prints no "--- PASS" lines,
+# so a suite where every test was filtered out, skipped, or never built looks
+# byte-for-byte like a suite where everything passed: no "--- FAIL" either way,
+# `ok <pkg> <time>`, exit 0. Counting PASS is the only way to tell those apart,
+# and counting PASS requires -v. So -v is always on internally; the full log is
+# printed only when asked for (--verbose) or when something went wrong.
+#
+# Floor: PASS must be at least MIN_PASS, which defaults to 1 -- "something ran".
+# The bound is INCLUSIVE, so MIN_PASS=1000 means 1000 is acceptable, not 1001.
+# Set it to pin a stricter floor; a real number catches a suite that quietly
+# lost half its tests, which "at least 1" cannot.
+#
+# Usage: run_go_layer <label> <command...>
+run_go_layer() {
+    local label="$1"; shift
+    local min_pass="${MIN_PASS:-1}"
+    local log rc pass fail skip
+
+    log="$(mktemp)"
+    if [[ -n "$VERBOSE" ]]; then
+        "$@" 2>&1 | tee "$log"
+        rc=${PIPESTATUS[0]}
+    else
+        "$@" >"$log" 2>&1
+        rc=$?
+    fi
+
+    pass=$(grep -c -- '--- PASS' "$log")
+    fail=$(grep -c -- '--- FAIL' "$log")
+    skip=$(grep -c -- '--- SKIP' "$log")
+
+    # Show the evidence whenever the result is not a clean pass.
+    if [[ -z "$VERBOSE" ]] && { [[ $rc -ne 0 ]] || [[ $fail -gt 0 ]] || [[ $pass -lt $min_pass ]]; }; then
+        cat "$log"
+    fi
+
+    log_info "$label: PASS=$pass FAIL=$fail SKIP=$skip (go test exit $rc)"
+
+    if [[ $pass -lt $min_pass ]]; then
+        log_error "$label: only $pass tests passed (minimum is $min_pass)."
+        log_error "A run that executed nothing is not a green run. Common causes:"
+        log_error "  - a -run pattern that matched no test (go test prints 'ok' and exits 0)"
+        log_error "  - the build tag missing, so no real-DB test was compiled in"
+        log_error "  - every test skipped"
+        rm -f "$log"
+        return 1
+    fi
+
+    if [[ $fail -gt 0 || $rc -ne 0 ]]; then
+        log_error "$label: $fail failing test(s), go test exit $rc"
+        grep -- '--- FAIL' "$log" | head -30 >&2
+        rm -f "$log"
+        return 1
+    fi
+
+    if [[ $skip -gt 0 ]]; then
+        log_warn "$label: $skip test(s) skipped — confirm each is data-dependent, not environmental"
+        grep -- '--- SKIP' "$log" | head -10
+    fi
+
+    rm -f "$log"
+    return 0
+}
+
 # Run Go unit tests
 run_unit_tests() {
     log_step "Running Go unit tests..."
-    
+
     cd "$PROJECT_ROOT"
-    
-    local go_test_opts=""
-    if [[ -n "$VERBOSE" ]]; then
-        go_test_opts="-v"
-    fi
-    
+
     if [ -z "$GO_TEST_ARGS" ]; then
         GO_TEST_ARGS="./..."
     fi
-    
-    go test $go_test_opts -run '^Test[^(Integration|Orchestrator_FailFast|Orchestrator_Full|Execute_|Real)].*' $GO_TEST_ARGS 2>&1
+
+    run_go_layer "unit" \
+        go test -v -run '^Test[^(Integration|Orchestrator_FailFast|Orchestrator_Full|Execute_|Real)].*' $GO_TEST_ARGS
 }
 
 # Run Go integration tests
 run_integration_tests() {
     log_step "Running Go integration tests..."
-    
+
     cd "$PROJECT_ROOT"
-    
-    local go_test_opts=""
-    if [[ -n "$VERBOSE" ]]; then
-        go_test_opts="-v"
-    fi
+
+    # These tests DELETE from source Sakila (measured: rental 16044 -> 5868), so
+    # the estate is no longer the one `make e2e-setup` produced. Dropping the
+    # marker forces the next E2E run back through the full rebuild.
+    #
+    # NOTE: the E2E suite is NOT broken by the drain -- every test reloads Sakila
+    # in its STEP 1. This is about starting from a known estate, not about
+    # protecting the archive from empty tables.
+    rm -f "$TESTS_DIR/.e2e-ready"
 
     if [ -z "$GO_TEST_ARGS" ]; then
         GO_TEST_ARGS="./internal/archiver/..."
@@ -767,9 +852,13 @@ run_integration_tests() {
     # Real-DB tests live behind the `integration` build tag and several are not
     # named *Integration*/*Real* (e.g. TestExecute_*, TestOrchestrator_FullWorkflow),
     # so the build tag — not a -run name filter — is what selects them.
-    # INTEGRATION_FORCE=true opts the gated tests in. Reseed first (`--setup`)
-    # so the destination starts empty; see tests/README.md.
-    INTEGRATION_FORCE=true go test $go_test_opts -tags=integration -count=1 $GO_TEST_ARGS 2>&1
+    # INTEGRATION_FORCE=true sets IntegrationConfig.Force, which makes every
+    # SetupIntegrationTest DROP and recreate its databases and re-apply the
+    # fixtures, so each test starts from a known schema. It does NOT gate which
+    # tests run -- the build tag does that. Reseed first (`--setup`) so the
+    # destination starts empty; see tests/README.md.
+    INTEGRATION_FORCE=true run_go_layer "integration" \
+        go test -v -tags=integration -count=1 $GO_TEST_ARGS
 }
 
 # Main execution

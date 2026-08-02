@@ -23,8 +23,24 @@ print("Archive Host:   " + archiveHost + ":" + archivePort);
 print("------------------------------------------------------------");
 
 // Load options
+//
+// threads: 1 is deliberate. This dump is ddlOnly (see dump_master.js), so the
+// load is pure DDL and there is no data throughput to parallelise -- the whole
+// thing takes under a second either way.
+//
+// With 4 threads it intermittently deadlocked:
+//
+//   NOTE: [Worker003]: Error processing table `sakila_archive`.`staff`,
+//   will retry after delay: MySQL Error 1213 (40001): Deadlock found
+//
+// Sakila's `staff` and `store` reference each other -- staff.store_id -> store
+// and store.manager_staff_id -> staff -- so two workers creating them at the
+// same time each need data-dictionary locks the other holds. loadDump retried
+// and the load succeeded, but a retried deadlock still prints a NOTE that
+// reads like a failure, and nothing recorded whether the retry worked. Serial
+// DDL removes the contention instead of masking it.
 var loadOptions = {
-    threads: 4,
+    threads: 1,
     schema: archiveDb,
     showProgress: true
 };

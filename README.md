@@ -369,7 +369,7 @@ troubleshooting in **[Permissions](docs/README_PERMISSIONS.md)**.
 ```bash
 go test -short ./...      # unit tests, no database required
 make test-integration     # integration tests (requires database setup)
-make e2e-setup            # bootstrap + Sakila end-to-end suite
+make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 ```
 
 📖 See **[Testing](docs/README_TESTING.md)** for the test layers, and **[tests/README.md](tests/README.md)** — the source of truth for the full integration and E2E matrix.
