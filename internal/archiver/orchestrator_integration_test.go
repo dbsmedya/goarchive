@@ -780,7 +780,7 @@ func TestOrchestrator_BatchArchive_Integration(t *testing.T) {
 // InitializeTables returns an error containing "legacy GoArchive tracking tables".
 func TestInitializeTables_RejectsLegacySchema_Integration(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	destDB, ok := setup.GetDB("destination")
 	if !ok {

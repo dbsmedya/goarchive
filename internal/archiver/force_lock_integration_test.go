@@ -19,7 +19,7 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearDestination(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -91,7 +91,7 @@ func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearDestination(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -166,7 +166,7 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearDestination(t, setup)
 	sourceDB, _ := setup.GetDB("source")
@@ -235,7 +235,7 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 	}
 
 	setup, ctx := SetupIntegrationTest(t)
-	defer setup.Close()
+	t.Cleanup(setup.Close)
 
 	clearDestination(t, setup)
 	sourceDB, _ := setup.GetDB("source")
