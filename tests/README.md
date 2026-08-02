@@ -226,7 +226,7 @@ left uncovered.
 > in-graph children, so a genuinely-uncovered config correctly surfaces
 > `FK_COVERAGE_CHECK` (test 02 demonstrates this). Because the Sakila schema has
 > every FK column indexed, there is no E2E `FK_INDEX_CHECK` demo — that check is
-> covered by unit tests only. See `.ayder/002-FK_COVERAGE_CHECK_BUG.md`.
+> covered by unit tests only.
 
 ## Test Output
 
