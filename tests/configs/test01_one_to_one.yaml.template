@@ -4,7 +4,7 @@
 # film_actor and film_category — have 2-column PRIMARY KEYs, which GoArchive does
 # not support (it identifies and deletes rows by a single PK column; a multi-column
 # PK would over-match). Preflight therefore aborts with COMPOSITE_PK_CHECK before
-# any data is touched. See README 'Known Limits & Caution' and .ayder/001.
+# any data is touched. See 'Known Limits & Caution' in docs/README_LIMITATIONS.md.
 #
 # COMPOSITE_PK_CHECK runs before the FK checks, so it is the reported category even
 # though film is also referenced by out-of-graph tables (which would otherwise trip

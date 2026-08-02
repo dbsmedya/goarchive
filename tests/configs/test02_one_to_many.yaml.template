@@ -6,7 +6,7 @@
 # so preflight aborts with FK_COVERAGE_CHECK: every table referencing an in-graph
 # table must itself be covered by a relation.
 #
-# (Before the .ayder/002 fix this scenario mis-reported FK_INDEX_CHECK because the
+# (Before the 1.4.0-community fix this scenario mis-reported FK_INDEX_CHECK because the
 # index check false-positived on out-of-graph children and ran first.)
 #
 # Copy this file to test02_one_to_many.yaml and substitute the password

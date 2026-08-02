@@ -8,7 +8,7 @@
 # NOTE: a customer-rooted archive (customer -> rental -> payment) is NOT
 # expressible — payment references both customer and rental, and rental
 # references customer, forming a diamond that the tree model + INTERNAL_FK_COVERAGE
-# reject. See .ayder/001 / the README Limitations section. This rental-rooted
+# reject. See docs/README_LIMITATIONS.md. This rental-rooted
 # shape is the closest working multi-level archive.
 #
 # Copy this file to test04_rental_payment.yaml and substitute the password
