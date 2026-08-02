@@ -163,10 +163,15 @@ They come in two flavours:
   documented error categories. Success means the expected failure occurred.
 
 ```bash
-make e2e            # working Sakila suite (assumes env already set up)
-make e2e-setup      # full bootstrap: docker + Sakila load + schema dump, then run
-make e2e-examples   # validation-failure demos
+make e2e            # the whole procedure — use this one
+make e2e-examples   # validation-failure demos (needs a seeded estate)
 ```
+
+`make e2e` runs `test-reset`, then `e2e-setup`, then
+`e2e-tests-must-run-after-setup`. The individual steps exist for when you know
+why you want one, and step 3 refuses to run unless step 2 has: any integration
+run DELETEs from source Sakila, and archiving a drained database reports a
+meaningless pass.
 
 Sakila contains DELETE triggers (`del_film`), so Sakila `archive` and `purge`
 invocations need `--force-triggers`.
@@ -194,9 +199,9 @@ run-once against a fresh setup.
 Reseed with the `--setup` flag:
 
 ```bash
-bash tests/scripts/run-tests.sh --setup --sakila
-# or
 make e2e-setup
+# or, explicitly
+bash tests/scripts/run-tests.sh --setup
 ```
 
 ### Writing tests that do not leak state
@@ -224,9 +229,10 @@ preflight at startup.
 | `make test-down` | Stop test databases |
 | `make integration-config` | Create the integration test config if absent |
 | `make test-integration` | Run integration tests |
-| `make e2e` | Working Sakila E2E suite (skips docker bootstrap) |
-| `make e2e-setup` | Full bootstrap, then the working suite |
-| `make e2e-examples` | Validation-failure demo suite |
+| `make e2e` | **The whole E2E procedure**: test-reset → e2e-setup → the tests |
+| `make e2e-setup` | Step 2 alone: bootstrap and seed the estate |
+| `make e2e-tests-must-run-after-setup` | Step 3 alone: the tests; refuses unless seeded |
+| `make e2e-examples` | Validation-failure demo suite; refuses unless seeded |
 | `make deadcode` | Dead-code guard — must stay clean |
 | `make lint` / `make vet` / `make fmt-check` | Static analysis |
 

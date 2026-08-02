@@ -72,3 +72,6 @@ tests/sakila-db/
 
 # OS files
 Thumbs.db
+
+# E2E seed marker
+tests/.e2e-ready

@@ -343,47 +343,27 @@ func getTestFileInfo() (string, string, int, bool) {
 	return "", "", 0, false
 }
 
-// SkipIfNoIntegrationEnv skips the test if integration test requirements aren't met
-func SkipIfNoIntegrationEnv(t *testing.T) {
-	// First check if config file exists and has valid credentials
-	_, err := LoadIntegrationConfig()
-	if err != nil {
-		t.Skipf("Skipping integration test: %v", err)
-	}
+// RequireIntegrationEnv fails the test if the real-DB environment is unusable.
+//
+// It does NOT skip. Under `-tags=integration` the environment is already proven
+// by TestMain (integration_main_test.go), so reaching a failure here means
+// something changed mid-run — a server went away, or credentials were mutated
+// by a test. Either is a genuine failure and must be reported as one.
+//
+// This used to be SkipIfNoIntegrationEnv, and it skipped. A skipped suite
+// prints `ok` and exits 0, which is indistinguishable from a green run unless
+// you pass -v and read the SKIP lines. Renamed so the name states what it does.
+func RequireIntegrationEnv(t *testing.T) {
+	t.Helper()
 
-	// Check if running in CI or explicit integration test mode
-	if os.Getenv("INTEGRATION_TESTS") != "true" && os.Getenv("CI") != "true" {
-		// Try to connect to default database
-		cfg := defaultIntegrationConfig()
-
-		// If password is empty and no config file exists, skip
-		if cfg.Databases[0].Password == "" {
-			t.Skip("Skipping integration test: no database password configured. " +
-				"Set MYSQL_ROOT_PASSWORD environment variable or create integration_test.yaml")
-		}
-
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=2s",
-			cfg.Databases[0].User, cfg.Databases[0].Password,
-			cfg.Databases[0].Host, cfg.Databases[0].Port)
-
-		db, err := sql.Open("mysql", dsn)
-		if err != nil {
-			t.Skip("Skipping integration test: no database connection available")
-		}
-		defer func() { _ = db.Close() }()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		if err := db.PingContext(ctx); err != nil {
-			t.Skip("Skipping integration test: cannot connect to database")
-		}
+	if _, err := LoadIntegrationConfig(); err != nil {
+		t.Fatalf("integration environment unusable: %v", err)
 	}
 }
 
 // SetupIntegrationTest is a convenience function for test setup
 func SetupIntegrationTest(t *testing.T) (*IntegrationTestSetup, context.Context) {
-	SkipIfNoIntegrationEnv(t)
+	RequireIntegrationEnv(t)
 
 	ctx := context.Background()
 

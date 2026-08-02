@@ -13,11 +13,12 @@ provides automatic dependency resolution using Kahn's algorithm, crash recovery 
 logging, and zero-lock batch processing.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Version**: `1.9.0-RC-community` — the release-candidate series validating the dbsgomysql
-integration ahead of 2.0 (see `docs/README_dbsgomysql.md`). The **stable** release is
-`1.8.0-community` (see `docs/README_LIMITATIONS.md`).
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a
 separate product.
+
+The current version is in `INSTALL.md`; `README.md` also states which release is stable. The
+RC series validating the dbsgomysql integration ahead of 2.0 is described in
+`docs/README_dbsgomysql.md`.
 
 **Preflight validation comes from `github.com/dbsmedya/dbsgomysql`**, not from hand-rolled
 probes. GoArchive **must not query `information_schema` directly** — `make consumer-policy`
@@ -30,25 +31,22 @@ operators.
 
 ### Versioning (read before bumping the version)
 
-The version string (e.g. `1.4.0-community`, with the `-community` edition suffix)
-is duplicated in several places. A bump MUST update **all** of these — a missed
-one ships mislabeled binaries:
-
-Release candidates keep the edition suffix and carry an `RC` marker before it:
-`1.9.0-RC-community`. Nothing in the repo parses the version — the workflows
-trigger on the `v*` glob and extract it with a prefix strip, and CI injects the
-literal `ci-test`. The only semver consumer is `docker/metadata-action`
-(`.github/workflows/docker.yml`), and every form above is a valid SemVer
-prerelease, which is also what makes `release.yml` mark the GitHub release a
-prerelease automatically (`prerelease: contains(VERSION, '-')`).
+The version string carries the `-community` edition suffix; release candidates keep it and
+add an `RC` marker before it. It is duplicated in several places, and a bump MUST update
+**all** of them — a missed one ships mislabeled binaries:
 
 | Location | What it controls |
 |----------|------------------|
 | `Makefile` → `RELEASE_VERSION` | Fallback version stamped into binaries when HEAD has no exact-match git tag. **The one most often missed.** |
 | `cmd/goarchive/cmd/root.go` → `Version` | Default `Version` constant (overridden by `-ldflags` at build time) |
-| `CLAUDE.md` (the **Version** line above, and the RC-format example in this section) | This document |
 | `README.md` (the **Version** line) | User-facing docs |
 | `INSTALL.md` (the **Version** line) | User-facing docs |
+
+Nothing in the repo parses the version — the workflows trigger on the `v*` glob and extract
+it with a prefix strip, and CI injects the literal `ci-test`. The only semver consumer is
+`docker/metadata-action` (`.github/workflows/docker.yml`); both forms are valid SemVer
+prereleases, which is also what makes `release.yml` mark the GitHub release a prerelease
+automatically (`prerelease: contains(VERSION, '-')`).
 
 Do **not** change: `cmd/goarchive/cmd/version_test.go` (uses `1.2.3` as a test
 fixture, not the project version), or historical release notes under `.ayder/`.
@@ -57,9 +55,9 @@ How the build resolves the version (`Makefile`):
 `VERSION := git describe --tags --exact-match || RELEASE_VERSION`. So a properly
 **tagged** release commit takes its version from the git tag; an untagged build
 falls back to `RELEASE_VERSION`. For an actual release, also create the matching
-tag: `make tag V=1.4.0-community` (this creates a `v`-prefixed tag, so a tagged
-build reports `v1.4.0-community` while the `RELEASE_VERSION` fallback reports
-`1.4.0-community` — keep `RELEASE_VERSION` in sync regardless).
+tag: `make tag V=<version>` (this creates a `v`-prefixed tag, so a tagged build
+reports `v<version>` while the `RELEASE_VERSION` fallback reports `<version>` —
+keep `RELEASE_VERSION` in sync regardless).
 
 After bumping, verify: `go build -o /tmp/gv ./cmd/goarchive && /tmp/gv --version`
 should print the new version, and `make github-release` should stamp every
@@ -239,21 +237,28 @@ set -a; source tests/.env; set +a
 |-------|---------|
 | Unit (no DB) | `go test ./... -count=1` |
 | Integration (tag `integration`) | `bash tests/scripts/run-tests.sh --setup --integration-only` |
-| E2E (Sakila) | `make e2e` · `make e2e-examples` · `make e2e-setup` |
+| E2E (Sakila) | `make e2e` |
+| Query a database | `tests/scripts/mysql-query.sh <port> "<sql>"` |
 
-Three traps that produce **false PASSes**, all of which have cost this project time:
+**Never call `mysqlsh` directly** — it reads `~/.my.cnf` and will connect as whoever that
+file names when the password is missing, so it succeeds locally and fails in CI. The wrapper
+passes `--no-defaults` and separates results (stdout) from errors (stderr).
+**Never pipe a gate through `2>&1`** — merging is what makes a failure look like an empty
+result.
 
-- **`run-tests.sh` always exits 0.** Its exit code is not evidence. Count `--- FAIL` lines
-  from the output instead, and never read `go test` output without `-v`.
-- **An unset password does not make `mysqlsh` fail loudly.** It connects with no password and
-  returns `MySQL Error 1045 (28000): Access denied` — which, to a "did this leave residue?"
-  check grepping for rows, is indistinguishable from a clean empty result. Treat
-  `Access denied` as a **failed** check, never an empty one.
-- **Integration and E2E need a freshly-reseeded destination.** The real-DB tests archive
-  Sakila into `sakila_archive` and several rely on it starting empty; leftover rows abort with
-  `destination already contains a row … Duplicate entry`, which is residue, **not** a
-  regression. `--setup` reseeds. Those tests also DELETE from source Sakila, so they are
-  run-once against a fresh `--setup`. If a run is killed mid-flight, `make test-reset`.
+The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
+see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
+
+**`make e2e` is the whole E2E procedure.** It runs, in order:
+
+```bash
+make test-reset                          # 1. destroy the estate
+make e2e-setup                           # 2. rebuild and seed it
+make e2e-tests-must-run-after-setup      # 3. run the tests
+```
+
+Run the steps individually only if you know why. Step 3 refuses unless step 2 has run.
+`make e2e-examples` (validation demos) has the same precondition.
 
 The characterization baseline is **`60 / 304 / 364 / 0 / 0`** (top-level / subtests / PASS /
 FAIL / SKIP), counted from a `-v` run. It stays unamended unless an increase is authorized in
@@ -262,8 +267,7 @@ advance.
 ## Test Environment
 
 Three MySQL 8.4 servers. **Ask the user if connection fails.** The root password is
-`MYSQL_ROOT_PASSWORD` in `tests/.env` — there is no `MYSQL_PASSWORD` variable. Use `mysqlsh`,
-not the `mysql` client.
+`MYSQL_ROOT_PASSWORD` in `tests/.env`. Query them with `tests/scripts/mysql-query.sh`.
 
 | Server | Host | Port | Database |
 |--------|------|------|----------|
@@ -273,7 +277,7 @@ not the `mysql` client.
 
 ```bash
 set -a; source tests/.env; set +a
-mysqlsh --host=127.0.0.1 --port=3305 --user=root --password="$MYSQL_ROOT_PASSWORD" --sql -e "SHOW DATABASES;"
+tests/scripts/mysql-query.sh 3305 "SHOW DATABASES;"
 ```
 
 Sakila's schema and the replica setup are documented in `tests/README.md`.

@@ -244,25 +244,38 @@ test-status:
 # `rm -rf tests/docker_files/dbdata`. See tests/compose.yml for why it moved.)
 .PHONY: test-reset
 test-reset:
+	@rm -f tests/.e2e-ready
 	@echo "Destroying test database state..."
 	cd tests && docker compose down -v
 	cd tests && docker compose up -d
 	@echo "Containers restarted with empty data directories."
 	@echo "Run 'bash tests/scripts/run-tests.sh --setup' to reload Sakila."
 
-# Run the working Sakila end-to-end suite (test 03 payment single-column-PK
-# archive, test 04 rental->payment 2-level archive). Assumes Docker test DBs are
-# already up (`make test-up`). Use `make e2e-setup` for a fresh-environment run
-# that also resets the databases.
+# The whole E2E procedure, in the only order that is correct. Use this one.
+# Slow by design: it destroys the estate, rebuilds it, then runs.
 .PHONY: e2e
 e2e:
+	@$(MAKE) test-reset
+	@$(MAKE) e2e-setup
+	@$(MAKE) e2e-tests-must-run-after-setup
+
+# The bare test run. Named for its precondition because the precondition is the
+# whole problem: source Sakila is drained by any integration run, so running
+# this against a stale estate archives from an empty database and reports a
+# meaningless pass. Refuses unless `make e2e-setup` seeded the estate.
+.PHONY: e2e-tests-must-run-after-setup
+e2e-tests-must-run-after-setup:
+	@bash tests/scripts/require-e2e-seed.sh
 	@bash tests/scripts/run-tests.sh --sakila --skip-docker
 
-# Run the working Sakila suite with full env bootstrap (docker + sakila load +
-# schema dump + archive schema). Slower — use for clean-slate verification.
+# Bootstrap the estate: docker up, Sakila load, schema dump, archive schema.
+# Seeds only — it does not run any test. Writes the marker the E2E targets
+# require.
 .PHONY: e2e-setup
 e2e-setup:
-	@bash tests/scripts/run-tests.sh --setup --sakila
+	@rm -f tests/.e2e-ready
+	@bash tests/scripts/run-tests.sh --setup
+	@touch tests/.e2e-ready
 
 # Run the validation-demonstration tests (01-02). These are EXPECTED to fail
 # preflight with documented error categories — success here means the failures
@@ -270,6 +283,7 @@ e2e-setup:
 # 02 = FK_COVERAGE_CHECK.
 .PHONY: e2e-examples
 e2e-examples:
+	@bash tests/scripts/require-e2e-seed.sh
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
 
 # Help target
@@ -299,8 +313,9 @@ help:
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
 	@echo "  make test-reset         - Destroy and rebuild test DBs (clears orphaned state)"
-	@echo "  make e2e                - Sakila E2E (working tests 03-04) — assumes DBs up"
-	@echo "  make e2e-setup          - Sakila E2E with full env bootstrap"
+	@echo "  make e2e                - Full E2E: test-reset, e2e-setup, then the tests. USE THIS"
+	@echo "  make e2e-setup          - Step 2 only: bootstrap docker + Sakila and seed the estate"
+	@echo "  make e2e-tests-must-run-after-setup - Step 3 only: the tests (refuses unless seeded)"
 	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
 	@echo "  make help               - Show this help"
 	@echo ""

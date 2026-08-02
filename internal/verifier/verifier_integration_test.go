@@ -23,8 +23,12 @@ import (
 
 // openIntegrationDB opens a connection to the source (port 3305) or
 // destination (port 3307) integration MySQL instance using the TEST_SOURCE_*
-// / TEST_DEST_* environment variables. It skips the test if the relevant
-// env vars are not set (tests/.env not sourced).
+// / TEST_DEST_* environment variables.
+//
+// It FAILS — it does not skip — when those variables are unset. Building with
+// `-tags=integration` is the opt-in: a binary that reaches here asked for
+// real-DB tests, and skipping them makes `go test` print `ok` and exit 0 for a
+// suite that verified nothing. Without -v the SKIP line is not even printed.
 func openIntegrationDB(t *testing.T, port int) *sql.DB {
 	t.Helper()
 
@@ -44,7 +48,17 @@ func openIntegrationDB(t *testing.T, port int) *sql.DB {
 	dbName := os.Getenv(prefix + "_DB")
 
 	if host == "" || user == "" || password == "" || dbName == "" {
-		t.Skipf("skipping: %s_HOST/_USER/_PASSWORD/_DB not set (source tests/.env; see tests/README.md)", prefix)
+		t.Fatalf(`integration environment not loaded: %[1]s_HOST/_USER/_PASSWORD/_DB are not set.
+
+  Load the test environment before calling go test:
+
+      set -a; source tests/.env; set +a
+
+  Or use the runner, which sources it for you:
+
+      bash tests/scripts/run-tests.sh --setup --integration-only
+
+  Reference: tests/README.md § Prerequisites`, prefix)
 	}
 
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?tls=false&parseTime=true", user, password, host, port, dbName)
