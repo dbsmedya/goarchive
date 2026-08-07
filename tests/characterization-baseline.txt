@@ -1,0 +1,32 @@
+# Characterization suite baseline — the recorded, authorized test counts.
+#
+# This file is the SOURCE OF TRUTH for the numbers. `make characterization`
+# (tests/scripts/check-characterization-baseline.sh) runs the suite, counts it,
+# and compares against these values. Nobody should ever count by hand.
+#
+# WHY IT IS A FILE AND NOT A SENTENCE IN A DOC
+#
+# It used to be a sentence in CLAUDE.md that each verifier re-derived with
+# ad-hoc greps. That fired in practice: `grep -c '^    --- PASS'` yields 206,
+# not 304, because the suite nests TWO levels deep and the other 98 subtests sit
+# at 8-space indent. The mismatch looked exactly like a 98-test regression in a
+# change that touched zero .go files. A number a human must reproduce with a
+# hand-written grep is a quiz, not a baseline.
+#
+# CHANGING THESE NUMBERS
+#
+# An increase is a DECISION and needs prior authorization — it is not a side
+# effect of adding tests. When it is authorized, update this file and the
+# pointer in CLAUDE.md together.
+#
+# Counted from `go test -tags=integration -v -run TestCharacterization`:
+#   TOPLEVEL  `--- PASS` at 0-space indent
+#   SUBTESTS  every `--- PASS` at any deeper indent (4-space AND 8-space)
+#   PASS      TOPLEVEL + SUBTESTS
+#   FAIL/SKIP at any depth
+
+TOPLEVEL=60
+SUBTESTS=304
+PASS=364
+FAIL=0
+SKIP=0

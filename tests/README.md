@@ -7,10 +7,42 @@ integration, and Sakila end-to-end (E2E) tests.
 
 | Test Type | Description | Command |
 |-----------|-------------|---------|
+| **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
+| **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge and copy-only runs that complete (tests 03–07) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
+
+### `make gate` — use this rather than assembling the steps
+
+It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `deadcode` → unit →
+integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`.
+
+**The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
+destroys the estate; run it before integration or characterization and those fail for reasons
+unrelated to your change. Integration needs `--setup`, or stale heartbeat state fabricates
+failures. `make gate` encodes both so nobody has to remember them.
+
+It fails fast on a dead estate rather than letting every step die with
+`Can't connect to MySQL server`, which reads exactly like a product failure. Note the harness's
+own `selftest_get_row_count_fails_loud` cannot catch that case — it probes an always-refused
+port on purpose, so it passes while the real databases are down.
+
+Credentials first, as always: `set -a; source tests/.env; set +a`.
+
+#### The characterization baseline is checked, not recited
+
+`tests/characterization-baseline.txt` holds the recorded counts and
+`scripts/check-characterization-baseline.sh` does the comparison.
+
+> **Never count it by hand.** The suite nests **two** levels deep. The obvious
+> `grep -c '^    --- PASS'` returns **206** against a baseline of 304 and looks like a 98-test
+> regression — the missing 98 are subtests at 8-space indent. That misfire has happened, on a
+> change touching zero `.go` files. Run `make characterization` and read its verdict.
+
+Raising the baseline is a decision requiring prior authorization, not a side effect of adding
+tests. When authorized, update the file and CLAUDE.md's pointer together.
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
 > false failures.** The real-DB tests archive Sakila into `sakila_archive` and

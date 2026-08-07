@@ -286,6 +286,55 @@ e2e-examples:
 	@bash tests/scripts/require-e2e-seed.sh
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
 
+# Check the characterization suite against its recorded baseline.
+#
+# The baseline lives in tests/characterization-baseline.txt, and the script does
+# the counting. Nobody counts by hand: the suite nests two levels deep, so the
+# obvious `grep -c '^    --- PASS'` misses 98 subtests and manufactures a
+# regression that is not there.
+.PHONY: characterization
+characterization:
+	@bash tests/scripts/check-characterization-baseline.sh
+
+# Refuse to proceed against a dead test estate. A killed run leaves the
+# containers Exited (137), and every later step then fails with "Can't connect
+# to MySQL server" -- indistinguishable from a real failure.
+.PHONY: require-estate
+require-estate:
+	@bash tests/scripts/require-containers-up.sh
+
+# THE FULL VERIFICATION GATE, in the only order that is correct. Use this one.
+#
+# Order is not stylistic and must not be rearranged:
+#   1. static + unit come first -- they need no database and fail in seconds.
+#   2. integration runs BEFORE e2e. It needs --setup (stale heartbeat state
+#      otherwise fabricates failures), which run-tests.sh applies here.
+#   3. characterization runs before e2e too: it is behind the integration build
+#      tag and wants the estate integration just seeded.
+#   4. e2e runs LAST because it begins with test-reset, destroying the estate
+#      that steps 2 and 3 depend on. Run it earlier and they fail for reasons
+#      that have nothing to do with the change under test.
+#
+# Requires credentials: set -a; source tests/.env; set +a
+.PHONY: gate
+gate: require-estate fmt-check vet lint consumer-policy deadcode test-unit
+	@echo ""
+	@echo "=== integration (before e2e: e2e resets the estate) ==="
+	@bash tests/scripts/run-tests.sh --setup --integration-only
+	@echo ""
+	@echo "=== characterization baseline ==="
+	@$(MAKE) characterization
+	@echo ""
+	@echo "=== e2e (destroys and rebuilds the estate) ==="
+	@$(MAKE) e2e
+	@echo ""
+	@echo "=== e2e validation demos ==="
+	@$(MAKE) e2e-examples
+	@echo ""
+	@echo "================================================"
+	@echo "  GATE COMPLETE - every step above exited 0"
+	@echo "================================================"
+
 # Help target
 .PHONY: help
 help:
@@ -317,6 +366,9 @@ help:
 	@echo "  make e2e-setup          - Step 2 only: bootstrap docker + Sakila and seed the estate"
 	@echo "  make e2e-tests-must-run-after-setup - Step 3 only: the tests (refuses unless seeded)"
 	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
+	@echo "  make gate               - THE FULL VERIFICATION GATE, in the correct order. USE THIS"
+	@echo "  make characterization   - Check the characterization suite against its baseline"
+	@echo "  make require-estate     - Fail early if the test databases are unreachable"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"
