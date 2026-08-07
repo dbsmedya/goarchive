@@ -71,7 +71,7 @@ fi
 #
 # Sourcing only DEFINES functions, so the estate variables further down this file
 # do not need to exist yet -- they are read when a function is called.
-for _lib in log query assert estate runner golayer engine; do
+for _lib in log query assert estate runner golayer registry engine; do
     if [ ! -f "$TESTS_DIR/e2e/lib/$_lib.sh" ]; then
         echo "ERROR: missing harness library $TESTS_DIR/e2e/lib/$_lib.sh" >&2
         exit 1
@@ -225,14 +225,14 @@ main() {
     # verified by sha256) perform real archives end-to-end; test 06 purges half
     # the payment table, deleting without copying.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3 4 5 6 7" "working"
+        run_e2e_suite "3 4 5 6 7" "working"
         exit 0
     fi
 
     # Run the validation demonstration tests — expected to fail preflight with
     # documented error categories: 01 = COMPOSITE_PK_CHECK, 02 = FK_COVERAGE_CHECK.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_sakila_tests "1 2" "validation demos"
+        run_e2e_suite "1 2" "validation demos"
         exit 0
     fi
     

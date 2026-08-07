@@ -1,31 +1,54 @@
 # E2E harness — the execution engine: one test, and the suite loop around it.
 #
-# Extracted verbatim from run-tests.sh by rc-phase-023. Behaviour unchanged; the
-# per-test case switch is restructured into tests/e2e/<category>/*.test.sh by a
-# later step of the same phase.
+# A test is a declaration file at tests/e2e/<category>/NN-<slug>.test.sh. This
+# file owns everything a test does NOT declare: resetting the estate, running the
+# command, and the five assertion steps.
+#
+# THE PER-TEST VARIABLE CONTRACT
+#
+#   test_name       identifier used for the log file name and the report
+#   test_desc       one line, printed when the test starts
+#   config_file     name of a rendered config in tests/configs/
+#   tables          space-separated tables to count, source order
+#   mode            "working" (runs to completion) or "example" (must fail preflight)
+#   expected_error  mode=example only: substring required in the failure
+#   command         mode=working only: archive | purge | copy-only
+#   verify_method   the method the run must report, or "none" to assert none ran
+#   min_duration    pacing floor in seconds
+#   expected_rows   exact rows moved, ONE PER ENTRY in $tables, same order
+#   orphan_checks   child:fk:parent:parent_pk pairs, required once $tables has >1
+#
+# The last four fail closed: a working test that omits one asserts less than it
+# claims to, so the engine refuses to run it. That property depends entirely on
+# each test starting from empty defaults -- see load_test_vars.
+#
+# The catalogue of which tests exist and why lives in tests/e2e/README.md, not
+# here. A list in both places is a list that disagrees with itself.
 #
 # Depends on the caller having defined: TESTS_DIR, SPECIFIC_TEST, GOARCHIVE_BIN,
 # and the estate variables. Requires lib/log.sh, lib/query.sh, lib/assert.sh,
-# lib/estate.sh, lib/runner.sh.
+# lib/estate.sh, lib/runner.sh, lib/registry.sh.
 
-# Run specific Sakila test. First argument is the test number. There are seven:
-#   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
-#   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
-#   03  Payment batch             -> working archive (count verification, inherited)
-#   04  rental -> payment         -> working archive (count verification, inherited)
-#   05  Payment + sha256          -> working archive (sha256 verification, explicit)
-#   06  Payment purge             -> working purge (no verification stage at all)
-#   07  rental -> payment copy    -> working copy-only (source must be UNTOUCHED)
-# Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
-# is set; tests 03-07 are working runs (mode=working) and run to completion.
+# Source a test file's declarations into the CALLER's scope.
 #
-# 03 and 05 are deliberately the same archive with different verification methods,
-# so a failure in 05 alone isolates to the method. 06 and 07 are the only
-# non-archive commands in the suite. 04 and 07 share a graph and a slice and
-# differ in the command, so a failure in 07 alone isolates to copy-only -- with
-# one deliberate exception, the pacing: 04 runs the slice in a single batch,
-# while 07 splits it into 20 so the sleep is exercised more than once.
-run_sakila_test() {
+# Declares nothing local on purpose. Bash is dynamically scoped, so the sourced
+# assignments land on the locals of whichever function called this one -- which is
+# how run_e2e_test hands each test a clean slate without this function needing to
+# know the variable names.
+#
+# The only local here is deliberately underscore-prefixed so it cannot collide
+# with a per-test variable name.
+load_test_vars() {
+    local _test_file="$1"
+    if [[ ! -f "$_test_file" ]]; then
+        log_error "load_test_vars: no such test file: $_test_file"
+        return 1
+    fi
+    # shellcheck disable=SC1090
+    . "$_test_file"
+}
+
+run_e2e_test() {
     local test_num=$1
     local test_name=""
     local test_desc=""
@@ -52,142 +75,40 @@ run_sakila_test() {
     local test_result="PASS"
     local test_error=""
 
-    case $test_num in
-        1)
-            test_name="Test01_CompositePKRejected"
-            test_desc="Composite-PK rejection: config includes film_actor/film_category (composite PKs) [validation demo]"
-            config_file="test01_one_to_one.yaml"
-            tables="film film_text film_actor film_category"
-            mode="example"
-            expected_error="COMPOSITE_PK_CHECK"
-            ;;
-        2)
-            test_name="Test02_UncoveredFKCoverage"
-            test_desc="FK-coverage rejection: archiving 'film' leaves out-of-graph tables (inventory/film_actor/film_category) referencing it [validation demo]"
-            config_file="test02_one_to_many.yaml"
-            tables="language film"
-            mode="example"
-            expected_error="FK_COVERAGE_CHECK"
-            ;;
-        3)
-            test_name="Test03_PaymentBatch"
-            test_desc="Working archive: high-volume payment (single-column PK, multi-batch)"
-            config_file="test03_payment_batch.yaml"
-            tables="payment"
-            mode="working"
-            command="archive"
-            # No verification block in the config, so the documented default
-            # applies: method=count, skip_verification=false.
-            verify_method="count"
-            # 1999 rows / batch_size 100 = 20 batches.
-            #   batch sleep:  20 x 0.2                        = 4.0s
-            #   delete sleep: 20 batches x 4 chunk-gaps x 0.2 = 16.0s
-            # (100 rows / batch_delete_size 20 = 5 chunks, and the last chunk of
-            # each table is not followed by a sleep, so 4 gaps.)
-            min_duration="20.0"
-            # payment_id <= 2000 selects 1999 rows, not 2000 -- payment_id is
-            # not contiguous. Measured, not computed.
-            expected_rows="1999"
-            ;;
-        4)
-            test_name="Test04_RentalPayment"
-            test_desc="Working archive: rental -> payment (2-level tree, non-diamond GDPR-shaped subgraph)"
-            config_file="test04_rental_payment.yaml"
-            tables="rental payment"
-            mode="working"
-            command="archive"
-            verify_method="count"
-            # This config declares no processing block at all, so it inherits the
-            # global defaults: batch_size 1000, sleep_seconds 1, and
-            # delete_sleep_seconds 0. 200 rentals / 1000 = a single batch.
-            #   batch sleep:  1 x 1.0 = 1.0s
-            #   delete sleep: disabled by default
-            min_duration="1.0"
-            # One number per table, in the SAME ORDER as $tables above.
-            # rental_id <= 200 selects 200 rentals, which pull in 200 payments.
-            expected_rows="200 200"
-            # The counts above cannot see a payment copied without its rental:
-            # this config disables FK checks on the copy path (it must -- payment
-            # references the uncopied customer and staff), so the destination
-            # accepts an orphan silently.
-            orphan_checks="payment:rental_id:rental:rental_id"
-            ;;
-        5)
-            test_name="Test05_PaymentVerifySHA256"
-            test_desc="Working archive: payment with sha256 verification (also the only INSERT IGNORE copy path in the suite)"
-            config_file="test05_payment_verify_sha256.yaml"
-            tables="payment"
-            mode="working"
-            command="archive"
-            # The config declares verification.method: sha256 explicitly rather
-            # than inheriting the default, and asserting on "sha256" here is the
-            # entire subject of this test. If this ever reads "count", the test
-            # has silently become a third copy of test 03.
-            verify_method="sha256"
-            # Same slice and same pacing as test 03, so the same floor.
-            min_duration="20.0"
-            expected_rows="1999"
-            ;;
-        6)
-            test_name="Test06_PaymentPurge"
-            test_desc="Working purge: delete half the payment table without copying anything"
-            config_file="test06_payment_purge.yaml"
-            tables="payment"
-            mode="working"
-            command="purge"
-            # Purge is batchDeleteOnly: the verify block sits inside the
-            # batchFull||batchCopyVerify gate, so dataVerifier is never called.
-            # "none" asserts the verification line is ABSENT -- so a purge that
-            # silently gained a verify stage, or an archive misconfigured as a
-            # purge, fails instead of passing quietly.
-            verify_method="none"
-            # 8022 rows / batch_size 500 = 17 batches (16 full, one 22-row tail).
-            #   batch sleep:  17 x 0.2                        = 3.4s
-            #   delete sleep: 16 batches x 4 chunk-gaps x 0.2 = 12.8s
-            # (500 / batch_delete_size 100 = 5 chunks -> 4 gaps. The 22-row tail
-            # batch is a single chunk and contributes no gap.)
-            min_duration="16.2"
-            # HALF the table, exactly: payment_id <= 8024 selects 8022 of
-            # payment's 16044 rows. The boundary is 8024 rather than 8022
-            # because two ids below it are missing; it was queried against the
-            # fixture, not computed. Over-deletion is purge's unrecoverable
-            # failure, and this number is the only thing that catches it.
-            expected_rows="8022"
-            ;;
-        7)
-            test_name="Test07_RentalPaymentCopyOnly"
-            test_desc="Working copy-only: copy rental -> payment, leaving the source untouched"
-            config_file="test07_rental_payment_copyonly.yaml"
-            tables="rental payment"
-            mode="working"
-            command="copy-only"
-            # copy-only is batchCopyVerify, so the verify stage DOES run -- the
-            # copy+verify block is gated on batchFull||batchCopyVerify
-            # (batch_pipeline.go:122). Method is inherited, so "count".
-            verify_method="count"
-            # Same 200-rental slice as test 04, but NOT test 04's pacing. That
-            # config inherits batch_size 1000, making 200 rentals a single batch,
-            # and one batch exercises one sleep call -- no per-batch accumulation
-            # bug is reachable. This config sets batch_size 10:
-            #   200 rentals / 10 = 20 batches
-            #   batch sleep: 20 x 0.5 = 10.0s
-            # Batch term ONLY. copy-only never runs DeletePhase (gated on
-            # batchFull||batchDeleteOnly, batch_pipeline.go:146), so
-            # delete_sleep_seconds is inert for this command and the config does
-            # not set it. Adding a delete term here would build a gate that no
-            # correct run can pass.
-            min_duration="10.0"
-            # Same slice as test 04, so the same counts -- but for copy-only the
-            # assertion reads differently: the source must be UNCHANGED and the
-            # destination must hold exactly these. See assert_postcondition.
-            expected_rows="200 200"
-            orphan_checks="payment:rental_id:rental:rental_id"
-            ;;
-        *)
-            log_error "Invalid test number: $test_num (expected 1-7)"
-            return 1
-            ;;
-    esac
+    # Resolve the number to exactly one test file. The registry fails closed both
+    # on a number with no file and on a number claimed by two files, because both
+    # have a silent form: the first would report a clean run of nothing, the
+    # second would run one test and ignore the other.
+    local test_file test_category
+    if ! test_file=$(registry_file_for "$test_num"); then
+        return 1
+    fi
+    test_category=$(registry_category_for_file "$test_file")
+
+    # THE PER-TEST VARIABLES ARE DECLARED local ABOVE AND LOADED HERE, IN THAT
+    # ORDER, AND THE ORDER IS LOAD-BEARING.
+    #
+    # Bash is dynamically scoped, so the assignments in the sourced file land on
+    # THIS function's locals rather than on globals. That is the only reason each
+    # test starts from the empty defaults above -- and the fail-closed guards
+    # below (no expected_rows, no min_duration, no orphan_checks on a multi-table
+    # test) work only because the previous test's values are gone.
+    #
+    # Lift the load out of this function, or drop the `local` declarations, and
+    # every one of those guards silently stops firing while the suite goes on
+    # reporting a pass. Verified on bash 3.2.57; the suite loop asserts after
+    # every test that nothing leaked to global scope.
+    if ! load_test_vars "$test_file"; then
+        return 1
+    fi
+
+    # A file that declares nothing at all would otherwise reach the assertions
+    # with every value empty and be reported against a blank name.
+    if [[ -z "$test_name" ]]; then
+        log_error "Test $test_num: $test_file set no test_name"
+        log_error "  a test file must declare at least test_name, mode and config_file"
+        return 1
+    fi
 
     # Split expected_rows into a parallel indexed array matching $tables by
     # position. bash 3.2 has no `declare -A`, and this must NOT be done with
@@ -512,9 +433,13 @@ generate_sakila_report() {
     cat "$summary_file"
 }
 
-# Run Sakila tests. First argument is a space-separated list of test numbers.
-# Second argument is a human label ("working" or "validation demos").
-run_sakila_tests() {
+# Run a set of E2E tests. First argument is a space-separated list of test
+# numbers. Second argument is a human label ("working" or "validation demos").
+#
+# The number list is EXPLICIT and ordered by the caller. It is not derived from
+# the filesystem: globbing tests/e2e/*/ would order by category name, giving
+# archive(03,04,05), copy-only(07), purge(06) -- silently reordering the suite.
+run_e2e_suite() {
     local test_nums="$1"
     local label="$2"
 
@@ -525,6 +450,14 @@ run_sakila_tests() {
     # Check prerequisites
     if ! command -v mysqlsh &> /dev/null; then
         log_error "mysqlsh is not installed or not in PATH"
+        exit 1
+    fi
+
+    # Refuse to start on an ambiguous registry. registry_file_for already fails
+    # closed per number, but only for the numbers this run was asked for; a
+    # duplicate on an untouched number would sit undetected until some later run
+    # happened to request it.
+    if ! registry_validate; then
         exit 1
     fi
 
@@ -557,11 +490,30 @@ run_sakila_tests() {
     fi
 
     for i in $run_list; do
-        if run_sakila_test "$i"; then
+        if run_e2e_test "$i"; then
             ((passed++))
         else
             ((failed++))
         fi
+
+        # Isolation guard, and it asserts the REAL mechanism rather than a copy of
+        # it: this function deliberately does not declare the per-test variables,
+        # so if run_e2e_test ever stops declaring them local -- or the load is
+        # lifted out of it -- the sourced assignments land HERE, in global scope,
+        # and are visible now.
+        #
+        # That breakage has no other symptom. Every test would inherit the
+        # previous one's values, every fail-closed guard would stop firing, and
+        # the suite would keep reporting a pass.
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}" ]]; then
+            log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
+            log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
+            log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
+            log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
+            log_error "  the next test and every fail-closed guard in the engine stops firing."
+            exit 1
+        fi
+
         echo ""
     done
 
