@@ -42,7 +42,9 @@ jobs:
     processing:
       batch_size: 100
       batch_delete_size: 20
-      sleep_seconds: 1
+      # 0.2s, not 1s. At 1s this single test spent 20s of its 42s idling between
+      # batches, and the throttle is exercised just as well at 0.2s.
+      sleep_seconds: 0.2
       # Throttle deletes: pause 0.2s between each batch_delete_size delete chunk
       # to limit binlog generation / replication lag.
       delete_sleep_seconds: 0.2

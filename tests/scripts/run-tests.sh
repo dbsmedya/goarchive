@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E tests (03, 04)
-#   -t, --test NUM      Run only specific Sakila test (1-4)
+#   --sakila            Run the working Sakila E2E tests (03, 04, 05)
+#   -t, --test NUM      Run only specific Sakila test (1-5)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -134,7 +134,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment)
+SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -211,7 +211,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -676,10 +676,14 @@ ensure_destination_schema() {
 # Run specific Sakila test. First argument is the test number. There are four:
 #   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
 #   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
-#   03  Payment batch             -> working archive
-#   04  rental -> payment         -> working archive
+#   03  Payment batch             -> working archive (count verification, inherited)
+#   04  rental -> payment         -> working archive (count verification, inherited)
+#   05  Payment + sha256          -> working archive (sha256 verification, explicit)
 # Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
-# is set; tests 03-04 are working archives (mode=working) and run to completion.
+# is set; tests 03-05 are working archives (mode=working) and run to completion.
+#
+# 03 and 05 are deliberately the same archive with different verification methods,
+# so a failure in 05 alone isolates to the method.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
@@ -732,8 +736,21 @@ run_sakila_test() {
             command="archive"
             verify_method="count"
             ;;
+        5)
+            test_name="Test05_PaymentVerifySHA256"
+            test_desc="Working archive: payment with sha256 verification (also the only INSERT IGNORE copy path in the suite)"
+            config_file="test05_payment_verify_sha256.yaml"
+            tables="payment"
+            mode="working"
+            command="archive"
+            # The config declares verification.method: sha256 explicitly rather
+            # than inheriting the default, and asserting on "sha256" here is the
+            # entire subject of this test. If this ever reads "count", the test
+            # has silently become a third copy of test 03.
+            verify_method="sha256"
+            ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-4)"
+            log_error "Invalid test number: $test_num (expected 1-5)"
             return 1
             ;;
     esac
@@ -1156,10 +1173,11 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK) and
-    # test 04 (rental -> payment, 2-level tree) perform real archives end-to-end.
+    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK),
+    # test 04 (rental -> payment, 2-level tree) and test 05 (payment again, but
+    # verified by sha256) perform real archives end-to-end.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3 4" "working"
+        run_sakila_tests "3 4 5" "working"
         exit 0
     fi
 

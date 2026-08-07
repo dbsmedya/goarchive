@@ -9,7 +9,7 @@ integration, and Sakila end-to-end (E2E) tests.
 |-----------|-------------|---------|
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archives that run to completion (tests 03–04) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archives that run to completion (tests 03–05) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
@@ -24,16 +24,26 @@ integration, and Sakila end-to-end (E2E) tests.
 
 ## Sakila E2E Test Suite
 
-Four focused tests: two working archives and two preflight-guardrail
-demonstrations. Configs live in `tests/configs/` (`.yaml` is rendered locally
-from the tracked `.yaml.template`; only `.template` files are committed).
+Five focused tests: three working archives and two preflight-guardrail
+demonstrations.
+
+**Configs live in `tests/configs/`, and the tracked file is always the
+`.yaml.template`.** `run-tests.sh` renders each one to its `.yaml` on every run,
+substituting the `MYSQL_ROOT_PASSWORD` placeholder from `tests/.env`. The
+rendered `.yaml` holds a real password, so it is gitignored — and it is
+**overwritten every run**, so edit the template, never the generated file.
 
 ### Working configurations — archive runs to completion
 
 | Test | Config | Shape | What it exercises |
 |------|--------|-------|-------------------|
-| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`) |
+| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); verification method inherited (`count`) |
 | **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
+| **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
+
+> **03 and 05 are the same archive with different verification methods.** That is
+> deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
+> you change one's slice or batch sizes, change the other's.
 
 ### Validation demos — preflight MUST fail
 
@@ -123,7 +133,7 @@ destination starts empty (see the Overview note):
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the tests (03–04)
+# The whole procedure — test-reset, then e2e-setup, then the tests (03–05)
 make e2e
 
 # Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
@@ -390,9 +400,19 @@ docker compose down -v      # the -v is what removes the data volumes
 
 ## Adding New Tests
 
-1. Create `configs/testNN_description.yaml.template` (and render the local
-   `.yaml` from it). Destination loaded from a DDL-only dump needs
+1. Create `configs/testNN_description.yaml.template` — the `.template` is the
+   **only** file you author; `run-tests.sh` renders the `.yaml` on the next run.
+   Destination loaded from a DDL-only dump needs
    `safety.disable_foreign_key_checks: true`.
+
+   Two constraints that are easy to trip over:
+
+   - **`NN` is the `case` number**, and the same number goes in the dispatch list
+     at step 3. Config filename, `case` arm and dispatch entry must agree.
+   - **The job key must be the line immediately after `jobs:`**, with no comment
+     on it and none between. `run_archive_job` extracts the job name with
+     `grep -A 1 "^jobs:" | tail -1`, so anything else on that line ends up inside
+     the name.
 2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
    - `mode="working"` → the command runs end-to-end; set `tables="..."`, plus:
      - `command="archive" | "purge" | "copy-only"` (defaults to `archive`).
@@ -406,6 +426,6 @@ docker compose down -v      # the -v is what removes the data volumes
      the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
      `command` and `verify_method` are unused here.
 3. Wire the number into the dispatch lists in `main()`:
-   - Working → `run_sakila_tests "3 4 NN" "working"`.
+   - Working → `run_sakila_tests "3 4 5 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
 4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
