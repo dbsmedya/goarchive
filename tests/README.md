@@ -17,7 +17,40 @@ integration, and Sakila end-to-end (E2E) tests.
 ### `make gate` — use this rather than assembling the steps
 
 It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `deadcode` → unit →
-integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`.
+integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`, and ends with a
+summary:
+
+```
+================================================
+  GATE SUMMARY
+================================================
+  estate             test estate reachable on 3305, 3307, 3308
+  fmt-check          ok
+  ...
+  integration        PASS=1026 FAIL=0 SKIP=1
+  characterization   OK (60 / 304 / 364 / 0 / 0)
+  e2e                Passed: 5  Failed: 0
+  e2e-examples       Passed: 2  Failed: 0
+================================================
+  GATE COMPLETE - every stage above exited 0
+```
+
+**Read the summary, not the scrollback.** The run emits thousands of lines — `mysqlsh` progress
+spinners, per-test output, schema dumps — and the numbers that matter are scattered through it.
+An independent verifier once reported six stages out of eight in good faith, because the other
+two had scrolled past.
+
+On failure it stops, prints the summary **so far** with the broken stage marked, names the
+per-stage log, and exits with **that stage's own exit code**. Per-stage logs land in
+`tests/results/gate/` (gitignored).
+
+> **Why a script (`scripts/run-gate.sh`) rather than Makefile recipe lines.** Collecting each
+> stage's output in make would mean `cmd | tee`, and that returns **tee's** exit status — a
+> failing stage would exit 0 and the gate would report green on red. make's default shell has no
+> reliable `pipefail`. The script takes the status from `PIPESTATUS[0]`, the command's own, and
+> checks it explicitly per stage. Same pattern as
+> `e2e-tests-must-run-after-setup` → `require-e2e-seed.sh`: the Makefile names the target, a
+> script owns the logic.
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
 destroys the estate; run it before integration or characterization and those fail for reasons

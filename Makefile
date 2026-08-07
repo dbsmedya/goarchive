@@ -305,35 +305,15 @@ require-estate:
 
 # THE FULL VERIFICATION GATE, in the only order that is correct. Use this one.
 #
-# Order is not stylistic and must not be rearranged:
-#   1. static + unit come first -- they need no database and fail in seconds.
-#   2. integration runs BEFORE e2e. It needs --setup (stale heartbeat state
-#      otherwise fabricates failures), which run-tests.sh applies here.
-#   3. characterization runs before e2e too: it is behind the integration build
-#      tag and wants the estate integration just seeded.
-#   4. e2e runs LAST because it begins with test-reset, destroying the estate
-#      that steps 2 and 3 depend on. Run it earlier and they fail for reasons
-#      that have nothing to do with the change under test.
+# The ordering, the per-stage exit-code checks and the closing summary all live
+# in the script -- see its header for why they cannot safely live in recipe
+# lines here (short version: `cmd | tee` returns tee's status, so collecting
+# output in make would hide a failing stage).
 #
 # Requires credentials: set -a; source tests/.env; set +a
 .PHONY: gate
-gate: require-estate fmt-check vet lint consumer-policy deadcode test-unit
-	@echo ""
-	@echo "=== integration (before e2e: e2e resets the estate) ==="
-	@bash tests/scripts/run-tests.sh --setup --integration-only
-	@echo ""
-	@echo "=== characterization baseline ==="
-	@$(MAKE) characterization
-	@echo ""
-	@echo "=== e2e (destroys and rebuilds the estate) ==="
-	@$(MAKE) e2e
-	@echo ""
-	@echo "=== e2e validation demos ==="
-	@$(MAKE) e2e-examples
-	@echo ""
-	@echo "================================================"
-	@echo "  GATE COMPLETE - every step above exited 0"
-	@echo "================================================"
+gate:
+	@bash tests/scripts/run-gate.sh
 
 # Help target
 .PHONY: help
