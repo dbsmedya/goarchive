@@ -9,7 +9,7 @@ integration, and Sakila end-to-end (E2E) tests.
 |-----------|-------------|---------|
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archives that run to completion (tests 03–05) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archive and purge runs that complete (tests 03–06) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
@@ -24,8 +24,8 @@ integration, and Sakila end-to-end (E2E) tests.
 
 ## Sakila E2E Test Suite
 
-Five focused tests: three working archives and two preflight-guardrail
-demonstrations.
+Six focused tests: four working runs — three archives and one purge — and two
+preflight-guardrail demonstrations.
 
 **Configs live in `tests/configs/`, and the tracked file is always the
 `.yaml.template`.** `run-tests.sh` renders each one to its `.yaml` on every run,
@@ -33,17 +33,26 @@ substituting the `MYSQL_ROOT_PASSWORD` placeholder from `tests/.env`. The
 rendered `.yaml` holds a real password, so it is gitignored — and it is
 **overwritten every run**, so edit the template, never the generated file.
 
-### Working configurations — archive runs to completion
+### Working configurations — the command runs to completion
 
 | Test | Config | Shape | What it exercises |
 |------|--------|-------|-------------------|
 | **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); verification method inherited (`count`) |
 | **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
 | **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
+| **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | The suite's only **`purge`** — the only command that deletes without copying, and the only one with **no verify stage at all**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
 > you change one's slice or batch sizes, change the other's.
+
+> **Why test 06 purges half the table rather than a token slice.** Purge's
+> unrecoverable failure is deleting *more* than the `where` clause selects, and a
+> half-table slice makes the gap between a correct run (8022) and a runaway one
+> (16044) unmistakable. The boundary is `8024`, not `8022`, because `payment_id`
+> is **not contiguous** — two ids below it are missing. Both numbers were queried
+> against the fixture, not computed, and both move together if the Sakila data
+> file changes. That is what `expected_rows` is there to report.
 
 #### The pacing floor — the one timing number that is not machine-dependent
 
@@ -65,9 +74,21 @@ floor = ceil(rows ÷ batch_size) × sleep_seconds
 | **03** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
 | **04** | 200 | 1000 *(default)* | 1 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
 | **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
+| **06** | 8022 | 500 | 17 | 17 × 0.2 = 3.4 s | 64 × 0.2 = 12.8 s | **16.2 s** |
 
 Test 04 declares no `processing:` block at all, so it inherits the global defaults
 (`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
+
+Test 06's 17th batch is a 22-row tail. It contributes to the **batch** term but
+**not** the delete term — 22 rows is a single chunk at `batch_delete_size: 100`,
+and a table's final chunk is never followed by a sleep. Only the 16 full batches
+produce the 4 gaps each that make 64. Counting the tail as though it had gaps
+inflates the floor and produces a gate no correct run can pass.
+
+Its sizing (`500 / 100`) is chosen against this floor rather than copied from 03.
+Over a slice four times larger, 03's `100 / 20` would cost **80.4 s** — 64 s of it
+pure `sleep` — and prove nothing that `500 / 100` does not, since both give five
+delete chunks per batch.
 
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
 machine can only push the measured duration *up*, so it can never fail.
@@ -88,9 +109,16 @@ and the floor is the only one that needs no model of what the command means:
 
 | Assertion | Answers | Needs to know |
 |---|---|---|
-| post-condition | did rows actually move, in the right direction | what the command does |
+| post-condition | did **exactly** the right rows move, in the right direction | what the command does, and how many rows the slice holds |
 | verify stage | did verification run, naming its method | the log contract |
 | **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
+
+> **The floor and the exact count cover opposite directions, and neither
+> substitutes for the other.** The floor is one-sided: a run that did *less* than
+> configured finishes early and fails it, but a run that did *more* simply takes
+> longer and passes. The exact count is what catches that second direction. Before
+> `expected_rows` existed, a purge of the whole table and an archive of the whole
+> table both passed every assertion in the suite.
 
 It is compared against **goarchive's own reported duration**, not the test's
 elapsed time: the latter includes the source reset, `validate` and `dry-run`,
@@ -185,7 +213,7 @@ destination starts empty (see the Overview note):
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the tests (03–05)
+# The whole procedure — test-reset, then e2e-setup, then the tests (03–06)
 make e2e
 
 # Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
@@ -327,12 +355,22 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 
     | command | source | destination |
     |---------|--------|-------------|
-    | `archive` | `after + destination == before` | must have **gained** rows |
-    | `purge` | must have **shrunk** | must stay **empty** |
-    | `copy-only` | must be **unchanged** | must have **gained** rows |
+    | `archive` | lost **exactly** `expected_rows` | holds **exactly** `expected_rows` |
+    | `purge` | lost **exactly** `expected_rows` | must stay **empty** |
+    | `copy-only` | must be **unchanged** | holds **exactly** `expected_rows` |
 
-    Conservation alone is not enough — a run that copied nothing and deleted nothing
-    satisfies it exactly — so each command also requires that something actually moved.
+    **Every arm compares an exact count, never a direction.** Direction was measured
+    blind: under the previous conservation-only arms, an archive of all 16044 rows, a
+    purge of all 16044 rows and an off-by-10× slice *all passed*. Conservation does not
+    rescue it — moving the whole table satisfies `after + destination == before`
+    precisely, and so does moving nothing.
+
+    Conservation is still computed, but only on the **failure** path, where it separates
+    two failures you would chase in opposite directions: *rows were conserved* means the
+    run was internally consistent and `expected_rows` is probably stale, while *rows were
+    not conserved* means rows went missing and the product is at fault. As a gate it can
+    no longer fire at all — once both exact checks hold, conservation follows
+    arithmetically — and a check that cannot fail is not protection.
   - **The run must not have been faster than its pacing floor** — goarchive's own
     reported duration must be at least the test's `min_duration`, and the console
     echoes `pacing OK (21.7s >= 20.0s floor)`. See
@@ -459,8 +497,9 @@ docker compose down -v      # the -v is what removes the data volumes
 
 1. Create `configs/testNN_description.yaml.template` — the `.template` is the
    **only** file you author; `run-tests.sh` renders the `.yaml` on the next run.
-   Destination loaded from a DDL-only dump needs
-   `safety.disable_foreign_key_checks: true`.
+   A test that **copies** into a destination loaded from a DDL-only dump needs
+   `safety.disable_foreign_key_checks: true`. A `purge` test does **not** — the
+   setting is consumed only on the copy path, so carrying it there is dead config.
 
    Two constraints that are easy to trip over:
 
@@ -483,10 +522,17 @@ docker compose down -v      # the -v is what removes the data volumes
        leave it empty and the test fails, because no run logs `method=`. Use `"none"`
        only for `purge`, which has no verify stage — `"none"` asserts the verification
        line is *absent*, so a stage that vanishes cannot pass unnoticed.
+     - `expected_rows="<n> [<n> ...]"` — the exact rows the run must move, **one per
+       entry in `tables`, in the same order**. **Required**, and it fails closed with
+       *"no expected row count configured"*. A count that disagrees with `tables` is
+       caught up front, before the source reseed, naming both lists. Measure each
+       number from a real run rather than computing it — Sakila's PK columns are not
+       contiguous, which is why `payment_id <= 2000` yields 1999 and
+       `payment_id <= 8024` yields 8022.
    - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
      the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
      `command` and `verify_method` are unused here.
 3. Wire the number into the dispatch lists in `main()`:
-   - Working → `run_sakila_tests "3 4 5 NN" "working"`.
+   - Working → `run_sakila_tests "3 4 5 6 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
 4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
