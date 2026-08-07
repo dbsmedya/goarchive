@@ -64,6 +64,68 @@ if [ -z "${SAKILA_DIR:-}" ]; then
     export SAKILA_DIR="$TESTS_DIR/sakila-db"
 fi
 
+# Render configs/*.yaml from their tracked templates -- the same gap .env closes
+# above, for the same reason. A rendered config carries the operator's real
+# password, so configs/*.yaml is gitignored (tests/.gitignore:5) and only the
+# .yaml.template is committed. Nothing rendered them until now: a fresh clone had
+# the templates, no configs, and `make e2e` died on a missing file. The four
+# configs that existed had been substituted by hand, once, and were invisible to
+# everyone else.
+#
+# Rendered unconditionally on every run. The template is the source of truth, and
+# render-if-missing would let a template edit sit un-propagated behind a stale
+# local .yaml -- silent divergence, which is worse than a lost local tweak. Edit
+# the template, never the .yaml.
+#
+# Substitution is bash parameter expansion, NOT sed: a password containing '&' or
+# the sed delimiter corrupts the replacement silently. ${var//pat/rep} is bash 3.2
+# safe -- macOS `make` resolves to /bin/bash 3.2.57, which has no `declare -A` and
+# is the floor this suite targets.
+render_test_configs() {
+    local template rendered line rendered_count=0
+
+    # An empty password renders a syntactically valid config that fails much
+    # later as an unexplained MySQL authentication error. Refuse up front.
+    if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
+        echo "ERROR: MYSQL_ROOT_PASSWORD is empty or unset after sourcing $TESTS_DIR/.env." >&2
+        echo "       Test configs cannot be rendered without it." >&2
+        return 1
+    fi
+
+    for template in "$TESTS_DIR"/configs/*.yaml.template; do
+        # With no matches the glob stays literal, so test for a real file.
+        [ -e "$template" ] || continue
+        rendered="${template%.template}"
+
+        if ! {
+            while IFS= read -r line || [ -n "$line" ]; do
+                printf '%s\n' "${line//\$\{MYSQL_ROOT_PASSWORD\}/$MYSQL_ROOT_PASSWORD}"
+            done < "$template"
+        } > "$rendered"; then
+            echo "ERROR: failed to render $rendered from $template" >&2
+            return 1
+        fi
+
+        # Fail closed on a placeholder this function does not know how to fill,
+        # rather than handing goarchive a config with a literal '${...}' in it.
+        if grep -q '\${' "$rendered"; then
+            echo "ERROR: $rendered still contains an unsubstituted \${...} placeholder." >&2
+            echo "       render_test_configs only substitutes \${MYSQL_ROOT_PASSWORD}." >&2
+            return 1
+        fi
+
+        rendered_count=$((rendered_count + 1))
+    done
+
+    if [ "$rendered_count" -eq 0 ]; then
+        echo "ERROR: no config templates found in $TESTS_DIR/configs/." >&2
+        echo "       The .yaml.template files are tracked in git; a clone should have them." >&2
+        return 1
+    fi
+}
+
+render_test_configs || exit 1
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'

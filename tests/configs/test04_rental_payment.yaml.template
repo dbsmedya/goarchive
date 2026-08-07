@@ -11,8 +11,10 @@
 # reject. See docs/README_LIMITATIONS.md. This rental-rooted
 # shape is the closest working multi-level archive.
 #
-# Copy this file to test04_rental_payment.yaml and substitute the password
-# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test04_rental_payment.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml --
+# that one is gitignored (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
