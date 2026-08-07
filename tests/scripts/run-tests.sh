@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E tests (03, 04, 05)
-#   -t, --test NUM      Run only specific Sakila test (1-5)
+#   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06)
+#   -t, --test NUM      Run only specific Sakila test (1-6)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -134,7 +134,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)
+SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -211,7 +211,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -479,6 +479,36 @@ selftest_get_row_count_fails_loud() {
     return 0
 }
 
+# Explain, on an archive failure, whether rows were conserved.
+#
+# NOT a gate -- see assert_postcondition's header for why conservation can no
+# longer fail on its own. This runs only after an exact-count check has already
+# failed, and it separates two failures an operator would chase in completely
+# opposite directions:
+#
+#   conserved     the run was internally consistent -- every row is accounted
+#                 for, just not in the quantity this test expected. Suspect a
+#                 stale expected_rows or a changed fixture, not the product.
+#   not conserved rows went missing or appeared out of nowhere. That is a
+#                 product failure, and the count is the least of it.
+#
+# Archive-only by design. Purge deletes without copying and copy-only copies
+# without deleting, so neither has a conservation invariant to report.
+explain_archive_conservation() {
+    local before=$1
+    local after_src=$2
+    local after_dst=$3
+    local total=$((after_src + after_dst))
+
+    if [[ "$total" -eq "$before" ]]; then
+        log_error "    rows WERE conserved ($after_src + $after_dst == $before): the run was internally"
+        log_error "    consistent, so suspect a stale expected_rows or a changed fixture."
+    else
+        log_error "    rows were NOT conserved ($after_src + $after_dst != $before): rows went missing or"
+        log_error "    appeared. This is a product failure, not a stale expectation."
+    fi
+}
+
 # Assert the end state a command is supposed to produce.
 #
 # Each command has a DIFFERENT correct outcome, and reusing one assertion for
@@ -490,55 +520,86 @@ selftest_get_row_count_fails_loud() {
 #   purge       rows deleted        nothing copied
 #   copy-only   untouched           rows arrived
 #
-# Conservation (after_src + after_dst == before) is necessary but NOT sufficient:
-# a run that copied nothing and deleted nothing satisfies it exactly. So archive
-# and copy-only additionally require that the destination actually gained rows,
-# and purge requires that the source actually lost some.
+# EVERY arm compares an EXACT count, never a direction. Direction alone was
+# measured blind: with the previous conservation-only arms, `archive ALL 16044
+# rows`, `purge ALL 16044 rows` and an off-by-10x slice ALL PASSED. Conservation
+# (after_src + after_dst == before) does not rescue it -- a run that moved the
+# whole table satisfies conservation precisely, and so does one that moved
+# nothing.
+#
+# The pacing floor cannot cover this direction either. The floor is ONE-SIDED by
+# design: a run that did MORE than configured simply takes longer and passes. So
+# the floor catches a run that did too little, and the exact count catches one
+# that did too much. Neither substitutes for the other.
+#
+# Conservation is still computed -- but only on the FAILURE path, where it is
+# the one thing that separates a stale <expected> from rows going missing. As a
+# gate it is now unfireable: once an archive arm has checked both
+# `before - after_src == expected` and `after_dst == expected`, conservation
+# follows arithmetically and can never fail on its own.
 #
 # The destination is assumed to start empty; ensure_destination_schema drops and
 # recreates the destination database before every working test.
 #
-# Usage: assert_postcondition <command> <table> <before> <after_src> <after_dst>
+# Usage: assert_postcondition <command> <table> <before> <after_src> <after_dst> <expected>
 assert_postcondition() {
     local command=$1
     local table=$2
     local before=$3
     local after_src=$4
     local after_dst=$5
+    local expected=$6
+
+    # Fail closed: without an expected count this degrades to a direction check,
+    # which is exactly what the function exists to stop doing.
+    if [[ -z "$expected" ]]; then
+        log_error "  $table: no expected row count configured for this test"
+        return 1
+    fi
+
+    local removed=$((before - after_src))
 
     case "$command" in
         archive)
-            if [[ "$after_dst" -le 0 ]]; then
-                log_error "  $table: archive copied NOTHING (destination=$after_dst)"
+            if [[ "$removed" -ne "$expected" ]]; then
+                log_error "  $table: archive removed $removed row(s) from source, expected $expected"
+                explain_archive_conservation "$before" "$after_src" "$after_dst"
                 return 1
             fi
-            if [[ $((after_src + after_dst)) -ne "$before" ]]; then
-                log_error "  $table: rows not conserved -- before=$before, after source=$after_src + destination=$after_dst = $((after_src + after_dst))"
+            if [[ "$after_dst" -ne "$expected" ]]; then
+                log_error "  $table: archive put $after_dst row(s) in the destination, expected $expected"
+                explain_archive_conservation "$before" "$after_src" "$after_dst"
                 return 1
             fi
-            log_info "  $table: archive OK (before=$before, source=$after_src, destination=$after_dst)"
+            log_info "  $table: archive OK (before=$before, source=$after_src, destination=$after_dst, moved exactly $expected)"
             ;;
         purge)
-            if [[ "$after_src" -ge "$before" ]]; then
-                log_error "  $table: purge deleted NOTHING (before=$before, source=$after_src)"
+            if [[ "$removed" -ne "$expected" ]]; then
+                log_error "  $table: purge deleted $removed row(s), expected exactly $expected"
+                # Conservation is not an invariant for purge -- it deletes
+                # without copying, so after_src + after_dst is SUPPOSED to be
+                # below before. The catastrophic case has its own signature.
+                if [[ "$after_src" -eq 0 ]]; then
+                    log_error "    the source table is now EMPTY -- the where clause did not bound the delete."
+                fi
                 return 1
             fi
             if [[ "$after_dst" -ne 0 ]]; then
                 log_error "  $table: purge must not copy, but destination holds $after_dst row(s)"
                 return 1
             fi
-            log_info "  $table: purge OK (before=$before, source=$after_src, destination empty)"
+            log_info "  $table: purge OK (before=$before, source=$after_src, deleted exactly $expected, destination empty)"
             ;;
         copy-only)
-            if [[ "$after_dst" -le 0 ]]; then
-                log_error "  $table: copy-only copied NOTHING (destination=$after_dst)"
-                return 1
-            fi
             if [[ "$after_src" -ne "$before" ]]; then
                 log_error "  $table: copy-only must not delete, but source went $before -> $after_src"
                 return 1
             fi
-            log_info "  $table: copy-only OK (source unchanged at $after_src, destination=$after_dst)"
+            if [[ "$after_dst" -ne "$expected" ]]; then
+                log_error "  $table: copy-only put $after_dst row(s) in the destination, expected $expected"
+                return 1
+            fi
+            log_info "  $table: copy-only OK (source unchanged at $after_src, destination=$after_dst, copied exactly $expected)"
             ;;
         *)
             # Fail closed: an unrecognised command must never assert nothing.
@@ -732,17 +793,19 @@ ensure_destination_schema() {
     return 0
 }
 
-# Run specific Sakila test. First argument is the test number. There are four:
+# Run specific Sakila test. First argument is the test number. There are six:
 #   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
 #   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
 #   03  Payment batch             -> working archive (count verification, inherited)
 #   04  rental -> payment         -> working archive (count verification, inherited)
 #   05  Payment + sha256          -> working archive (sha256 verification, explicit)
+#   06  Payment purge             -> working purge (no verification stage at all)
 # Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
-# is set; tests 03-05 are working archives (mode=working) and run to completion.
+# is set; tests 03-06 are working runs (mode=working) and run to completion.
 #
 # 03 and 05 are deliberately the same archive with different verification methods,
-# so a failure in 05 alone isolates to the method.
+# so a failure in 05 alone isolates to the method. 06 is the only non-archive
+# command in the suite.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
@@ -757,6 +820,10 @@ run_sakila_test() {
     local min_duration=""         # pacing floor in seconds, derived from the
                                   # config's batch/sleep settings; see
                                   # assert_min_duration for the arithmetic
+    local expected_rows=""        # exact rows the run must move, ONE PER ENTRY
+                                  # in $tables and in the same order; see
+                                  # assert_postcondition for why a direction
+                                  # check alone is not enough
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -794,6 +861,9 @@ run_sakila_test() {
             # (100 rows / batch_delete_size 20 = 5 chunks, and the last chunk of
             # each table is not followed by a sleep, so 4 gaps.)
             min_duration="20.0"
+            # payment_id <= 2000 selects 1999 rows, not 2000 -- payment_id is
+            # not contiguous. Measured, not computed.
+            expected_rows="1999"
             ;;
         4)
             test_name="Test04_RentalPayment"
@@ -809,6 +879,9 @@ run_sakila_test() {
             #   batch sleep:  1 x 1.0 = 1.0s
             #   delete sleep: disabled by default
             min_duration="1.0"
+            # One number per table, in the SAME ORDER as $tables above.
+            # rental_id <= 200 selects 200 rentals, which pull in 200 payments.
+            expected_rows="200 200"
             ;;
         5)
             test_name="Test05_PaymentVerifySHA256"
@@ -824,12 +897,66 @@ run_sakila_test() {
             verify_method="sha256"
             # Same slice and same pacing as test 03, so the same floor.
             min_duration="20.0"
+            expected_rows="1999"
+            ;;
+        6)
+            test_name="Test06_PaymentPurge"
+            test_desc="Working purge: delete half the payment table without copying anything"
+            config_file="test06_payment_purge.yaml"
+            tables="payment"
+            mode="working"
+            command="purge"
+            # Purge is batchDeleteOnly: the verify block sits inside the
+            # batchFull||batchCopyVerify gate, so dataVerifier is never called.
+            # "none" asserts the verification line is ABSENT -- so a purge that
+            # silently gained a verify stage, or an archive misconfigured as a
+            # purge, fails instead of passing quietly.
+            verify_method="none"
+            # 8022 rows / batch_size 500 = 17 batches (16 full, one 22-row tail).
+            #   batch sleep:  17 x 0.2                        = 3.4s
+            #   delete sleep: 16 batches x 4 chunk-gaps x 0.2 = 12.8s
+            # (500 / batch_delete_size 100 = 5 chunks -> 4 gaps. The 22-row tail
+            # batch is a single chunk and contributes no gap.)
+            min_duration="16.2"
+            # HALF the table, exactly: payment_id <= 8024 selects 8022 of
+            # payment's 16044 rows. The boundary is 8024 rather than 8022
+            # because two ids below it are missing; it was queried against the
+            # fixture, not computed. Over-deletion is purge's unrecoverable
+            # failure, and this number is the only thing that catches it.
+            expected_rows="8022"
             ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-5)"
+            log_error "Invalid test number: $test_num (expected 1-6)"
             return 1
             ;;
     esac
+
+    # Split expected_rows into a parallel indexed array matching $tables by
+    # position. bash 3.2 has no `declare -A`, and this must NOT be done with
+    # `set -- $expected_rows` inside STEP 4's loop: that clobbers this
+    # function's own positional parameters.
+    local expected_arr=()
+    local n
+    for n in $expected_rows; do
+        expected_arr+=("$n")
+    done
+
+    # Catch a miscount HERE, before a 60s source reseed, and name the real
+    # fault. Left to STEP 4, a short list hands an empty value to the extra
+    # table and fails with "no expected row count", which points at the wrong
+    # thing.
+    if [[ "$mode" == "working" ]]; then
+        local table_count=0
+        for n in $tables; do
+            table_count=$((table_count + 1))
+        done
+        if [[ ${#expected_arr[@]} -ne $table_count ]]; then
+            log_error "Test $test_num: expected_rows has ${#expected_arr[@]} entr(ies) but tables has $table_count"
+            log_error "  tables:        $tables"
+            log_error "  expected_rows: $expected_rows"
+            return 1
+        fi
+    fi
     
     log_header ""
     log_header "========================================"
@@ -1019,7 +1146,7 @@ run_sakila_test() {
                 return 1
             fi
             echo "  $table (after): Source=$after_src Destination=$after_dst" >> "$log_file"
-            if ! assert_postcondition "$command" "$table" "${before_counts[$idx]}" "$after_src" "$after_dst"; then
+            if ! assert_postcondition "$command" "$table" "${before_counts[$idx]}" "$after_src" "$after_dst" "${expected_arr[$idx]}"; then
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
                 echo "" >> "$log_file"
@@ -1263,9 +1390,10 @@ main() {
     
     # Run the working Sakila E2E suite. Test 03 (payment, single-column PK),
     # test 04 (rental -> payment, 2-level tree) and test 05 (payment again, but
-    # verified by sha256) perform real archives end-to-end.
+    # verified by sha256) perform real archives end-to-end; test 06 purges half
+    # the payment table, deleting without copying.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3 4 5" "working"
+        run_sakila_tests "3 4 5 6" "working"
         exit 0
     fi
 

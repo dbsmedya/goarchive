@@ -1,0 +1,69 @@
+# Test 06: purge -- delete from source WITHOUT copying anything
+#
+# The suite's only `purge` coverage. purge is the one destructive command that
+# deletes without copying, so a mistake here is unrecoverable -- which is why
+# this test purges HALF the payment table rather than a token slice: the gap
+# between a correct run (8022 rows) and a runaway one (16044) is then large and
+# unmistakable, and the runner asserts the exact number, not a direction.
+#
+# payment_id <= 8024 selects exactly 8022 of payment's 16044 rows. The boundary
+# is 8024 and not 8022 because payment_id is NOT contiguous -- two ids below it
+# are missing. It was queried against the fixture, not computed. Both numbers
+# are fixture-derived and move together if the Sakila data file changes; the
+# runner's exact-count assertion is what reports that rather than quietly
+# purging a different half.
+#
+# Sizing (batch_size 500 / batch_delete_size 100) is chosen against the pacing
+# floor. It gives 17 batches with 5 delete chunks each -- the same chunk shape
+# as test 03, so the delete throttle is exercised identically -- for a 16.2s
+# floor. Mirroring test 03's 100/20 over this larger slice would cost 80.4s, of
+# which 64s is pure sleep, and would prove nothing extra.
+#
+# NO safety block: disable_foreign_key_checks is consumed only by copy.go, and
+# purge never copies. Carrying it would be dead config.
+#
+# NO verification block: purge is batchDeleteOnly, so no verify stage runs at
+# all. The runner asserts its ABSENCE via verify_method="none", which is what
+# catches a purge that silently gained one -- or an archive misconfigured as a
+# purge.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test06_payment_purge.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml --
+# that one is gitignored (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+# Required even though purge runs under PreflightProfileSourceOnly and skips the
+# destination checks: the tracking tables (archiver_job, archiver_job_log_<id>)
+# are still written to the destination's job schema.
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+# The job key must be the line immediately after `jobs:` -- run_archive_job
+# extracts the name with `grep -A 1 "^jobs:" | tail -1`, so a comment here or a
+# trailing comment on the key itself lands inside the extracted name.
+jobs:
+  purge-payment-rows:
+    root_table: payment
+    primary_key: payment_id
+    # Exactly half the table: 8022 of 16044 rows.
+    where: "payment_id <= 8024"
+    processing:
+      batch_size: 500
+      batch_delete_size: 100
+      # 17 batches x 0.2s = 3.4s
+      sleep_seconds: 0.2
+      # 16 full batches x 4 chunk-gaps x 0.2s = 12.8s. The 22-row tail batch is
+      # a single chunk and contributes none -- a table's last chunk is never
+      # followed by a sleep.
+      delete_sleep_seconds: 0.2
