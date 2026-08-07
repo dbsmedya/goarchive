@@ -252,8 +252,25 @@ left uncovered.
 Each Sakila test prints a header and a verdict; per-test logs are written to
 `results/test_<n>.log`.
 
-- **Working test** → runs `validate → dry-run → archive` and ends with
-  `Result: PASS` (plus `records_copied` / `records_deleted`).
+- **Working test** → runs `validate → dry-run → <command>`, then **asserts the outcome**,
+  and ends with `Result: PASS`.
+
+  Two assertions run after the command, and either one fails the test:
+
+  - **The verify stage must have run, naming its method** — the log must carry
+    `Starting verification (method=<method>)`, and the console echoes
+    `confirmed: verification ran with method=count`.
+  - **The post-condition must hold**, per command. Rows are counted on **both** source
+    and destination, before and after:
+
+    | command | source | destination |
+    |---------|--------|-------------|
+    | `archive` | `after + destination == before` | must have **gained** rows |
+    | `purge` | must have **shrunk** | must stay **empty** |
+    | `copy-only` | must be **unchanged** | must have **gained** rows |
+
+    Conservation alone is not enough — a run that copied nothing and deleted nothing
+    satisfies it exactly — so each command also requires that something actually moved.
 - **Demo test** → `validate` fails; the runner prints
   `EXPECTED FAILURE matched` and `Result: PASS` when the category matches, or
   `Result: FAIL (wrong error category)` otherwise.
@@ -316,6 +333,13 @@ catches a run that did nothing.
 | `TEST_REPLICA_PORT` | 3308 | Replica MySQL port |
 | `SAKILA_DIR` | `tests/sakila-db` | Sakila SQL files location (auto-defaulted by run-tests.sh) |
 | `DUMP_DIR` | `/tmp/db1_schema_dump` | Temp dir for destination schema dump |
+| `GOARCHIVE_BIN` | `bin/goarchive` | Binary the Sakila E2E suite runs. Set it to test a **different build** — an older release, say — against the same suite. |
+
+**`GOARCHIVE_BIN` behaves differently depending on whether you set it.** Left unset, the
+runner builds `bin/goarchive` if it is missing, as before. Set explicitly, a missing binary
+is an **error** naming the path — the runner will not build the current tree in its place,
+because that would silently test a build you did not ask for and pass. It is resolved once,
+up front, and the suite prints `Binary under test: <path>` before the first test.
 
 ## Troubleshooting
 
@@ -370,9 +394,17 @@ docker compose down -v      # the -v is what removes the data volumes
    `.yaml` from it). Destination loaded from a DDL-only dump needs
    `safety.disable_foreign_key_checks: true`.
 2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
-   - `mode="working"` → archive runs end-to-end; set `tables="..."`.
+   - `mode="working"` → the command runs end-to-end; set `tables="..."`, plus:
+     - `command="archive" | "purge" | "copy-only"` (defaults to `archive`).
+       Do **not** add `--force-triggers` anywhere — `run_archive_job` applies it per
+       command, and `copy-only` does not accept it.
+     - `verify_method="count" | "sha256" | "none"`. **Required**, and it fails closed:
+       leave it empty and the test fails, because no run logs `method=`. Use `"none"`
+       only for `purge`, which has no verify stage — `"none"` asserts the verification
+       line is *absent*, so a stage that vanishes cannot pass unnoticed.
    - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
      the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
+     `command` and `verify_method` are unused here.
 3. Wire the number into the dispatch lists in `main()`:
    - Working → `run_sakila_tests "3 4 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
