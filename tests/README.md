@@ -70,10 +70,27 @@ Test 04 declares no `processing:` block at all, so it inherits the global defaul
 (`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
 
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
-machine can only push the measured duration *up*, so it can never fail. It fails
-only when the throttling genuinely did not happen — `sleep_seconds` silently
-zeroed, a config that stopped being read, a batch loop that ran once instead of
-twenty. Wall-clock alone cannot tell those apart from a fast machine.
+machine can only push the measured duration *up*, so it can never fail.
+
+**It is not a test of sleeping.** The floor encodes the run's *shape* — this job
+must process twenty batches with these pauses — so anything that changes that
+shape lands below it, **including causes nobody anticipated**, and it catches them
+while the command still exits 0 with entirely plausible output:
+
+- a config that silently stopped being read, so the global defaults applied;
+- discovery returning fewer roots than the `where` slice implies;
+- an early return introduced by a later refactor;
+- a resume path that skipped work it should have replayed;
+- a batch loop that ran once where it should have run twenty.
+
+That is the point. Each working test now asserts on three **independent** axes,
+and the floor is the only one that needs no model of what the command means:
+
+| Assertion | Answers | Needs to know |
+|---|---|---|
+| post-condition | did rows actually move, in the right direction | what the command does |
+| verify stage | did verification run, naming its method | the log contract |
+| **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
 
 It is compared against **goarchive's own reported duration**, not the test's
 elapsed time: the latter includes the source reset, `validate` and `dry-run`,
