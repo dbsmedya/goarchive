@@ -45,6 +45,41 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
 > you change one's slice or batch sizes, change the other's.
 
+#### The pacing floor — the one timing number that is not machine-dependent
+
+Wall-clock varies with the container, the host and the filesystem. The **sleep**
+component does not: it is arithmetic over the config, and no machine can go below
+it. Each working test declares that floor as `min_duration`, and the runner fails
+the test if the run came in under it.
+
+```
+floor = ceil(rows ÷ batch_size) × sleep_seconds
+      + Σ over batches of (delete chunks per table − 1) × delete_sleep_seconds
+```
+
+`sleep_seconds` fires after **every** batch including the last; `delete_sleep_seconds`
+**skips** each table's final chunk, so 5 chunks means 4 pauses.
+
+| Test | rows | `batch_size` | batches | batch sleep | delete sleep | **floor** |
+|---|---|---|---|---|---|---|
+| **03** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
+| **04** | 200 | 1000 *(default)* | 1 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
+| **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
+
+Test 04 declares no `processing:` block at all, so it inherits the global defaults
+(`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
+
+**This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
+machine can only push the measured duration *up*, so it can never fail. It fails
+only when the throttling genuinely did not happen — `sleep_seconds` silently
+zeroed, a config that stopped being read, a batch loop that ran once instead of
+twenty. Wall-clock alone cannot tell those apart from a fast machine.
+
+It is compared against **goarchive's own reported duration**, not the test's
+elapsed time: the latter includes the source reset, `validate` and `dry-run`,
+which dwarf the floor and would hide a lost throttle. For scale, measured against
+the 20.0 s floor, tests 03 and 05 spend about **0.7 s** doing actual work.
+
 ### Validation demos — preflight MUST fail
 
 The runner **inverts** pass/fail for demos: a demo "passes" when `validate` fails
@@ -265,7 +300,7 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 - **Working test** → runs `validate → dry-run → <command>`, then **asserts the outcome**,
   and ends with `Result: PASS`.
 
-  Two assertions run after the command, and either one fails the test:
+  Three assertions run after the command, and any one of them fails the test:
 
   - **The verify stage must have run, naming its method** — the log must carry
     `Starting verification (method=<method>)`, and the console echoes
@@ -281,6 +316,11 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 
     Conservation alone is not enough — a run that copied nothing and deleted nothing
     satisfies it exactly — so each command also requires that something actually moved.
+  - **The run must not have been faster than its pacing floor** — goarchive's own
+    reported duration must be at least the test's `min_duration`, and the console
+    echoes `pacing OK (21.7s >= 20.0s floor)`. See
+    [the pacing floor](#the-pacing-floor--the-one-timing-number-that-is-not-machine-dependent)
+    for how the floor is derived and why a slow machine cannot fail it.
 - **Demo test** → `validate` fails; the runner prints
   `EXPECTED FAILURE matched` and `Result: PASS` when the category matches, or
   `Result: FAIL (wrong error category)` otherwise.
@@ -418,6 +458,10 @@ docker compose down -v      # the -v is what removes the data volumes
      - `command="archive" | "purge" | "copy-only"` (defaults to `archive`).
        Do **not** add `--force-triggers` anywhere — `run_archive_job` applies it per
        command, and `copy-only` does not accept it.
+     - `min_duration="<seconds>"` — the pacing floor, computed from the config with
+       the formula above. **Required**, and it fails closed: leave it empty and the
+       test fails with *"no min_duration configured"*. Recompute it whenever you
+       change the slice, `batch_size`, `batch_delete_size` or either sleep.
      - `verify_method="count" | "sha256" | "none"`. **Required**, and it fails closed:
        leave it empty and the test fails, because no run logs `method=`. Use `"none"`
        only for `purge`, which has no verify stage — `"none"` asserts the verification

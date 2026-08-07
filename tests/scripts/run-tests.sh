@@ -549,6 +549,65 @@ assert_postcondition() {
     return 0
 }
 
+# Assert the run took at least as long as its configured throttling requires.
+#
+# The floor is deterministic -- pure arithmetic over the config, with no
+# dependence on the machine:
+#
+#   floor = ceil(rows / batch_size) * sleep_seconds
+#         + SUM over batches of (delete chunks per table - 1) * delete_sleep_seconds
+#
+# sleep_seconds fires after EVERY batch including the last (orchestrator.go:457,
+# no guard). delete_sleep_seconds skips each table's final chunk
+# (delete.go:185, `batchNum < totalBatches-1`), so a batch of 100 rows at
+# batch_delete_size=20 sleeps 4 times, not 5.
+#
+# Why this is safe to assert, when timing assertions usually are not: it is a
+# ONE-SIDED bound. A slow container, a loaded host, a cold filesystem or a
+# reseeded estate can only push the measured duration UP, and can therefore
+# never fail it. It fails only when the sleeps did not actually happen --
+# sleep_seconds silently zeroed, a config that stopped being read, a batch loop
+# that ran once where it should have run twenty. Wall-clock alone cannot tell
+# those apart from a fast machine; the floor can.
+#
+# Compared against goarchive's OWN reported duration, not the shell-measured
+# test duration. The latter includes the source reset, validate and dry-run,
+# which together dwarf the floor and would mask a lost throttle entirely.
+assert_min_duration() {
+    local log_file=$1
+    local floor=$2
+
+    # Fail closed: a working test with no floor configured asserts nothing.
+    if [[ -z "$floor" ]]; then
+        log_error "  no min_duration configured for this test"
+        return 1
+    fi
+
+    # The last "duration":<seconds> in the log is the command's own total.
+    # archive, purge and copy-only all emit it as a structured field
+    # (cmd/goarchive/cmd/{archive,purge,copyonly}.go). The phase-level logs spell
+    # duration inside a message string instead, so they cannot collide with this.
+    local actual
+    actual=$(grep -o '"duration":[0-9.]*' "$log_file" | tail -1 | cut -d: -f2)
+    if [[ -z "$actual" ]]; then
+        log_error "  could not read the run's own duration from $log_file"
+        log_error "  the command logs it as a \"duration\" field; if that changed,"
+        log_error "  this assertion has stopped matching and is no longer checking anything."
+        return 1
+    fi
+
+    # bash 3.2 has no floating-point arithmetic, so awk does the comparison.
+    if ! awk -v a="$actual" -v f="$floor" 'BEGIN { exit !(a >= f) }'; then
+        log_error "  run finished in ${actual}s, below its ${floor}s pacing floor"
+        log_error "  the configured sleep_seconds / delete_sleep_seconds cannot all have"
+        log_error "  been applied -- this is a throttling regression, not a fast machine."
+        return 1
+    fi
+
+    log_info "  pacing OK (${actual}s >= ${floor}s floor)"
+    return 0
+}
+
 # Reset source database
 reset_source_database() {
     log_info "Resetting source database..."
@@ -695,6 +754,9 @@ run_sakila_test() {
     local command="archive"       # archive | purge | copy-only (mode=working)
     local verify_method=""        # verification method the run must report, or
                                   # "none" to assert no verification ran at all
+    local min_duration=""         # pacing floor in seconds, derived from the
+                                  # config's batch/sleep settings; see
+                                  # assert_min_duration for the arithmetic
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -726,6 +788,12 @@ run_sakila_test() {
             # No verification block in the config, so the documented default
             # applies: method=count, skip_verification=false.
             verify_method="count"
+            # 1999 rows / batch_size 100 = 20 batches.
+            #   batch sleep:  20 x 0.2                        = 4.0s
+            #   delete sleep: 20 batches x 4 chunk-gaps x 0.2 = 16.0s
+            # (100 rows / batch_delete_size 20 = 5 chunks, and the last chunk of
+            # each table is not followed by a sleep, so 4 gaps.)
+            min_duration="20.0"
             ;;
         4)
             test_name="Test04_RentalPayment"
@@ -735,6 +803,12 @@ run_sakila_test() {
             mode="working"
             command="archive"
             verify_method="count"
+            # This config declares no processing block at all, so it inherits the
+            # global defaults: batch_size 1000, sleep_seconds 1, and
+            # delete_sleep_seconds 0. 200 rentals / 1000 = a single batch.
+            #   batch sleep:  1 x 1.0 = 1.0s
+            #   delete sleep: disabled by default
+            min_duration="1.0"
             ;;
         5)
             test_name="Test05_PaymentVerifySHA256"
@@ -748,6 +822,8 @@ run_sakila_test() {
             # entire subject of this test. If this ever reads "count", the test
             # has silently become a third copy of test 03.
             verify_method="sha256"
+            # Same slice and same pacing as test 03, so the same floor.
+            min_duration="20.0"
             ;;
         *)
             log_error "Invalid test number: $test_num (expected 1-5)"
@@ -862,6 +938,18 @@ run_sakila_test() {
             return 1
         else
             log_info "  confirmed: verification ran with method=$verify_method"
+        fi
+
+        # Step 3d: the run must not have been FASTER than its own configured
+        # throttling permits. See assert_min_duration for why this is safe.
+        log_info "[STEP 3d] Asserting the run respected its pacing floor (${min_duration}s)..."
+        if ! assert_min_duration "$log_file" "$min_duration"; then
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (ran below its pacing floor)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
         fi
     else
         # Example tests expect `validate` to fail with a specific error category.
