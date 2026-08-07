@@ -479,6 +479,110 @@ selftest_get_row_count_fails_loud() {
     return 0
 }
 
+# Count rows in the destination's CHILD table that reference a PARENT row which
+# is not there.
+#
+# Row counts cannot cover this, and the reason is structural rather than
+# theoretical: every working test that copies must set
+# safety.disable_foreign_key_checks: true, because a copied child normally
+# references out-of-graph parents the destination does not hold (payment -> the
+# uncopied customer and staff). With FK enforcement off, the destination cannot
+# reject an orphan on its own. "200 rentals and 200 payments arrived" therefore
+# stays true even if all 200 payments point at rentals that never did.
+#
+# A NULL foreign key is NOT an orphan -- it is a row with no parent reference,
+# which is legal. Load-bearing here rather than defensive: sakila's
+# payment.rental_id is `INT DEFAULT NULL` with ON DELETE SET NULL
+# (tests/sakila-db/sakila-schema.sql:273,280), so omitting the IS NOT NULL guard
+# would report legitimately-null rows as orphans.
+#
+# Contract, deliberately identical to get_row_count's:
+#   stdout / exit 0   the orphan count
+#   stderr / exit 1   the query failed -- callers MUST check
+# A failed query is a FAILURE, never "0 orphans". Returning 0 on error would
+# make this assertion indistinguishable from a passing one, which is the exact
+# defect get_row_count was rewritten to remove.
+count_orphans() {
+    local host=$1
+    local port=$2
+    local user=$3
+    local db=$4
+    local child=$5
+    local fk=$6
+    local parent=$7
+    local parent_pk=$8
+
+    # `local out` is declared on its own line, for the same reason as in
+    # get_row_count: written as `local out=$(...)` the exit status would be
+    # `local`'s (always 0) rather than the query's.
+    local out
+    if ! out=$(MYSQL_QUERY_HOST="$host" MYSQL_QUERY_USER="$user" \
+        "$SCRIPT_DIR/mysql-query.sh" "$port" \
+        "SELECT COUNT(*) FROM \`$db\`.\`$child\` c \
+         LEFT JOIN \`$db\`.\`$parent\` p ON c.\`$fk\` = p.\`$parent_pk\` \
+         WHERE c.\`$fk\` IS NOT NULL AND p.\`$parent_pk\` IS NULL;"); then
+        echo "count_orphans: could not check ${db}.${child}.${fk} -> ${db}.${parent} on ${host}:${port}" >&2
+        return 1
+    fi
+
+    # mysql-query.sh emits the column header, then the value.
+    echo "$out" | tail -1
+}
+
+# Prove that count_orphans reports a failure instead of returning "0".
+#
+# Same reasoning as selftest_get_row_count_fails_loud, and the same reachable
+# argument: an orphan count that silently reads 0 on a broken query reports
+# "referential integrity holds" for every test that uses it.
+selftest_count_orphans_fails_loud() {
+    local out rc
+    out=$(count_orphans 127.0.0.1 59999 "$ARCHIVE_USER" "$ARCHIVE_DB" \
+        payment rental_id rental rental_id 2>/dev/null)
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_error "HARNESS SELF-CHECK FAILED: count_orphans exited 0 against an unreachable port."
+        log_error "  It returned: '${out}'"
+        log_error "  A failed query is being reported as an orphan count, which means every"
+        log_error "  referential-integrity assertion in this suite is vacuous. Refusing to run."
+        return 1
+    fi
+    log_verbose "self-check: count_orphans fails loud on an unreachable port (exit $rc)"
+    return 0
+}
+
+# Assert that a copied child/parent pair in the destination has no orphans.
+#
+# Usage: assert_no_orphans <child> <fk_column> <parent> <parent_pk>
+assert_no_orphans() {
+    local child=$1
+    local fk=$2
+    local parent=$3
+    local parent_pk=$4
+
+    local orphans
+    if ! orphans=$(count_orphans "$ARCHIVE_HOST" "$ARCHIVE_PORT" "$ARCHIVE_USER" \
+        "$ARCHIVE_DB" "$child" "$fk" "$parent" "$parent_pk"); then
+        log_error "  $child -> $parent: orphan check could not run"
+        log_error "    this is a FAILED ASSERTION, not a clean result."
+        return 1
+    fi
+    if [[ -z "$orphans" ]]; then
+        log_error "  $child -> $parent: orphan check returned no value"
+        return 1
+    fi
+
+    if [[ "$orphans" -ne 0 ]]; then
+        log_error "  $child: $orphans row(s) reference a $parent that is not in the destination"
+        log_error "    the row COUNTS can still be exactly right -- this is the copy landing"
+        log_error "    the wrong rows, or landing children whose parents never arrived."
+        log_error "    Check the copy ORDER: parents must be copied before their children."
+        return 1
+    fi
+
+    log_info "  $child -> $parent: no orphans"
+    return 0
+}
+
 # Explain, on an archive failure, whether rows were conserved.
 #
 # NOT a gate -- see assert_postcondition's header for why conservation can no
@@ -793,19 +897,23 @@ ensure_destination_schema() {
     return 0
 }
 
-# Run specific Sakila test. First argument is the test number. There are six:
+# Run specific Sakila test. First argument is the test number. There are seven:
 #   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
 #   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
 #   03  Payment batch             -> working archive (count verification, inherited)
 #   04  rental -> payment         -> working archive (count verification, inherited)
 #   05  Payment + sha256          -> working archive (sha256 verification, explicit)
 #   06  Payment purge             -> working purge (no verification stage at all)
+#   07  rental -> payment copy    -> working copy-only (source must be UNTOUCHED)
 # Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
-# is set; tests 03-06 are working runs (mode=working) and run to completion.
+# is set; tests 03-07 are working runs (mode=working) and run to completion.
 #
 # 03 and 05 are deliberately the same archive with different verification methods,
-# so a failure in 05 alone isolates to the method. 06 is the only non-archive
-# command in the suite.
+# so a failure in 05 alone isolates to the method. 06 and 07 are the only
+# non-archive commands in the suite. 04 and 07 share a graph and a slice and
+# differ in the command, so a failure in 07 alone isolates to copy-only -- with
+# one deliberate exception, the pacing: 04 runs the slice in a single batch,
+# while 07 splits it into 20 so the sleep is exercised more than once.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
@@ -824,6 +932,11 @@ run_sakila_test() {
                                   # in $tables and in the same order; see
                                   # assert_postcondition for why a direction
                                   # check alone is not enough
+    local orphan_checks=""        # referential-integrity pairs to verify in the
+                                  # destination, as child:fk:parent:parent_pk,
+                                  # space-separated. REQUIRED for any test with
+                                  # more than one table; see assert_no_orphans
+                                  # for why exact counts do not cover this
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -882,6 +995,11 @@ run_sakila_test() {
             # One number per table, in the SAME ORDER as $tables above.
             # rental_id <= 200 selects 200 rentals, which pull in 200 payments.
             expected_rows="200 200"
+            # The counts above cannot see a payment copied without its rental:
+            # this config disables FK checks on the copy path (it must -- payment
+            # references the uncopied customer and staff), so the destination
+            # accepts an orphan silently.
+            orphan_checks="payment:rental_id:rental:rental_id"
             ;;
         5)
             test_name="Test05_PaymentVerifySHA256"
@@ -925,8 +1043,37 @@ run_sakila_test() {
             # failure, and this number is the only thing that catches it.
             expected_rows="8022"
             ;;
+        7)
+            test_name="Test07_RentalPaymentCopyOnly"
+            test_desc="Working copy-only: copy rental -> payment, leaving the source untouched"
+            config_file="test07_rental_payment_copyonly.yaml"
+            tables="rental payment"
+            mode="working"
+            command="copy-only"
+            # copy-only is batchCopyVerify, so the verify stage DOES run -- the
+            # copy+verify block is gated on batchFull||batchCopyVerify
+            # (batch_pipeline.go:122). Method is inherited, so "count".
+            verify_method="count"
+            # Same 200-rental slice as test 04, but NOT test 04's pacing. That
+            # config inherits batch_size 1000, making 200 rentals a single batch,
+            # and one batch exercises one sleep call -- no per-batch accumulation
+            # bug is reachable. This config sets batch_size 10:
+            #   200 rentals / 10 = 20 batches
+            #   batch sleep: 20 x 0.5 = 10.0s
+            # Batch term ONLY. copy-only never runs DeletePhase (gated on
+            # batchFull||batchDeleteOnly, batch_pipeline.go:146), so
+            # delete_sleep_seconds is inert for this command and the config does
+            # not set it. Adding a delete term here would build a gate that no
+            # correct run can pass.
+            min_duration="10.0"
+            # Same slice as test 04, so the same counts -- but for copy-only the
+            # assertion reads differently: the source must be UNCHANGED and the
+            # destination must hold exactly these. See assert_postcondition.
+            expected_rows="200 200"
+            orphan_checks="payment:rental_id:rental:rental_id"
+            ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-6)"
+            log_error "Invalid test number: $test_num (expected 1-7)"
             return 1
             ;;
     esac
@@ -956,6 +1103,35 @@ run_sakila_test() {
             log_error "  expected_rows: $expected_rows"
             return 1
         fi
+
+        # Fail closed on referential integrity. A multi-table test copies a
+        # parent/child graph, and exact row counts cannot see a child landing
+        # without its parent -- so a test that declares more than one table and
+        # no orphan_checks is asserting less than it appears to. Single-table
+        # tests have no edge to check, which is why the rule keys off the table
+        # count rather than being universally required.
+        if [[ $table_count -gt 1 && -z "$orphan_checks" ]]; then
+            log_error "Test $test_num: $table_count tables but no orphan_checks configured"
+            log_error "  tables: $tables"
+            log_error "  A multi-table test must declare at least one"
+            log_error "  child:fk:parent:parent_pk pair. Exact row counts stay true even"
+            log_error "  when every copied child points at a parent that never arrived."
+            return 1
+        fi
+
+        # Validate the SHAPE here too, before the reseed. Parsed leniently, a
+        # malformed spec would silently check some other pair of tables -- and
+        # pass.
+        local spec
+        for spec in $orphan_checks; do
+            local colons
+            colons=$(echo "$spec" | tr -cd ':' | wc -c | tr -d ' ')
+            if [[ "$colons" -ne 3 ]]; then
+                log_error "Test $test_num: malformed orphan_checks entry '$spec'"
+                log_error "  want child:fk:parent:parent_pk (three colons), got $colons"
+                return 1
+            fi
+        done
     fi
     
     log_header ""
@@ -1158,6 +1334,38 @@ run_sakila_test() {
         done
     fi
 
+    # Step 5: Assert referential integrity in the destination.
+    #
+    # A separate axis from Step 4, not a refinement of it. Step 4 asks "did the
+    # right NUMBER of rows move"; this asks "are the rows that moved internally
+    # consistent". Both can hold while the other fails: 200 payments referencing
+    # 200 absent rentals satisfies every count in Step 4.
+    if [[ "$mode" == "working" && -n "$orphan_checks" ]]; then
+        log_info "[STEP 5] Asserting referential integrity in the destination..."
+        local check
+        for check in $orphan_checks; do
+            # Pure parameter expansion -- no IFS juggling and no subshell. The
+            # three-colon shape was already validated up front.
+            local c_tbl c_fk p_tbl p_pk rest
+            c_tbl="${check%%:*}"
+            rest="${check#*:}"
+            c_fk="${rest%%:*}"
+            rest="${rest#*:}"
+            p_tbl="${rest%%:*}"
+            p_pk="${rest##*:}"
+
+            if ! assert_no_orphans "$c_tbl" "$c_fk" "$p_tbl" "$p_pk"; then
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (orphaned $c_tbl rows in the destination)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            echo "  $c_tbl -> $p_tbl: no orphans in the destination" >> "$log_file"
+        done
+    fi
+
     end_time=$(date +%s)
     duration=$((end_time - start_time))
     if [[ "$mode" == "example" ]]; then
@@ -1212,6 +1420,9 @@ run_sakila_tests() {
     # Prove the harness can tell a failed query from an empty one BEFORE trusting
     # any assertion built on it. Costs one refused connection (~0.3s).
     if ! selftest_get_row_count_fails_loud; then
+        exit 1
+    fi
+    if ! selftest_count_orphans_fails_loud; then
         exit 1
     fi
 
@@ -1393,7 +1604,7 @@ main() {
     # verified by sha256) perform real archives end-to-end; test 06 purges half
     # the payment table, deleting without copying.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3 4 5 6" "working"
+        run_sakila_tests "3 4 5 6 7" "working"
         exit 0
     fi
 
