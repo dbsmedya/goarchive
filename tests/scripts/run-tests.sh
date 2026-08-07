@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06)
-#   -t, --test NUM      Run only specific Sakila test (1-6)
+#   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06, 07)
+#   -t, --test NUM      Run only specific Sakila test (1-7)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -83,7 +83,7 @@ unset _lib
 render_test_configs || exit 1
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge)
+SAKILA=false            # Working Sakila E2E tests (03/04/05 archive, 06 purge, 07 copy-only)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -107,7 +107,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -220,10 +220,15 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK),
-    # test 04 (rental -> payment, 2-level tree) and test 05 (payment again, but
-    # verified by sha256) perform real archives end-to-end; test 06 purges half
-    # the payment table, deleting without copying.
+    # Run the working E2E suite.
+    #
+    # The number list is the ORDER the suite runs in, and it is deliberately
+    # explicit: deriving it from the filesystem would order by category name and
+    # silently turn 3 4 5 6 7 into 3 4 5 7 6.
+    #
+    # What each test proves is NOT restated here -- see tests/e2e/README.md and
+    # each category's README. A list of tests in the dispatcher is a list that
+    # goes stale, which is how this comment came to omit test 07.
     if [ "$SAKILA" = true ]; then
         run_e2e_suite "3 4 5 6 7" "working"
         exit 0
