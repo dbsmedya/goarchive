@@ -200,10 +200,14 @@ architectural decisions — **MUST** be written to:
 
 ### RULE: search the docs with RAG first, grep second
 
-Query `mcp__dbs-vector__search_md_search_gemma` before `grep`. Grep finds *which files contain
-a token*; the failure mode here is *two documents that agree in tokens and disagree in
+Query `mcp__dbs-vector__search_md_goarchive_search` before `grep`. Grep finds *which files
+contain a token*; the failure mode here is *two documents that agree in tokens and disagree in
 meaning*. Use grep for a literal identifier, an exhaustive count, or a file you can name — but
 a string match is not a scope analysis.
+
+> The engine name has been renamed several times. If that tool 404s, call
+> `mcp__dbs-vector__list_engines` for the current `mcp_tool` / `read_tool` names rather than
+> falling back to grep.
 
 - **Indexed and watched:** `docs/`, `tests/`, `.ayder/` — markdown only, re-indexed within
   seconds of a change.
@@ -214,7 +218,7 @@ a string match is not a scope analysis.
 - **`source_filter`**: full path, trailing fragment (`specs/api.md`), or directory (`specs`) —
   never a leading fragment (`phase-030` fails). A no-match or unmatched filter returns a
   diagnostic, never proof of absence.
-- **Split content:** pass a result's `Chunk cursor` to `read_md_search_gemma` (`direction`,
+- **Split content:** pass a result's `Chunk cursor` to `read_md_goarchive_search` (`direction`,
   `count` ≤ 3) — exact text read, not a second search.
 
 Model swaps: `.ayder/dbs-vector/gemma-model-performance.md`.
@@ -291,4 +295,4 @@ Sakila's schema and the replica setup are documented in `tests/README.md`.
 | What changed, and when? | `git log`, GitHub PRs, `.ayder/releases/` (one note per version) |
 | What work is in flight? | `.ayder/superpowers_<YYYYMMDD>/{plans,specs,decisions}` |
 | How do I run the tests? | `tests/README.md` |
-| **Where was this decided, and why?** | **RAG first** — `mcp__dbs-vector__search_md_search_gemma` over `docs/`, `tests/`, `.ayder/`. See the rule above before trusting a score or an empty result. |
+| **Where was this decided, and why?** | **RAG first** — `mcp__dbs-vector__search_md_goarchive_search` over `docs/`, `tests/`, `.ayder/`. See the rule above before trusting a score or an empty result. |
