@@ -229,6 +229,36 @@ ARCHIVE_PORT="${TEST_DEST_PORT:-3307}"
 ARCHIVE_USER="${TEST_DEST_USER:-root}"
 ARCHIVE_DB="${TEST_DEST_DB:-sakila_archive}"
 
+# The goarchive binary under test.
+#
+# Overridable so this same suite can be run against a DIFFERENT build -- capturing
+# a behavioural baseline from an older release, for instance. When the caller sets
+# it explicitly, a missing binary is an ERROR rather than a cue to build: compiling
+# the current tree over the top would silently exercise a build nobody asked for,
+# and every test would pass while proving nothing about the requested one.
+if [[ -n "${GOARCHIVE_BIN:-}" ]]; then
+    GOARCHIVE_BIN_EXPLICIT=true
+else
+    GOARCHIVE_BIN="$PROJECT_ROOT/bin/goarchive"
+    GOARCHIVE_BIN_EXPLICIT=false
+fi
+
+# Build the binary under test, but only when we own it.
+ensure_goarchive_bin() {
+    if [[ -f "$GOARCHIVE_BIN" ]]; then
+        return 0
+    fi
+    if [[ "$GOARCHIVE_BIN_EXPLICIT" == "true" ]]; then
+        log_error "GOARCHIVE_BIN was set explicitly, but no binary exists at:"
+        log_error "  $GOARCHIVE_BIN"
+        log_error "Refusing to build the current tree in its place -- that would test a"
+        log_error "different build than the one requested, and pass."
+        return 1
+    fi
+    log_info "Building goarchive binary at $GOARCHIVE_BIN..."
+    (cd "$PROJECT_ROOT" && go build -o "$GOARCHIVE_BIN" ./cmd/goarchive)
+}
+
 # Setup test environment
 setup_environment() {
     log_step "Setting up test environment..."
@@ -325,18 +355,136 @@ setup_environment() {
     log_info "Environment setup complete!"
 }
 
-# Get row count from a table
+# Get row count from a table.
+#
+# Routed through mysql-query.sh so that A FAILED QUERY CAN NEVER BE MISTAKEN FOR A
+# ROW COUNT OF ZERO. The previous form called mysqlsh directly, discarded stderr
+# with 2>/dev/null, ignored the exit status, and defaulted an empty result to "0"
+# via ${count:-0}. An unreachable server, a wrong password, a dropped table and a
+# genuinely empty table were therefore indistinguishable -- all four reported "0".
+#
+# That is not a theoretical hole. Every post-condition assertion below is built on
+# this function, and the purge assertion is "the destination stayed empty": a
+# destination query that fails returns 0 and the assertion PASSES, without a
+# connection ever having been made. selftest_get_row_count_fails_loud proves it
+# does not, and runs on every invocation of the suite.
+#
+# Contract:
+#   stdout / exit 0   the row count
+#   stderr / exit 1   the query failed -- callers MUST check
 get_row_count() {
     local host=$1
     local port=$2
     local user=$3
     local db=$4
     local table=$5
-    
-    local count
-    count=$(mysqlsh --host="$host" --port="$port" --user="$user" --password="$MYSQL_PASS" --sql \
-        -e "SELECT COUNT(*) FROM \`$db\`.\`$table\`;" 2>/dev/null | tail -1)
-    echo "${count:-0}"
+
+    # `local out` is declared on its own line. Written as `local out=$(...)` the
+    # exit status would be `local`'s (always 0) rather than the query's, which
+    # silently restores exactly the defect this function was rewritten to remove.
+    local out
+    if ! out=$(MYSQL_QUERY_HOST="$host" MYSQL_QUERY_USER="$user" \
+        "$SCRIPT_DIR/mysql-query.sh" "$port" "SELECT COUNT(*) FROM \`$db\`.\`$table\`;"); then
+        echo "get_row_count: could not count ${db}.${table} on ${host}:${port}" >&2
+        return 1
+    fi
+
+    # mysql-query.sh emits the column header, then the value.
+    echo "$out" | tail -1
+}
+
+# Prove that get_row_count reports a failure instead of returning "0".
+#
+# This is deliberately NOT a mutation proof that has to be applied and reverted.
+# The failure mode is reachable through an ARGUMENT, so it can be asserted on
+# every run and keeps holding: port 59999 on loopback is refused immediately
+# (ECONNREFUSED, measured ~0.3s -- no DNS, no timeout, no server state touched,
+# nothing else in the run affected).
+#
+# A reverted mutation leaves a sentence in a plan file. This leaves a test.
+selftest_get_row_count_fails_loud() {
+    local out rc
+    out=$(get_row_count 127.0.0.1 59999 "$SOURCE_USER" "$SOURCE_DB" actor 2>/dev/null)
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        log_error "HARNESS SELF-CHECK FAILED: get_row_count exited 0 against an unreachable port."
+        log_error "  It returned: '${out}'"
+        log_error "  A failed query is being reported as a row count, which means every"
+        log_error "  post-condition assertion in this suite is vacuous. Refusing to run."
+        return 1
+    fi
+    log_verbose "self-check: get_row_count fails loud on an unreachable port (exit $rc)"
+    return 0
+}
+
+# Assert the end state a command is supposed to produce.
+#
+# Each command has a DIFFERENT correct outcome, and reusing one assertion for
+# another passes vacuously -- a purge checked only for "the source shrank" proves
+# nothing, because the destination is empty whether or not purge did its job.
+#
+#   command     source after        destination after
+#   archive     rows moved out      rows arrived
+#   purge       rows deleted        nothing copied
+#   copy-only   untouched           rows arrived
+#
+# Conservation (after_src + after_dst == before) is necessary but NOT sufficient:
+# a run that copied nothing and deleted nothing satisfies it exactly. So archive
+# and copy-only additionally require that the destination actually gained rows,
+# and purge requires that the source actually lost some.
+#
+# The destination is assumed to start empty; ensure_destination_schema drops and
+# recreates the destination database before every working test.
+#
+# Usage: assert_postcondition <command> <table> <before> <after_src> <after_dst>
+assert_postcondition() {
+    local command=$1
+    local table=$2
+    local before=$3
+    local after_src=$4
+    local after_dst=$5
+
+    case "$command" in
+        archive)
+            if [[ "$after_dst" -le 0 ]]; then
+                log_error "  $table: archive copied NOTHING (destination=$after_dst)"
+                return 1
+            fi
+            if [[ $((after_src + after_dst)) -ne "$before" ]]; then
+                log_error "  $table: rows not conserved -- before=$before, after source=$after_src + destination=$after_dst = $((after_src + after_dst))"
+                return 1
+            fi
+            log_info "  $table: archive OK (before=$before, source=$after_src, destination=$after_dst)"
+            ;;
+        purge)
+            if [[ "$after_src" -ge "$before" ]]; then
+                log_error "  $table: purge deleted NOTHING (before=$before, source=$after_src)"
+                return 1
+            fi
+            if [[ "$after_dst" -ne 0 ]]; then
+                log_error "  $table: purge must not copy, but destination holds $after_dst row(s)"
+                return 1
+            fi
+            log_info "  $table: purge OK (before=$before, source=$after_src, destination empty)"
+            ;;
+        copy-only)
+            if [[ "$after_dst" -le 0 ]]; then
+                log_error "  $table: copy-only copied NOTHING (destination=$after_dst)"
+                return 1
+            fi
+            if [[ "$after_src" -ne "$before" ]]; then
+                log_error "  $table: copy-only must not delete, but source went $before -> $after_src"
+                return 1
+            fi
+            log_info "  $table: copy-only OK (source unchanged at $after_src, destination=$after_dst)"
+            ;;
+        *)
+            # Fail closed: an unrecognised command must never assert nothing.
+            log_error "  $table: no post-condition defined for command '$command'"
+            return 1
+            ;;
+    esac
+    return 0
 }
 
 # Reset source database
@@ -366,25 +514,43 @@ reset_source_database() {
     log_info "Source database reset complete"
 }
 
-# Run archive job using goarchive binary
+# Run a goarchive job. Second argument is the command under test:
+# archive | purge | copy-only. Defaults to archive.
 run_archive_job() {
     local config_file="$1"
+    local command="${2:-archive}"
     local full_config_path="$TESTS_DIR/configs/$config_file"
-    
+
+    # --force-triggers is NOT accepted by every command. archive and purge delete
+    # from the source and so must be told to proceed past Sakila's DELETE
+    # triggers; copy-only never deletes and does not define the flag at all, so
+    # passing it unconditionally would abort with "unknown flag" and read as a
+    # product failure. Verified against cmd/goarchive/cmd/{archive,purge,copyonly}.go.
+    local command_flags=""
+    case "$command" in
+        archive|purge)
+            command_flags="--force-triggers"
+            ;;
+        copy-only)
+            command_flags=""
+            ;;
+        *)
+            log_error "run_archive_job: unsupported command '$command' (archive|purge|copy-only)"
+            return 1
+            ;;
+    esac
+
     if [[ ! -f "$full_config_path" ]]; then
         log_error "Config file not found: $full_config_path"
         return 1
     fi
-    
-    log_info "Running archive job with config: $config_file"
-    
-    # Build goarchive if needed
-    if [[ ! -f "$PROJECT_ROOT/bin/goarchive" ]]; then
-        log_info "Building goarchive binary..."
-        cd "$PROJECT_ROOT"
-        go build -o bin/goarchive ./cmd/goarchive
+
+    log_info "Running $command job with config: $config_file"
+
+    if ! ensure_goarchive_bin; then
+        return 1
     fi
-    
+
     cd "$PROJECT_ROOT"
     # Extract job name from config file (first job in the jobs section)
     local job_name=$(grep -A 1 "^jobs:" "$full_config_path" | tail -1 | sed 's/://g' | tr -d ' ')
@@ -393,28 +559,29 @@ run_archive_job() {
         return 1
     fi
     
-    # STEP 1: Validate configuration first
+    # STEP 1: Validate configuration first. Kept for every command -- it is cheap,
+    # and the only place the preflight profile is exercised end to end.
     log_info "[STEP 1/3] Validating configuration..."
     # Use --force-triggers because Sakila database has DELETE triggers
-    if ! ./bin/goarchive validate --config "$full_config_path" --force-triggers 2>&1; then
+    if ! "$GOARCHIVE_BIN" validate --config "$full_config_path" --force-triggers 2>&1; then
         log_error "Configuration validation failed - check for missing relations"
         return 1
     fi
-    
-    # STEP 2: Dry-run to detect issues before actual archive
+
+    # STEP 2: Dry-run to detect issues before the real run
     log_info "[STEP 2/3] Running dry-run to detect potential issues..."
-    if ! ./bin/goarchive dry-run --job "$job_name" --config "$full_config_path" 2>&1; then
+    if ! "$GOARCHIVE_BIN" dry-run --job "$job_name" --config "$full_config_path" 2>&1; then
         log_error "Dry-run failed - check configuration"
         return 1
     fi
-    
-    # STEP 3: Run actual archive
-    log_info "[STEP 3/3] Executing archive..."
-    if ! ./bin/goarchive archive --job "$job_name" --config "$full_config_path" --force-triggers 2>&1; then
-        log_error "Archive job failed"
+
+    # STEP 3: Run the command under test
+    log_info "[STEP 3/3] Executing $command..."
+    if ! "$GOARCHIVE_BIN" "$command" --job "$job_name" --config "$full_config_path" $command_flags 2>&1; then
+        log_error "$command job failed"
         return 1
     fi
-    
+
     return 0
 }
 
@@ -459,6 +626,9 @@ run_sakila_test() {
     local tables=""
     local mode=""                 # "working" or "example"
     local expected_error=""       # substring required in error when mode=example
+    local command="archive"       # archive | purge | copy-only (mode=working)
+    local verify_method=""        # verification method the run must report, or
+                                  # "none" to assert no verification ran at all
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -486,6 +656,10 @@ run_sakila_test() {
             config_file="test03_payment_batch.yaml"
             tables="payment"
             mode="working"
+            command="archive"
+            # No verification block in the config, so the documented default
+            # applies: method=count, skip_verification=false.
+            verify_method="count"
             ;;
         4)
             test_name="Test04_RentalPayment"
@@ -493,6 +667,8 @@ run_sakila_test() {
             config_file="test04_rental_payment.yaml"
             tables="rental payment"
             mode="working"
+            command="archive"
+            verify_method="count"
             ;;
         *)
             log_error "Invalid test number: $test_num (expected 1-4)"
@@ -529,38 +705,32 @@ run_sakila_test() {
         return 1
     }
     
-    # Step 2: Count before archiving
-    log_info "[STEP 2] Counting rows before archiving..."
+    # Step 2: Count before the run. These counts are kept -- Step 4 compares
+    # against them. A parallel indexed array, not an associative one: macOS ships
+    # bash 3.2, which has no `declare -A`, and this suite is documented as running
+    # on an operator workstation.
+    log_info "[STEP 2] Counting rows before the run..."
+    local before_counts=()
     for table in $tables; do
         local count
-        count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table")
+        if ! count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table"); then
+            log_error "Could not count $table before the run"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (pre-count failed for $table)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        before_counts+=("$count")
         log_info "  $table: Source=$count"
         echo "  $table (before): Source=$count" >> "$log_file"
     done
-    
+
     # Step 3: Run the test depending on mode.
     if [[ "$mode" == "working" ]]; then
         # Working tests expect archive to complete successfully. Destination
         # schema must mirror source, so load it before running.
-
-        # Test 10 requires the isolated job schema to exist on the archive server.
-        # Drop and recreate it each run so prior tracking rows (archiver_job,
-        # archiver_job_log_<id>) do not persist and cause the job to see all root
-        # PKs as already completed, archiving zero rows on subsequent runs.
-        if [[ "$test_num" == "10" ]]; then
-            log_info "[STEP 3-pre] Resetting isolated job schema goarchive_meta (clean slate)..."
-            if ! mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" --user="$ARCHIVE_USER" \
-                --password="$MYSQL_PASS" --sql \
-                -e "DROP DATABASE IF EXISTS goarchive_meta; CREATE DATABASE goarchive_meta;" >> "$log_file" 2>&1; then
-                log_error "Failed to reset goarchive_meta schema"
-                end_time=$(date +%s)
-                duration=$((end_time - start_time))
-                echo "" >> "$log_file"
-                echo "Result: FAIL (goarchive_meta reset)" >> "$log_file"
-                echo "Duration: ${duration}s" >> "$log_file"
-                return 1
-            fi
-        fi
 
         log_info "[STEP 3a] Ensuring destination schema..."
         if ! ensure_destination_schema >> "$log_file" 2>&1; then
@@ -572,9 +742,9 @@ run_sakila_test() {
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
         fi
-        log_info "[STEP 3b] Running archive job (expect success)..."
-        if ! run_archive_job "$config_file" >> "$log_file" 2>&1; then
-            log_error "Archive job failed"
+        log_info "[STEP 3b] Running $command job (expect success)..."
+        if ! run_archive_job "$config_file" "$command" >> "$log_file" 2>&1; then
+            log_error "$command job failed"
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
@@ -583,43 +753,36 @@ run_sakila_test() {
             return 1
         fi
 
-        # Test 10 post-run: assert that tracking tables landed in goarchive_meta.
-        if [[ "$test_num" == "10" ]]; then
-            log_info "[STEP 3c] Asserting goarchive_meta.archiver_job exists..."
-            local job_table_count
-            job_table_count=$(mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" \
-                --user="$ARCHIVE_USER" --password="$MYSQL_PASS" --sql \
-                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='goarchive_meta' AND table_name='archiver_job';" \
-                2>/dev/null | tail -1)
-            if [[ "${job_table_count:-0}" -lt 1 ]]; then
-                log_error "goarchive_meta.archiver_job not found after archive run"
+        # Step 3c: assert the verify stage actually ran, naming the method.
+        #
+        # Nothing asserted this at any layer before. Verification is what makes
+        # delete-after-copy safe, and a config change or a silently skipped stage
+        # would leave every test passing. The anchor is goarchive's own log line
+        # at internal/verifier/verifier.go -- "Starting verification (method=%s)".
+        log_info "[STEP 3c] Asserting the verify stage ran (expect: $verify_method)..."
+        if [[ "$verify_method" == "none" ]]; then
+            if grep -q "Starting verification (method=" "$log_file"; then
+                log_error "Verification ran, but this test expects none"
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
                 echo "" >> "$log_file"
-                echo "Result: FAIL (goarchive_meta.archiver_job missing)" >> "$log_file"
+                echo "Result: FAIL (unexpected verification)" >> "$log_file"
                 echo "Duration: ${duration}s" >> "$log_file"
                 return 1
             fi
-            log_info "  goarchive_meta.archiver_job confirmed present"
-            echo "  goarchive_meta.archiver_job: present (count=$job_table_count)" >> "$log_file"
-
-            log_info "[STEP 3d] Asserting goarchive_meta.archiver_job_log_<id> exists..."
-            local job_log_table_count
-            job_log_table_count=$(mysqlsh --host="$ARCHIVE_HOST" --port="$ARCHIVE_PORT" \
-                --user="$ARCHIVE_USER" --password="$MYSQL_PASS" --sql \
-                -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='goarchive_meta' AND table_name LIKE 'archiver_job_log_%';" \
-                2>/dev/null | tail -1)
-            if [[ "${job_log_table_count:-0}" -lt 1 ]]; then
-                log_error "FAIL: goarchive_meta.archiver_job_log_<id> not found after archive run"
-                end_time=$(date +%s)
-                duration=$((end_time - start_time))
-                echo "" >> "$log_file"
-                echo "Result: FAIL (goarchive_meta.archiver_job_log_<id> missing)" >> "$log_file"
-                echo "Duration: ${duration}s" >> "$log_file"
-                return 1
-            fi
-            log_info "  goarchive_meta.archiver_job_log_<id> confirmed present"
-            echo "  goarchive_meta.archiver_job_log_<id>: present (count=$job_log_table_count)" >> "$log_file"
+            log_info "  confirmed: no verification stage, as expected"
+        elif ! grep -q "Starting verification (method=${verify_method})" "$log_file"; then
+            log_error "No verification with method=${verify_method} in the run output"
+            log_error "  Either the stage did not run, or the log line changed and this"
+            log_error "  assertion has stopped matching. Both are findings."
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (verification method=${verify_method} not observed)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        else
+            log_info "  confirmed: verification ran with method=$verify_method"
         fi
     else
         # Example tests expect `validate` to fail with a specific error category.
@@ -627,10 +790,16 @@ run_sakila_test() {
         log_info "[STEP 3] Running validate (expect failure: $expected_error)..."
         local full_config_path="$TESTS_DIR/configs/$config_file"
         local validate_out
-        if [[ ! -f "$PROJECT_ROOT/bin/goarchive" ]]; then
-            (cd "$PROJECT_ROOT" && go build -o bin/goarchive ./cmd/goarchive) >> "$log_file" 2>&1
+        if ! ensure_goarchive_bin >> "$log_file" 2>&1; then
+            log_error "goarchive binary unavailable"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (binary unavailable)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
         fi
-        validate_out=$("$PROJECT_ROOT/bin/goarchive" validate --config "$full_config_path" --force-triggers 2>&1) && {
+        validate_out=$("$GOARCHIVE_BIN" validate --config "$full_config_path" --force-triggers 2>&1) && {
             log_error "Validate unexpectedly PASSED — validation demo no longer demonstrates failure"
             echo "$validate_out" >> "$log_file"
             end_time=$(date +%s)
@@ -653,14 +822,45 @@ run_sakila_test() {
         log_info "  Matched expected error category: $expected_error"
     fi
 
-    # Step 4: Count after archiving (working tests only — tables changed)
+    # Step 4: Assert the post-condition (working tests only — tables changed).
+    #
+    # This used to count source rows and only LOG them, comparing nothing and
+    # never touching the destination at all, so a working test passed if and only
+    # if the binary exited 0 -- a run that copied nothing and deleted nothing
+    # passed. The counts are now compared, and the destination is counted too.
     if [[ "$mode" == "working" ]]; then
-        log_info "[STEP 4] Counting rows after archiving..."
+        log_info "[STEP 4] Asserting post-conditions for '$command'..."
+        local idx=0
         for table in $tables; do
-            local count
-            count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table")
-            log_info "  $table: Source=$count"
-            echo "  $table (after): Source=$count" >> "$log_file"
+            local after_src after_dst
+            if ! after_src=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" "$table"); then
+                log_error "Could not count $table on the source after the run"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (post-count failed for source $table)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            if ! after_dst=$(get_row_count "$ARCHIVE_HOST" "$ARCHIVE_PORT" "$ARCHIVE_USER" "$ARCHIVE_DB" "$table"); then
+                log_error "Could not count $table on the destination after the run"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (post-count failed for destination $table)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            echo "  $table (after): Source=$after_src Destination=$after_dst" >> "$log_file"
+            if ! assert_postcondition "$command" "$table" "${before_counts[$idx]}" "$after_src" "$after_dst"; then
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (post-condition for $table)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            idx=$((idx + 1))
         done
     fi
 
@@ -714,6 +914,20 @@ run_sakila_tests() {
         log_error "mysqlsh is not installed or not in PATH"
         exit 1
     fi
+
+    # Prove the harness can tell a failed query from an empty one BEFORE trusting
+    # any assertion built on it. Costs one refused connection (~0.3s).
+    if ! selftest_get_row_count_fails_loud; then
+        exit 1
+    fi
+
+    # Resolve the binary once, up front. Left to the per-test path, a wrong
+    # GOARCHIVE_BIN fails every test with a generic "job failed" on the console
+    # and names the path only in tests/results/test_N.log -- true, but buried.
+    if ! ensure_goarchive_bin; then
+        exit 1
+    fi
+    log_info "Binary under test: $GOARCHIVE_BIN"
 
     mkdir -p "$TESTS_DIR/results"
 
