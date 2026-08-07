@@ -1,0 +1,65 @@
+# Test 05: payment archive with SHA256 verification
+#
+# Deliberately identical to test 03 -- same root, same slice, same batch sizes --
+# except for the verification block. That makes the pair an A/B on verification
+# method alone: if test 05 fails where test 03 passes, the method is the only
+# variable that changed.
+#
+# What this covers that test 03 does not:
+#
+#   1. The sha256 verify path. Every other working test inherits the documented
+#      default (method: count, skip_verification: false), so the hash comparison
+#      in internal/verifier has never run end to end through the CLI.
+#   2. The INSERT IGNORE copy path. sha256 is not just a strictness dial --
+#      shouldUseStrictInsert() returns false for sha256 when verification runs
+#      and the destination has no unique index beyond the PK, so the copy uses
+#      INSERT IGNORE rather than the plain INSERT that count forces. payment has
+#      no such index, so this is the first E2E exercise of that branch.
+#
+# A failure here is a goarchive finding, not a fixture problem: nothing has run
+# this path before. The likely shape is a count mismatch inside the sha256
+# result -- INSERT IGNORE downgrades a rejected row to a warning, so a dropped
+# row shows up as source/dest counts differing rather than as a hash difference.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test05_payment_verify_sha256.yaml on every run, substituting the
+# MYSQL_ROOT_PASSWORD placeholder from tests/.env. Edit this file, never the
+# generated .yaml -- that one is gitignored (it holds a real password) and is
+# overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-payment-verify-sha256:
+    root_table: payment
+    primary_key: payment_id
+    # Same slice as test 03, so the two are directly comparable.
+    where: "payment_id <= 2000"
+    processing:
+      batch_size: 100
+      batch_delete_size: 20
+      sleep_seconds: 0.2
+      delete_sleep_seconds: 0.2
+
+# The whole point of this test. Without this block the job would inherit
+# method: count and become a third copy of test 03.
+verification:
+  method: sha256

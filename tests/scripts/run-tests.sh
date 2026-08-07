@@ -8,8 +8,8 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E tests (03, 04)
-#   -t, --test NUM      Run only specific Sakila test (1-4)
+#   --sakila            Run the working Sakila E2E tests (03, 04, 05)
+#   -t, --test NUM      Run only specific Sakila test (1-5)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -64,6 +64,68 @@ if [ -z "${SAKILA_DIR:-}" ]; then
     export SAKILA_DIR="$TESTS_DIR/sakila-db"
 fi
 
+# Render configs/*.yaml from their tracked templates -- the same gap .env closes
+# above, for the same reason. A rendered config carries the operator's real
+# password, so configs/*.yaml is gitignored (tests/.gitignore:5) and only the
+# .yaml.template is committed. Nothing rendered them until now: a fresh clone had
+# the templates, no configs, and `make e2e` died on a missing file. The four
+# configs that existed had been substituted by hand, once, and were invisible to
+# everyone else.
+#
+# Rendered unconditionally on every run. The template is the source of truth, and
+# render-if-missing would let a template edit sit un-propagated behind a stale
+# local .yaml -- silent divergence, which is worse than a lost local tweak. Edit
+# the template, never the .yaml.
+#
+# Substitution is bash parameter expansion, NOT sed: a password containing '&' or
+# the sed delimiter corrupts the replacement silently. ${var//pat/rep} is bash 3.2
+# safe -- macOS `make` resolves to /bin/bash 3.2.57, which has no `declare -A` and
+# is the floor this suite targets.
+render_test_configs() {
+    local template rendered line rendered_count=0
+
+    # An empty password renders a syntactically valid config that fails much
+    # later as an unexplained MySQL authentication error. Refuse up front.
+    if [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then
+        echo "ERROR: MYSQL_ROOT_PASSWORD is empty or unset after sourcing $TESTS_DIR/.env." >&2
+        echo "       Test configs cannot be rendered without it." >&2
+        return 1
+    fi
+
+    for template in "$TESTS_DIR"/configs/*.yaml.template; do
+        # With no matches the glob stays literal, so test for a real file.
+        [ -e "$template" ] || continue
+        rendered="${template%.template}"
+
+        if ! {
+            while IFS= read -r line || [ -n "$line" ]; do
+                printf '%s\n' "${line//\$\{MYSQL_ROOT_PASSWORD\}/$MYSQL_ROOT_PASSWORD}"
+            done < "$template"
+        } > "$rendered"; then
+            echo "ERROR: failed to render $rendered from $template" >&2
+            return 1
+        fi
+
+        # Fail closed on a placeholder this function does not know how to fill,
+        # rather than handing goarchive a config with a literal '${...}' in it.
+        if grep -q '\${' "$rendered"; then
+            echo "ERROR: $rendered still contains an unsubstituted \${...} placeholder." >&2
+            echo "       render_test_configs only substitutes \${MYSQL_ROOT_PASSWORD}." >&2
+            return 1
+        fi
+
+        rendered_count=$((rendered_count + 1))
+    done
+
+    if [ "$rendered_count" -eq 0 ]; then
+        echo "ERROR: no config templates found in $TESTS_DIR/configs/." >&2
+        echo "       The .yaml.template files are tracked in git; a clone should have them." >&2
+        return 1
+    fi
+}
+
+render_test_configs || exit 1
+
 # Colors for output
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -72,7 +134,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment)
+SAKILA=false            # Working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -149,7 +211,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment)"
+            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256)"
             echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -487,6 +549,65 @@ assert_postcondition() {
     return 0
 }
 
+# Assert the run took at least as long as its configured throttling requires.
+#
+# The floor is deterministic -- pure arithmetic over the config, with no
+# dependence on the machine:
+#
+#   floor = ceil(rows / batch_size) * sleep_seconds
+#         + SUM over batches of (delete chunks per table - 1) * delete_sleep_seconds
+#
+# sleep_seconds fires after EVERY batch including the last (orchestrator.go:457,
+# no guard). delete_sleep_seconds skips each table's final chunk
+# (delete.go:185, `batchNum < totalBatches-1`), so a batch of 100 rows at
+# batch_delete_size=20 sleeps 4 times, not 5.
+#
+# Why this is safe to assert, when timing assertions usually are not: it is a
+# ONE-SIDED bound. A slow container, a loaded host, a cold filesystem or a
+# reseeded estate can only push the measured duration UP, and can therefore
+# never fail it. It fails only when the sleeps did not actually happen --
+# sleep_seconds silently zeroed, a config that stopped being read, a batch loop
+# that ran once where it should have run twenty. Wall-clock alone cannot tell
+# those apart from a fast machine; the floor can.
+#
+# Compared against goarchive's OWN reported duration, not the shell-measured
+# test duration. The latter includes the source reset, validate and dry-run,
+# which together dwarf the floor and would mask a lost throttle entirely.
+assert_min_duration() {
+    local log_file=$1
+    local floor=$2
+
+    # Fail closed: a working test with no floor configured asserts nothing.
+    if [[ -z "$floor" ]]; then
+        log_error "  no min_duration configured for this test"
+        return 1
+    fi
+
+    # The last "duration":<seconds> in the log is the command's own total.
+    # archive, purge and copy-only all emit it as a structured field
+    # (cmd/goarchive/cmd/{archive,purge,copyonly}.go). The phase-level logs spell
+    # duration inside a message string instead, so they cannot collide with this.
+    local actual
+    actual=$(grep -o '"duration":[0-9.]*' "$log_file" | tail -1 | cut -d: -f2)
+    if [[ -z "$actual" ]]; then
+        log_error "  could not read the run's own duration from $log_file"
+        log_error "  the command logs it as a \"duration\" field; if that changed,"
+        log_error "  this assertion has stopped matching and is no longer checking anything."
+        return 1
+    fi
+
+    # bash 3.2 has no floating-point arithmetic, so awk does the comparison.
+    if ! awk -v a="$actual" -v f="$floor" 'BEGIN { exit !(a >= f) }'; then
+        log_error "  run finished in ${actual}s, below its ${floor}s pacing floor"
+        log_error "  the configured sleep_seconds / delete_sleep_seconds cannot all have"
+        log_error "  been applied -- this is a throttling regression, not a fast machine."
+        return 1
+    fi
+
+    log_info "  pacing OK (${actual}s >= ${floor}s floor)"
+    return 0
+}
+
 # Reset source database
 reset_source_database() {
     log_info "Resetting source database..."
@@ -614,10 +735,14 @@ ensure_destination_schema() {
 # Run specific Sakila test. First argument is the test number. There are four:
 #   01  Composite-PK rejection    -> expects COMPOSITE_PK_CHECK   [validation demo]
 #   02  Uncovered FK coverage     -> expects FK_COVERAGE_CHECK     [validation demo]
-#   03  Payment batch             -> working archive
-#   04  rental -> payment         -> working archive
+#   03  Payment batch             -> working archive (count verification, inherited)
+#   04  rental -> payment         -> working archive (count verification, inherited)
+#   05  Payment + sha256          -> working archive (sha256 verification, explicit)
 # Tests 01-02 are validation demos (mode=example) and only run when --sakila-examples
-# is set; tests 03-04 are working archives (mode=working) and run to completion.
+# is set; tests 03-05 are working archives (mode=working) and run to completion.
+#
+# 03 and 05 are deliberately the same archive with different verification methods,
+# so a failure in 05 alone isolates to the method.
 run_sakila_test() {
     local test_num=$1
     local test_name=""
@@ -629,6 +754,9 @@ run_sakila_test() {
     local command="archive"       # archive | purge | copy-only (mode=working)
     local verify_method=""        # verification method the run must report, or
                                   # "none" to assert no verification ran at all
+    local min_duration=""         # pacing floor in seconds, derived from the
+                                  # config's batch/sleep settings; see
+                                  # assert_min_duration for the arithmetic
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -660,6 +788,12 @@ run_sakila_test() {
             # No verification block in the config, so the documented default
             # applies: method=count, skip_verification=false.
             verify_method="count"
+            # 1999 rows / batch_size 100 = 20 batches.
+            #   batch sleep:  20 x 0.2                        = 4.0s
+            #   delete sleep: 20 batches x 4 chunk-gaps x 0.2 = 16.0s
+            # (100 rows / batch_delete_size 20 = 5 chunks, and the last chunk of
+            # each table is not followed by a sleep, so 4 gaps.)
+            min_duration="20.0"
             ;;
         4)
             test_name="Test04_RentalPayment"
@@ -669,9 +803,30 @@ run_sakila_test() {
             mode="working"
             command="archive"
             verify_method="count"
+            # This config declares no processing block at all, so it inherits the
+            # global defaults: batch_size 1000, sleep_seconds 1, and
+            # delete_sleep_seconds 0. 200 rentals / 1000 = a single batch.
+            #   batch sleep:  1 x 1.0 = 1.0s
+            #   delete sleep: disabled by default
+            min_duration="1.0"
+            ;;
+        5)
+            test_name="Test05_PaymentVerifySHA256"
+            test_desc="Working archive: payment with sha256 verification (also the only INSERT IGNORE copy path in the suite)"
+            config_file="test05_payment_verify_sha256.yaml"
+            tables="payment"
+            mode="working"
+            command="archive"
+            # The config declares verification.method: sha256 explicitly rather
+            # than inheriting the default, and asserting on "sha256" here is the
+            # entire subject of this test. If this ever reads "count", the test
+            # has silently become a third copy of test 03.
+            verify_method="sha256"
+            # Same slice and same pacing as test 03, so the same floor.
+            min_duration="20.0"
             ;;
         *)
-            log_error "Invalid test number: $test_num (expected 1-4)"
+            log_error "Invalid test number: $test_num (expected 1-5)"
             return 1
             ;;
     esac
@@ -783,6 +938,18 @@ run_sakila_test() {
             return 1
         else
             log_info "  confirmed: verification ran with method=$verify_method"
+        fi
+
+        # Step 3d: the run must not have been FASTER than its own configured
+        # throttling permits. See assert_min_duration for why this is safe.
+        log_info "[STEP 3d] Asserting the run respected its pacing floor (${min_duration}s)..."
+        if ! assert_min_duration "$log_file" "$min_duration"; then
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (ran below its pacing floor)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
         fi
     else
         # Example tests expect `validate` to fail with a specific error category.
@@ -1094,10 +1261,11 @@ main() {
         setup_environment
     fi
     
-    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK) and
-    # test 04 (rental -> payment, 2-level tree) perform real archives end-to-end.
+    # Run the working Sakila E2E suite. Test 03 (payment, single-column PK),
+    # test 04 (rental -> payment, 2-level tree) and test 05 (payment again, but
+    # verified by sha256) perform real archives end-to-end.
     if [ "$SAKILA" = true ]; then
-        run_sakila_tests "3 4" "working"
+        run_sakila_tests "3 4 5" "working"
         exit 0
     fi
 

@@ -9,7 +9,7 @@ integration, and Sakila end-to-end (E2E) tests.
 |-----------|-------------|---------|
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archives that run to completion (tests 03–04) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archives that run to completion (tests 03–05) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
@@ -24,16 +24,78 @@ integration, and Sakila end-to-end (E2E) tests.
 
 ## Sakila E2E Test Suite
 
-Four focused tests: two working archives and two preflight-guardrail
-demonstrations. Configs live in `tests/configs/` (`.yaml` is rendered locally
-from the tracked `.yaml.template`; only `.template` files are committed).
+Five focused tests: three working archives and two preflight-guardrail
+demonstrations.
+
+**Configs live in `tests/configs/`, and the tracked file is always the
+`.yaml.template`.** `run-tests.sh` renders each one to its `.yaml` on every run,
+substituting the `MYSQL_ROOT_PASSWORD` placeholder from `tests/.env`. The
+rendered `.yaml` holds a real password, so it is gitignored — and it is
+**overwritten every run**, so edit the template, never the generated file.
 
 ### Working configurations — archive runs to completion
 
 | Test | Config | Shape | What it exercises |
 |------|--------|-------|-------------------|
-| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`) |
+| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); verification method inherited (`count`) |
 | **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
+| **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
+
+> **03 and 05 are the same archive with different verification methods.** That is
+> deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
+> you change one's slice or batch sizes, change the other's.
+
+#### The pacing floor — the one timing number that is not machine-dependent
+
+Wall-clock varies with the container, the host and the filesystem. The **sleep**
+component does not: it is arithmetic over the config, and no machine can go below
+it. Each working test declares that floor as `min_duration`, and the runner fails
+the test if the run came in under it.
+
+```
+floor = ceil(rows ÷ batch_size) × sleep_seconds
+      + Σ over batches of (delete chunks per table − 1) × delete_sleep_seconds
+```
+
+`sleep_seconds` fires after **every** batch including the last; `delete_sleep_seconds`
+**skips** each table's final chunk, so 5 chunks means 4 pauses.
+
+| Test | rows | `batch_size` | batches | batch sleep | delete sleep | **floor** |
+|---|---|---|---|---|---|---|
+| **03** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
+| **04** | 200 | 1000 *(default)* | 1 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
+| **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
+
+Test 04 declares no `processing:` block at all, so it inherits the global defaults
+(`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
+
+**This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
+machine can only push the measured duration *up*, so it can never fail.
+
+**It is not a test of sleeping.** The floor encodes the run's *shape* — this job
+must process twenty batches with these pauses — so anything that changes that
+shape lands below it, **including causes nobody anticipated**, and it catches them
+while the command still exits 0 with entirely plausible output:
+
+- a config that silently stopped being read, so the global defaults applied;
+- discovery returning fewer roots than the `where` slice implies;
+- an early return introduced by a later refactor;
+- a resume path that skipped work it should have replayed;
+- a batch loop that ran once where it should have run twenty.
+
+That is the point. Each working test now asserts on three **independent** axes,
+and the floor is the only one that needs no model of what the command means:
+
+| Assertion | Answers | Needs to know |
+|---|---|---|
+| post-condition | did rows actually move, in the right direction | what the command does |
+| verify stage | did verification run, naming its method | the log contract |
+| **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
+
+It is compared against **goarchive's own reported duration**, not the test's
+elapsed time: the latter includes the source reset, `validate` and `dry-run`,
+which dwarf the floor and would hide a lost throttle. For scale, measured against
+the 20.0 s floor, tests 03 and 05 spend about **0.7 s** doing actual work.
 
 ### Validation demos — preflight MUST fail
 
@@ -123,7 +185,7 @@ destination starts empty (see the Overview note):
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the tests (03–04)
+# The whole procedure — test-reset, then e2e-setup, then the tests (03–05)
 make e2e
 
 # Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
@@ -252,8 +314,30 @@ left uncovered.
 Each Sakila test prints a header and a verdict; per-test logs are written to
 `results/test_<n>.log`.
 
-- **Working test** → runs `validate → dry-run → archive` and ends with
-  `Result: PASS` (plus `records_copied` / `records_deleted`).
+- **Working test** → runs `validate → dry-run → <command>`, then **asserts the outcome**,
+  and ends with `Result: PASS`.
+
+  Three assertions run after the command, and any one of them fails the test:
+
+  - **The verify stage must have run, naming its method** — the log must carry
+    `Starting verification (method=<method>)`, and the console echoes
+    `confirmed: verification ran with method=count`.
+  - **The post-condition must hold**, per command. Rows are counted on **both** source
+    and destination, before and after:
+
+    | command | source | destination |
+    |---------|--------|-------------|
+    | `archive` | `after + destination == before` | must have **gained** rows |
+    | `purge` | must have **shrunk** | must stay **empty** |
+    | `copy-only` | must be **unchanged** | must have **gained** rows |
+
+    Conservation alone is not enough — a run that copied nothing and deleted nothing
+    satisfies it exactly — so each command also requires that something actually moved.
+  - **The run must not have been faster than its pacing floor** — goarchive's own
+    reported duration must be at least the test's `min_duration`, and the console
+    echoes `pacing OK (21.7s >= 20.0s floor)`. See
+    [the pacing floor](#the-pacing-floor--the-one-timing-number-that-is-not-machine-dependent)
+    for how the floor is derived and why a slow machine cannot fail it.
 - **Demo test** → `validate` fails; the runner prints
   `EXPECTED FAILURE matched` and `Result: PASS` when the category matches, or
   `Result: FAIL (wrong error category)` otherwise.
@@ -316,6 +400,13 @@ catches a run that did nothing.
 | `TEST_REPLICA_PORT` | 3308 | Replica MySQL port |
 | `SAKILA_DIR` | `tests/sakila-db` | Sakila SQL files location (auto-defaulted by run-tests.sh) |
 | `DUMP_DIR` | `/tmp/db1_schema_dump` | Temp dir for destination schema dump |
+| `GOARCHIVE_BIN` | `bin/goarchive` | Binary the Sakila E2E suite runs. Set it to test a **different build** — an older release, say — against the same suite. |
+
+**`GOARCHIVE_BIN` behaves differently depending on whether you set it.** Left unset, the
+runner builds `bin/goarchive` if it is missing, as before. Set explicitly, a missing binary
+is an **error** naming the path — the runner will not build the current tree in its place,
+because that would silently test a build you did not ask for and pass. It is resolved once,
+up front, and the suite prints `Binary under test: <path>` before the first test.
 
 ## Troubleshooting
 
@@ -366,14 +457,36 @@ docker compose down -v      # the -v is what removes the data volumes
 
 ## Adding New Tests
 
-1. Create `configs/testNN_description.yaml.template` (and render the local
-   `.yaml` from it). Destination loaded from a DDL-only dump needs
+1. Create `configs/testNN_description.yaml.template` — the `.template` is the
+   **only** file you author; `run-tests.sh` renders the `.yaml` on the next run.
+   Destination loaded from a DDL-only dump needs
    `safety.disable_foreign_key_checks: true`.
+
+   Two constraints that are easy to trip over:
+
+   - **`NN` is the `case` number**, and the same number goes in the dispatch list
+     at step 3. Config filename, `case` arm and dispatch entry must agree.
+   - **The job key must be the line immediately after `jobs:`**, with no comment
+     on it and none between. `run_archive_job` extracts the job name with
+     `grep -A 1 "^jobs:" | tail -1`, so anything else on that line ends up inside
+     the name.
 2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
-   - `mode="working"` → archive runs end-to-end; set `tables="..."`.
+   - `mode="working"` → the command runs end-to-end; set `tables="..."`, plus:
+     - `command="archive" | "purge" | "copy-only"` (defaults to `archive`).
+       Do **not** add `--force-triggers` anywhere — `run_archive_job` applies it per
+       command, and `copy-only` does not accept it.
+     - `min_duration="<seconds>"` — the pacing floor, computed from the config with
+       the formula above. **Required**, and it fails closed: leave it empty and the
+       test fails with *"no min_duration configured"*. Recompute it whenever you
+       change the slice, `batch_size`, `batch_delete_size` or either sleep.
+     - `verify_method="count" | "sha256" | "none"`. **Required**, and it fails closed:
+       leave it empty and the test fails, because no run logs `method=`. Use `"none"`
+       only for `purge`, which has no verify stage — `"none"` asserts the verification
+       line is *absent*, so a stage that vanishes cannot pass unnoticed.
    - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
      the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
+     `command` and `verify_method` are unused here.
 3. Wire the number into the dispatch lists in `main()`:
-   - Working → `run_sakila_tests "3 4 NN" "working"`.
+   - Working → `run_sakila_tests "3 4 5 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
 4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).

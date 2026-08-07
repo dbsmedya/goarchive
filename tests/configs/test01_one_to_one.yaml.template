@@ -10,8 +10,10 @@
 # though film is also referenced by out-of-graph tables (which would otherwise trip
 # FK_COVERAGE_CHECK — see test02).
 #
-# Copy this file to test01_one_to_one.yaml and substitute the password
-# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test01_one_to_one.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml --
+# that one is gitignored (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1

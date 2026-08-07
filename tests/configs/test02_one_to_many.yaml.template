@@ -9,8 +9,10 @@
 # (Before the 1.4.0-community fix this scenario mis-reported FK_INDEX_CHECK because the
 # index check false-positived on out-of-graph children and ran first.)
 #
-# Copy this file to test02_one_to_many.yaml and substitute the password
-# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test02_one_to_many.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml --
+# that one is gitignored (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1

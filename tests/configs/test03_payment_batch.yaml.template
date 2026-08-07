@@ -8,8 +8,10 @@
 # archive). payment is a leaf (no table references it), so it needs no child
 # relations; FK checks are disabled for the copy into the archive destination.
 #
-# Copy this file to test03_payment_batch.yaml and substitute the password
-# (or render ${MYSQL_ROOT_PASSWORD} from tests/.env) before running.
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test03_payment_batch.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml --
+# that one is gitignored (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
@@ -40,7 +42,9 @@ jobs:
     processing:
       batch_size: 100
       batch_delete_size: 20
-      sleep_seconds: 1
+      # 0.2s, not 1s. At 1s this single test spent 20s of its 42s idling between
+      # batches, and the throttle is exercised just as well at 0.2s.
+      sleep_seconds: 0.2
       # Throttle deletes: pause 0.2s between each batch_delete_size delete chunk
       # to limit binlog generation / replication lag.
       delete_sleep_seconds: 0.2
