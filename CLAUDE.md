@@ -237,10 +237,17 @@ credentials before **any** integration, E2E, or `mysqlsh` command:
 set -a; source tests/.env; set +a
 ```
 
+**`make gate` runs the whole verification sequence in the only correct order** — estate check,
+static, unit, integration, characterization, then E2E. Use it instead of assembling the steps
+by hand. The order is load-bearing and enforced there: integration and characterization must
+precede `make e2e`, because `e2e` begins with `test-reset` and destroys the estate they need.
+
 | Layer | Command |
 |-------|---------|
+| **Everything, correctly ordered** | **`make gate`** |
 | Unit (no DB) | `go test ./... -count=1` |
 | Integration (tag `integration`) | `bash tests/scripts/run-tests.sh --setup --integration-only` |
+| Characterization baseline | `make characterization` |
 | E2E (Sakila) | `make e2e` |
 | Query a database | `tests/scripts/mysql-query.sh <port> "<sql>"` |
 
@@ -264,9 +271,17 @@ make e2e-tests-must-run-after-setup      # 3. run the tests
 Run the steps individually only if you know why. Step 3 refuses unless step 2 has run.
 `make e2e-examples` (validation demos) has the same precondition.
 
-The characterization baseline is **`60 / 304 / 364 / 0 / 0`** (top-level / subtests / PASS /
-FAIL / SKIP), counted from a `-v` run. It stays unamended unless an increase is authorized in
-advance.
+The characterization baseline lives in **`tests/characterization-baseline.txt`** and is checked
+by **`make characterization`**. It is currently `60 / 304 / 364 / 0 / 0` (top-level / subtests /
+PASS / FAIL / SKIP) and stays unamended unless an increase is authorized in advance — change the
+file and this line together.
+
+> **Do not count it by hand.** The suite nests **two** levels deep, so the obvious
+> `grep -c '^    --- PASS'` returns 206 and appears to show a 98-test regression that does not
+> exist; the other 98 subtests sit at 8-space indent. That misfire happened, on a change that
+> touched zero `.go` files. The script owns the counting so nobody has to know the trick — and
+> when a gate reports a regression in a layer the diff does not touch, suspect the gate first
+> (`git diff --name-only main...HEAD | grep -c '\.go$'` settles it).
 
 ## Test Environment
 

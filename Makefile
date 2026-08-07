@@ -286,6 +286,35 @@ e2e-examples:
 	@bash tests/scripts/require-e2e-seed.sh
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
 
+# Check the characterization suite against its recorded baseline.
+#
+# The baseline lives in tests/characterization-baseline.txt, and the script does
+# the counting. Nobody counts by hand: the suite nests two levels deep, so the
+# obvious `grep -c '^    --- PASS'` misses 98 subtests and manufactures a
+# regression that is not there.
+.PHONY: characterization
+characterization:
+	@bash tests/scripts/check-characterization-baseline.sh
+
+# Refuse to proceed against a dead test estate. A killed run leaves the
+# containers Exited (137), and every later step then fails with "Can't connect
+# to MySQL server" -- indistinguishable from a real failure.
+.PHONY: require-estate
+require-estate:
+	@bash tests/scripts/require-containers-up.sh
+
+# THE FULL VERIFICATION GATE, in the only order that is correct. Use this one.
+#
+# The ordering, the per-stage exit-code checks and the closing summary all live
+# in the script -- see its header for why they cannot safely live in recipe
+# lines here (short version: `cmd | tee` returns tee's status, so collecting
+# output in make would hide a failing stage).
+#
+# Requires credentials: set -a; source tests/.env; set +a
+.PHONY: gate
+gate:
+	@bash tests/scripts/run-gate.sh
+
 # Help target
 .PHONY: help
 help:
@@ -317,6 +346,9 @@ help:
 	@echo "  make e2e-setup          - Step 2 only: bootstrap docker + Sakila and seed the estate"
 	@echo "  make e2e-tests-must-run-after-setup - Step 3 only: the tests (refuses unless seeded)"
 	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
+	@echo "  make gate               - THE FULL VERIFICATION GATE, in the correct order. USE THIS"
+	@echo "  make characterization   - Check the characterization suite against its baseline"
+	@echo "  make require-estate     - Fail early if the test databases are unreachable"
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"

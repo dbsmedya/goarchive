@@ -1,0 +1,80 @@
+# Test 07: copy-only -- copy to the destination WITHOUT deleting from source
+#
+# The suite's only `copy-only` coverage. copy-only is the one command that never
+# deletes, so the assertion that carries this test is the NEGATIVE one: the
+# source count must be IDENTICAL before and after. Without it this is an archive
+# test under a different name.
+#
+# Same graph and same slice as test 04 (rental -> payment, rental_id <= 200), so
+# a failure here that test 04 does not share isolates to the command.
+#
+# The `processing:` block is the one deliberate difference from test 04, and it
+# is not cosmetic. Test 04 declares no processing block, inheriting batch_size
+# 1000, which makes 200 rentals a SINGLE batch -- one batch exercises one sleep
+# call, and no per-batch accumulation bug is reachable because there is no
+# second batch. batch_size 10 gives 20 batches. That also makes this the first
+# E2E run of copy-only's own orchestrator loop for more than one iteration:
+# copyonly_orchestrator.go carries its own copy of the batch/sleep loop, a third
+# one alongside orchestrator.go and purge_orchestrator.go, and nothing exercised
+# it end to end before this test.
+#
+# NO batch_delete_size and NO delete_sleep_seconds. copy-only runs as
+# batchCopyVerify, and the delete phase is gated on batchFull||batchDeleteOnly
+# (batch_pipeline.go:146), so DeletePhase never runs at all. Both settings are
+# inert here, exactly as disable_foreign_key_checks is inert for purge. Carrying
+# delete_sleep_seconds would be worse than dead config: the pacing-floor formula
+# in tests/README.md has a delete term, and including it here would produce a
+# gate that no correct run can ever pass.
+#
+# safety.disable_foreign_key_checks IS required -- unlike purge, copy-only
+# copies, and the setting is consumed on the copy path (copy.go:154). The
+# destination's payment table has FKs to customer and staff, and neither is in
+# the graph. It is also why the runner asserts referential integrity explicitly
+# (orphan_checks): with FK enforcement off, the destination cannot reject an
+# orphan by itself, and exact row counts stay true even if every copied payment
+# pointed at a rental that never arrived.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test07_rental_payment_copyonly.yaml on every run, substituting the
+# MYSQL_ROOT_PASSWORD placeholder from tests/.env. Edit this file, never the
+# generated .yaml -- that one is gitignored (it holds a real password) and is
+# overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# The job key must be the line immediately after `jobs:` -- run_archive_job
+# extracts the name with `grep -A 1 "^jobs:" | tail -1`, so a comment here or a
+# trailing comment on the key itself lands inside the extracted name.
+jobs:
+  copy-rental-payments:
+    root_table: rental
+    primary_key: rental_id
+    # The same 200 rentals as test 04, pulling in the same 200 payments.
+    where: "rental_id <= 200"
+    processing:
+      # 200 rentals / 10 = 20 batches.
+      batch_size: 10
+      # 20 batches x 0.5s = 10.0s. Batch term only -- see the note above on why
+      # there is no delete term for this command.
+      sleep_seconds: 0.5
+    relations:
+      # 1-N: a rental has many payments (payment.rental_id -> rental)
+      - table: payment
+        primary_key: payment_id
+        foreign_key: rental_id
+        dependency_type: "1-N"

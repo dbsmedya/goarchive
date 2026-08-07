@@ -7,10 +7,75 @@ integration, and Sakila end-to-end (E2E) tests.
 
 | Test Type | Description | Command |
 |-----------|-------------|---------|
+| **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive and purge runs that complete (tests 03–06) | `make e2e` (reset + seed + run) |
+| **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
+| **Sakila E2E (working)** | Archive, purge and copy-only runs that complete (tests 03–07) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
+
+### `make gate` — use this rather than assembling the steps
+
+It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `deadcode` → unit →
+integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`, and ends with a
+summary:
+
+```
+================================================
+  GATE SUMMARY
+================================================
+  estate             test estate reachable on 3305, 3307, 3308
+  fmt-check          ok
+  ...
+  integration        PASS=1026 FAIL=0 SKIP=1
+  characterization   OK (60 / 304 / 364 / 0 / 0)
+  e2e                Passed: 5  Failed: 0
+  e2e-examples       Passed: 2  Failed: 0
+================================================
+  GATE COMPLETE - every stage above exited 0
+```
+
+**Read the summary, not the scrollback.** The run emits thousands of lines — `mysqlsh` progress
+spinners, per-test output, schema dumps — and the numbers that matter are scattered through it.
+An independent verifier once reported six stages out of eight in good faith, because the other
+two had scrolled past.
+
+On failure it stops, prints the summary **so far** with the broken stage marked, names the
+per-stage log, and exits with **that stage's own exit code**. Per-stage logs land in
+`tests/results/gate/` (gitignored).
+
+> **Why a script (`scripts/run-gate.sh`) rather than Makefile recipe lines.** Collecting each
+> stage's output in make would mean `cmd | tee`, and that returns **tee's** exit status — a
+> failing stage would exit 0 and the gate would report green on red. make's default shell has no
+> reliable `pipefail`. The script takes the status from `PIPESTATUS[0]`, the command's own, and
+> checks it explicitly per stage. Same pattern as
+> `e2e-tests-must-run-after-setup` → `require-e2e-seed.sh`: the Makefile names the target, a
+> script owns the logic.
+
+**The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
+destroys the estate; run it before integration or characterization and those fail for reasons
+unrelated to your change. Integration needs `--setup`, or stale heartbeat state fabricates
+failures. `make gate` encodes both so nobody has to remember them.
+
+It fails fast on a dead estate rather than letting every step die with
+`Can't connect to MySQL server`, which reads exactly like a product failure. Note the harness's
+own `selftest_get_row_count_fails_loud` cannot catch that case — it probes an always-refused
+port on purpose, so it passes while the real databases are down.
+
+Credentials first, as always: `set -a; source tests/.env; set +a`.
+
+#### The characterization baseline is checked, not recited
+
+`tests/characterization-baseline.txt` holds the recorded counts and
+`scripts/check-characterization-baseline.sh` does the comparison.
+
+> **Never count it by hand.** The suite nests **two** levels deep. The obvious
+> `grep -c '^    --- PASS'` returns **206** against a baseline of 304 and looks like a 98-test
+> regression — the missing 98 are subtests at 8-space indent. That misfire has happened, on a
+> change touching zero `.go` files. Run `make characterization` and read its verdict.
+
+Raising the baseline is a decision requiring prior authorization, not a side effect of adding
+tests. When authorized, update the file and CLAUDE.md's pointer together.
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
 > false failures.** The real-DB tests archive Sakila into `sakila_archive` and
@@ -24,8 +89,8 @@ integration, and Sakila end-to-end (E2E) tests.
 
 ## Sakila E2E Test Suite
 
-Six focused tests: four working runs — three archives and one purge — and two
-preflight-guardrail demonstrations.
+Seven focused tests: five working runs — three archives, one purge and one
+copy-only — and two preflight-guardrail demonstrations.
 
 **Configs live in `tests/configs/`, and the tracked file is always the
 `.yaml.template`.** `run-tests.sh` renders each one to its `.yaml` on every run,
@@ -41,6 +106,7 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 | **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
 | **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
 | **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | The suite's only **`purge`** — the only command that deletes without copying, and the only one with **no verify stage at all**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
+| **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | The suite's only **`copy-only`** — the only command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged**. Also the first E2E run of `copyonly_orchestrator.go`'s batch loop. |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
@@ -53,6 +119,14 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 > is **not contiguous** — two ids below it are missing. Both numbers were queried
 > against the fixture, not computed, and both move together if the Sakila data
 > file changes. That is what `expected_rows` is there to report.
+
+> **04 and 07 are the same graph and the same slice under different commands**, so
+> a failure in 07 alone isolates to `copy-only` — with one deliberate exception.
+> **Their pacing differs, and that is not an oversight.** 04 declares no
+> `processing:` block, so 200 rentals arrive in a *single* batch, and one batch
+> exercises one sleep call: no per-batch accumulation bug is reachable, because
+> there is no second batch. 07 sets `batch_size: 10` for 20 batches. If you make
+> them identical, say which one you meant to weaken.
 
 #### The pacing floor — the one timing number that is not machine-dependent
 
@@ -75,6 +149,7 @@ floor = ceil(rows ÷ batch_size) × sleep_seconds
 | **04** | 200 | 1000 *(default)* | 1 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
 | **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
 | **06** | 8022 | 500 | 17 | 17 × 0.2 = 3.4 s | 64 × 0.2 = 12.8 s | **16.2 s** |
+| **07** | 200 | 10 | 20 | 20 × 0.5 = 10.0 s | — *(no delete phase)* | **10.0 s** |
 
 Test 04 declares no `processing:` block at all, so it inherits the global defaults
 (`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
@@ -90,6 +165,15 @@ Over a slice four times larger, 03's `100 / 20` would cost **80.4 s** — 64 s o
 pure `sleep` — and prove nothing that `500 / 100` does not, since both give five
 delete chunks per batch.
 
+**Test 07 has no delete term at all, and the formula's second line must be dropped
+for it.** `copy-only` runs as `batchCopyVerify`, and the delete phase is gated on
+`batchFull || batchDeleteOnly` (`internal/archiver/batch_pipeline.go:146`), so
+`DeletePhase` never runs. `delete_sleep_seconds` and `batch_delete_size` are inert
+for this command — the config sets neither, and including a delete term in its
+floor would build a gate no correct run can pass. Whenever you add a test, derive
+the floor from the phases that command actually executes, not from the shape of
+the formula.
+
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
 machine can only push the measured duration *up*, so it can never fail.
 
@@ -104,14 +188,23 @@ while the command still exits 0 with entirely plausible output:
 - a resume path that skipped work it should have replayed;
 - a batch loop that ran once where it should have run twenty.
 
-That is the point. Each working test now asserts on three **independent** axes,
+That is the point. Each working test now asserts on four **independent** axes,
 and the floor is the only one that needs no model of what the command means:
 
 | Assertion | Answers | Needs to know |
 |---|---|---|
 | post-condition | did **exactly** the right rows move, in the right direction | what the command does, and how many rows the slice holds |
 | verify stage | did verification run, naming its method | the log contract |
+| referential integrity | are the rows that moved **internally consistent** | the graph's parent→child edges |
 | **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
+
+> **Referential integrity is a separate axis, not a refinement of the count.**
+> Both can hold while the other fails — 200 payments referencing 200 rentals that
+> never arrived satisfies every count. It applies only to multi-table tests, where
+> there is an edge to check, and it exists because every test that *copies* must
+> set `safety.disable_foreign_key_checks: true`: a copied child normally references
+> out-of-graph parents the destination does not hold, so the destination cannot
+> reject an orphan on its own.
 
 > **The floor and the exact count cover opposite directions, and neither
 > substitutes for the other.** The floor is one-sided: a run that did *less* than
@@ -213,7 +306,7 @@ destination starts empty (see the Overview note):
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the tests (03–06)
+# The whole procedure — test-reset, then e2e-setup, then the tests (03–07)
 make e2e
 
 # Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
@@ -345,7 +438,7 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 - **Working test** → runs `validate → dry-run → <command>`, then **asserts the outcome**,
   and ends with `Result: PASS`.
 
-  Three assertions run after the command, and any one of them fails the test:
+  Four assertions run after the command, and any one of them fails the test:
 
   - **The verify stage must have run, naming its method** — the log must carry
     `Starting verification (method=<method>)`, and the console echoes
@@ -371,6 +464,11 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
     not conserved* means rows went missing and the product is at fault. As a gate it can
     no longer fire at all — once both exact checks hold, conservation follows
     arithmetically — and a check that cannot fail is not protection.
+  - **No orphans in the destination**, for every `child:fk:parent:parent_pk` pair the
+    test declares in `orphan_checks`. The console echoes `payment -> rental: no orphans`.
+    **Required for any test with more than one table**, and it fails closed — a
+    multi-table test that declares none is rejected before the source reseed. Single-table
+    tests have no edge to check. A NULL foreign key is *not* an orphan.
   - **The run must not have been faster than its pacing floor** — goarchive's own
     reported duration must be at least the test's `min_duration`, and the console
     echoes `pacing OK (21.7s >= 20.0s floor)`. See
@@ -529,10 +627,18 @@ docker compose down -v      # the -v is what removes the data volumes
        number from a real run rather than computing it — Sakila's PK columns are not
        contiguous, which is why `payment_id <= 2000` yields 1999 and
        `payment_id <= 8024` yields 8022.
+     - `orphan_checks="child:fk:parent:parent_pk [...]"` — referential-integrity pairs
+       checked in the destination, space-separated. **Required as soon as `tables` has
+       more than one entry**, and it fails closed with *"N tables but no orphan_checks
+       configured"*, before the source reseed. Exact counts cannot cover this: a test
+       that copies runs with `disable_foreign_key_checks: true`, so the destination
+       accepts a child whose parent never arrived, and the counts stay right. A
+       malformed entry is rejected up front rather than silently checking some other
+       pair of tables.
    - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
      the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
      `command` and `verify_method` are unused here.
 3. Wire the number into the dispatch lists in `main()`:
-   - Working → `run_sakila_tests "3 4 5 6 NN" "working"`.
+   - Working → `run_sakila_tests "3 4 5 6 7 NN" "working"`.
    - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
 4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
