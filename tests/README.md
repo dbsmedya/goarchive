@@ -92,6 +92,13 @@ tests. When authorized, update the file and CLAUDE.md's pointer together.
 Seven focused tests: five working runs — three archives, one purge and one
 copy-only — and two preflight-guardrail demonstrations.
 
+**Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
+command it exercises**, with the shared harness in `tests/e2e/lib/`.
+[`e2e/README.md`](e2e/README.md) documents the file format, the per-test variables
+and how to add a test; each category directory has its own `README.md` for what is
+peculiar to that command. This file stays the reference for *what the tests prove*
+— the catalogue below, the assertion axes, the pacing formula and the estate.
+
 **Configs live in `tests/configs/`, and the tracked file is always the
 `.yaml.template`.** `run-tests.sh` renders each one to its `.yaml` on every run,
 substituting the `MYSQL_ROOT_PASSWORD` placeholder from `tests/.env`. The
@@ -579,7 +586,10 @@ docker compose down -v      # the -v is what removes the data volumes
 
 | File/Directory | Description |
 |----------------|-------------|
-| `scripts/run-tests.sh` | Main test runner (unit / integration / Sakila E2E) |
+| `scripts/run-tests.sh` | Entry point: owns the environment, the flags and the dispatch |
+| `e2e/README.md` | The E2E test-file format and how to add a test |
+| `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers |
+| `e2e/<category>/NN-*.test.sh` | One declaration file per test, grouped by the command under test |
 | `scripts/check-servers.sh` | Database connectivity checker |
 | `scripts/get_sakila_db.sh` | Downloads the Sakila database |
 | `scripts/dump_master.js` | MySQL Shell script for schema dump |
@@ -593,52 +603,24 @@ docker compose down -v      # the -v is what removes the data volumes
 
 ## Adding New Tests
 
-1. Create `configs/testNN_description.yaml.template` — the `.template` is the
-   **only** file you author; `run-tests.sh` renders the `.yaml` on the next run.
-   A test that **copies** into a destination loaded from a DDL-only dump needs
-   `safety.disable_foreign_key_checks: true`. A `purge` test does **not** — the
-   setting is consumed only on the copy path, so carrying it there is dead config.
+**The E2E test format and the full procedure live in
+[`e2e/README.md`](e2e/README.md).** A test is now a declaration file at
+`e2e/<category>/NN-<slug>.test.sh` — there is no `case` arm to edit.
 
-   Two constraints that are easy to trip over:
+The short version:
 
-   - **`NN` is the `case` number**, and the same number goes in the dispatch list
-     at step 3. Config filename, `case` arm and dispatch entry must agree.
-   - **The job key must be the line immediately after `jobs:`**, with no comment
-     on it and none between. `run_archive_job` extracts the job name with
-     `grep -A 1 "^jobs:" | tail -1`, so anything else on that line ends up inside
-     the name.
-2. Add a `case` entry to `run_sakila_test()` in `scripts/run-tests.sh`:
-   - `mode="working"` → the command runs end-to-end; set `tables="..."`, plus:
-     - `command="archive" | "purge" | "copy-only"` (defaults to `archive`).
-       Do **not** add `--force-triggers` anywhere — `run_archive_job` applies it per
-       command, and `copy-only` does not accept it.
-     - `min_duration="<seconds>"` — the pacing floor, computed from the config with
-       the formula above. **Required**, and it fails closed: leave it empty and the
-       test fails with *"no min_duration configured"*. Recompute it whenever you
-       change the slice, `batch_size`, `batch_delete_size` or either sleep.
-     - `verify_method="count" | "sha256" | "none"`. **Required**, and it fails closed:
-       leave it empty and the test fails, because no run logs `method=`. Use `"none"`
-       only for `purge`, which has no verify stage — `"none"` asserts the verification
-       line is *absent*, so a stage that vanishes cannot pass unnoticed.
-     - `expected_rows="<n> [<n> ...]"` — the exact rows the run must move, **one per
-       entry in `tables`, in the same order**. **Required**, and it fails closed with
-       *"no expected row count configured"*. A count that disagrees with `tables` is
-       caught up front, before the source reseed, naming both lists. Measure each
-       number from a real run rather than computing it — Sakila's PK columns are not
-       contiguous, which is why `payment_id <= 2000` yields 1999 and
-       `payment_id <= 8024` yields 8022.
-     - `orphan_checks="child:fk:parent:parent_pk [...]"` — referential-integrity pairs
-       checked in the destination, space-separated. **Required as soon as `tables` has
-       more than one entry**, and it fails closed with *"N tables but no orphan_checks
-       configured"*, before the source reseed. Exact counts cannot cover this: a test
-       that copies runs with `disable_foreign_key_checks: true`, so the destination
-       accepts a child whose parent never arrived, and the counts stay right. A
-       malformed entry is rejected up front rather than silently checking some other
-       pair of tables.
-   - `mode="example"` → preflight must fail; set `expected_error="CATEGORY"` to
-     the exact tag (e.g. `COMPOSITE_PK_CHECK`, `FK_COVERAGE_CHECK`, `INTERNAL_FK_COVERAGE`).
-     `command` and `verify_method` are unused here.
-3. Wire the number into the dispatch lists in `main()`:
-   - Working → `run_sakila_tests "3 4 5 6 7 NN" "working"`.
-   - Demos → `run_sakila_tests "1 2 NN" "validation demos"`.
-4. Verify: `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
+1. Author `configs/testNN_<name>.yaml.template` (the `.template` is the only
+   tracked file; the `.yaml` is rendered every run).
+2. Add `e2e/<category>/NN-<slug>.test.sh` declaring `test_name`, `config_file`,
+   `tables`, `mode`, and — for a working test — `command`, `verify_method`,
+   `min_duration`, `expected_rows`, and `orphan_checks` when `tables` names more
+   than one table. **Those last four fail closed**: omit one and the test is
+   refused rather than run.
+3. Add `NN` to the ordered dispatch list in `scripts/run-tests.sh` → `main`
+   (`run_e2e_suite "3 4 5 6 7 NN" "working"`, or `"1 2 NN" "validation demos"`).
+4. Update the catalogue in this file and the category's `README.md`.
+5. Verify: `./scripts/run-tests.sh --sakila -t NN`.
+
+Measure every row count from a real run rather than computing it — Sakila's PK
+columns are not contiguous, which is why `payment_id <= 2000` yields 1999 and
+`payment_id <= 8024` yields 8022.
