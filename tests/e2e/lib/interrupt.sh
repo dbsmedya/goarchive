@@ -348,6 +348,82 @@ assert_interrupt_preconditions() {
     return 0
 }
 
+# Assert the resumed run copied only what it still had left to copy.
+#
+# Usage: assert_resume_copy_accounting <kind> <assert_log> <expect_total> <expect_at_interrupt>
+#
+# WHAT THIS ADDS, precisely -- and it is narrower than it first looks. The
+# discriminator proves *some* recovery ran; it does not prove which branch. A
+# 'copied' row is supposed to be promoted through the DELETE-ONLY path
+# (batchDeleteOnly) because its copy already succeeded and was verified.
+#
+# MEASURED: when that branch is swapped for the full pipeline, the run does NOT
+# reach here -- goarchive's own sha256 verification fails first, because run 1 had
+# already deleted part of the batch and the re-copy then compares 80 source rows
+# against 100 in the destination. So the product catches the realistic form of this
+# regression on its own.
+#
+# What this covers is the residue: the case where run 1 died before deleting
+# anything. Source and destination then agree, a re-copy verifies cleanly, INSERT
+# IGNORE absorbs the duplicates, the destination total is unchanged, the extra work
+# only makes the one-sided pacing floor easier, and every root PK still ends at
+# 'completed'. The run's own copy counter is then the only number that moves.
+#
+# Treat it as defence in depth, not as the sole guard. Measured 2026-08-08: test 09's
+# run 2 reports records_copied=399 over a 499-row slice with 100 already copied, and
+# the recovery line carries "mode":2.
+#
+# The same arithmetic holds for the graceful kind, for a different reason: archive
+# DELETES what it copies, so run 1's completed batch is gone from source and run 2
+# cannot re-fetch it. (That is also why an archive resume cannot be made to prove it
+# *read* the checkpoint -- the source itself encodes the progress, so ignoring the
+# checkpoint is harmless and therefore invisible. For archive the checkpoint is an
+# optimization; its VALUE is asserted in the preconditions.)
+assert_resume_copy_accounting() {
+    local kind="$1"
+    local assert_log="$2"
+    local expect_total="$3"
+    local expect_at_interrupt="$4"
+
+    local want=$((expect_total - expect_at_interrupt))
+    local got
+    got=$(grep -o '"records_copied":[0-9]*' "$assert_log" | tail -1 | cut -d: -f2)
+    if [[ -z "$got" ]]; then
+        log_error "  could not read records_copied from the resumed run's log"
+        log_error "    The command logs it as a structured field; if that changed, this"
+        log_error "    assertion has stopped matching and is no longer checking anything."
+        return 1
+    fi
+    if [[ "$got" -ne "$want" ]]; then
+        log_error "  run 2 copied $got row(s), expected exactly $want"
+        log_error "    ($expect_total in the slice, $expect_at_interrupt already copied before the interrupt.)"
+        if [[ "$got" -eq "$expect_total" ]]; then
+            log_error "    It copied the WHOLE slice, so the rows run 1 had already copied were"
+            log_error "    re-copied instead of promoted through the delete-only branch. With"
+            log_error "    sha256 the duplicates are absorbed by INSERT IGNORE, which is why no"
+            log_error "    count, no orphan check and no pacing floor notices."
+        fi
+        return 1
+    fi
+    log_info "  run 2 copied exactly $got — the $expect_at_interrupt already-copied row(s) were not re-copied"
+
+    # Name the branch as well as its effect. Cheap, and it fails with a clearer
+    # diagnostic than a count when the recovery policy itself changes.
+    if [[ "$kind" == "crash" ]]; then
+        local want_recovery="\"count\":${expect_at_interrupt},\"mode\":2"
+        if ! grep -q "Recovering non-terminal PKs from prior run.*${want_recovery}" "$assert_log"; then
+            log_error "  the recovery did not report count=$expect_at_interrupt with mode=2 (batchDeleteOnly)"
+            log_error "    mode 2 is the delete-only replay: these rows' copy already succeeded and"
+            log_error "    was verified, so re-copying them is wrong even though it looks correct."
+            log_error "    Observed:"
+            grep -o 'Recovering non-terminal PKs from prior run[^}]*' "$assert_log" | head -1 | sed 's/^/      /'
+            return 1
+        fi
+        log_info "  recovery reported count=$expect_at_interrupt mode=2 (delete-only replay)"
+    fi
+    return 0
+}
+
 # Assert the tracking tables are fully settled after the resumed run.
 #
 # Usage: assert_tracking_settled <job_name> <expect_completed>

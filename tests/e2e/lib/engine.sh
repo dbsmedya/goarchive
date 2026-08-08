@@ -419,6 +419,22 @@ run_e2e_test() {
                 return 1
             fi
             log_info "  confirmed: recovery $([ $recovered -eq 1 ] && echo ran || echo 'did not run'), as '$interrupt' requires"
+
+            # The discriminator proves recovery ran; it does not prove which branch.
+            # A 'copied' row must be promoted through delete-only, not re-copied.
+            # Defence in depth: the realistic form of that regression is caught by
+            # goarchive's own verification (measured), but a crash that deleted
+            # nothing would let a re-copy verify cleanly, and then only this counter
+            # moves. See assert_resume_copy_accounting.
+            log_info "[STEP 3b-v] Asserting run 2 copied only what was left to copy..."
+            if ! assert_resume_copy_accounting "$interrupt" "$assert_log" \
+                 "${expected_arr[0]}" "$interrupt_expect_dest"; then
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (resumed run re-copied work it should have skipped)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
         fi
 
         # Step 3c: assert the verify stage actually ran, naming the method.
