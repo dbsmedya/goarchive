@@ -12,7 +12,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
-| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
@@ -89,8 +89,8 @@ tests. When authorized, update the file and CLAUDE.md's pointer together.
 
 ## Sakila E2E Test Suite
 
-Nine focused tests: seven working runs — three archives, one purge, one
-copy-only and two interrupt/resume pairs — and two preflight-guardrail
+Eleven focused tests: seven working runs — three archives, one purge, one
+copy-only and two interrupt/resume tests — and four preflight-guardrail
 demonstrations.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
@@ -281,7 +281,7 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 |------|--------|----------------|-----|
 | **01** | `test01_one_to_one.yaml` | `COMPOSITE_PK_CHECK` | Config includes Sakila's composite-PK tables `film_actor` (`actor_id, film_id`) / `film_category` (`film_id, category_id`); GoArchive identifies/deletes by a single PK column, so a multi-column PK is rejected up front. |
 | **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the graph, but `film` is also referenced by out-of-graph `inventory`/`film_actor`/`film_category`; deleting archived films would violate those FKs, so every referencing table must be covered. |
-| **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins deviation **D5**, and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
+| **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy** (`internal/archiver/preflight.go`), and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
 | **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two in-graph parents, so one FK edge is always undeclared. |
 
 > **The `customer → rental → payment` (GDPR) shape is unrepresentable, and test 11

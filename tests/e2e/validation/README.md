@@ -13,7 +13,7 @@ touch data.
 |---|---|---|
 | 01 | `COMPOSITE_PK_CHECK` | includes `film_actor` / `film_category`, which have composite primary keys; goarchive supports single-column root PKs only |
 | 02 | `FK_COVERAGE_CHECK` | archives `film` while `inventory`, `film_actor` and `film_category` still reference it, so the delete would violate their foreign keys |
-| 10 | `TABLE_EXISTENCE_CHECK` | `root_table` is the view `customer_list`; only base tables can be archived (deviation **D5**) |
+| 10 | `TABLE_EXISTENCE_CHECK` | `root_table` is the view `customer_list`; only base tables can be archived — the **non-base-table policy** |
 | 11 | `INTERNAL_FK_COVERAGE` | the `customer → rental → payment` GDPR diamond — `payment` has two in-graph parents, so one FK edge is always undeclared |
 
 `mode="example"` selects this arm of the engine. The only other variable that
@@ -48,8 +48,8 @@ Every other test here pins behaviour that 1.8.0 already had. Test 10 pins a chan
 | `v1.8.0-community` | `PRIMARY_KEY_CHECK` — "fix the primary key", on a view |
 | current | `TABLE_EXISTENCE_CHECK` — "only base tables can be archived" |
 
-**So test 10 fails against a 1.8 binary, and that is correct** — an "expected failure,
-deviation D5" row in the behavioural baseline, not a regression. It is the only test
+**So test 10 fails against a 1.8 binary, and that is correct** — an **expected failure**
+row in the behavioural baseline, not a regression. It is the only test
 in the suite with that property, so a cross-binary run that reports it as a failure
 has not found a bug.
 
