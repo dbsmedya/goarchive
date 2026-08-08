@@ -74,10 +74,17 @@ avoids self-deadlocking a single-connection configuration.
 ## Versioning
 
 GoArchive pins an exact released tag of the library — no `replace` directives, no
-pseudo-versions. The pin is currently **v0.7.0**.
+pseudo-versions, no committed `go.work`. **Which tag is recorded in `go.mod`, and only
+there:**
+
+```bash
+grep dbsgomysql go.mod
+```
 
 The 1.9.x release-candidate series exists to validate this integration against successive
-library releases before GoArchive 2.0 pins the library's stable **v1.0.0**. The stable
+**pre-1.0** library releases before GoArchive 2.0 pins the library's stable **v1.0.0**.
+While the library is pre-1.0 its exported surface may still change between releases —
+validating that against a real archival workload is what the RC series is for. The stable
 GoArchive release remains `1.8.0-community` until 2.0 ships.
 
 ## See also
