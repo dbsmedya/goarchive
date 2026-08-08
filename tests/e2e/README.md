@@ -5,7 +5,7 @@ estate.
 
 **This file owns the *mechanics*: the layout, the test-file format, and how to add
 a test.** It does not describe what the individual tests prove — `../README.md`
-owns the catalogue, the four assertion axes, the pacing-floor formula, and the
+owns the catalogue, the assertion axes, the pacing-floor formula, and the
 estate. A second copy of those would be a second copy that disagrees.
 
 The suite exists so someone evaluating GoArchive can read what it proves without
@@ -20,7 +20,8 @@ tests/e2e/
 ├── validation/    01 02    configs that MUST fail preflight
 ├── archive/       03 04 05 copy → verify → delete
 ├── purge/         06       delete without copying
-└── copy-only/     07       copy without deleting
+├── copy-only/     07       copy without deleting
+└── resume/        08 09    interrupt a live run, then finish it
 ```
 
 Categories are **by command under test**. That is the axis the suite's own
@@ -61,14 +62,29 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `min_duration` | pacing floor in seconds — formula in `../README.md` |
 | `expected_rows` | exact rows moved, **one per entry in `tables`, same order** |
 | `orphan_checks` | `child:fk:parent:parent_pk`, space-separated |
+| `interrupt` | *(resume only)* `graceful` \| `crash` — turns on the two-run arm |
+| `interrupt_after_batches` | *(resume only)* which batch to interrupt at |
+| `interrupt_expect_dest` | *(resume only)* destination rows required **exactly** at that point |
+| `root_pk` | *(resume only)* root table's PK column, for the checkpoint assertion |
 
 Do **not** put `--force-triggers` anywhere. `run_archive_job` applies it per
 command, and `copy-only` does not accept the flag at all.
 
-### Four variables fail closed
+### Four variables fail closed — and the resume group makes eight
 
 A `working` test that omits `verify_method`, `min_duration`, `expected_rows`, or —
 once `tables` names more than one table — `orphan_checks` is **refused, not run**.
+
+The four `interrupt*`/`root_pk` variables fail closed as a **group**: declare
+`interrupt` and the other three become mandatory, and an unrecognised `interrupt`
+value is refused rather than quietly treated as "no interrupt". Both checks run
+before the 60-second source reseed, so a misdeclared resume test fails in
+**0 seconds**. `interrupt_expect_dest=0` is refused outright — it would assert that
+nothing was copied before the interrupt, leaving nothing to resume from.
+
+**`interrupt` is a flag on `mode="working"`, deliberately not a third mode.** Every
+guard here is gated on `mode == "working"`; a new mode would have bypassed all of
+them at once, and a missed widening fails *open*.
 
 Each is required because its absence was *measured* to let the suite pass on a
 broken run; `../README.md` records what each one caught. Two of the refusals fire
@@ -104,7 +120,7 @@ behind it as defence in depth.
 
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
-   - working → `run_e2e_suite "3 4 5 6 7 NN" "working"`
+   - working → `run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`
    - demos → `run_e2e_suite "1 2 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
@@ -112,7 +128,7 @@ behind it as defence in depth.
 5. **Verify:** `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
    Both `-t 7` and `-t 07` work.
 
-## Three invariants to know before editing `lib/`
+## Four invariants to know before editing `lib/`
 
 **Numbers are the identity; categories are only where files live.** `-t N`,
 `results/test_N.log` and `configs/testNN_*.yaml` all key off the number, so a test
@@ -132,3 +148,19 @@ and the suite goes on reporting a pass. Nothing else has that symptom, which is
 why the suite loop asserts after each test that nothing reached global scope. That
 check exercises the real mechanism: `run_e2e_suite` deliberately does not declare
 those variables, so a lost `local` surfaces there.
+
+**`ensure_destination_schema` drops and recreates the destination database, and the
+tracking tables live inside it.** `destination.job_schema` defaults to the
+destination database and no test config overrides it, so that call takes
+`archiver_job` and `archiver_job_log_<id>` with it. For a single-run test that is
+exactly what you want — no state leaks between tests and job ids restart. For the
+**two-run** resume tests it is fatal: call it between the runs and the checkpoint,
+the log table and the rows run 1 copied all disappear, so run 2 starts from scratch
+and **every end-state assertion still passes**.
+
+It is called once, in STEP 3a, before run 1. Measured: inserting a second call
+before run 2 is caught only by `expected_rows` (`archive put 1899 row(s) in the
+destination, expected 1999`) — the interrupt preconditions run *before* run 2 and
+never see it, and the discriminator, the verify grep and the pacing floor all pass
+straight through. If that exact count were ever relaxed to a direction check,
+nothing would catch this.
