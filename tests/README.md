@@ -11,7 +11,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
-| **Sakila E2E (working)** | Archive, purge and copy-only runs that complete (tests 03–07) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
@@ -29,7 +29,7 @@ summary:
   ...
   integration        PASS=1026 FAIL=0 SKIP=1
   characterization   OK (60 / 304 / 364 / 0 / 0)
-  e2e                Passed: 5  Failed: 0
+  e2e                Passed: 7  Failed: 0
   e2e-examples       Passed: 2  Failed: 0
 ================================================
   GATE COMPLETE - every stage above exited 0
@@ -89,8 +89,9 @@ tests. When authorized, update the file and CLAUDE.md's pointer together.
 
 ## Sakila E2E Test Suite
 
-Seven focused tests: five working runs — three archives, one purge and one
-copy-only — and two preflight-guardrail demonstrations.
+Nine focused tests: seven working runs — three archives, one purge, one
+copy-only and two interrupt/resume pairs — and two preflight-guardrail
+demonstrations.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
 command it exercises**, with the shared harness in `tests/e2e/lib/`.
@@ -114,6 +115,8 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 | **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
 | **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | The suite's only **`purge`** — the only command that deletes without copying, and the only one with **no verify stage at all**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
 | **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | The suite's only **`copy-only`** — the only command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged**. Also the first E2E run of `copyonly_orchestrator.go`'s batch loop. |
+| **08** | `test08_payment_graceful_resume.yaml` | `payment`, same config as 05, run **twice** | **Graceful stop → checkpoint resume.** `SIGTERM` at a batch boundary; the batch completes, so **zero** non-terminal rows are left and resume comes from `last_processed_root_pk_id` alone. |
+| **09** | `test09_payment_crash_replay.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **twice** | **Crash → status-aware replay.** `SIGKILL` inside the delete phase leaves 100 rows at `copied` and the checkpoint `NULL`, so run 2 must find them via `recover()`. The only test that exercises the delete-only replay branch, and the only one that starts from a stale `job_status=1`. |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
@@ -134,6 +137,25 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 > exercises one sleep call: no per-batch accumulation bug is reachable, because
 > there is no second batch. 07 sets `batch_size: 10` for 20 batches. If you make
 > them identical, say which one you meant to weaken.
+
+> **08 and 09 are the only tests that run the binary twice, and the only ones whose
+> subject is a *path* rather than an end state.** After a successful resume the
+> database looks exactly like it does after an uninterrupted run, so the obvious
+> assertions cannot distinguish *"resumed correctly"* from *"never actually
+> interrupted"* — and both sides of that window pass. What holds them shut is an
+> **exact** destination count at the interrupt point plus one log-line assertion
+> (`"Recovering non-terminal PKs from prior run"`, which must be absent for 08 and
+> present for 09). `tests/e2e/resume/README.md` explains the mechanism in full;
+> read it before touching either test.
+>
+> **05 is 08's uninterrupted control** — identical config, so a failure in 08 alone
+> isolates to the interrupt. Keep them in step, as with 03 and 05.
+>
+> **09's `delete_sleep_seconds: 1.0` is the test, not tuning.** The kill has to land
+> between `MarkBatchCopied` committing and `CompleteBatch` running, and the only part
+> of that interval with any duration is the inter-chunk delete throttle. At the 0.2
+> every other config uses, the whole window is 4 × 200 ms. Its slice is smaller
+> (499 rows) precisely because that throttle costs ~4 s per batch.
 
 #### The pacing floor — the one timing number that is not machine-dependent
 
@@ -157,6 +179,22 @@ floor = ceil(rows ÷ batch_size) × sleep_seconds
 | **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
 | **06** | 8022 | 500 | 17 | 17 × 0.2 = 3.4 s | 64 × 0.2 = 12.8 s | **16.2 s** |
 | **07** | 200 | 10 | 20 | 20 × 0.5 = 10.0 s | — *(no delete phase)* | **10.0 s** |
+| **08** † | 1899 | 100 | 19 | 19 × 0.2 = 3.8 s | 76 × 0.2 = 15.2 s | **19.0 s** |
+| **09** † | 399 | 100 | 4 | 4 × 0.2 = 0.8 s | 16 × **1.0** = 16.0 s | **16.8 s** |
+
+† **08 and 09 declare the floor for their *second* run, not the whole slice.** Run 1
+is interrupted and legitimately finishes below any full-slice floor, so the runner
+measures the resumed run's own reported duration. 08's rows are the 1899 left after
+one batch; 09's are the 399 left after one batch of its 499-row slice.
+
+**09's floor deliberately omits its recovery phase**, and that is the one place in
+this table where a term is left out on purpose. Recovery runs before the batch loop
+and its cost is *variable*: the kill point decides how many of the interrupted
+batch's 100 rows are still present to delete, and so how many chunk sleeps it spends
+— 100 rows is 5 chunks and 4 sleeps, 80 rows is 3, 20 rows is none. A probe measured
+80 remaining. **Zero is legal**, so folding a recovery term in would build a floor a
+correct run can fail — and the tempting fix would be to lower it. That recovery
+*happened* is asserted by a log line instead, not by timing.
 
 Test 04 declares no `processing:` block at all, so it inherits the global defaults
 (`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
@@ -195,8 +233,9 @@ while the command still exits 0 with entirely plausible output:
 - a resume path that skipped work it should have replayed;
 - a batch loop that ran once where it should have run twenty.
 
-That is the point. Each working test now asserts on four **independent** axes,
-and the floor is the only one that needs no model of what the command means:
+That is the point. Each working test asserts on four **independent** axes — five
+for a resume test — and the floor is the only one that needs no model of what the
+command means:
 
 | Assertion | Answers | Needs to know |
 |---|---|---|
@@ -204,6 +243,13 @@ and the floor is the only one that needs no model of what the command means:
 | verify stage | did verification run, naming its method | the log contract |
 | referential integrity | are the rows that moved **internally consistent** | the graph's parent→child edges |
 | **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
+| tracking tables *(08/09)* | does **goarchive's own bookkeeping** agree the work is finished | the `log_status` contract |
+
+> **The fifth axis asks a question the other four cannot.** All of them read user
+> data; this one reads `archiver_job_log_<id>`. A replayed batch that copied and
+> deleted but never reached `CompleteBatch` leaves the data perfect and the log still
+> claiming rows to replay — so the next run would replay them again. Currently
+> asserted for the resume tests only; every working test could carry it.
 
 > **Referential integrity is a separate axis, not a refinement of the count.**
 > Both can hold while the other fails — 200 payments referencing 200 rentals that
@@ -445,7 +491,10 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
 - **Working test** → runs `validate → dry-run → <command>`, then **asserts the outcome**,
   and ends with `Result: PASS`.
 
-  Four assertions run after the command, and any one of them fails the test:
+  Four assertions run after the command, and any one of them fails the test —
+  a resume test adds two more, described in `e2e/resume/README.md`: the
+  **interrupt preconditions**, checked between the two runs, and the
+  **tracking-table settlement** at the end:
 
   - **The verify stage must have run, naming its method** — the log must carry
     `Starting verification (method=<method>)`, and the console echoes
@@ -588,7 +637,7 @@ docker compose down -v      # the -v is what removes the data volumes
 |----------------|-------------|
 | `scripts/run-tests.sh` | Entry point: owns the environment, the flags and the dispatch |
 | `e2e/README.md` | The E2E test-file format and how to add a test |
-| `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers |
+| `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers, the tracking-table reader and the interrupt/resume arm |
 | `e2e/<category>/NN-*.test.sh` | One declaration file per test, grouped by the command under test |
 | `scripts/check-servers.sh` | Database connectivity checker |
 | `scripts/get_sakila_db.sh` | Downloads the Sakila database |
@@ -596,7 +645,7 @@ docker compose down -v      # the -v is what removes the data volumes
 | `scripts/create_archive.js` | MySQL Shell script for loading schema |
 | `scripts/reset_source.js` | MySQL Shell script for resetting source |
 | `configs/*.yaml.template` | Tracked test configs (local `*.yaml` rendered from these) |
-| `results/` | Per-test logs (`test_<n>.log`) and summary |
+| `results/` | Per-test logs (`test_<n>.log`, plus `test_<n>.run2.log` for a resume test) and summary |
 | `sakila-db/` | Sakila database files (downloaded) |
 | `docker_files/my.cnf.d/` | Per-server MySQL config, bind-mounted read-only |
 | `compose.yml` | Docker Compose configuration (datadirs are named volumes) |
@@ -617,7 +666,7 @@ The short version:
    than one table. **Those last four fail closed**: omit one and the test is
    refused rather than run.
 3. Add `NN` to the ordered dispatch list in `scripts/run-tests.sh` → `main`
-   (`run_e2e_suite "3 4 5 6 7 NN" "working"`, or `"1 2 NN" "validation demos"`).
+   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 NN" "validation demos"`).
 4. Update the catalogue in this file and the category's `README.md`.
 5. Verify: `./scripts/run-tests.sh --sakila -t NN`.
 

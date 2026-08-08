@@ -18,9 +18,25 @@
 #   expected_rows   exact rows moved, ONE PER ENTRY in $tables, same order
 #   orphan_checks   child:fk:parent:parent_pk pairs, required once $tables has >1
 #
-# The last four fail closed: a working test that omits one asserts less than it
+# Four of those fail closed: a working test that omits one asserts less than it
 # claims to, so the engine refuses to run it. That property depends entirely on
 # each test starting from empty defaults -- see load_test_vars.
+#
+# THE TWO-RUN (RESUME) ARM -- added by rc-phase-011
+#
+#   interrupt               "" = one run, today's behaviour | graceful | crash
+#   interrupt_after_batches which batch to interrupt at
+#   interrupt_expect_dest   rows that MUST be in the destination at that point
+#   root_pk                 root table's PK column, for the checkpoint assertion
+#
+# Setting `interrupt` turns STEP 3 into: reset the destination ONCE, run and
+# interrupt, assert what the interrupt left behind, then run again to completion.
+# The four are required TOGETHER and fail closed as a group.
+#
+# Note this is a flag on mode="working", NOT a third mode. Every guard below is
+# gated on `mode == "working"`, so a new mode would silently bypass all of them and
+# a missed widening would fail OPEN. The resume tests keep every existing assertion
+# and add to it.
 #
 # The catalogue of which tests exist and why lives in tests/e2e/README.md, not
 # here. A list in both places is a list that disagrees with itself.
@@ -71,6 +87,14 @@ run_e2e_test() {
                                   # space-separated. REQUIRED for any test with
                                   # more than one table; see assert_no_orphans
                                   # for why exact counts do not cover this
+    local interrupt=""            # "" = single run | graceful | crash. Non-empty
+                                  # selects the two-run resume arm; see lib/interrupt.sh
+    local interrupt_after_batches=""  # which batch to interrupt at
+    local interrupt_expect_dest=""    # destination rows required at the interrupt
+                                      # point -- EXACT, so a mistimed interrupt
+                                      # fails here instead of invalidating the floor
+    local root_pk=""              # root table's PK column; the checkpoint assertion
+                                  # compares against MAX() of it in the destination
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -149,6 +173,58 @@ run_e2e_test() {
             log_error "  child:fk:parent:parent_pk pair. Exact row counts stay true even"
             log_error "  when every copied child points at a parent that never arrived."
             return 1
+        fi
+
+        # Fail closed on a half-declared resume test. All four values are needed
+        # together: `interrupt` alone would run the interrupt with no idea where to
+        # stop or what to assert, and any missing one degrades the test into a
+        # plain single-run archive that passes -- which is exactly the silent-pass
+        # region this phase exists to close.
+        #
+        # Checked here, BEFORE the 60s source reseed, so a misdeclared test fails in
+        # seconds.
+        if [[ -n "$interrupt" ]]; then
+            case "$interrupt" in
+                graceful|crash) ;;
+                *)
+                    # Fail closed on an unrecognised value. It must never mean
+                    # "run it as an ordinary test" -- same rule as
+                    # assert_postcondition's default arm.
+                    log_error "Test $test_num: unknown interrupt='$interrupt' (want graceful|crash)"
+                    return 1
+                    ;;
+            esac
+            local missing=""
+            [[ -z "$interrupt_after_batches" ]] && missing="$missing interrupt_after_batches"
+            [[ -z "$interrupt_expect_dest" ]] && missing="$missing interrupt_expect_dest"
+            [[ -z "$root_pk" ]] && missing="$missing root_pk"
+            if [[ -n "$missing" ]]; then
+                log_error "Test $test_num: interrupt='$interrupt' but missing:$missing"
+                log_error "  A resume test needs all four together. Without them the interrupt"
+                log_error "  cannot be placed or checked, and the test degrades into an ordinary"
+                log_error "  single-run archive that passes while proving nothing about resume."
+                return 1
+            fi
+            case "$interrupt_after_batches" in
+                ''|*[!0-9]*)
+                    log_error "Test $test_num: interrupt_after_batches='$interrupt_after_batches' is not a number"
+                    return 1
+                    ;;
+            esac
+            case "$interrupt_expect_dest" in
+                ''|*[!0-9]*)
+                    log_error "Test $test_num: interrupt_expect_dest='$interrupt_expect_dest' is not a number"
+                    return 1
+                    ;;
+            esac
+            if [[ "$interrupt_expect_dest" -eq 0 ]]; then
+                # Zero is the silent-pass region stated as a declaration: an
+                # interrupt that copied nothing leaves nothing to resume, and the
+                # re-run does the whole job and passes every end-state check.
+                log_error "Test $test_num: interrupt_expect_dest=0 asserts that nothing was copied"
+                log_error "  before the interrupt, so there would be nothing to resume from."
+                return 1
+            fi
         fi
 
         # Validate the SHAPE here too, before the reseed. Parsed leniently, a
@@ -232,15 +308,133 @@ run_e2e_test() {
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
         fi
-        log_info "[STEP 3b] Running $command job (expect success)..."
-        if ! run_archive_job "$config_file" "$command" >> "$log_file" 2>&1; then
-            log_error "$command job failed"
-            end_time=$(date +%s)
-            duration=$((end_time - start_time))
-            echo "" >> "$log_file"
-            echo "Result: FAIL" >> "$log_file"
-            echo "Duration: ${duration}s" >> "$log_file"
-            return 1
+        # assert_log is the log the STEP 3c/3d assertions read. For a single-run
+        # test that is the test log itself. For a resume test it MUST be the second
+        # run's output alone: run 1 already verified its first batch, so grepping the
+        # combined log for "Starting verification (method=...)" would be satisfied by
+        # run 1 and pass even if run 2 verified nothing at all.
+        local assert_log="$log_file"
+
+        if [[ -z "$interrupt" ]]; then
+            log_info "[STEP 3b] Running $command job (expect success)..."
+            if ! run_archive_job "$config_file" "$command" >> "$log_file" 2>&1; then
+                log_error "$command job failed"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+        else
+            # ---- the two-run resume arm -------------------------------------
+            #
+            # ensure_destination_schema ran ONCE, in STEP 3a, and MUST NOT run
+            # again here. It drops and recreates the destination database, and
+            # destination.job_schema defaults to that same database -- so calling it
+            # between the runs would delete archiver_job, archiver_job_log_<id> AND
+            # the rows run 1 copied. Run 2 would then start from scratch and every
+            # end-state assertion below would still pass. That is the single
+            # easiest way to make this test vacuous.
+            local root_table job_name
+            root_table="${tables%% *}"          # root first, by convention
+            if ! job_name=$(extract_job_name "$TESTS_DIR/configs/$config_file"); then
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "Result: FAIL (job name)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+
+            log_info "[STEP 3b-i] Run 1: $command, interrupted ($interrupt) at batch $interrupt_after_batches..."
+            if ! run_interrupted_job "$config_file" "$command" "$interrupt" \
+                 "$interrupt_after_batches" "$log_file"; then
+                log_error "the interrupted run did not reach its interrupt point"
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (interrupt not delivered)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+
+            # Path preconditions. A failure here is an ERROR, not a pass: an
+            # interrupt outside its window makes the run inconclusive, and both
+            # sides of that window pass every end-state assertion.
+            log_info "[STEP 3b-ii] Asserting what the interrupt left behind..."
+            tracking_dump "$job_name" "$(tracking_job_id "$job_name" 2>/dev/null)" >> "$log_file" 2>&1
+            if ! assert_interrupt_preconditions "$interrupt" "$job_name" \
+                 "$root_table" "$root_pk" "$interrupt_expect_dest"; then
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (interrupt landed outside its window)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+
+            # Run 2, to completion, through the normal runner so it pays for
+            # validate + dry-run exactly like every other working test.
+            #
+            # Captured to its own file and then appended -- NOT teed. A pipe would
+            # put the command's status in PIPESTATUS[0] and leave $? reporting
+            # tee's, which is always 0.
+            assert_log="$TESTS_DIR/results/test_${test_num}.run2.log"
+            log_info "[STEP 3b-iii] Run 2: resuming $command to completion..."
+            echo "================ RUN 2 (resume) ================" >> "$log_file"
+            run_archive_job "$config_file" "$command" > "$assert_log" 2>&1
+            local run2_rc=$?
+            cat "$assert_log" >> "$log_file"
+            if [[ $run2_rc -ne 0 ]]; then
+                log_error "the resumed $command run failed (exit $run2_rc)"
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (resume run)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+
+            # The discriminator. Recovery replays non-terminal rows, and only a
+            # crash leaves any -- so this line must be ABSENT for a graceful stop
+            # and PRESENT for a crash. It is the one assertion that keeps the two
+            # tests from silently becoming copies of each other, and it asserts the
+            # PATH, which no end-state check can do.
+            log_info "[STEP 3b-iv] Asserting the resume took the '$interrupt' path..."
+            local recovered=0
+            grep -q "Recovering non-terminal PKs from prior run" "$assert_log" && recovered=1
+            if [[ "$interrupt" == "crash" && $recovered -ne 1 ]]; then
+                log_error "run 2 never recovered non-terminal PKs, but run 1 was killed mid-batch"
+                log_error "  Either the replay path was not taken, or the log line changed and this"
+                log_error "  assertion has stopped matching. Both are findings."
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "Result: FAIL (replay path not taken)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            if [[ "$interrupt" == "graceful" && $recovered -ne 0 ]]; then
+                log_error "run 2 recovered non-terminal PKs after a GRACEFUL stop"
+                log_error "  A cooperative stop leaves every row terminal, so there is nothing to"
+                log_error "  recover and resume must come from the checkpoint alone. Recovery here"
+                log_error "  means this test has quietly become the crash test."
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "Result: FAIL (recovered after a graceful stop)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
+            log_info "  confirmed: recovery $([ $recovered -eq 1 ] && echo ran || echo 'did not run'), as '$interrupt' requires"
+
+            # The discriminator proves recovery ran; it does not prove which branch.
+            # A 'copied' row must be promoted through delete-only, not re-copied.
+            # Defence in depth: the realistic form of that regression is caught by
+            # goarchive's own verification (measured), but a crash that deleted
+            # nothing would let a re-copy verify cleanly, and then only this counter
+            # moves. See assert_resume_copy_accounting.
+            log_info "[STEP 3b-v] Asserting run 2 copied only what was left to copy..."
+            if ! assert_resume_copy_accounting "$interrupt" "$assert_log" \
+                 "${expected_arr[0]}" "$interrupt_expect_dest"; then
+                end_time=$(date +%s); duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (resumed run re-copied work it should have skipped)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
+                return 1
+            fi
         fi
 
         # Step 3c: assert the verify stage actually ran, naming the method.
@@ -251,7 +445,7 @@ run_e2e_test() {
         # at internal/verifier/verifier.go -- "Starting verification (method=%s)".
         log_info "[STEP 3c] Asserting the verify stage ran (expect: $verify_method)..."
         if [[ "$verify_method" == "none" ]]; then
-            if grep -q "Starting verification (method=" "$log_file"; then
+            if grep -q "Starting verification (method=" "$assert_log"; then
                 log_error "Verification ran, but this test expects none"
                 end_time=$(date +%s)
                 duration=$((end_time - start_time))
@@ -261,7 +455,7 @@ run_e2e_test() {
                 return 1
             fi
             log_info "  confirmed: no verification stage, as expected"
-        elif ! grep -q "Starting verification (method=${verify_method})" "$log_file"; then
+        elif ! grep -q "Starting verification (method=${verify_method})" "$assert_log"; then
             log_error "No verification with method=${verify_method} in the run output"
             log_error "  Either the stage did not run, or the log line changed and this"
             log_error "  assertion has stopped matching. Both are findings."
@@ -277,8 +471,12 @@ run_e2e_test() {
 
         # Step 3d: the run must not have been FASTER than its own configured
         # throttling permits. See assert_min_duration for why this is safe.
+        # For a resume test this reads run 2's log, so the floor describes the
+        # RESUMED run. Run 1 is interrupted and legitimately finishes below any
+        # full-slice floor, so pointing this at the combined log would either fail a
+        # correct run or, with tail -1, depend on run 2 happening to be last.
         log_info "[STEP 3d] Asserting the run respected its pacing floor (${min_duration}s)..."
-        if ! assert_min_duration "$log_file" "$min_duration"; then
+        if ! assert_min_duration "$assert_log" "$min_duration"; then
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
@@ -398,6 +596,34 @@ run_e2e_test() {
         done
     fi
 
+    # Step 6: the tracking tables must be settled (resume tests only).
+    #
+    # A separate axis again. Steps 4 and 5 ask about the DATA; this asks whether
+    # goarchive's own bookkeeping agrees that the work is finished. A replayed batch
+    # that copied and deleted but never reached CompleteBatch leaves the data
+    # perfect and the log table still claiming rows to replay -- so the next run
+    # would replay them again.
+    #
+    # Scoped to resume tests deliberately. Every working test could carry it, and
+    # arguably should, but switching it on for tests 03-07 changes what those tests
+    # assert and is a scope decision, not an implementation detail.
+    if [[ "$mode" == "working" && -n "$interrupt" ]]; then
+        log_info "[STEP 6] Asserting goarchive's tracking tables are settled..."
+        local settle_job
+        if ! settle_job=$(extract_job_name "$TESTS_DIR/configs/$config_file"); then
+            echo "Result: FAIL (job name)" >> "$log_file"
+            return 1
+        fi
+        if ! assert_tracking_settled "$settle_job" "${expected_arr[0]}"; then
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (tracking tables not settled)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+    fi
+
     end_time=$(date +%s)
     duration=$((end_time - start_time))
     if [[ "$mode" == "example" ]]; then
@@ -469,6 +695,12 @@ run_e2e_suite() {
     if ! selftest_count_orphans_fails_loud; then
         exit 1
     fi
+    # Matters most of the three: the tracking assertions PASS on a count of zero, so
+    # a broken query returning "0" would report "no non-terminal rows left" for a
+    # resume that never happened.
+    if ! selftest_tracking_fails_loud; then
+        exit 1
+    fi
 
     # Resolve the binary once, up front. Left to the per-test path, a wrong
     # GOARCHIVE_BIN fails every test with a generic "job failed" on the console
@@ -505,10 +737,12 @@ run_e2e_suite() {
         # That breakage has no other symptom. Every test would inherit the
         # previous one's values, every fail-closed guard would stop firing, and
         # the suite would keep reporting a pass.
-        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}" ]]; then
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${root_pk:-}" ]]; then
             log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
             log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
             log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
+            log_error "  interrupt='${interrupt:-}' interrupt_after_batches='${interrupt_after_batches:-}'"
+            log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}' root_pk='${root_pk:-}'"
             log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
             log_error "  the next test and every fail-closed guard in the engine stops firing."
             exit 1

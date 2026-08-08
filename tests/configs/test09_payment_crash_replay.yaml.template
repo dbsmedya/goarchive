@@ -1,0 +1,81 @@
+# Test 09: payment archive killed mid-batch, then replayed from the log table
+#
+# The other half of the resume pair. Test 08 stops COOPERATIVELY and resumes from
+# the checkpoint; this one is killed outright and resumes from non-terminal rows in
+# archiver_job_log_<id>. Different code paths, which is why they are two tests:
+#
+#   08  SIGTERM -> stop channel -> batch boundary -> all rows terminal
+#       -> resume via last_processed_root_pk_id, recover() finds nothing to do
+#   09  SIGKILL -> no cleanup at all -> rows left at log_status=1 ('copied')
+#       -> resume via recover() -> recoverChunks(copied, batchDeleteOnly)
+#
+# WHY THE DELETE THROTTLE IS 1.0 HERE AND 0.2 EVERYWHERE ELSE -- this is the whole
+# design of the test, not tuning:
+#
+# The kill has to land after MarkBatchCopied commits and before CompleteBatch runs.
+# That interval is exactly the delete phase, and the only part of it with any
+# duration is the inter-chunk throttle: batch 1's copy + sha256 verify +
+# MarkBatchCopied together take ~10ms (measured), so at delete_sleep_seconds: 0.2
+# the whole window is 4 x 200ms and hitting it depends on the machine.
+#
+# At 1.0 the window is 4 x 1s, and the harness lands in the FIRST of those sleeps
+# after seeing "Starting delete phase" in the log. The window is then a config
+# value rather than a race, which is what makes this test deterministic instead of
+# flaky. Do not lower it to match the other configs.
+#
+# WHY THE SLICE IS SMALLER -- 499 rows, not 1999. delete_sleep_seconds multiplies
+# across every batch of the run, so the 1.0 above costs ~4s per batch. At test 05's
+# 1999-row slice this test would take ~90s; at 499 it takes ~21s and proves exactly
+# the same thing. 499 is MEASURED (payment_id is not contiguous, so <= 500 is not
+# 500) -- expected_rows fails closed on an exact count.
+#
+# NO sentinel_file. This run is killed, not paused, and an unset sentinel_file
+# disables the gate entirely.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test09_payment_crash_replay.yaml on every run, substituting the
+# MYSQL_ROOT_PASSWORD placeholder from tests/.env. Edit this file, never the
+# generated .yaml -- that one is gitignored (it holds a real password) and is
+# overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-payment-crash-replay:
+    root_table: payment
+    primary_key: payment_id
+    # 499 rows, MEASURED. Smaller than tests 03/05/08 because the wide delete
+    # throttle below costs ~4s per batch.
+    where: "payment_id <= 500"
+    processing:
+      batch_size: 100
+      batch_delete_size: 20
+      sleep_seconds: 0.2
+      # THE KILL WINDOW. See the header -- this is the test's mechanism.
+      delete_sleep_seconds: 1.0
+
+# sha256 is REQUIRED here, unlike in test 08. This run leaves non-terminal
+# ('copied') rows behind, and recover()'s count-mode gate refuses to resume a
+# count-verified archive in that state outright: a pre-existing destination row
+# cannot be proven equal to source by a row count alone. sha256 also selects the
+# INSERT IGNORE copy path, which is what makes the replay idempotent.
+verification:
+  method: sha256
