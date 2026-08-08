@@ -1,0 +1,70 @@
+# Test 11: an internal FK that the relations config never declares
+#          (validation demo — EXPECTED TO FAIL)
+#
+# The graph is customer -> {rental, payment}, both children joined by customer_id.
+# Every table the graph touches is present and every declared relation is correct.
+#
+# What is missing is an edge BETWEEN two tables already in the graph: payment has
+# `fk_payment_rental` (payment.rental_id -> rental.rental_id), and rental is right
+# there in the graph -- but the config never says so. GoArchive would then delete
+# rental rows while payment rows still pointed at them, inside its own graph.
+#
+# Preflight rejects it with INTERNAL_FK_COVERAGE:
+#
+#   INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+#     - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
+#
+# WHY THIS TEST EXISTS -- this is the most realistic operator error the demos cover.
+# The other demos fail on something visibly wrong: a composite PK, a view, a table
+# left out. Here nothing is absent. Every table the operator meant to archive is
+# listed, so the config LOOKS complete, and only the FK topology says otherwise.
+# Nothing else in the suite exercises this check.
+#
+# Distinct from FK_COVERAGE_CHECK (test 02), which is about tables OUTSIDE the graph
+# referencing tables inside it. This one is entirely internal.
+#
+# Identical on 1.8.0 and 1.9.x -- unlike test 10, this is a preserved behaviour, so
+# it is a clean baseline row.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test11_internal_fk_undeclared.yaml on every run, substituting the password
+# placeholder from tests/.env. Edit this file, never the generated .yaml -- that one
+# is gitignored (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-customer-undeclared-fk:
+    root_table: customer
+    primary_key: customer_id
+    # Small slice: preflight never reads a row, so the bound only keeps the config
+    # honest about being a plausible job.
+    where: "customer_id <= 5"
+    relations:
+      # Correct: rental.customer_id -> customer.customer_id
+      - table: rental
+        primary_key: rental_id
+        foreign_key: customer_id
+        dependency_type: "1-N"
+      # Correct as far as it goes: payment.customer_id -> customer.customer_id.
+      #
+      # THE DEFECT: payment also has fk_payment_rental (payment.rental_id ->
+      # rental.rental_id) and rental is in this graph, but no relation declares that
+      # edge. Nesting payment under rental by rental_id instead is what fixes it --
+      # which is exactly the mutation that must make this demo stop demonstrating.
+      - table: payment
+        primary_key: payment_id
+        foreign_key: customer_id
+        dependency_type: "1-N"
