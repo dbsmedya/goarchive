@@ -1,30 +1,40 @@
-# Test 11: an internal FK that the relations config never declares
+# Test 11: the customer -> rental -> payment GDPR diamond
 #          (validation demo — EXPECTED TO FAIL)
 #
-# The graph is customer -> {rental, payment}, both children joined by customer_id.
-# Every table the graph touches is present and every declared relation is correct.
+# This is the shape operators ask for most — "archive everything belonging to this
+# customer" — and GoArchive cannot represent it. This test is the gate for that
+# limitation, which until now existed only as prose in tests/README.md.
 #
-# What is missing is an edge BETWEEN two tables already in the graph: payment has
-# `fk_payment_rental` (payment.rental_id -> rental.rental_id), and rental is right
-# there in the graph -- but the config never says so. GoArchive would then delete
-# rental rows while payment rows still pointed at them, inside its own graph.
+# WHY IT CANNOT BE REPRESENTED. GoArchive's graph is a strict TREE: config.Relation
+# carries a single `foreign_key` (internal/config/config.go), so a table has exactly
+# one parent edge. But `payment` has TWO in-graph parents here:
 #
-# Preflight rejects it with INTERNAL_FK_COVERAGE:
+#     payment.rental_id   -> rental      (fk_payment_rental)
+#     payment.customer_id -> customer    (fk_payment_customer)
+#
+# and `rental.customer_id -> customer` closes the diamond. Whichever parent payment
+# declares, the other edge is left undeclared, and INTERNAL_FK_COVERAGE refuses it:
 #
 #   INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
-#     - payment.rental_id -> rental.rental_id (constraint: fk_payment_rental) [no graph edge]
+#     - payment.customer_id -> customer.customer_id (constraint: fk_payment_customer) [no graph edge]
 #
-# WHY THIS TEST EXISTS -- this is the most realistic operator error the demos cover.
-# The other demos fail on something visibly wrong: a composite PK, a view, a table
-# left out. Here nothing is absent. Every table the operator meant to archive is
-# listed, so the config LOOKS complete, and only the FK topology says otherwise.
-# Nothing else in the suite exercises this check.
+# THIS IS NOT AN OPERATOR TYPO, AND NOT FIXABLE BY REARRANGING. Rooting elsewhere or
+# re-nesting payment only moves which edge is uncovered — measured, not assumed: the
+# mirror config (payment under customer, leaving payment.rental_id uncovered) fails
+# with the same category. Both parents must stay in the graph, because dropping
+# either leaves customer referenced from outside it and FK_COVERAGE_CHECK fires
+# instead. The only passing shape is a narrower one: test 04's rental -> payment,
+# where customer stays out-of-graph as an upstream parent.
 #
-# Distinct from FK_COVERAGE_CHECK (test 02), which is about tables OUTSIDE the graph
+# So the config below is *correct in every declaration it makes*. It fails because
+# the requested topology is outside the model — which is exactly what makes it worth
+# asserting: a future change that quietly accepted a diamond would over-delete.
+#
+# Distinct from test 02 / FK_COVERAGE_CHECK, which is about tables OUTSIDE the graph
 # referencing tables inside it. This one is entirely internal.
 #
-# Identical on 1.8.0 and 1.9.x -- unlike test 10, this is a preserved behaviour, so
-# it is a clean baseline row.
+# Identical on 1.8.0 and 1.9.x — unlike test 10, a preserved behaviour, so it is a
+# clean baseline row.
 #
 # This template is the tracked source of truth. run-tests.sh renders it to
 # test11_internal_fk_undeclared.yaml on every run, substituting the password
@@ -46,25 +56,33 @@ destination:
   database: sakila_archive
 
 jobs:
-  archive-customer-undeclared-fk:
+  archive-customer-gdpr-diamond:
     root_table: customer
     primary_key: customer_id
     # Small slice: preflight never reads a row, so the bound only keeps the config
     # honest about being a plausible job.
     where: "customer_id <= 5"
     relations:
-      # Correct: rental.customer_id -> customer.customer_id
+      # rental.customer_id -> customer. Correct, and declared.
       - table: rental
         primary_key: rental_id
         foreign_key: customer_id
         dependency_type: "1-N"
-      # Correct as far as it goes: payment.customer_id -> customer.customer_id.
-      #
-      # THE DEFECT: payment also has fk_payment_rental (payment.rental_id ->
-      # rental.rental_id) and rental is in this graph, but no relation declares that
-      # edge. Nesting payment under rental by rental_id instead is what fixes it --
-      # which is exactly the mutation that must make this demo stop demonstrating.
-      - table: payment
-        primary_key: payment_id
-        foreign_key: customer_id
-        dependency_type: "1-N"
+        # payment MUST be nested here, not listed as a sibling.
+        #
+        # Parentage comes from NESTING, not from matching foreign_key against some
+        # other table's PK: a flat sibling entry becomes a child of the ROOT, so
+        # `payment` with foreign_key: rental_id at this level would be read as
+        # customer -> payment via rental_id and rejected as an FK column mismatch --
+        # an operator typo, a different defect, and not the diamond at all. Measured
+        # during this phase by writing it flat first and reading what preflight said.
+        relations:
+          # payment.rental_id -> rental. Correct, and declared.
+          #
+          # What no relation can express is payment's SECOND in-graph parent,
+          # payment.customer_id -> customer. That is the uncovered edge, and the
+          # reason this job is refused.
+          - table: payment
+            primary_key: payment_id
+            foreign_key: rental_id
+            dependency_type: "1-N"
