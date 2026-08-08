@@ -1,0 +1,76 @@
+# Test 08: payment archive, stopped gracefully at a batch boundary, then resumed
+#
+# Deliberately IDENTICAL to test 05's config. Same root, same slice, same batch
+# sizes, same verification method -- the interrupt lives entirely in the harness,
+# not in this file. That makes test 05 this test's uninterrupted control: a failure
+# in 08 but not in 05 isolates to the interrupt.
+#
+# What this covers that no other test does:
+#
+#   1. A real process being signalled and restarted. Every resume test at the
+#      integration layer calls orch.Execute() in-process with hand-seeded log
+#      rows -- none delivers a signal, loses a MySQL session, or re-reads a
+#      checkpoint from a fresh process.
+#   2. The CHECKPOINT resume path specifically. A single SIGTERM is cooperative:
+#      the in-flight batch always runs to a terminal state, so this test leaves
+#      NO non-terminal rows and resume happens via the forward scan from
+#      last_processed_root_pk_id. That is a different mechanism from test 09's
+#      status-aware replay, which is why they are two tests.
+#
+# WHY THERE IS NO sentinel_file HERE, though an earlier draft had one: the harness
+# waits for goarchive's own "Processing batch" line for batch N and then signals.
+# "Processing batch" is logged AFTER the loop's stop check, and the in-flight batch
+# always runs to a terminal state, so the run stops after exactly N batches on its
+# own -- measured at N=1 (100 rows) and N=3 (300 rows), with the checkpoint equal to
+# the destination's max payment_id both times. A sentinel pause would have added a
+# /tmp file, cleanup on every exit path, and a failure mode where a leftover file
+# pauses the next run indefinitely -- for no gain, since creating the file faces the
+# same deadline as sending the signal. sentinel_file therefore remains covered only
+# by internal/archiver/sentinel_test.go.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test08_payment_graceful_resume.yaml on every run, substituting the
+# MYSQL_ROOT_PASSWORD placeholder from tests/.env. Edit this file, never the
+# generated .yaml -- that one is gitignored (it holds a real password) and is
+# overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-payment-graceful-resume:
+    root_table: payment
+    primary_key: payment_id
+    # Same slice as tests 03 and 05 -- 1999 rows, MEASURED not computed
+    # (payment_id is not contiguous, so <= 2000 is not 2000).
+    where: "payment_id <= 2000"
+    processing:
+      batch_size: 100
+      batch_delete_size: 20
+      sleep_seconds: 0.2
+      delete_sleep_seconds: 0.2
+
+# sha256 rather than the inherited default. NOT strictly required on this path --
+# recover() returns early when no non-terminal rows exist, before the count-mode
+# gate can fire, so a graceful stop would resume under `count` too. It is here
+# because sha256 selects the INSERT IGNORE copy path, which is what makes a replay
+# idempotent, and because matching test 05 keeps that test a clean control.
+verification:
+  method: sha256

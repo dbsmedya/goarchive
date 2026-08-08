@@ -21,6 +21,27 @@ ensure_goarchive_bin() {
     (cd "$PROJECT_ROOT" && go build -o "$GOARCHIVE_BIN" ./cmd/goarchive)
 }
 
+# The job name a config declares, on stdout.
+#
+# Extracted from run_archive_job by rc-phase-011 so the two-run resume arm can
+# resolve the same name WITHOUT a second copy of this grep. It is deliberately
+# strict about the config layout -- `grep -A 1 "^jobs:" | tail -1` takes whatever
+# line follows `jobs:`, so a comment on or immediately after that key lands inside
+# the extracted name. Every config template says so; one definition means one place
+# for that rule to live.
+extract_job_name() {
+    local full_config_path="$1"
+    local job_name
+    job_name=$(grep -A 1 "^jobs:" "$full_config_path" | tail -1 | sed 's/://g' | tr -d ' ')
+    if [[ -z "$job_name" ]]; then
+        log_error "Could not extract job name from $full_config_path"
+        log_error "  the job key must be the line immediately after '^jobs:', with no"
+        log_error "  comment on it and none between."
+        return 1
+    fi
+    printf '%s\n' "$job_name"
+}
+
 # Run a goarchive job. Second argument is the command under test:
 # archive | purge | copy-only. Defaults to archive.
 run_archive_job() {
@@ -59,13 +80,15 @@ run_archive_job() {
     fi
 
     cd "$PROJECT_ROOT"
-    # Extract job name from config file (first job in the jobs section)
-    local job_name=$(grep -A 1 "^jobs:" "$full_config_path" | tail -1 | sed 's/://g' | tr -d ' ')
-    if [[ -z "$job_name" ]]; then
-        log_error "Could not extract job name from config file"
+    # `local job_name` on its own line: written as `local job_name=$(...)` the exit
+    # status would be `local`'s (always 0), so a failed extraction would proceed
+    # with an empty --job.
+    local job_name
+    if ! job_name=$(extract_job_name "$full_config_path"); then
         return 1
     fi
-    
+
+
     # STEP 1: Validate configuration first. Kept for every command -- it is cheap,
     # and the only place the preflight profile is exercised end to end.
     log_info "[STEP 1/3] Validating configuration..."
