@@ -9,7 +9,8 @@
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
 #   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06, 07, 08, 09)
-#   -t, --test NUM      Run only specific Sakila test (1-9)
+#   --sakila-examples   Run the validation-demo tests (01, 02, 10, 11)
+#   -t, --test NUM      Run only specific Sakila test (1-9, 10-11)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -84,7 +85,7 @@ render_test_configs || exit 1
 
 SETUP=false
 SAKILA=false            # Working Sakila E2E tests (03/04/05 archive, 06 purge, 07 copy-only)
-SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (01 composite-PK, 02 FK-index)
+SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (see tests/e2e/validation/README.md)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
 INTEGRATION_ONLY=false
@@ -108,7 +109,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
             echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay)"
-            echo "  --sakila-examples   Run the validation-demonstration tests (01-02)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (01, 02, 10, 11)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
             echo "  -t, --test NUM      Run only the specified test number (works with"
@@ -122,7 +123,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --setup                    # Full setup: docker + databases"
             echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
             echo "  $0 --sakila-examples -t 1     # Run only the composite-PK demo (test 01)"
-            echo "  $0 --sakila-examples          # Run validation demos (01-02)"
+            echo "  $0 --sakila-examples          # Run validation demos (01, 02, 10, 11)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -235,9 +236,15 @@ main() {
     fi
 
     # Run the validation demonstration tests — expected to fail preflight with
-    # documented error categories: 01 = COMPOSITE_PK_CHECK, 02 = FK_COVERAGE_CHECK.
+    # documented error categories. What each one proves is NOT restated here; see
+    # tests/e2e/validation/README.md. (A list of tests in the dispatcher is a list
+    # that goes stale, which is how the working-suite comment above came to omit
+    # test 07.)
+    #
+    # 10 and 11 are appended, not renumbered in: a number once given never moves,
+    # because renumbering silently invalidates other phases' `Passed: N` counts.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_e2e_suite "1 2" "validation demos"
+        run_e2e_suite "1 2 10 11" "validation demos"
         exit 0
     fi
     

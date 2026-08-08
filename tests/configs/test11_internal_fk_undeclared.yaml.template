@@ -1,0 +1,88 @@
+# Test 11: the customer -> rental -> payment GDPR diamond
+#          (validation demo — EXPECTED TO FAIL)
+#
+# This is the shape operators ask for most — "archive everything belonging to this
+# customer" — and GoArchive cannot represent it. This test is the gate for that
+# limitation, which until now existed only as prose in tests/README.md.
+#
+# WHY IT CANNOT BE REPRESENTED. GoArchive's graph is a strict TREE: config.Relation
+# carries a single `foreign_key` (internal/config/config.go), so a table has exactly
+# one parent edge. But `payment` has TWO in-graph parents here:
+#
+#     payment.rental_id   -> rental      (fk_payment_rental)
+#     payment.customer_id -> customer    (fk_payment_customer)
+#
+# and `rental.customer_id -> customer` closes the diamond. Whichever parent payment
+# declares, the other edge is left undeclared, and INTERNAL_FK_COVERAGE refuses it:
+#
+#   INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
+#     - payment.customer_id -> customer.customer_id (constraint: fk_payment_customer) [no graph edge]
+#
+# THIS IS NOT AN OPERATOR TYPO, AND NOT FIXABLE BY REARRANGING. Rooting elsewhere or
+# re-nesting payment only moves which edge is uncovered — measured, not assumed: the
+# mirror config (payment under customer, leaving payment.rental_id uncovered) fails
+# with the same category. Both parents must stay in the graph, because dropping
+# either leaves customer referenced from outside it and FK_COVERAGE_CHECK fires
+# instead. The only passing shape is a narrower one: test 04's rental -> payment,
+# where customer stays out-of-graph as an upstream parent.
+#
+# So the config below is *correct in every declaration it makes*. It fails because
+# the requested topology is outside the model — which is exactly what makes it worth
+# asserting: a future change that quietly accepted a diamond would over-delete.
+#
+# Distinct from test 02 / FK_COVERAGE_CHECK, which is about tables OUTSIDE the graph
+# referencing tables inside it. This one is entirely internal.
+#
+# Identical on 1.8.0 and 1.9.x — unlike test 10, a preserved behaviour, so it is a
+# clean baseline row.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test11_internal_fk_undeclared.yaml on every run, substituting the password
+# placeholder from tests/.env. Edit this file, never the generated .yaml -- that one
+# is gitignored (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-customer-gdpr-diamond:
+    root_table: customer
+    primary_key: customer_id
+    # Small slice: preflight never reads a row, so the bound only keeps the config
+    # honest about being a plausible job.
+    where: "customer_id <= 5"
+    relations:
+      # rental.customer_id -> customer. Correct, and declared.
+      - table: rental
+        primary_key: rental_id
+        foreign_key: customer_id
+        dependency_type: "1-N"
+        # payment MUST be nested here, not listed as a sibling.
+        #
+        # Parentage comes from NESTING, not from matching foreign_key against some
+        # other table's PK: a flat sibling entry becomes a child of the ROOT, so
+        # `payment` with foreign_key: rental_id at this level would be read as
+        # customer -> payment via rental_id and rejected as an FK column mismatch --
+        # an operator typo, a different defect, and not the diamond at all. Measured
+        # during this phase by writing it flat first and reading what preflight said.
+        relations:
+          # payment.rental_id -> rental. Correct, and declared.
+          #
+          # What no relation can express is payment's SECOND in-graph parent,
+          # payment.customer_id -> customer. That is the uncovered edge, and the
+          # reason this job is refused.
+          - table: payment
+            primary_key: payment_id
+            foreign_key: rental_id
+            dependency_type: "1-N"

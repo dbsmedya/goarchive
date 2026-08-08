@@ -1,0 +1,55 @@
+# Test 10: a VIEW named as the root table (validation demo — EXPECTED TO FAIL)
+#
+# `customer_list` is one of Sakila's seven views, not a base table. GoArchive
+# archives base tables only: it deletes rows by primary key, and a view has no
+# primary key to delete by. Preflight rejects it with TABLE_EXISTENCE_CHECK before
+# anything is touched.
+#
+# WHY THIS TEST EXISTS -- it pins deviation D5, and it is the only test in the
+# suite that demonstrates a 2.0 improvement rather than a preserved behaviour:
+#
+#   goarchive 1.8.0  ->  PRIMARY_KEY_CHECK
+#   goarchive 1.9.x  ->  TABLE_EXISTENCE_CHECK: Only base tables can be archived
+#
+# 1.8 told the operator to fix a primary key that a view cannot have. The current
+# release names the real problem. That improvement was previously asserted only by
+# a source comment (internal/archiver/preflight.go, the D5 policy block); this test
+# turns the claim into a gate. Because of it, test 10 FAILS on a 1.8 binary, and
+# that is the correct and recorded outcome -- not a regression.
+#
+# Everything else here is deliberately valid: one job, a real database, a real
+# column name. The ONLY defect is that the root is a view, so nothing else can be
+# what preflight objects to.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test10_view_not_base_table.yaml on every run, substituting the password
+# placeholder from tests/.env. Edit this file, never the generated .yaml -- that one
+# is gitignored (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+jobs:
+  archive-customer-list-view:
+    # customer_list is a VIEW. This is the single defect under test.
+    #
+    # `ID` is genuinely the view's column name (Sakila's views upper-case it), so
+    # the config is not additionally wrong about the column -- if preflight ever
+    # stopped classifying object types, the next thing it hit would be the absence
+    # of a primary key, which is exactly the 1.8 behaviour this test distinguishes
+    # itself from.
+    root_table: customer_list
+    primary_key: ID
+    where: "ID <= 10"
+    relations: []

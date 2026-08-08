@@ -12,7 +12,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
-| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01–02) | `make e2e-examples` |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
@@ -30,7 +30,7 @@ summary:
   integration        PASS=1026 FAIL=0 SKIP=1
   characterization   OK (60 / 304 / 364 / 0 / 0)
   e2e                Passed: 7  Failed: 0
-  e2e-examples       Passed: 2  Failed: 0
+  e2e-examples       Passed: 4  Failed: 0
 ================================================
   GATE COMPLETE - every stage above exited 0
 ```
@@ -89,8 +89,8 @@ tests. When authorized, update the file and CLAUDE.md's pointer together.
 
 ## Sakila E2E Test Suite
 
-Nine focused tests: seven working runs — three archives, one purge, one
-copy-only and two interrupt/resume pairs — and two preflight-guardrail
+Eleven focused tests: seven working runs — three archives, one purge, one
+copy-only and two interrupt/resume tests — and four preflight-guardrail
 demonstrations.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
@@ -281,13 +281,29 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 |------|--------|----------------|-----|
 | **01** | `test01_one_to_one.yaml` | `COMPOSITE_PK_CHECK` | Config includes Sakila's composite-PK tables `film_actor` (`actor_id, film_id`) / `film_category` (`film_id, category_id`); GoArchive identifies/deletes by a single PK column, so a multi-column PK is rejected up front. |
 | **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the graph, but `film` is also referenced by out-of-graph `inventory`/`film_actor`/`film_category`; deleting archived films would violate those FKs, so every referencing table must be covered. |
+| **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy** (`internal/archiver/preflight.go`), and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
+| **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two in-graph parents, so one FK edge is always undeclared. |
 
-> **Why no `customer → rental → payment` (GDPR) test?** `payment` references
-> **both** `customer` and `rental`, and `rental` references `customer` — a diamond.
-> GoArchive's graph is a strict tree, and `INTERNAL_FK_COVERAGE` requires every
-> in-graph FK edge to be a represented parent→child relation, so any rooting
-> leaves one edge uncovered. Test 04 (`rental → payment`) is the closest working
-> multi-level shape (`customer`/`staff` stay out-of-graph as upstream parents).
+> **The `customer → rental → payment` (GDPR) shape is unrepresentable, and test 11
+> is the gate for that.** `payment` references **both** `customer` and `rental`, and
+> `rental` references `customer` — a diamond. GoArchive's graph is a strict tree
+> (`config.Relation` carries a single `foreign_key`), and `INTERNAL_FK_COVERAGE`
+> requires every in-graph FK edge to be a represented parent→child relation, so any
+> rooting leaves one edge uncovered. Test 04 (`rental → payment`) is the closest
+> **working** multi-level shape (`customer`/`staff` stay out-of-graph as upstream
+> parents).
+>
+> This is not fixable by rearranging, and both halves of that were measured rather
+> than argued: re-nesting `payment` under `rental` only moves which edge is uncovered,
+> and dropping either parent leaves `customer` referenced from outside the graph so
+> `FK_COVERAGE_CHECK` fires instead. Collapsing the diamond to test 04's shape is what
+> makes `validate` pass — which is how test 11 is proven able to fail.
+>
+> **Nesting is what assigns a parent, not `foreign_key`.** A relation listed flat
+> becomes a child of the **root**, whatever its `foreign_key` says: writing `payment`
+> as a sibling of `rental` with `foreign_key: rental_id` is read as
+> `customer → payment` via `rental_id` and rejected as an FK column mismatch — a
+> different defect from the diamond. Nest the child under its parent.
 > The earlier tests 04–10 (film hierarchy / actor / category / isolated
 > job_schema) were removed: several archived composite-PK association tables by a
 > single non-key column (over-delete, now blocked by `COMPOSITE_PK_CHECK`); the
@@ -464,7 +480,8 @@ INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
 
 It is what makes the `customer → rental → payment` diamond unrepresentable (see
 the suite note above): `payment` has two in-graph parents, so one edge is always
-left uncovered.
+left uncovered. **Test 11 asserts exactly this**, and the output above is the
+output it produces.
 
 ### `FK_COVERAGE_CHECK` vs `FK_INDEX_CHECK`
 
@@ -666,7 +683,7 @@ The short version:
    than one table. **Those last four fail closed**: omit one and the test is
    refused rather than run.
 3. Add `NN` to the ordered dispatch list in `scripts/run-tests.sh` → `main`
-   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 NN" "validation demos"`).
+   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 10 11 NN" "validation demos"`).
 4. Update the catalogue in this file and the category's `README.md`.
 5. Verify: `./scripts/run-tests.sh --sakila -t NN`.
 

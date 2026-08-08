@@ -121,7 +121,7 @@ behind it as defence in depth.
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
    - working → `run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`
-   - demos → `run_e2e_suite "1 2 NN" "validation demos"`
+   - demos → `run_e2e_suite "1 2 10 11 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
 
