@@ -353,6 +353,14 @@ Two independent mechanisms prevent overlap:
 2. **Heartbeat-aware same-root checks** in `archiver_job` prevent a different job
    name from operating on the same root table concurrently.
 
+A third, transient lock serializes **startup itself**: each run briefly holds a
+root-table advisory lock (`goarchive:root:<table>`) on the destination while it
+initializes tracking state, and releases it before batch processing begins. A
+startup that cannot acquire it within 10 seconds aborts with
+`timed out acquiring root-table lock for "<table>" (another startup in progress)`
+— retry once the concurrent startup has finished initializing. The lock is
+released even when startup is cancelled or refused.
+
 ### The lock connection must stay alive
 
 The advisory lock is held on a **dedicated connection**. Keepalive verifies
