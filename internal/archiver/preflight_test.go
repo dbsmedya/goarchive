@@ -75,7 +75,10 @@ func TestNewPreflightChecker_NilDB(t *testing.T) {
 
 	_, err := NewPreflightChecker(nil, "testdb", g, log)
 	if err == nil {
-		t.Error("Expected error for nil database")
+		t.Fatal("Expected error for nil database")
+	}
+	if !strings.Contains(err.Error(), "database is nil") {
+		t.Errorf("Expected error to identify the nil database, got: %v", err)
 	}
 }
 
@@ -88,7 +91,10 @@ func TestNewPreflightChecker_EmptyDBName(t *testing.T) {
 
 	_, err := NewPreflightChecker(db, "", g, log)
 	if err == nil {
-		t.Error("Expected error for empty database name")
+		t.Fatal("Expected error for empty database name")
+	}
+	if !strings.Contains(err.Error(), "source database name is required") {
+		t.Errorf("Expected error to identify the empty source database name, got: %v", err)
 	}
 }
 
@@ -100,7 +106,10 @@ func TestNewPreflightChecker_NilGraph(t *testing.T) {
 
 	_, err := NewPreflightChecker(db, "testdb", nil, log)
 	if err == nil {
-		t.Error("Expected error for nil graph")
+		t.Fatal("Expected error for nil graph")
+	}
+	if !strings.Contains(err.Error(), "graph is nil") {
+		t.Errorf("Expected error to identify the nil graph, got: %v", err)
 	}
 }
 
@@ -116,7 +125,11 @@ func TestNewPreflightChecker_DefaultLogger(t *testing.T) {
 	}
 
 	if checker.logger == nil {
-		t.Error("Expected default logger to be set")
+		t.Fatal("Expected default logger to be set")
+	}
+
+	if checker.logger.Level() != zapcore.InfoLevel {
+		t.Errorf("Expected default logger to be at info level, got: %v", checker.logger.Level())
 	}
 }
 
@@ -775,8 +788,9 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	core, recorded := observer.New(zapcore.DebugLevel)
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 	ctx := context.Background()
 
 	run := &preflightRun{
@@ -804,6 +818,22 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("stage queried despite the preloaded facts: %v", err)
 	}
+
+	// The pair (WithCascade/NoCascade) is only meaningful if the log line actually
+	// names the fixture's cascading constraints — WarnCascadeRules returns nil in
+	// both cases, so err == nil alone cannot distinguish them.
+	const want = "ON DELETE CASCADE rules detected (2): " +
+		"[testdb.order_items.order_id->testdb.orders.id testdb.orders.user_id->testdb.users.id]"
+	var found bool
+	for _, entry := range recorded.FilterLevelExact(zapcore.WarnLevel).All() {
+		if entry.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want %q; warnings were: %v",
+			want, recorded.FilterLevelExact(zapcore.WarnLevel).All())
+	}
 }
 
 func TestWarnCascadeRules_NoCascade(t *testing.T) {
@@ -811,8 +841,9 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	core, recorded := observer.New(zapcore.DebugLevel)
+	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 	ctx := context.Background()
 
 	run := &preflightRun{
@@ -837,6 +868,15 @@ func TestWarnCascadeRules_NoCascade(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("stage queried despite the preloaded facts: %v", err)
+	}
+
+	// RESTRICT-only fixture: no cascade rules exist, so no cascade warning may be
+	// logged at any level. This is what the vacuous version of this test missed —
+	// it never looked at the log, so a build that always warned still passed.
+	for _, entry := range recorded.All() {
+		if strings.Contains(entry.Message, "ON DELETE CASCADE rules detected") {
+			t.Fatalf("no CASCADE rules were present in the fixture; got log: %q", entry.Message)
+		}
 	}
 }
 
@@ -983,7 +1023,10 @@ func TestConfigureDestination_Success(t *testing.T) {
 		t.Fatalf("NewPreflightChecker failed: %v", err)
 	}
 
-	if err := checker.ConfigureDestination(destDB, "destdb", "destdb"); err != nil {
+	// destinationDBName and jobSchema must be distinct literals, or an assignment
+	// bug like p.jobSchemaName = destinationDBName (instead of jobSchema) is
+	// byte-identical and undetectable.
+	if err := checker.ConfigureDestination(destDB, "destdb", "jobschemadb"); err != nil {
 		t.Fatalf("ConfigureDestination failed: %v", err)
 	}
 
@@ -993,8 +1036,8 @@ func TestConfigureDestination_Success(t *testing.T) {
 	if checker.destinationDBName != "destdb" {
 		t.Fatalf("expected destinationDBName=destdb, got %s", checker.destinationDBName)
 	}
-	if checker.jobSchemaName != "destdb" {
-		t.Fatalf("expected jobSchemaName=destdb, got %s", checker.jobSchemaName)
+	if checker.jobSchemaName != "jobschemadb" {
+		t.Fatalf("expected jobSchemaName=jobschemadb, got %s", checker.jobSchemaName)
 	}
 }
 
@@ -2104,7 +2147,7 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Graph: orders -> order_items, orders -> item_shipments (flat, both siblings)
-	// But DB has: item_shipments.item_id -> order_items.item_id (nested FK)
+	// But DB has: item_shipments.shipment_item_id -> order_items.item_id (nested FK)
 	g := graph.NewGraph("orders", "order_id")
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
 	g.AddNode("item_shipments", &graph.Node{Name: "item_shipments", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
@@ -2116,8 +2159,11 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	log := logger.NewDefault()
 	checker, _ := NewPreflightChecker(db, "testdb", g, log)
 
-	// DB reports an FK from item_shipments.item_id -> order_items.item_id
-	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items)
+	// DB reports an FK from item_shipments.shipment_item_id -> order_items.item_id
+	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items).
+	// Child and parent column names are deliberately distinct so that swapping
+	// childColumn/parentColumn in reconcileInternalFKs produces a different, and
+	// therefore detectable, message.
 	run := &preflightRun{
 		checker: checker, tables: g.AllNodes(),
 		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
@@ -2125,7 +2171,7 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 				ParentTable: "orders", ParentColumns: []string{"order_id"}},
 			{ConstraintName: "fk_ship_orders", ChildTable: "item_shipments", ChildColumns: []string{"order_id"},
 				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"shipment_item_id"},
 				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
 		}},
 		fkWiLoaded: true,
@@ -2143,8 +2189,12 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	if preflightErr.Check != "INTERNAL_FK_COVERAGE" {
 		t.Fatalf("expected INTERNAL_FK_COVERAGE check, got %s", preflightErr.Check)
 	}
-	if !strings.Contains(preflightErr.Error(), "item_shipments") {
-		t.Fatalf("expected error to mention item_shipments, got: %v", preflightErr)
+	// Distinct child/parent column names in the fixture mean this assertion only
+	// passes if the message names them in the correct child -> parent order; a
+	// swap of childColumn/parentColumn in reconcileInternalFKs would instead
+	// produce "item_shipments.item_id -> order_items.shipment_item_id".
+	if !strings.Contains(preflightErr.Error(), "item_shipments.shipment_item_id -> order_items.item_id") {
+		t.Fatalf("expected error to name child->parent columns in order, got: %v", preflightErr)
 	}
 	if !strings.Contains(preflightErr.Error(), "no graph edge") {
 		t.Fatalf("expected 'no graph edge' reason, got: %v", preflightErr)
@@ -2449,12 +2499,12 @@ func TestPreflightError_Error(t *testing.T) {
 	}
 
 	// Should contain check name
-	if msg == "" || len(msg) < len("TEST_CHECK") {
+	if !strings.Contains(msg, "TEST_CHECK") {
 		t.Errorf("Expected error to contain check name, got: %s", msg)
 	}
 
 	// Should contain tables
-	if msg == "" || len(msg) < len("table1") {
+	if !strings.Contains(msg, "table1") || !strings.Contains(msg, "table2") {
 		t.Errorf("Expected error to contain table names, got: %s", msg)
 	}
 }
@@ -2466,8 +2516,9 @@ func TestPreflightError_ErrorNoTables(t *testing.T) {
 	}
 
 	msg := err.Error()
-	if msg == "" {
-		t.Error("Expected non-empty error message")
+	want := "TEST_CHECK: test message"
+	if msg != want {
+		t.Errorf("expected error %q, got %q", want, msg)
 	}
 }
 
@@ -2671,8 +2722,9 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 
 	err := checker.ValidateTablesExist(ctx, run)
 
-	if err == nil {
-		t.Error("Expected error for cancelled context")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error chain to contain context.Canceled (cancellation must "+
+			"propagate, not just any query failure), got: %v", err)
 	}
 }
 
@@ -2689,11 +2741,19 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
-	checker, err := NewPreflightChecker(db, "sourcedb", g, log)
-	if err != nil {
-		t.Fatalf("NewPreflightChecker failed: %v", err)
+	// destinationDB stays nil, but destinationDBName is deliberately non-empty
+	// (unlike the old fixture, which left both unset) so the two conditions are
+	// separable: a guard mistakenly keyed on destinationDBName would not trip
+	// here. Built directly since this is package archiver and
+	// NewPreflightChecker/ConfigureDestination refuse a nil destination handle.
+	checker := &PreflightChecker{
+		db:                db,
+		sourceDBName:      "sourcedb",
+		destinationDB:     nil,
+		destinationDBName: "destdb",
+		graph:             g,
+		logger:            log,
 	}
-	// Do NOT call ConfigureDestination - destinationDB stays nil
 
 	ctx := context.Background()
 
@@ -2703,6 +2763,14 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "destination database not configured") {
 		t.Errorf("Unexpected error message: %v", err)
+	}
+	// The outer p.destinationDB == nil guard must short-circuit before destTables'
+	// inner dstInspector == nil guard ever runs. If it didn't, the identical text
+	// would come back wrapped by inspectionError("destination_table_existence",
+	// ...), which a substring check can't tell apart from the plain guard error but
+	// an exact match can.
+	if err.Error() != "destination database not configured; call ConfigureDestination first" {
+		t.Errorf("expected the outer guard's plain, unwrapped error, got: %v", err)
 	}
 
 	err = checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
@@ -2785,9 +2853,16 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 
 // TestValidateJobSchemaPermissions_NilDestination proves the stage's own
 // destinationDB == nil guard returns before ever touching the run, so a nil run is
-// safe to pass here.
+// safe to pass here. destinationDBName is deliberately non-empty (unlike the old
+// fixture, which left both unset) so a guard mistakenly keyed on
+// destinationDBName instead of destinationDB would not trip here and would go on
+// to dereference the nil run.
 func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
-	p := &PreflightChecker{logger: logger.NewDefault(), jobSchemaName: "goarchive"}
+	p := &PreflightChecker{
+		logger:            logger.NewDefault(),
+		jobSchemaName:     "goarchive",
+		destinationDBName: "destdb",
+	}
 	err := p.ValidateJobSchemaPermissions(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil destination")
