@@ -8,7 +8,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | Test Type | Description | Command |
 |-----------|-------------|---------|
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
-| **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
+| **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
