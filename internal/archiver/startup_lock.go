@@ -170,9 +170,18 @@ func beginJobStartup(
 		return nil, fmt.Errorf("failed to seed heartbeat: %w", err)
 	}
 
-	if _, releaseErr := rootLock.ReleaseLock(ctx); releaseErr != nil {
+	// Releasing the root lock is cleanup: it must not be skippable by the very
+	// cancellation that makes cleanup necessary. Releasing on ctx leaked the lock
+	// into the pool for minutes when startup was cancelled (issue #79) — detach
+	// from cancellation, and bound it so a wedged server cannot hang startup.
+	releaseCtx, cancelRelease := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if _, releaseErr := rootLock.ReleaseLock(releaseCtx); releaseErr != nil {
 		log.Warnw("root-table lock release error (proceeding)", "error", releaseErr)
 	}
+	cancelRelease()
+	// Unconditional on purpose: ReleaseLock never leaves this session holding the
+	// lock — it released it, or it discarded the session (internal/lock). The
+	// deferred net above exists for the early-return paths that never reach here.
 	rootLockHeld = false
 
 	if jobLockHeld {

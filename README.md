@@ -377,7 +377,7 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `1.9.2-RC-community` (release-candidate series — **for testing**)
+- **Version**: `1.9.3-RC-community` (release-candidate series — **for testing**)
 - **Stable release**: `1.8.0-community` — use this for production. The 1.9.x RCs validate the [dbsgomysql integration](docs/README_dbsgomysql.md) ahead of 2.0.
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)

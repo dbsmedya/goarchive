@@ -224,6 +224,12 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	if !strings.Contains(execErr.Error(), "already running") {
 		t.Fatalf("expected 'already running' rejection, got: %v", execErr)
 	}
+
+	// #79: the refused startup returned early — the deferred net in
+	// beginJobStartup must have released the root-table lock it had acquired.
+	// (The JOB lock is deliberately not asserted here: this test's own
+	// holderLock still holds it.)
+	assertAdvisoryLockFree(t, destDB, lock.GenerateRootTableLockName("customers"))
 }
 
 // TestArchiveForceDoesNotBypassSameRoot proves that --force only bypasses the
@@ -287,6 +293,26 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 	// concurrency_check.go:79 — "live job(s) running on root_table"
 	if !strings.Contains(msg, "live") || !strings.Contains(msg, "running on root_table") {
 		t.Fatalf("expected same-root live-conflict rejection, got: %v", execErr)
+	}
+}
+
+// assertAdvisoryLockFree fails the test if lockName is still held after a short
+// grace period. Read-only (IS_USED_LOCK), so it cannot leak a lock itself.
+func assertAdvisoryLockFree(t *testing.T, db *sql.DB, lockName string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var owner sql.NullInt64
+		if err := db.QueryRow("SELECT IS_USED_LOCK(?)", lockName).Scan(&owner); err != nil {
+			t.Fatalf("IS_USED_LOCK(%q): %v", lockName, err)
+		}
+		if !owner.Valid {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("advisory lock %q still held by connection %d", lockName, owner.Int64)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

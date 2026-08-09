@@ -3,8 +3,12 @@ package lock
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 // ============================================================================
@@ -430,4 +434,95 @@ func TestAdvisoryLock_MultipleLocksIndependentLifecycle(t *testing.T) {
 	if lock2.held {
 		t.Error("Lock2 should be released")
 	}
+}
+
+func TestAdvisoryLock_ReleaseLock_FailedReleaseDiscardsSession(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectQuery("SELECT GET_LOCK").
+		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK(?, ?)"}).AddRow(int64(1)))
+	mock.ExpectQuery("SELECT CONNECTION_ID").
+		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(123)))
+	mock.ExpectQuery("SELECT RELEASE_LOCK").
+		WithArgs("t_discard_on_failed_release").
+		WillReturnError(errors.New("synthetic release failure"))
+
+	l := NewAdvisoryLock(db, "t_discard_on_failed_release")
+	acquired, err := l.AcquireLock(context.Background(), 1)
+	if err != nil || !acquired {
+		t.Fatalf("AcquireLock = %v, %v; want true, nil", acquired, err)
+	}
+
+	if _, err := l.ReleaseLock(context.Background()); err == nil {
+		t.Fatal("ReleaseLock must surface the query failure")
+	}
+
+	// The session could not prove it released the lock, so it must NOT return to
+	// the pool: a pooled session keeps a real GET_LOCK alive until the pool reaps
+	// it minutes later (issue #79). Discarded session => zero open connections.
+	if got := db.Stats().OpenConnections; got != 0 {
+		t.Fatalf("failed release left %d open connection(s) in the pool; the session must be discarded", got)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+func TestAdvisoryLock_ReleaseLock_CancelledContextFreesLock(t *testing.T) {
+	holderDB := connectToTestDB(t)
+	defer func() { _ = holderDB.Close() }()
+
+	observerDB := connectToTestDB(t)
+	defer func() { _ = observerDB.Close() }()
+
+	lockName := generateUniqueLockName(t)
+	held := NewAdvisoryLock(holderDB, lockName)
+	ctx := context.Background()
+
+	acquired, err := held.AcquireLock(ctx, 1)
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected to acquire lock")
+	}
+
+	// Release on an already-cancelled context: the RELEASE_LOCK statement cannot
+	// run. Issue #79: the session must still not keep the lock.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_, _ = held.ReleaseLock(cancelled)
+
+	// Observed from a different pool (different MySQL sessions): the lock must
+	// become free promptly, not after the pool reaps the session minutes later.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var owner sql.NullInt64
+		if err := observerDB.QueryRow("SELECT IS_USED_LOCK(?)", lockName).Scan(&owner); err != nil {
+			t.Fatalf("IS_USED_LOCK(%q): %v", lockName, err)
+		}
+		if !owner.Valid {
+			break // free
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock %q still held by connection %d after failed release — leaked into the pool", lockName, owner.Int64)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The operator-visible consequence: the next run can take the lock immediately.
+	next := NewAdvisoryLock(observerDB, lockName)
+	reacquired, err := next.AcquireLock(ctx, 1)
+	if err != nil {
+		t.Fatalf("re-acquire errored: %v", err)
+	}
+	if !reacquired {
+		t.Fatal("lock could not be re-acquired after a failed release")
+	}
+	_, _ = next.ReleaseLock(context.Background())
 }

@@ -4,6 +4,7 @@ package lock
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -159,17 +160,25 @@ func (a *AdvisoryLock) ReleaseLock(ctx context.Context) (bool, error) {
 	var result sql.NullInt64
 
 	err := a.conn.QueryRowContext(ctx, query, a.lockName).Scan(&result)
+	if err != nil {
+		// The RELEASE_LOCK statement did not provably execute, so this session may
+		// still hold the lock. Returning the connection to the pool would keep the
+		// lock alive until the pool reaps the session — minutes under the default
+		// SetConnMaxIdleTime — blocking every startup on the same lock name in the
+		// meantime (issue #79). Mark the connection bad so database/sql closes the
+		// MySQL session instead; MySQL frees all advisory locks on session end.
+		_ = a.conn.Raw(func(any) error { return driver.ErrBadConn })
+		_ = a.conn.Close()
+		a.conn = nil
+		a.connID = 0
+		a.held = false
+		return false, fmt.Errorf("failed to execute RELEASE_LOCK: %w", err)
+	}
+
 	closeErr := a.conn.Close()
 	a.conn = nil
 	a.connID = 0
 	a.held = false
-
-	if err != nil {
-		if closeErr != nil {
-			return false, fmt.Errorf("failed to execute RELEASE_LOCK: %w (failed to close connection: %v)", err, closeErr)
-		}
-		return false, fmt.Errorf("failed to execute RELEASE_LOCK: %w", err)
-	}
 
 	// Check if result is NULL (lock didn't exist)
 	if !result.Valid {
