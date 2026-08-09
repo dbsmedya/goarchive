@@ -13,6 +13,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/internal/lock"
 )
 
 // ============================================================================
@@ -606,6 +607,12 @@ func TestOrchestrator_ContextCancellation_Integration(t *testing.T) {
 	if result != nil {
 		t.Logf("Partial result: %d records copied before cancellation", result.RecordsCopied)
 	}
+
+	// #79: a cancelled run must leave no advisory lock behind — the next run on
+	// this root table must not be told "another startup is in progress".
+	destDB, _ := setup.GetDB("destination")
+	assertAdvisoryLockFree(t, destDB, lock.GenerateRootTableLockName("customers"))
+	assertAdvisoryLockFree(t, destDB, lock.GenerateJobLockName("test_cancellation"))
 }
 
 // TestOrchestrator_EmptyResultSet_Integration tests handling of no matching rows
