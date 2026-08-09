@@ -37,13 +37,34 @@ The test layers, how to run each, and what they need.
 
 ## Unit tests
 
-Fast, no database, `sqlmock`-backed.
+Fast, and no database.
 
 ```bash
 go test -short ./...          # unit only
 go test ./... -count=1        # unit, no cache
 go test -v -run TestFunctionName ./internal/graph/
 ```
+
+**Two kinds of unit test, and the difference matters when adding one.**
+
+Tests that exercise **GoArchive's own SQL** — tracking tables, batch DML, checkpoints — use
+`sqlmock`, and that is correct: the statement under test is one GoArchive wrote.
+
+Tests that exercise a **preflight stage** do not mock SQL at all. Preflight facts come from
+`dbsgomysql`, so those tests inject the library's typed values (`[]validations.TableInfo`,
+`validations.Grants`, …) directly into the run the stage reads from, and most of them open no
+database handle whatsoever. Mocking the library's queries instead would couple the test to
+`dbsgomysql`'s SQL wire format — column names, aliases, row order — which nothing verifies, so a
+library change would diverge silently while the suite stayed green. Injecting the fact couples
+the test to the library's API, which the compiler checks.
+
+A stage that ignores the injected fact and issues its own query fails with
+`validations: nil Querier`, so the absence of a handle is itself the assertion.
+
+`internal/archiver/consumer_policy_test.go` holds the guards for this: one fails the build if
+non-test code names `information_schema` in a string literal, the other pins how much `sqlmock`
+the converted files may still contain. If you need a mock in a pinned file, preload the fact
+instead — the guard's failure message names the pattern to copy.
 
 ---
 

@@ -33,6 +33,58 @@ func createPreflightTestGraph() *graph.Graph {
 	return g
 }
 
+// newSourceOnlyChecker returns a checker with NO database handle.
+//
+// Preflight stages read p.db in exactly one place — the Inspector newPreflightRun
+// builds — and the library answers a nil Querier with a named error ("validations:
+// nil Querier") rather than a panic. So once a test preloads the fact its stage
+// consumes, no handle is needed at all, and a stage that wrongly issues its own query
+// fails as an assertion instead of being absorbed by a mock that answers it.
+//
+// NewPreflightChecker rejects a nil handle, hence the struct literal. It is confined
+// to this helper and newDestChecker so the fixture is reviewed once rather than once
+// per test. Tests needing a captured logger or a verification config assign the field
+// after construction.
+func newSourceOnlyChecker(g *graph.Graph, srcDBName string) *PreflightChecker {
+	return &PreflightChecker{
+		db:           nil,
+		sourceDBName: srcDBName,
+		graph:        g,
+		logger:       logger.NewDefault(),
+	}
+}
+
+// newDestChecker returns a checker whose destination handle is a deny-all stub.
+//
+// Five stages — ValidateDestinationTablesExist, ValidateDestinationSchemaCompatibility,
+// ValidateDestinationWritePermissions, ValidateJobSchemaPermissions and
+// ValidateDestinationInsertTriggers — guard on p.destinationDB == nil BEFORE they read
+// the run, so a nil destination handle can never reach a preloaded destination fact.
+// The source handle stays nil.
+//
+// The sqlmock control handle is deliberately discarded. A caller that cannot reach it
+// cannot program an expectation, so reintroducing SQL here requires reintroducing
+// sqlmock.New at the call site — visible in review rather than one more line in an
+// existing fixture.
+func newDestChecker(t *testing.T, g *graph.Graph, srcDBName, dstDBName, jobSchema string) *PreflightChecker {
+	t.Helper()
+	dstDB, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = dstDB.Close() })
+
+	return &PreflightChecker{
+		db:                nil,
+		sourceDBName:      srcDBName,
+		destinationDB:     dstDB,
+		destinationDBName: dstDBName,
+		jobSchemaName:     jobSchema,
+		graph:             g,
+		logger:            logger.NewDefault(),
+	}
+}
+
 // ============================================================================
 // NewPreflightChecker Tests
 // ============================================================================
@@ -75,7 +127,10 @@ func TestNewPreflightChecker_NilDB(t *testing.T) {
 
 	_, err := NewPreflightChecker(nil, "testdb", g, log)
 	if err == nil {
-		t.Error("Expected error for nil database")
+		t.Fatal("Expected error for nil database")
+	}
+	if !strings.Contains(err.Error(), "database is nil") {
+		t.Errorf("Expected error to identify the nil database, got: %v", err)
 	}
 }
 
@@ -88,7 +143,10 @@ func TestNewPreflightChecker_EmptyDBName(t *testing.T) {
 
 	_, err := NewPreflightChecker(db, "", g, log)
 	if err == nil {
-		t.Error("Expected error for empty database name")
+		t.Fatal("Expected error for empty database name")
+	}
+	if !strings.Contains(err.Error(), "source database name is required") {
+		t.Errorf("Expected error to identify the empty source database name, got: %v", err)
 	}
 }
 
@@ -100,7 +158,10 @@ func TestNewPreflightChecker_NilGraph(t *testing.T) {
 
 	_, err := NewPreflightChecker(db, "testdb", nil, log)
 	if err == nil {
-		t.Error("Expected error for nil graph")
+		t.Fatal("Expected error for nil graph")
+	}
+	if !strings.Contains(err.Error(), "graph is nil") {
+		t.Errorf("Expected error to identify the nil graph, got: %v", err)
 	}
 }
 
@@ -116,7 +177,11 @@ func TestNewPreflightChecker_DefaultLogger(t *testing.T) {
 	}
 
 	if checker.logger == nil {
-		t.Error("Expected default logger to be set")
+		t.Fatal("Expected default logger to be set")
+	}
+
+	if checker.logger.Level() != zapcore.InfoLevel {
+		t.Errorf("Expected default logger to be at info level, got: %v", checker.logger.Level())
 	}
 }
 
@@ -156,30 +221,31 @@ func TestRunAllChecks_MissingTables(t *testing.T) {
 	}
 }
 
+// TestPreflightChecker_ValidateRootPKNumeric preloads run.pks directly, once per
+// handle: the first proves an integer single-column root PK passes, the second proves
+// a non-integer one fails ROOT_PK_TYPE_UNSUPPORTED as a plain error.
 func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
 	g := graph.NewGraph("users", "id")
-	checker, _ := NewPreflightChecker(db, "testdb", g, nil)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).AddRow("users", "id", "bigint", "bigint(20) unsigned"))
-	if err := checker.ValidateRootPKNumeric(context.Background(), newPreflightRun(checker)); err != nil {
+	run := newPreflightRun(checker)
+	run.pks = []validations.PKInfo{
+		{Table: "users", Kind: validations.PKSingle, Columns: []string{"id"},
+			DataType: "bigint", IsInteger: true, Unsigned: true},
+	}
+	run.pksLoaded = true
+	if err := checker.ValidateRootPKNumeric(context.Background(), run); err != nil {
 		t.Fatalf("ValidateRootPKNumeric: %v", err)
 	}
 
-	db2, mock2, _ := sqlmock.New()
-	defer func() { _ = db2.Close() }()
-	checker2, _ := NewPreflightChecker(db2, "testdb", graph.NewGraph("orders", "uuid"), nil)
-	mock2.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).AddRow("orders", "uuid", "varchar", "varchar(36)"))
-	err := checker2.ValidateRootPKNumeric(context.Background(), newPreflightRun(checker2))
+	checker2 := newSourceOnlyChecker(graph.NewGraph("orders", "uuid"), "testdb")
+	run2 := newPreflightRun(checker2)
+	run2.pks = []validations.PKInfo{
+		{Table: "orders", Kind: validations.PKSingle, Columns: []string{"uuid"},
+			DataType: "varchar", IsInteger: false},
+	}
+	run2.pksLoaded = true
+	err := checker2.ValidateRootPKNumeric(context.Background(), run2)
 	if err == nil || !strings.Contains(err.Error(), "ROOT_PK_TYPE_UNSUPPORTED") {
 		t.Fatalf("expected ROOT_PK_TYPE_UNSUPPORTED, got %v", err)
 	}
@@ -248,32 +314,25 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 }
 
 func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Minimal graph containing users and orders (phase 018, Step 7b): the table set
-	// now comes from run.tables (= graph.AllNodes()), so the mocked column fact must
-	// cover exactly these two tables.
+	// now comes from run.tables (= graph.AllNodes()), so the preloaded column fact
+	// must cover exactly these two tables.
 	g := graph.NewGraph("users", "id")
 	g.AddNode("orders", &graph.Node{Name: "orders", ForeignKey: "user_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.SetPK("orders", "id")
 	g.AddEdge("users", "orders")
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
 	// orders has no "id" column at all: its column fact names a different column.
-	// Graph.AllNodes() ranges over a map, so the trailing bind args are
-	// nondeterministic for this two-node graph — WithArgs is deliberately omitted
-	// (phase 018, Step 7b).
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).
-			AddRow("users", "id", 1, "bigint", "bigint", "").
-			AddRow("orders", "order_num", 1, "bigint", "bigint", ""))
+	run := newPreflightRun(checker)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "users", Columns: []validations.ColumnInfo{{Name: "id", Ordinal: 1, DataType: "bigint"}}},
+		{Table: "orders", Columns: []validations.ColumnInfo{{Name: "order_num", Ordinal: 1, DataType: "bigint"}}},
+	}
+	run.srcColumnsLoaded = true
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
+	err := checker.ValidatePrimaryKeyColumns(ctx, run)
 	if err == nil {
 		t.Fatal("expected PK column validation error")
 	}
@@ -288,29 +347,23 @@ func TestValidatePrimaryKeyColumns_MissingConfiguredPKColumn(t *testing.T) {
 }
 
 func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// A configured root plus an unconfigured "legacy" child. NewGraph always
 	// configures its root, so the unconfigured table is added with AddNode and no
 	// SetPK (phase 018, Step 7b).
 	g := graph.NewGraph("users", "id")
 	g.AddNode("legacy", &graph.Node{Name: "legacy"})
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	// The column fact is now fetched unconditionally for every graph table, even
-	// though "legacy" is rejected without ever consulting its columns — so a Columns
-	// expectation covering the configured root must still be registered, or the
-	// stage returns a plain inspection error instead of *PreflightError. Graph.AllNodes()
-	// ranges over a map, so the trailing bind args are nondeterministic for this
-	// two-node graph — WithArgs is deliberately omitted (phase 018, Step 7b).
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("users", "id", 1, "bigint", "bigint", ""))
+	// "legacy" is rejected without ever consulting its columns, so the preloaded
+	// column fact covers only the configured root — matching what the mock this
+	// replaces returned.
+	run := newPreflightRun(checker)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "users", Columns: []validations.ColumnInfo{{Name: "id", Ordinal: 1, DataType: "bigint"}}},
+	}
+	run.srcColumnsLoaded = true
 
-	err := checker.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(checker))
+	err := checker.ValidatePrimaryKeyColumns(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected explicit PK mapping error")
 	}
@@ -330,23 +383,19 @@ func TestValidatePrimaryKeyColumns_RequiresExplicitPKMapping(t *testing.T) {
 // case-mismatch error — NOT allowed to pass as "exists" and NOT reported via
 // the data-loss-flavored PRIMARY_KEY_CHECK. Column names are case-sensitive.
 func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := graph.NewGraph("events", "LOG_ID")
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
 	// MySQL's information_schema.COLUMNS collates case-insensitively, so the real
 	// column comes back as "log_id" even though the configured key is "LOG_ID".
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("testdb", "events").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("events", "log_id", 1, "bigint", "bigint", ""))
+	run := newPreflightRun(checker)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "events", Columns: []validations.ColumnInfo{{Name: "log_id", Ordinal: 1, DataType: "bigint"}}},
+	}
+	run.srcColumnsLoaded = true
 
-	err := checker.ValidatePrimaryKeyColumns(ctx, newPreflightRun(checker))
+	err := checker.ValidatePrimaryKeyColumns(ctx, run)
 	if err == nil {
 		t.Fatal("expected case-mismatch validation error, got nil")
 	}
@@ -384,20 +433,16 @@ func TestValidatePrimaryKeyColumns_CaseMismatch(t *testing.T) {
 // what this phase's DELIBERATE TEXT CHANGE (Step 6) actually produces. "pk_columns" is
 // safe: the raw error does not contain that string.
 func TestValidatePrimaryKeyColumnsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("query failed")
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnError(wantErr)
 
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidatePrimaryKeyColumns(context.Background(), newPreflightRun(p))
+	run := newPreflightRun(p)
+	run.srcColumnsErr = wantErr
+	run.srcColumnsLoaded = true
+
+	err := p.ValidatePrimaryKeyColumns(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -418,34 +463,21 @@ func TestValidatePrimaryKeyColumnsInspectionErrorIsPlain(t *testing.T) {
 // non-negotiable ("goarchive must never re-query information_schema for a fact the
 // library answers").
 //
-// Exactly ONE expectation is registered and the explicit pre-load consumes it. A stage
-// that ignored `run` and built its own Inspector would issue a second query, receive
-// "all expectations were already fulfilled", and return that as a plain inspection
-// error — failing the *PreflightError assertion below. mock.ExpectationsWereMet() would
-// NOT catch this: the single expectation is consumed either way. The verdict
-// discriminates, not the expectation bookkeeping.
+// The checker has no database handle at all. A stage that ignored `run` and built its
+// own Inspector would issue a query against a nil Querier and get back a plain
+// "validations: nil Querier" error — failing the *PreflightError assertion below. The
+// verdict discriminates, not any query bookkeeping.
 func TestValidatePrimaryKeyColumnsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("srcdb", "orders").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "note", 1, "varchar", "varchar(64)", ""))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
 	run := newPreflightRun(p)
-	if _, err := run.sourceColumns(context.Background()); err != nil {
-		t.Fatalf("pre-load of the column fact failed: %v", err)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{{Name: "note", Ordinal: 1, DataType: "varchar"}}},
 	}
+	run.srcColumnsLoaded = true
 
-	err = p.ValidatePrimaryKeyColumns(context.Background(), run)
+	err := p.ValidatePrimaryKeyColumns(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -461,103 +493,112 @@ func TestValidatePrimaryKeyColumnsConsumesTheCachedFact(t *testing.T) {
 // ============================================================================
 
 func TestValidateTablesExist_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	// The table list now comes from the run, which reads it from the graph.
+	// The table list comes from the run, which reads it from the graph.
 	// createPreflightTestGraph's nodes are users, orders and order_items.
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "InnoDB").
-			AddRow("order_items", "BASE TABLE", "InnoDB"))
+	run := newPreflightRun(checker)
+	run.srcTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "order_items", Type: "BASE TABLE", Engine: "InnoDB"},
+	}
+	run.srcTablesLoaded = true
 
-	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
+	err := checker.ValidateTablesExist(ctx, run)
 
 	if err != nil {
 		t.Fatalf("ValidateTablesExist failed: %v", err)
 	}
 }
 
+// TestValidateTablesExist_MissingTables — REFERENCE SHAPE 1: a source-side fact,
+// preloaded, no database handle.
+//
+// That a requested name the server never reports produces a finding is a LIBRARY
+// verdict; dbsgomysql's TestCheckTablesExist covers it across four cases. What is
+// goarchive's own is asserted here: the check ID stamped on the error, and the
+// flattening of Finding.Tables into PreflightError.Tables by findingsToPreflightError.
+// This is one of only two caller-level tests of that mapper.
 func TestValidateTablesExist_MissingTables(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	// "nonexistent" is a graph node so that the run asks about it; the server
-	// never reports it back, so it must be the one missing table.
+	// "nonexistent" is a graph node so that the run asks about it; the preloaded
+	// fact omits it, so it must be the one missing table.
 	g := createPreflightTestGraph()
 	g.AddNode("nonexistent", &graph.Node{Name: "nonexistent", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.SetPK("nonexistent", "id")
 	g.AddEdge("orders", "nonexistent")
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	ctx := context.Background()
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "InnoDB").
-			AddRow("order_items", "BASE TABLE", "InnoDB"))
-	// Missing: nonexistent
-
-	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
-
-	if err == nil {
-		t.Error("Expected error for missing tables")
+	run := newPreflightRun(checker)
+	run.srcTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "order_items", Type: "BASE TABLE", Engine: "InnoDB"},
 	}
+	run.srcTablesLoaded = true
+
+	err := checker.ValidateTablesExist(context.Background(), run)
 
 	preflightErr, ok := err.(*PreflightError)
 	if !ok {
-		t.Fatalf("Expected PreflightError, got %T", err)
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
 	}
-
+	if preflightErr.Check != "TABLE_EXISTENCE_CHECK" {
+		t.Errorf("Check = %q, want TABLE_EXISTENCE_CHECK", preflightErr.Check)
+	}
 	if len(preflightErr.Tables) != 1 || preflightErr.Tables[0] != "nonexistent" {
-		t.Errorf("Expected missing table 'nonexistent', got %v", preflightErr.Tables)
+		t.Errorf("Tables = %v, want [nonexistent]", preflightErr.Tables)
 	}
 }
 
 func TestValidateTablesExist_ExactCaseRequired(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	// The graph asks for "Users"; the server reports "users". A case-insensitive
-	// match would wrongly pass.
+	// The graph asks for "Users"; the preloaded fact reports "users". A
+	// case-insensitive match would wrongly pass.
 	g := graph.NewGraph("Users", "id")
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB"))
+	run := newPreflightRun(checker)
+	run.srcTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+	}
+	run.srcTablesLoaded = true
 
-	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
+	err := checker.ValidateTablesExist(ctx, run)
 	if err == nil {
 		t.Fatal("expected case-sensitive table mismatch error")
+	}
+
+	// Bare "err != nil" cannot tell a policy verdict from a stray-query error;
+	// the check ID confirms which one this is.
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if preflightErr.Check != "TABLE_EXISTENCE_CHECK" {
+		t.Errorf("Check = %q, want TABLE_EXISTENCE_CHECK", preflightErr.Check)
 	}
 }
 
 func TestValidateTablesExist_QueryError(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnError(errors.New("query failed"))
+	// The sentinel is required: this test's own assertions are only "some plain
+	// error, and not a *PreflightError" — without errors.Is a stray query, which
+	// also yields a plain error, would be indistinguishable from this injected one.
+	errInspect := errors.New("query failed")
+	run := newPreflightRun(checker)
+	run.srcTablesErr = errInspect
+	run.srcTablesLoaded = true
 
-	err := checker.ValidateTablesExist(ctx, newPreflightRun(checker))
+	err := checker.ValidateTablesExist(ctx, run)
 
-	if err == nil {
-		t.Error("Expected error for query failure")
+	if !errors.Is(err, errInspect) {
+		t.Fatalf("expected the memoized load error to propagate, got: %v", err)
 	}
 
 	// An inspection failure is not a schema verdict.
@@ -572,20 +613,18 @@ func TestValidateTablesExist_QueryError(t *testing.T) {
 // ============================================================================
 
 func TestValidateStorageEngine_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "InnoDB"))
+	run := newPreflightRun(checker)
+	run.srcTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+	}
+	run.srcTablesLoaded = true
 
-	err := checker.ValidateStorageEngine(ctx, newPreflightRun(checker))
+	err := checker.ValidateStorageEngine(ctx, run)
 
 	if err != nil {
 		t.Fatalf("ValidateStorageEngine failed: %v", err)
@@ -593,21 +632,19 @@ func TestValidateStorageEngine_Success(t *testing.T) {
 }
 
 func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "MyISAM").
-			AddRow("order_items", "BASE TABLE", "MEMORY"))
+	run := newPreflightRun(checker)
+	run.srcTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "orders", Type: "BASE TABLE", Engine: "MyISAM"},
+		{Table: "order_items", Type: "BASE TABLE", Engine: "MEMORY"},
+	}
+	run.srcTablesLoaded = true
 
-	err := checker.ValidateStorageEngine(ctx, newPreflightRun(checker))
+	err := checker.ValidateStorageEngine(ctx, run)
 
 	if err == nil {
 		t.Error("Expected error for non-InnoDB tables")
@@ -641,33 +678,27 @@ func TestValidateStorageEngine_NonInnoDB(t *testing.T) {
 // which the retired test did not.
 // ============================================================================
 
-// TestValidateForeignKeyIndexes_Unindexed rewrites the old query-level test against the
-// new pipeline. The primary INNODB_FOREIGN path always sets Indexed:true by
-// construction, so provoking Indexed:false requires the full fallback: primary fails,
-// KEY_COLUMN_USAGE succeeds, and the STATISTICS supporting-index query returns no rows
-// for the child table (so foreignKeyColumnsIndexed has no candidate to match).
+// TestValidateForeignKeyIndexes_Unindexed provokes Indexed:false directly. In
+// production the primary INNODB_FOREIGN path always sets Indexed:true by construction,
+// and reaching false requires the library's internal fallback chain (primary fails,
+// KEY_COLUMN_USAGE succeeds, the STATISTICS supporting-index query returns no rows for
+// the child table). That whole chain collapses into ONE preloaded run.fkOut carrying a
+// single ForeignKey with Indexed explicitly false — CheckFKIndexed reads only that
+// field, so the fallback machinery that produces it is out of scope here.
 func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("INNODB_FOREIGN AS f").WillReturnError(errors.New("PROCESS denied"))
-	mock.ExpectQuery("KEY_COLUMN_USAGE AS kcu").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "CONSTRAINT_NAME", "COLUMN_NAME",
-			"REFERENCED_TABLE_SCHEMA", "REFERENCED_TABLE_NAME", "REFERENCED_COLUMN_NAME",
-			"DELETE_RULE", "UPDATE_RULE", "ORDINAL_POSITION",
-		}).AddRow("testdb", "orders", "fk_orders_users", "user_id", "testdb", "users", "id", "RESTRICT", "RESTRICT", 1))
-	mock.ExpectQuery("information_schema.STATISTICS").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_SCHEMA", "TABLE_NAME", "INDEX_NAME", "COLUMN_NAME", "SEQ_IN_INDEX",
-		})) // no supporting index rows for orders.user_id
+	run := newPreflightRun(checker)
+	run.fkOut = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
+			ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
+			ParentColumns: []string{"id"}, OnDelete: "RESTRICT", OnUpdate: "RESTRICT", Indexed: false},
+	}}
+	run.fkOutLoaded = true
 
-	err := checker.ValidateForeignKeyIndexes(ctx, newPreflightRun(checker))
+	err := checker.ValidateForeignKeyIndexes(ctx, run)
 
 	if err == nil {
 		t.Fatal("Expected error for unindexed FK")
@@ -684,9 +715,6 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 	if len(preflightErr.Tables) != 1 || preflightErr.Tables[0] != "orders.user_id" {
 		t.Errorf("Expected Tables = [orders.user_id], got %v", preflightErr.Tables)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet sqlmock expectations: %v", err)
-	}
 }
 
 // ============================================================================
@@ -694,43 +722,32 @@ func TestValidateForeignKeyIndexes_Unindexed(t *testing.T) {
 // ============================================================================
 
 func TestValidateTriggers_NoTriggers(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("testdb", "DELETE").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}))
+	run := newPreflightRun(checker)
+	run.srcDelTriggers = []validations.TriggerInfo{}
+	run.srcDelTriggersLoaded = true
 
-	if err := checker.ValidateTriggers(ctx, newPreflightRun(checker), false); err != nil {
+	if err := checker.ValidateTriggers(ctx, run, false); err != nil {
 		t.Fatalf("ValidateTriggers failed: %v", err)
 	}
 }
 
 func TestValidateTriggers_WithTriggers(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("testdb", "DELETE").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}).
-			AddRow("users", "trg_users_delete", "DELETE", "AFTER").
-			AddRow("orders", "trg_orders_delete", "DELETE", "AFTER"))
+	run := newPreflightRun(checker)
+	run.srcDelTriggers = []validations.TriggerInfo{
+		{Table: "users", Name: "trg_users_delete", Event: "DELETE", Timing: "AFTER"},
+		{Table: "orders", Name: "trg_orders_delete", Event: "DELETE", Timing: "AFTER"},
+	}
+	run.srcDelTriggersLoaded = true
 
-	err := checker.ValidateTriggers(ctx, newPreflightRun(checker), false)
+	err := checker.ValidateTriggers(ctx, run, false)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -746,22 +763,18 @@ func TestValidateTriggers_WithTriggers(t *testing.T) {
 }
 
 func TestValidateTriggers_WithForce(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
-	mock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("testdb", "DELETE").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}).AddRow("orders", "trg_del", "DELETE", "AFTER"))
+	run := newPreflightRun(checker)
+	run.srcDelTriggers = []validations.TriggerInfo{
+		{Table: "orders", Name: "trg_del", Event: "DELETE", Timing: "AFTER"},
+	}
+	run.srcDelTriggersLoaded = true
 
-	// The rows above DO contain a trigger; only --force-triggers turns this into a pass.
-	if err := checker.ValidateTriggers(ctx, newPreflightRun(checker), true); err != nil {
+	// The fact above DOES contain a trigger; only --force-triggers turns this into a pass.
+	if err := checker.ValidateTriggers(ctx, run, true); err != nil {
 		t.Fatalf("--force-triggers must downgrade to a warning, got: %v", err)
 	}
 }
@@ -770,29 +783,31 @@ func TestValidateTriggers_WithForce(t *testing.T) {
 // WarnCascadeRules Tests
 // ============================================================================
 
+// TestWarnCascadeRules_WithCascade — REFERENCE SHAPE 2: a test that never programmed
+// SQL to begin with. The handle and the mock.ExpectationsWereMet() call were both
+// dead: with zero expectations that method returns nil unconditionally
+// (sqlmock.go:187), so it asserted nothing. What proves no query was issued is the
+// preloaded fact plus the specific assertion below — a stage that refetched would get
+// "validations: nil Querier" and fail it.
 func TestWarnCascadeRules_WithCascade(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	core, recorded := observer.New(zapcore.DebugLevel)
+	checker := newSourceOnlyChecker(g, "testdb")
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 	ctx := context.Background()
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
-				ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
-				ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
-		}},
-		fkOut: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
-				ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
-				ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
-		}},
-		fkInLoaded: true, fkOutLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkInLoaded, run.fkOutLoaded = true, true
+	run.fkIn = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
+			ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
+			ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
+	}}
+	run.fkOut = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
+			ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
+			ParentColumns: []string{"id"}, OnDelete: "CASCADE"},
+	}}
 
 	// Should not error, just warn
 	err := checker.WarnCascadeRules(ctx, run)
@@ -800,43 +815,57 @@ func TestWarnCascadeRules_WithCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WarnCascadeRules should not error: %v", err)
 	}
-	// No query is expected: WarnCascadeRules consumes only the preloaded facts.
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded facts: %v", err)
+
+	// The pair (WithCascade/NoCascade) is only meaningful if the log line actually
+	// names the fixture's cascading constraints — WarnCascadeRules returns nil in
+	// both cases, so err == nil alone cannot distinguish them.
+	const want = "ON DELETE CASCADE rules detected (2): " +
+		"[testdb.order_items.order_id->testdb.orders.id testdb.orders.user_id->testdb.users.id]"
+	var found bool
+	for _, entry := range recorded.FilterLevelExact(zapcore.WarnLevel).All() {
+		if entry.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want %q; warnings were: %v",
+			want, recorded.FilterLevelExact(zapcore.WarnLevel).All())
 	}
 }
 
 func TestWarnCascadeRules_NoCascade(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	core, recorded := observer.New(zapcore.DebugLevel)
+	checker := newSourceOnlyChecker(g, "testdb")
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 	ctx := context.Background()
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
-				ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
-				ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
-		}},
-		fkOut: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
-				ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
-				ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
-		}},
-		fkInLoaded: true, fkOutLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_orders_users", ChildSchema: "testdb", ChildTable: "orders",
+			ChildColumns: []string{"user_id"}, ParentSchema: "testdb", ParentTable: "users",
+			ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
+	}}
+	run.fkOut = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_items_orders", ChildSchema: "testdb", ChildTable: "order_items",
+			ChildColumns: []string{"order_id"}, ParentSchema: "testdb", ParentTable: "orders",
+			ParentColumns: []string{"id"}, OnDelete: "RESTRICT"},
+	}}
+	run.fkInLoaded, run.fkOutLoaded = true, true
 
 	err := checker.WarnCascadeRules(ctx, run)
 
 	if err != nil {
 		t.Fatalf("WarnCascadeRules failed: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded facts: %v", err)
+
+	// RESTRICT-only fixture: no cascade rules exist, so no cascade warning may be
+	// logged at any level. This is what the vacuous version of this test missed —
+	// it never looked at the log, so a build that always warned still passed.
+	for _, entry := range recorded.All() {
+		if strings.Contains(entry.Message, "ON DELETE CASCADE rules detected") {
+			t.Fatalf("no CASCADE rules were present in the fixture; got log: %q", entry.Message)
+		}
 	}
 }
 
@@ -857,29 +886,24 @@ func TestWarnCascadeRulesInspectionErrorIsPlain(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		run  func(c *PreflightChecker, g *graph.Graph) *preflightRun
+		run  func(r *preflightRun)
 	}{
-		{"incoming", func(c *PreflightChecker, g *graph.Graph) *preflightRun {
-			return &preflightRun{checker: c, tables: g.AllNodes(),
-				fkInErr: wantErr, fkInLoaded: true}
+		{"incoming", func(r *preflightRun) {
+			r.fkInErr, r.fkInLoaded = wantErr, true
 		}},
-		{"outgoing", func(c *PreflightChecker, g *graph.Graph) *preflightRun {
-			return &preflightRun{checker: c, tables: g.AllNodes(),
-				fkIn: validations.ForeignKeyResult{}, fkInLoaded: true,
-				fkOutErr: wantErr, fkOutLoaded: true}
+		{"outgoing", func(r *preflightRun) {
+			r.fkIn, r.fkInLoaded = validations.ForeignKeyResult{}, true
+			r.fkOutErr, r.fkOutLoaded = wantErr, true
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatalf("sqlmock.New: %v", err)
-			}
-			defer func() { _ = db.Close() }()
-
 			g := createPreflightTestGraph()
-			checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+			checker := newSourceOnlyChecker(g, "testdb")
 
-			err = checker.WarnCascadeRules(context.Background(), tc.run(checker, g))
+			run := newPreflightRun(checker)
+			tc.run(run)
+
+			err := checker.WarnCascadeRules(context.Background(), run)
 			if err == nil {
 				t.Fatal("expected an inspection error, got nil")
 			}
@@ -892,9 +916,6 @@ func TestWarnCascadeRulesInspectionErrorIsPlain(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "preflight cascade inspection failed") {
 				t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
-			}
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Fatalf("stage queried despite the preloaded facts: %v", err)
 			}
 		})
 	}
@@ -920,12 +941,6 @@ func TestWarnCascadeRulesInspectionErrorIsPlain(t *testing.T) {
 // Asserting the exact rendered slice is what makes all three fail; independent substring
 // checks would not.
 func TestWarnCascadeRulesSortsTheUnion(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	cascade := func(name, child string) validations.ForeignKey {
 		return validations.ForeignKey{
 			ConstraintName: name, ChildSchema: "srcdb", ChildTable: child,
@@ -937,15 +952,13 @@ func TestWarnCascadeRulesSortsTheUnion(t *testing.T) {
 
 	core, recorded := observer.New(zapcore.DebugLevel)
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	checker := newSourceOnlyChecker(g, "testdb")
 	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn:       validations.ForeignKeyResult{Keys: []validations.ForeignKey{zebra, middle}},
-		fkOut:      validations.ForeignKeyResult{Keys: []validations.ForeignKey{middle, alpha}},
-		fkInLoaded: true, fkOutLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{Keys: []validations.ForeignKey{zebra, middle}}
+	run.fkOut = validations.ForeignKeyResult{Keys: []validations.ForeignKey{middle, alpha}}
+	run.fkInLoaded, run.fkOutLoaded = true, true
 
 	if err := checker.WarnCascadeRules(context.Background(), run); err != nil {
 		t.Fatalf("WarnCascadeRules: %v", err)
@@ -964,9 +977,6 @@ func TestWarnCascadeRulesSortsTheUnion(t *testing.T) {
 		t.Fatalf("want %q; warnings were: %v",
 			want, recorded.FilterLevelExact(zapcore.WarnLevel).All())
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded facts: %v", err)
-	}
 }
 
 func TestConfigureDestination_Success(t *testing.T) {
@@ -983,7 +993,10 @@ func TestConfigureDestination_Success(t *testing.T) {
 		t.Fatalf("NewPreflightChecker failed: %v", err)
 	}
 
-	if err := checker.ConfigureDestination(destDB, "destdb", "destdb"); err != nil {
+	// destinationDBName and jobSchema must be distinct literals, or an assignment
+	// bug like p.jobSchemaName = destinationDBName (instead of jobSchema) is
+	// byte-identical and undetectable.
+	if err := checker.ConfigureDestination(destDB, "destdb", "jobschemadb"); err != nil {
 		t.Fatalf("ConfigureDestination failed: %v", err)
 	}
 
@@ -993,34 +1006,55 @@ func TestConfigureDestination_Success(t *testing.T) {
 	if checker.destinationDBName != "destdb" {
 		t.Fatalf("expected destinationDBName=destdb, got %s", checker.destinationDBName)
 	}
-	if checker.jobSchemaName != "destdb" {
-		t.Fatalf("expected jobSchemaName=destdb, got %s", checker.jobSchemaName)
+	if checker.jobSchemaName != "jobschemadb" {
+		t.Fatalf("expected jobSchemaName=jobschemadb, got %s", checker.jobSchemaName)
 	}
 }
 
+// TestValidateDestinationTablesExist_MissingTables — REFERENCE SHAPE 3: a
+// destination-side fact. ValidateDestinationTablesExist guards on
+// p.destinationDB == nil before it reads the run, so this one keeps a handle — a
+// deny-all stub from newDestChecker, whose control handle is discarded.
+//
+// This is the mapper's second and last caller-level test, so it asserts the check ID
+// and the flattened list rather than merely that an error came back.
 func TestValidateDestinationTablesExist_MissingTables(t *testing.T) {
-	sourceDB, _, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	// The table list now comes from the run, which reads it from the graph:
+	// The table list comes from the run, which reads it from the graph:
 	// createPreflightTestGraph's nodes are users, orders and order_items. Only
 	// "users" is reported back, so orders and order_items are missing.
-	destRows := sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-		AddRow("users", "BASE TABLE", "InnoDB")
-	destMock.ExpectQuery("information_schema.TABLES").
-		WithArgs("destdb").
-		WillReturnRows(destRows)
+	run := newPreflightRun(checker)
+	run.dstTables = []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+	}
+	run.dstTablesLoaded = true
 
-	err := checker.ValidateDestinationTablesExist(context.Background(), newPreflightRun(checker))
-	if err == nil {
-		t.Fatal("expected destination table existence error")
+	err := checker.ValidateDestinationTablesExist(context.Background(), run)
+
+	preflightErr, ok := err.(*PreflightError)
+	if !ok {
+		t.Fatalf("expected *PreflightError, got %T: %v", err, err)
+	}
+	if preflightErr.Check != "DEST_TABLE_EXISTENCE_CHECK" {
+		t.Errorf("Check = %q, want DEST_TABLE_EXISTENCE_CHECK", preflightErr.Check)
+	}
+	// Tables is fed by Graph.AllNodes(), which ranges over a map with no sort
+	// (internal/graph/types.go:133), so its order is not stable across runs — measured
+	// flaky ~8-10% of the time as a fixed-index check, which is why a single passing run
+	// proves nothing here. Length + set membership is the order-independent equivalent.
+	if len(preflightErr.Tables) != 2 {
+		t.Fatalf("Tables = %v, want length 2", preflightErr.Tables)
+	}
+	got := map[string]bool{}
+	for _, tbl := range preflightErr.Tables {
+		got[tbl] = true
+	}
+	for _, want := range []string{"orders", "order_items"} {
+		if !got[want] {
+			t.Errorf("Tables %v does not contain %q", preflightErr.Tables, want)
+		}
 	}
 }
 
@@ -1050,35 +1084,27 @@ func preloadedSchemaSpecPair(a, b []validations.ColumnSpec) specPair {
 }
 
 // runPreloadedSchemaCompatibilityCheck preloads run.specs with one table's spec pair and
-// calls the stage. No sqlmock expectations are registered on either pool: tableSpecs is
-// the fact acquisition boundary now, so a mismatch case exercises evaluateSchemaCompatibility
-// through the real stage without touching a database at all.
+// calls the stage. tableSpecs is the fact-acquisition boundary, so a mismatch case
+// exercises evaluateSchemaCompatibility through the real stage without touching a
+// database at all.
+//
+// The source handle is nil and the destination handle is newDestChecker's deny-all stub,
+// which ValidateDestinationSchemaCompatibility requires only because it guards on
+// p.destinationDB == nil before reading the run. A stage that ignored the preloaded specs
+// would get "validations: nil Querier" on the source side and fail its caller's
+// assertion — which is what proves no query was issued. The two
+// mock.ExpectationsWereMet() calls this helper used to make could not prove that: with
+// zero expectations programmed, that method returns nil unconditionally (sqlmock.go:187).
 func runPreloadedSchemaCompatibilityCheck(t *testing.T, sourceCols, destCols []validations.ColumnSpec) error {
 	t.Helper()
-	sourceDB, sourceMock, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
-		specsLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.specs = []specPair{preloadedSchemaSpecPair(sourceCols, destCols)}
+	run.specsLoaded = true
 
-	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
-	if serr := sourceMock.ExpectationsWereMet(); serr != nil {
-		t.Fatalf("stage queried the source despite the preloaded fact: %v", serr)
-	}
-	if derr := destMock.ExpectationsWereMet(); derr != nil {
-		t.Fatalf("stage queried the destination despite the preloaded fact: %v", derr)
-	}
-	return err
+	return checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 }
 
 // TestValidateDestinationSchemaCompatibility_Mismatch proves the stage surfaces a
@@ -1286,27 +1312,15 @@ func withCharset(c validations.ColumnSpec, charset, collation string) validation
 // memoized tableSpecs error must surface as a PLAIN error carrying goarchive's
 // "destination_schema_compatibility" inspection wrapper, never a *PreflightError.
 func TestValidateDestinationSchemaCompatibilityInspectionErrorIsPlain(t *testing.T) {
-	sourceDB, sourceMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = destDB.Close() }()
-
 	wantErr := errors.New("table spec fetch failed")
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		specsErr: wantErr, specsLoaded: true,
-	}
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	run := newPreflightRun(checker)
+	run.specsErr = wantErr
+	run.specsLoaded = true
+
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1320,12 +1334,6 @@ func TestValidateDestinationSchemaCompatibilityInspectionErrorIsPlain(t *testing
 	if !strings.Contains(err.Error(), "preflight destination_schema_compatibility inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := sourceMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the source despite the preloaded error: %v", err)
-	}
-	if err := destMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the destination despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateDestinationSchemaCompatibilityConsumesCachedFact — contract 3. The stage
@@ -1333,30 +1341,16 @@ func TestValidateDestinationSchemaCompatibilityInspectionErrorIsPlain(t *testing
 // expectations are registered on either pool, and the preloaded pair is deliberately
 // incompatible so the stage's own verdict, not an empty result, is what proves it ran.
 func TestValidateDestinationSchemaCompatibilityConsumesCachedFact(t *testing.T) {
-	sourceDB, sourceMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
 	sourceCols := []validations.ColumnSpec{specColT(1, "id", "bigint"), specColT(2, "name", "varchar(255)")}
 	destCols := []validations.ColumnSpec{specColT(1, "id", "bigint"), specColT(2, "name", "varchar(100)")} // mismatch
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
-		specsLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.specs = []specPair{preloadedSchemaSpecPair(sourceCols, destCols)}
+	run.specsLoaded = true
 
-	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected the preloaded mismatch to surface as an error")
 	}
@@ -1366,12 +1360,6 @@ func TestValidateDestinationSchemaCompatibilityConsumesCachedFact(t *testing.T) 
 	}
 	if pe.Check != "DEST_SCHEMA_COMPATIBILITY_CHECK" {
 		t.Fatalf("expected Check == DEST_SCHEMA_COMPATIBILITY_CHECK, got %q", pe.Check)
-	}
-	if err := sourceMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
-	}
-	if err := destMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
 	}
 }
 
@@ -1383,20 +1371,8 @@ func TestValidateDestinationSchemaCompatibilityConsumesCachedFact(t *testing.T) 
 // TestSchemaCompatUncapturedIndexesAbortBeforeDiffSpecs, and is what actually catches a
 // stage that swallows evaluateSchemaCompatibility's error (`verdict, _ := evaluate...`).
 func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailure(t *testing.T) {
-	sourceDB, sourceMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
 	pair := preloadedSchemaSpecPair(
 		[]validations.ColumnSpec{specColT(1, "id", "bigint")},
@@ -1404,12 +1380,11 @@ func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailur
 	)
 	pair.B.Captured = 0 // destination side never captured indexes
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		specs: []specPair{pair}, specsLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.specs = []specPair{pair}
+	run.specsLoaded = true
 
-	err = checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
+	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected the stage to abort on an inspection-integrity failure")
 	}
@@ -1422,12 +1397,6 @@ func TestValidateDestinationSchemaCompatibilityAbortsOnInspectionIntegrityFailur
 	}
 	if strings.Contains(err.Error(), "IndexUnconfirmed") {
 		t.Fatalf("the guard must run before DiffSpecs; this came from the diff loop: %v", err)
-	}
-	if err := sourceMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
-	}
-	if err := destMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
 	}
 }
 
@@ -1469,22 +1438,15 @@ func TestValidateDestinationWritePermissionsNamesTables(t *testing.T) {
 // TestValidateJobSchemaPermissionsInspectionErrorIsPlain; only the stage word and the
 // validator differ.
 func TestValidateDestinationWritePermissionsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("grants failed")
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders"},
-		dstGrantsErr: wantErr, dstGrantsLoaded: true,
-	}
+	g := graph.NewGraph("orders", "id")
+	p := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	err = p.ValidateDestinationWritePermissions(context.Background(), run)
+	run := newPreflightRun(p)
+	run.dstGrantsErr = wantErr
+	run.dstGrantsLoaded = true
+
+	err := p.ValidateDestinationWritePermissions(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1498,9 +1460,6 @@ func TestValidateDestinationWritePermissionsInspectionErrorIsPlain(t *testing.T)
 	if !strings.Contains(err.Error(), "preflight destination_write inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateDestinationWritePermissionsConsumesTheCachedFact proves the stage consumes
@@ -1513,21 +1472,15 @@ func TestValidateDestinationWritePermissionsInspectionErrorIsPlain(t *testing.T)
 // run.tables must be set: this validator reads run.graphTables(), and an empty slice
 // makes CheckTablePrivileges return no findings, passing this test vacuously.
 func TestValidateDestinationWritePermissionsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("lines", nil)
+	p := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), destinationDB: db, destinationDBName: "destdb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders", "lines"},
-		dstGrants: validations.Grants{}, dstGrantsLoaded: true,
-	}
+	run := newPreflightRun(p)
+	run.dstGrants = validations.Grants{}
+	run.dstGrantsLoaded = true
 
-	err = p.ValidateDestinationWritePermissions(context.Background(), run)
+	err := p.ValidateDestinationWritePermissions(context.Background(), run)
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
@@ -1546,9 +1499,6 @@ func TestValidateDestinationWritePermissionsConsumesTheCachedFact(t *testing.T) 
 			t.Errorf("Tables %v does not contain %q", pe.Tables, want)
 		}
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateSourceDeletePermissionsInspectionErrorIsPlain proves an inspection
@@ -1557,22 +1507,15 @@ func TestValidateDestinationWritePermissionsConsumesTheCachedFact(t *testing.T) 
 // TestValidateDestinationWritePermissionsInspectionErrorIsPlain; only the stage word,
 // the validator, and the source-side checker fields differ.
 func TestValidateSourceDeletePermissionsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("grants failed")
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders"},
-		srcGrantsErr: wantErr, srcGrantsLoaded: true,
-	}
+	g := graph.NewGraph("orders", "id")
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	err = p.ValidateSourceDeletePermissions(context.Background(), run)
+	run := newPreflightRun(p)
+	run.srcGrantsErr = wantErr
+	run.srcGrantsLoaded = true
+
+	err := p.ValidateSourceDeletePermissions(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1586,9 +1529,6 @@ func TestValidateSourceDeletePermissionsInspectionErrorIsPlain(t *testing.T) {
 	if !strings.Contains(err.Error(), "preflight source_delete inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateSourceDeletePermissionsConsumesTheCachedFact proves the stage consumes
@@ -1601,21 +1541,15 @@ func TestValidateSourceDeletePermissionsInspectionErrorIsPlain(t *testing.T) {
 // run.tables must be set: this validator reads run.graphTables(), and an empty slice
 // makes CheckTablePrivileges return no findings, passing this test vacuously.
 func TestValidateSourceDeletePermissionsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("lines", nil)
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders", "lines"},
-		srcGrants: validations.Grants{}, srcGrantsLoaded: true,
-	}
+	run := newPreflightRun(p)
+	run.srcGrants = validations.Grants{}
+	run.srcGrantsLoaded = true
 
-	err = p.ValidateSourceDeletePermissions(context.Background(), run)
+	err := p.ValidateSourceDeletePermissions(context.Background(), run)
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
@@ -1634,9 +1568,6 @@ func TestValidateSourceDeletePermissionsConsumesTheCachedFact(t *testing.T) {
 			t.Errorf("Tables %v does not contain %q", pe.Tables, want)
 		}
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateSourceSelectPermissionsInspectionErrorIsPlain proves an inspection
@@ -1645,22 +1576,15 @@ func TestValidateSourceDeletePermissionsConsumesTheCachedFact(t *testing.T) {
 // TestValidateSourceDeletePermissionsInspectionErrorIsPlain; only the stage word and
 // the validator differ.
 func TestValidateSourceSelectPermissionsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("grants failed")
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders"},
-		srcGrantsErr: wantErr, srcGrantsLoaded: true,
-	}
+	g := graph.NewGraph("orders", "id")
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	err = p.ValidateSourceSelectPermissions(context.Background(), run)
+	run := newPreflightRun(p)
+	run.srcGrantsErr = wantErr
+	run.srcGrantsLoaded = true
+
+	err := p.ValidateSourceSelectPermissions(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1674,9 +1598,6 @@ func TestValidateSourceSelectPermissionsInspectionErrorIsPlain(t *testing.T) {
 	if !strings.Contains(err.Error(), "preflight source_select inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateSourceSelectPermissionsConsumesTheCachedFact proves the stage consumes
@@ -1688,21 +1609,15 @@ func TestValidateSourceSelectPermissionsInspectionErrorIsPlain(t *testing.T) {
 // run.tables must be set: this validator reads run.graphTables(), and an empty slice
 // makes CheckTablePrivileges return no findings, passing this test vacuously.
 func TestValidateSourceSelectPermissionsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	g := graph.NewGraph("orders", "id")
+	g.AddNode("lines", nil)
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders", "lines"},
-		srcGrants: validations.Grants{}, srcGrantsLoaded: true,
-	}
+	run := newPreflightRun(p)
+	run.srcGrants = validations.Grants{}
+	run.srcGrantsLoaded = true
 
-	err = p.ValidateSourceSelectPermissions(context.Background(), run)
+	err := p.ValidateSourceSelectPermissions(context.Background(), run)
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
@@ -1721,9 +1636,6 @@ func TestValidateSourceSelectPermissionsConsumesTheCachedFact(t *testing.T) {
 			t.Errorf("Tables %v does not contain %q", pe.Tables, want)
 		}
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateForeignKeyIndexesInspectionErrorIsPlain — contract 2. Preload fkOutErr /
@@ -1732,22 +1644,15 @@ func TestValidateSourceSelectPermissionsConsumesTheCachedFact(t *testing.T) {
 // TestValidateSourceSelectPermissionsInspectionErrorIsPlain; only the stage word and the
 // validator differ.
 func TestValidateForeignKeyIndexesInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("fk fetch failed")
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
-	}
-	run := &preflightRun{
-		checker: p, tables: []string{"orders"},
-		fkOutErr: wantErr, fkOutLoaded: true,
-	}
+	g := graph.NewGraph("orders", "id")
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	err = p.ValidateForeignKeyIndexes(context.Background(), run)
+	run := newPreflightRun(p)
+	run.fkOutErr = wantErr
+	run.fkOutLoaded = true
+
+	err := p.ValidateForeignKeyIndexes(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1761,9 +1666,6 @@ func TestValidateForeignKeyIndexesInspectionErrorIsPlain(t *testing.T) {
 	if !strings.Contains(err.Error(), "preflight fk_index inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateForeignKeyIndexesConsumesTheCachedFact — contract 3. Preload fkOut with an
@@ -1775,27 +1677,19 @@ func TestValidateForeignKeyIndexesInspectionErrorIsPlain(t *testing.T) {
 // empty fact yields no findings, and the test would pass vacuously against a stage that
 // never consulted the fact at all.
 func TestValidateForeignKeyIndexesConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	g := graph.NewGraph("order_lines", "id")
+	p := newSourceOnlyChecker(g, "sourcedb")
 
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), db: db, sourceDBName: "sourcedb",
+	run := newPreflightRun(p)
+	run.fkOut = validations.ForeignKeyResult{
+		Keys: []validations.ForeignKey{{
+			ConstraintName: "fk_ol_o", ChildSchema: "sourcedb", ChildTable: "order_lines",
+			ChildColumns: []string{"order_id"}, ParentTable: "orders", Indexed: false,
+		}},
 	}
-	run := &preflightRun{
-		checker: p, tables: []string{"order_lines"},
-		fkOut: validations.ForeignKeyResult{
-			Keys: []validations.ForeignKey{{
-				ConstraintName: "fk_ol_o", ChildSchema: "sourcedb", ChildTable: "order_lines",
-				ChildColumns: []string{"order_id"}, ParentTable: "orders", Indexed: false,
-			}},
-		},
-		fkOutLoaded: true,
-	}
+	run.fkOutLoaded = true
 
-	err = p.ValidateForeignKeyIndexes(context.Background(), run)
+	err := p.ValidateForeignKeyIndexes(context.Background(), run)
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
@@ -1806,29 +1700,19 @@ func TestValidateForeignKeyIndexesConsumesTheCachedFact(t *testing.T) {
 	if len(pe.Tables) != 1 || pe.Tables[0] != "order_lines.order_id" {
 		t.Fatalf("Tables = %v, want [order_lines.order_id]", pe.Tables)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
-	sourceDB, _, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, log)
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 
-	destMock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("destdb", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}).AddRow("users", "trg_users_insert", "INSERT", "BEFORE"))
+	run := newPreflightRun(checker)
+	run.dstInsTriggers = []validations.TriggerInfo{
+		{Table: "users", Name: "trg_users_insert", Event: "INSERT", Timing: "BEFORE"},
+	}
+	run.dstInsTriggersLoaded = true
 
-	err := checker.ValidateDestinationInsertTriggers(context.Background(), newPreflightRun(checker))
+	err := checker.ValidateDestinationInsertTriggers(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected destination INSERT trigger error")
 	}
@@ -1847,25 +1731,20 @@ func TestValidateDestinationInsertTriggers_WithTriggers(t *testing.T) {
 // ValidateForeignKeyCoverage now reads validations.ForeignKeyResult via
 // run.fkIncoming, not the deleted raw information_schema query.
 func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn: validations.ForeignKeyResult{
-			Keys: []validations.ForeignKey{
-				{ConstraintName: "fk_ext_orders_1", ChildSchema: "testdb", ChildTable: "external_cascade",
-					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "CASCADE"},
-				{ConstraintName: "fk_ext_orders_2", ChildSchema: "testdb", ChildTable: "external_restrict",
-					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
-			},
-			Visibility: validations.VisibilityComplete,
+	checker := newSourceOnlyChecker(g, "testdb")
+
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{
+		Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_ext_orders_1", ChildSchema: "testdb", ChildTable: "external_cascade",
+				ParentSchema: "testdb", ParentTable: "orders", OnDelete: "CASCADE"},
+			{ConstraintName: "fk_ext_orders_2", ChildSchema: "testdb", ChildTable: "external_restrict",
+				ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
 		},
-		fkInLoaded: true,
+		Visibility: validations.VisibilityComplete,
 	}
+	run.fkInLoaded = true
 
 	err := checker.ValidateForeignKeyCoverage(context.Background(), run)
 	if err == nil {
@@ -1885,9 +1764,6 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 	if !strings.Contains(preflightErr.Error(), "ON DELETE RESTRICT") {
 		t.Fatalf("expected RESTRICT rule in error message, got: %v", preflightErr)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateForeignKeyCoverage_CrossSchemaSameNameChild proves an out-of-graph
@@ -1895,25 +1771,20 @@ func TestValidateForeignKeyCoverage_FailsForUncoveredCascadeAndRestrict(t *testi
 // (otherdb.orders vs in-graph orders) is still flagged: membership must be
 // schema-aware, not bare-name. Preloads the run's fkIn fact directly, same as above.
 func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph() // graph = {users, orders, order_items} in "testdb"
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
+	checker := newSourceOnlyChecker(g, "testdb")
 	ctx := context.Background()
 
 	// otherdb.orders (out-of-graph) references in-graph testdb.users.
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn: validations.ForeignKeyResult{
-			Keys: []validations.ForeignKey{
-				{ConstraintName: "fk_other_users", ChildSchema: "otherdb", ChildTable: "orders",
-					ParentSchema: "testdb", ParentTable: "users", OnDelete: "CASCADE"},
-			},
-			Visibility: validations.VisibilityComplete,
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{
+		Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_other_users", ChildSchema: "otherdb", ChildTable: "orders",
+				ParentSchema: "testdb", ParentTable: "users", OnDelete: "CASCADE"},
 		},
-		fkInLoaded: true,
+		Visibility: validations.VisibilityComplete,
 	}
+	run.fkInLoaded = true
 
 	err := checker.ValidateForeignKeyCoverage(ctx, run)
 	if err == nil {
@@ -1925,9 +1796,6 @@ func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 	if !strings.Contains(err.Error(), "otherdb") {
 		t.Fatalf("expected error to qualify the child schema, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // ============================================================================
@@ -1938,21 +1806,15 @@ func TestValidateForeignKeyCoverage_CrossSchemaSameNameChild(t *testing.T) {
 // memoized fkIncoming error must surface as a PLAIN error carrying goarchive's
 // "fk_metadata_visibility" inspection wrapper, never a *PreflightError.
 func TestValidateForeignKeyMetadataVisibilityInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("fk fetch failed")
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkInErr: wantErr, fkInLoaded: true,
-	}
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	err = checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
+	run := newPreflightRun(checker)
+	run.fkInErr = wantErr
+	run.fkInLoaded = true
+
+	err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -1966,9 +1828,6 @@ func TestValidateForeignKeyMetadataVisibilityInspectionErrorIsPlain(t *testing.T
 	if !strings.Contains(err.Error(), "preflight fk_metadata_visibility inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact — contract 3, and the
@@ -1979,15 +1838,12 @@ func TestValidateForeignKeyMetadataVisibilityInspectionErrorIsPlain(t *testing.T
 // vacuously, for an empty target) and registering ZERO sqlmock expectations proves the
 // stage judges the cached fact, not a fresh query.
 func TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn:       validations.ForeignKeyResult{Visibility: validations.VisibilityUnconfirmed},
-		fkInLoaded: true,
-	}
+	checker := newSourceOnlyChecker(g, "testdb")
+
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{Visibility: validations.VisibilityUnconfirmed}
+	run.fkInLoaded = true
 
 	err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
 	if err == nil {
@@ -1996,29 +1852,37 @@ func TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact(t *testing.T)
 	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_VISIBILITY_CHECK" {
 		t.Fatalf("expected FK_COVERAGE_VISIBILITY_CHECK, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete is Step 6's
 // positive counterpart: VisibilityComplete preloaded, zero sqlmock expectations.
+// The pass/fail err check alone cannot distinguish "the PASSED branch ran" from any
+// other code path that happens to return nil, so this also asserts the specific debug
+// log line that only that branch emits — the success-case analogue of reference shape
+// 3's check-ID strengthening (there is no *PreflightError to inspect on the nil path).
 func TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn:       validations.ForeignKeyResult{Visibility: validations.VisibilityComplete},
-		fkInLoaded: true,
-	}
+	checker := newSourceOnlyChecker(g, "testdb")
+	core, recorded := observer.New(zapcore.DebugLevel)
+	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
+
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{Visibility: validations.VisibilityComplete}
+	run.fkInLoaded = true
 
 	if err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run); err != nil {
 		t.Fatalf("expected pass with VisibilityComplete, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
+
+	const want = "FK metadata visibility check PASSED (InnoDB metadata registry readable)"
+	var found bool
+	for _, entry := range recorded.FilterLevelExact(zapcore.DebugLevel).All() {
+		if entry.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want debug log %q; logs were: %v", want, recorded.All())
 	}
 }
 
@@ -2026,21 +1890,13 @@ func TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete(t *testi
 // fkIncoming error must surface as a PLAIN error carrying goarchive's "fk_coverage"
 // inspection wrapper, never a *PreflightError.
 func TestValidateForeignKeyCoverageInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("fk fetch failed")
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkInErr: wantErr, fkInLoaded: true,
-	}
+	checker := newSourceOnlyChecker(g, "testdb")
+	run := newPreflightRun(checker)
+	run.fkInErr, run.fkInLoaded = wantErr, true
 
-	err = checker.ValidateForeignKeyCoverage(context.Background(), run)
+	err := checker.ValidateForeignKeyCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -2054,9 +1910,6 @@ func TestValidateForeignKeyCoverageInspectionErrorIsPlain(t *testing.T) {
 	if !strings.Contains(err.Error(), "preflight fk_coverage inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateForeignKeyCoverageConsumesTheCachedFact — contract 3. Preload fkIn with
@@ -2064,21 +1917,17 @@ func TestValidateForeignKeyCoverageInspectionErrorIsPlain(t *testing.T) {
 // that re-queried would get no match, return a plain error, and fail the
 // *PreflightError assertion below.
 func TestValidateForeignKeyCoverageConsumesTheCachedFact(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkIn: validations.ForeignKeyResult{
-			Keys: []validations.ForeignKey{
-				{ConstraintName: "fk_ext_orders", ChildSchema: "testdb", ChildTable: "external_child",
-					ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
-			},
-			Visibility: validations.VisibilityComplete,
+	checker := newSourceOnlyChecker(g, "testdb")
+	run := newPreflightRun(checker)
+	run.fkIn = validations.ForeignKeyResult{
+		Keys: []validations.ForeignKey{
+			{ConstraintName: "fk_ext_orders", ChildSchema: "testdb", ChildTable: "external_child",
+				ParentSchema: "testdb", ParentTable: "orders", OnDelete: "RESTRICT"},
 		},
-		fkInLoaded: true,
+		Visibility: validations.VisibilityComplete,
 	}
+	run.fkInLoaded = true
 
 	err := checker.ValidateForeignKeyCoverage(context.Background(), run)
 	if err == nil {
@@ -2086,9 +1935,6 @@ func TestValidateForeignKeyCoverageConsumesTheCachedFact(t *testing.T) {
 	}
 	if pfErr, ok := err.(*PreflightError); !ok || pfErr.Check != "FK_COVERAGE_CHECK" {
 		t.Fatalf("expected FK_COVERAGE_CHECK, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2100,11 +1946,8 @@ func TestValidateForeignKeyCoverageConsumesTheCachedFact(t *testing.T) {
 // contract-3 proof: the preloaded fact plus ZERO registered sqlmock expectations
 // proves the stage judges the cached fkWithin fact rather than issuing its own query.
 func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Graph: orders -> order_items, orders -> item_shipments (flat, both siblings)
-	// But DB has: item_shipments.item_id -> order_items.item_id (nested FK)
+	// But DB has: item_shipments.shipment_item_id -> order_items.item_id (nested FK)
 	g := graph.NewGraph("orders", "order_id")
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
 	g.AddNode("item_shipments", &graph.Node{Name: "item_shipments", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
@@ -2113,23 +1956,23 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	g.AddEdgeWithMeta("orders", "order_items", "order_id", "order_id", "1-N")
 	g.AddEdgeWithMeta("orders", "item_shipments", "order_id", "order_id", "1-N")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	// DB reports an FK from item_shipments.item_id -> order_items.item_id
-	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items)
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-			{ConstraintName: "fk_ship_orders", ChildTable: "item_shipments", ChildColumns: []string{"order_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
-				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	// DB reports an FK from item_shipments.shipment_item_id -> order_items.item_id
+	// This FK is NOT represented in the graph (item_shipments is sibling, not child of order_items).
+	// Child and parent column names are deliberately distinct so that swapping
+	// childColumn/parentColumn in reconcileInternalFKs produces a different, and
+	// therefore detectable, message.
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		{ConstraintName: "fk_ship_orders", ChildTable: "item_shipments", ChildColumns: []string{"order_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"shipment_item_id"},
+			ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
@@ -2143,21 +1986,19 @@ func TestValidateInternalFKCoverage_FlatConfigMissingNesting(t *testing.T) {
 	if preflightErr.Check != "INTERNAL_FK_COVERAGE" {
 		t.Fatalf("expected INTERNAL_FK_COVERAGE check, got %s", preflightErr.Check)
 	}
-	if !strings.Contains(preflightErr.Error(), "item_shipments") {
-		t.Fatalf("expected error to mention item_shipments, got: %v", preflightErr)
+	// Distinct child/parent column names in the fixture mean this assertion only
+	// passes if the message names them in the correct child -> parent order; a
+	// swap of childColumn/parentColumn in reconcileInternalFKs would instead
+	// produce "item_shipments.item_id -> order_items.shipment_item_id".
+	if !strings.Contains(preflightErr.Error(), "item_shipments.shipment_item_id -> order_items.item_id") {
+		t.Fatalf("expected error to name child->parent columns in order, got: %v", preflightErr)
 	}
 	if !strings.Contains(preflightErr.Error(), "no graph edge") {
 		t.Fatalf("expected 'no graph edge' reason, got: %v", preflightErr)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Graph: orders -> order_items -> item_shipments (properly nested)
 	g := graph.NewGraph("orders", "order_id")
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
@@ -2167,33 +2008,24 @@ func TestValidateInternalFKCoverage_ProperlyNestedConfig(t *testing.T) {
 	g.AddEdgeWithMeta("orders", "order_items", "order_id", "order_id", "1-N")
 	g.AddEdgeWithMeta("order_items", "item_shipments", "item_id", "item_id", "1-N")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
-				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+			ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error for properly nested config, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Graph: orders -> payments with FK column "cust_id"
 	// But DB has: payments.customer_id -> orders.order_id
 	g := graph.NewGraph("orders", "order_id")
@@ -2201,17 +2033,14 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 	g.SetPK("payments", "payment_id")
 	g.AddEdgeWithMeta("orders", "payments", "cust_id", "order_id", "1-N")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
@@ -2231,15 +2060,9 @@ func TestValidateInternalFKCoverage_WrongFKColumn(t *testing.T) {
 	if !strings.Contains(preflightErr.Error(), "DB has 'customer_id'") {
 		t.Fatalf("expected DB column in error, got: %v", preflightErr)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Graph: orders (PK: order_id) -> line_items with FK "order_id" referencing "order_id"
 	// But DB has: line_items.order_id -> orders.id (different referenced column)
 	g := graph.NewGraph("orders", "order_id")
@@ -2247,17 +2070,14 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 	g.SetPK("line_items", "line_id")
 	g.AddEdgeWithMeta("orders", "line_items", "order_id", "order_id", "1-N")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_line_orders", ChildTable: "line_items", ChildColumns: []string{"order_id"},
-				ParentTable: "orders", ParentColumns: []string{"id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_line_orders", ChildTable: "line_items", ChildColumns: []string{"order_id"},
+			ParentTable: "orders", ParentColumns: []string{"id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
@@ -2277,9 +2097,6 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 	if !strings.Contains(preflightErr.Error(), "DB references 'id'") {
 		t.Fatalf("expected DB reference in error, got: %v", preflightErr)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateInternalFKCoverage_NoInternalFKs preloads an EMPTY ForeignKeyResult, not
@@ -2287,53 +2104,35 @@ func TestValidateInternalFKCoverage_WrongReferenceColumn(t *testing.T) {
 // set, so seeding it with a key the Within selector could never return would violate the
 // accessor's own fact contract and test a state that cannot occur.
 func TestValidateInternalFKCoverage_NoInternalFKs(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi:       validations.ForeignKeyResult{},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error when no internal FKs exist, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := graph.NewGraph("categories", "id")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
 	// Self-referencing FK: categories.parent_id -> categories.id
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_cat_parent", ChildTable: "categories", ChildColumns: []string{"parent_id"},
-				ParentTable: "categories", ParentColumns: []string{"id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_cat_parent", ChildTable: "categories", ChildColumns: []string{"parent_id"},
+			ParentTable: "categories", ParentColumns: []string{"id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err != nil {
 		t.Fatalf("expected no error for self-referencing FK, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2342,9 +2141,6 @@ func TestValidateInternalFKCoverage_SelfReferencingFK(t *testing.T) {
 // "  - p"). Asserting the exact adjacent block is what fails if the sort is removed —
 // two independent strings.Contains checks would not.
 func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	// Graph: orders -> order_items, orders -> item_shipments (flat), orders -> payments (wrong FK col)
 	g := graph.NewGraph("orders", "order_id")
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "order_id", DependencyType: "1-N"})
@@ -2357,23 +2153,20 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 	g.AddEdgeWithMeta("orders", "item_shipments", "order_id", "order_id", "1-N")
 	g.AddEdgeWithMeta("orders", "payments", "wrong_col", "order_id", "1-N")
 
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
 
 	// Facts are supplied payments-first, then item_shipments, then order_items (the
 	// third matches its edge and yields no line, exactly as in the 1.8 fixture).
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWi: validations.ForeignKeyResult{Keys: []validations.ForeignKey{
-			{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-			{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
-				ParentTable: "order_items", ParentColumns: []string{"item_id"}},
-			{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
-				ParentTable: "orders", ParentColumns: []string{"order_id"}},
-		}},
-		fkWiLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.fkWi = validations.ForeignKeyResult{Keys: []validations.ForeignKey{
+		{ConstraintName: "fk_pay_orders", ChildTable: "payments", ChildColumns: []string{"customer_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+		{ConstraintName: "fk_ship_items", ChildTable: "item_shipments", ChildColumns: []string{"item_id"},
+			ParentTable: "order_items", ParentColumns: []string{"item_id"}},
+		{ConstraintName: "fk_items_orders", ChildTable: "order_items", ChildColumns: []string{"order_id"},
+			ParentTable: "orders", ParentColumns: []string{"order_id"}},
+	}}
+	run.fkWiLoaded = true
 
 	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
@@ -2390,30 +2183,19 @@ func TestValidateInternalFKCoverage_MultipleFailures(t *testing.T) {
 	if !strings.Contains(preflightErr.Error(), wantBlock) {
 		t.Fatalf("discrepancies must appear sorted; got:\n%s", preflightErr.Error())
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateInternalFKCoverageInspectionErrorIsPlain — contract 2. A memoized
 // fkWithin error must surface as a PLAIN error carrying goarchive's
 // "internal_fk_coverage" inspection wrapper, never a *PreflightError.
 func TestValidateInternalFKCoverageInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("fk fetch failed")
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		fkWiErr: wantErr, fkWiLoaded: true,
-	}
+	checker := newSourceOnlyChecker(g, "testdb")
+	run := newPreflightRun(checker)
+	run.fkWiErr, run.fkWiLoaded = wantErr, true
 
-	err = checker.ValidateInternalFKCoverage(context.Background(), run)
+	err := checker.ValidateInternalFKCoverage(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -2426,9 +2208,6 @@ func TestValidateInternalFKCoverageInspectionErrorIsPlain(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "preflight internal_fk_coverage inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
 	}
 }
 
@@ -2449,12 +2228,12 @@ func TestPreflightError_Error(t *testing.T) {
 	}
 
 	// Should contain check name
-	if msg == "" || len(msg) < len("TEST_CHECK") {
+	if !strings.Contains(msg, "TEST_CHECK") {
 		t.Errorf("Expected error to contain check name, got: %s", msg)
 	}
 
 	// Should contain tables
-	if msg == "" || len(msg) < len("table1") {
+	if !strings.Contains(msg, "table1") || !strings.Contains(msg, "table2") {
 		t.Errorf("Expected error to contain table names, got: %s", msg)
 	}
 }
@@ -2466,8 +2245,9 @@ func TestPreflightError_ErrorNoTables(t *testing.T) {
 	}
 
 	msg := err.Error()
-	if msg == "" {
-		t.Error("Expected non-empty error message")
+	want := "TEST_CHECK: test message"
+	if msg != want {
+		t.Errorf("expected error %q, got %q", want, msg)
 	}
 }
 
@@ -2476,24 +2256,16 @@ func TestPreflightError_ErrorNoTables(t *testing.T) {
 // phase adds the matching end-to-end assertion (chrAssertRawTables) to phase 004's
 // characterization; this test is the unit-level guard for the same property.
 func TestValidateStorageEngineReportsEngineInDecoration(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("orders", "BASE TABLE", "MyISAM"))
-
 	g := graph.NewGraph("orders", "id")
-	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	p := newSourceOnlyChecker(g, "srcdb")
 
 	run := newPreflightRun(p)
-	err = p.ValidateStorageEngine(context.Background(), run)
+	run.srcTables = []validations.TableInfo{
+		{Table: "orders", Type: "BASE TABLE", Engine: "MyISAM"},
+	}
+	run.srcTablesLoaded = true
+
+	err := p.ValidateStorageEngine(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -2515,20 +2287,16 @@ func TestValidateStorageEngineReportsEngineInDecoration(t *testing.T) {
 // ValidateStorageEngine that returns nil unconditionally. Its partner above is what
 // proves the check still fires. See Step 8's mutants.
 func TestValidateStorageEngineIgnoresCase(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("orders", "BASE TABLE", "innodb"))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	if err := p.ValidateStorageEngine(context.Background(), newPreflightRun(p)); err != nil {
+	run := newPreflightRun(p)
+	run.srcTables = []validations.TableInfo{
+		{Table: "orders", Type: "BASE TABLE", Engine: "innodb"},
+	}
+	run.srcTablesLoaded = true
+
+	if err := p.ValidateStorageEngine(context.Background(), run); err != nil {
 		t.Fatalf("expected engine 'innodb' to pass under ASCII folding, got: %v", err)
 	}
 }
@@ -2543,22 +2311,27 @@ func TestValidateStorageEngineIgnoresCase(t *testing.T) {
 // so the storage-engine inspection branch is unreachable end-to-end — which is exactly
 // why characterization_matrix_integration_test.go's SCOPE CAVEAT requires each of
 // phases 013-031 to assert this shape at unit level for the check it replaces.
+// TestValidateStorageEngineInspectionErrorIsPlain — REFERENCE SHAPE 4: a preloaded
+// fact ERROR. Every fact has a companion *Err field, so a load failure is injected
+// rather than mocked.
+//
+// The sentinel is load-bearing, not stylistic: this test's own assertion is only "some
+// plain error", so without errors.Is a stray query — which also yields a plain error —
+// would be indistinguishable from the injected failure. That makes this strictly
+// stronger than the WillReturnError mock it replaces.
 func TestValidateStorageEngineInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnError(errors.New("query failed"))
+	errInspect := errors.New("query failed")
 
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidateStorageEngine(context.Background(), newPreflightRun(p))
-	if err == nil {
-		t.Fatal("expected an inspection error, got nil")
+	run := newPreflightRun(p)
+	run.srcTablesErr = errInspect
+	run.srcTablesLoaded = true
+
+	err := p.ValidateStorageEngine(context.Background(), run)
+	if !errors.Is(err, errInspect) {
+		t.Fatalf("the memoized load error must propagate, got: %v", err)
 	}
 	var pe *PreflightError
 	if errors.As(err, &pe) {
@@ -2573,34 +2346,21 @@ func TestValidateStorageEngineInspectionErrorIsPlain(t *testing.T) {
 // and a standing non-negotiable: the stage issues NO query of its own, because the fact
 // was already acquired by the existence check at position 1.
 //
-// Exactly ONE expectation is registered and the explicit pre-load consumes it. An
-// implementation that ignored `run` and built its own Inspector would issue a second
-// query, receive "all expectations were already fulfilled", and return that as an
-// inspection error — a plain error, so the *PreflightError assertion below fails.
-//
-// Note what does NOT work here: mock.ExpectationsWereMet() cannot detect the re-query,
-// because the single expectation is consumed either way. The VERDICT is what
-// discriminates, not the expectation bookkeeping.
+// The checker carries no database handle at all (newSourceOnlyChecker): an
+// implementation that ignored `run` and built its own Inspector would hit
+// "validations: nil Querier" — a plain error — so the *PreflightError assertion below
+// fails. The VERDICT is what discriminates, not any mock bookkeeping.
 func TestValidateStorageEngineConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("orders", "BASE TABLE", "MyISAM"))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
 	run := newPreflightRun(p)
-	if _, err := run.sourceTables(context.Background()); err != nil {
-		t.Fatalf("pre-load of the source fact failed: %v", err)
+	run.srcTables = []validations.TableInfo{
+		{Table: "orders", Type: "BASE TABLE", Engine: "MyISAM"},
 	}
+	run.srcTablesLoaded = true
 
-	err = p.ValidateStorageEngine(context.Background(), run)
+	err := p.ValidateStorageEngine(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -2624,20 +2384,16 @@ func TestValidateStorageEngineConsumesTheCachedFact(t *testing.T) {
 // released decoration to preserve, and "orders()" would read as a formatting defect
 // while concealing the fact being reported.
 func TestValidateStorageEngineNullEngineIsUnknown(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("orders", "BASE TABLE", nil))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidateStorageEngine(context.Background(), newPreflightRun(p))
+	run := newPreflightRun(p)
+	run.srcTables = []validations.TableInfo{
+		{Table: "orders", Type: "BASE TABLE", Engine: ""},
+	}
+	run.srcTablesLoaded = true
+
+	err := p.ValidateStorageEngine(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -2671,8 +2427,9 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 
 	err := checker.ValidateTablesExist(ctx, run)
 
-	if err == nil {
-		t.Error("Expected error for cancelled context")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error chain to contain context.Canceled (cancellation must "+
+			"propagate, not just any query failure), got: %v", err)
 	}
 }
 
@@ -2681,28 +2438,40 @@ func TestValidateTablesExist_ContextCancellation(t *testing.T) {
 // ============================================================================
 
 func TestDestinationMethods_NilDestination(t *testing.T) {
-	db, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("Failed to create mock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
 	log := logger.NewDefault()
-	checker, err := NewPreflightChecker(db, "sourcedb", g, log)
-	if err != nil {
-		t.Fatalf("NewPreflightChecker failed: %v", err)
+	// destinationDB stays nil, but destinationDBName is deliberately non-empty
+	// (unlike the old fixture, which left both unset) so the two conditions are
+	// separable: a guard mistakenly keyed on destinationDBName would not trip
+	// here. Built directly since this is package archiver and
+	// NewPreflightChecker/ConfigureDestination refuse a nil destination handle.
+	// The source db stays nil too: all four guards below trip on
+	// p.destinationDB == nil before ever reading p.db or the run.
+	checker := &PreflightChecker{
+		db:                nil,
+		sourceDBName:      "sourcedb",
+		destinationDB:     nil,
+		destinationDBName: "destdb",
+		graph:             g,
+		logger:            log,
 	}
-	// Do NOT call ConfigureDestination - destinationDB stays nil
 
 	ctx := context.Background()
 
-	err = checker.ValidateDestinationTablesExist(ctx, newPreflightRun(checker))
+	err := checker.ValidateDestinationTablesExist(ctx, newPreflightRun(checker))
 	if err == nil {
 		t.Fatal("ValidateDestinationTablesExist should return error when destination is nil")
 	}
 	if !strings.Contains(err.Error(), "destination database not configured") {
 		t.Errorf("Unexpected error message: %v", err)
+	}
+	// The outer p.destinationDB == nil guard must short-circuit before destTables'
+	// inner dstInspector == nil guard ever runs. If it didn't, the identical text
+	// would come back wrapped by inspectionError("destination_table_existence",
+	// ...), which a substring check can't tell apart from the plain guard error but
+	// an exact match can.
+	if err.Error() != "destination database not configured; call ConfigureDestination first" {
+		t.Errorf("expected the outer guard's plain, unwrapped error, got: %v", err)
 	}
 
 	err = checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker))
@@ -2731,14 +2500,8 @@ func TestDestinationMethods_NilDestination(t *testing.T) {
 }
 
 func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
-	sourceDB, sourceMock, _ := sqlmock.New()
-	defer func() { _ = sourceDB.Close() }()
-	destDB, destMock, _ := sqlmock.New()
-	defer func() { _ = destDB.Close() }()
-
 	g := createPreflightTestGraph()
-	checker, _ := NewPreflightChecker(sourceDB, "sourcedb", g, logger.NewDefault())
-	_ = checker.ConfigureDestination(destDB, "destdb", "destdb")
+	checker := newDestChecker(t, g, "sourcedb", "destdb", "destdb")
 	checker.SetVerification(config.VerificationConfig{Method: "sha256", SkipVerification: false})
 
 	sourceCols := []validations.ColumnSpec{
@@ -2747,21 +2510,13 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 	destCols := []validations.ColumnSpec{
 		withCharset(specColT(1, "name", "varchar(255)"), "latin1", "latin1_swedish_ci"),
 	}
-	run := &preflightRun{
-		checker: checker, tables: g.AllNodes(),
-		specs:       []specPair{preloadedSchemaSpecPair(sourceCols, destCols)},
-		specsLoaded: true,
-	}
+	run := newPreflightRun(checker)
+	run.specs = []specPair{preloadedSchemaSpecPair(sourceCols, destCols)}
+	run.specsLoaded = true
 
 	err := checker.ValidateDestinationSchemaCompatibility(context.Background(), run)
 	if err != nil {
 		t.Fatalf("charset mismatch should be allowed (warn) under sha256 verification, got: %v", err)
-	}
-	if err := sourceMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the source despite the preloaded fact: %v", err)
-	}
-	if err := destMock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried the destination despite the preloaded fact: %v", err)
 	}
 }
 
@@ -2785,9 +2540,16 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 
 // TestValidateJobSchemaPermissions_NilDestination proves the stage's own
 // destinationDB == nil guard returns before ever touching the run, so a nil run is
-// safe to pass here.
+// safe to pass here. destinationDBName is deliberately non-empty (unlike the old
+// fixture, which left both unset) so a guard mistakenly keyed on
+// destinationDBName instead of destinationDB would not trip here and would go on
+// to dereference the nil run.
 func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
-	p := &PreflightChecker{logger: logger.NewDefault(), jobSchemaName: "goarchive"}
+	p := &PreflightChecker{
+		logger:            logger.NewDefault(),
+		jobSchemaName:     "goarchive",
+		destinationDBName: "destdb",
+	}
 	err := p.ValidateJobSchemaPermissions(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil destination")
@@ -2803,22 +2565,16 @@ func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
 // this means "we could not find out". The raw error contains neither "job_schema" nor
 // the wrapper text, so an unwrapped `return err` cannot pass this test.
 func TestValidateJobSchemaPermissionsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("grants failed")
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), destinationDB: db,
-		destinationDBName: "destdb", jobSchemaName: "jobs",
-	}
-	run := &preflightRun{
-		checker: p, dstGrantsErr: wantErr, dstGrantsLoaded: true,
-	}
 
-	err = p.ValidateJobSchemaPermissions(context.Background(), run)
+	g := createPreflightTestGraph()
+	p := newDestChecker(t, g, "", "destdb", "jobs")
+
+	run := newPreflightRun(p)
+	run.dstGrantsErr = wantErr
+	run.dstGrantsLoaded = true
+
+	err := p.ValidateJobSchemaPermissions(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
 	}
@@ -2832,9 +2588,6 @@ func TestValidateJobSchemaPermissionsInspectionErrorIsPlain(t *testing.T) {
 	if !strings.Contains(err.Error(), "preflight job_schema inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded error: %v", err)
-	}
 }
 
 // TestValidateJobSchemaPermissionsConsumesTheCachedFact proves the stage reads the
@@ -2846,21 +2599,14 @@ func TestValidateJobSchemaPermissionsInspectionErrorIsPlain(t *testing.T) {
 // queried again, sqlmock would return an unexpected-query inspection error and the
 // *PreflightError assertion below would fail.
 func TestValidateJobSchemaPermissionsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
+	g := createPreflightTestGraph()
+	p := newDestChecker(t, g, "", "destdb", "jobs")
 
-	p := &PreflightChecker{
-		logger: logger.NewDefault(), destinationDB: db,
-		destinationDBName: "destdb", jobSchemaName: "jobs",
-	}
-	run := &preflightRun{
-		checker: p, dstGrants: validations.Grants{}, dstGrantsLoaded: true,
-	}
+	run := newPreflightRun(p)
+	run.dstGrants = validations.Grants{}
+	run.dstGrantsLoaded = true
 
-	err = p.ValidateJobSchemaPermissions(context.Background(), run)
+	err := p.ValidateJobSchemaPermissions(context.Background(), run)
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *PreflightError from the cached fact, got %T: %v", err, err)
@@ -2875,31 +2621,26 @@ func TestValidateJobSchemaPermissionsConsumesTheCachedFact(t *testing.T) {
 			t.Errorf("message %q does not contain %q", pe.Message, want)
 		}
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("stage queried despite the preloaded fact: %v", err)
-	}
 }
 
 // TestValidateNoInvisibleColumns_Rejected proves a participating table with an
 // INVISIBLE column is rejected: SELECT * would silently omit it from both the
 // copy and the verification hash, so it must be caught before any archive.
 func TestValidateNoInvisibleColumns_Rejected(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	checker := newSourceOnlyChecker(createPreflightTestGraph(), "testdb")
 	ctx := context.Background()
 
-	// P1 correction (phase 018 review): the check now derives from the general column
-	// fact instead of its own InvisibleColumns query. createPreflightTestGraph is a
-	// three-node graph, so Graph.AllNodes()'s map order makes the trailing bind args
-	// nondeterministic — WithArgs is deliberately omitted.
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "secret_payload", 1, "varchar", "varchar(64)", "INVISIBLE"))
+	// The check derives from the general column fact instead of its own
+	// InvisibleColumns query.
+	run := newPreflightRun(checker)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "secret_payload", Ordinal: 1, DataType: "varchar", Invisible: true},
+		}},
+	}
+	run.srcColumnsLoaded = true
 
-	err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker))
+	err := checker.ValidateNoInvisibleColumns(ctx, run)
 	if err == nil {
 		t.Fatal("expected INVISIBLE_COLUMN_CHECK for a participating invisible column, got nil")
 	}
@@ -2913,32 +2654,25 @@ func TestValidateNoInvisibleColumns_Rejected(t *testing.T) {
 	if !strings.Contains(err.Error(), "orders.secret_payload") {
 		t.Fatalf("expected error to name the offending column orders.secret_payload, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
-	}
 }
 
 // TestValidateNoInvisibleColumns_Success is the negative control: no invisible
 // columns among the participating tables passes.
 func TestValidateNoInvisibleColumns_Success(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
-	checker, _ := NewPreflightChecker(db, "testdb", createPreflightTestGraph(), logger.NewDefault())
+	checker := newSourceOnlyChecker(createPreflightTestGraph(), "testdb")
 	ctx := context.Background()
 
-	// P1 correction (phase 018 review): Columns-shaped fact, no invisible columns
-	// anywhere. Three-node graph — WithArgs omitted for the same reason as above.
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
-
-	if err := checker.ValidateNoInvisibleColumns(ctx, newPreflightRun(checker)); err != nil {
-		t.Fatalf("expected no error when no invisible columns are present, got: %v", err)
+	// Columns-shaped fact, no invisible columns anywhere.
+	run := newPreflightRun(checker)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "id", Ordinal: 1, DataType: "bigint"},
+		}},
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unfulfilled mock expectations: %v", err)
+	run.srcColumnsLoaded = true
+
+	if err := checker.ValidateNoInvisibleColumns(ctx, run); err != nil {
+		t.Fatalf("expected no error when no invisible columns are present, got: %v", err)
 	}
 }
 
@@ -2951,38 +2685,10 @@ func TestValidateNoInvisibleColumns_Success(t *testing.T) {
 // set equality ACROSS tables. Cross-table order follows graph.AllNodes(), which ranges a
 // map, so a flat ordered assertion would flake roughly half the time.
 func TestValidateNoInvisibleColumnsFansOutPerColumn(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Rows arrive as the library's ORDER BY TABLE_NAME, ORDINAL_POSITION would deliver
-	// them — "order_lines" sorts before "orders" ('_' < 's'). Cross-table row order is
-	// in fact irrelevant (the library buckets into a map), but matching the real query
-	// keeps the fixture honest.
-	//
-	// "zeta" precedes "alpha" DELIBERATELY: ordinal order here is not alphabetical
-	// order, so the within-table assertion below genuinely fails if anything sorts the
-	// columns. With alphabetically-ordered names the assertion could not tell the two
-	// apart and would pin nothing.
-	//
-	// P1 correction (phase 018 review): Columns-shaped fact (six columns, EXTRA =
-	// "INVISIBLE" on all three rows) instead of the retired InvisibleColumns query.
-	// This is a two-node graph, so Graph.AllNodes()'s map order still makes the
-	// trailing bind args nondeterministic — WithArgs is deliberately omitted.
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).
-			AddRow("order_lines", "hidden", 1, "varchar", "varchar(64)", "INVISIBLE").
-			AddRow("orders", "zeta", 1, "varchar", "varchar(64)", "INVISIBLE").
-			AddRow("orders", "alpha", 2, "varchar", "varchar(64)", "INVISIBLE"))
-
 	// AddNode is REQUIRED. AddEdgeWithMeta only records the edge in Children/Parents; it
 	// does NOT register the node, so without this the child never reaches AllNodes(),
-	// is never requested, and the library filters its row out — the test would then fail
-	// for a reason unrelated to what it checks.
+	// is never requested, and the fact below would be pointless for a table not asked
+	// about — the test would then fail for a reason unrelated to what it checks.
 	g := graph.NewGraph("orders", "id")
 	g.AddNode("order_lines", &graph.Node{
 		Name:           "order_lines",
@@ -2993,12 +2699,25 @@ func TestValidateNoInvisibleColumnsFansOutPerColumn(t *testing.T) {
 	g.SetPK("order_lines", "id")
 	g.AddEdgeWithMeta("orders", "order_lines", "order_id", "id", "1-N")
 
-	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p))
+	// "zeta" precedes "alpha" DELIBERATELY: ordinal order here is not alphabetical
+	// order, so the within-table assertion below genuinely fails if anything sorts the
+	// columns. With alphabetically-ordered names the assertion could not tell the two
+	// apart and would pin nothing.
+	run := newPreflightRun(p)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "order_lines", Columns: []validations.ColumnInfo{
+			{Name: "hidden", Ordinal: 1, DataType: "varchar", Invisible: true},
+		}},
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "zeta", Ordinal: 1, DataType: "varchar", Invisible: true},
+			{Name: "alpha", Ordinal: 2, DataType: "varchar", Invisible: true},
+		}},
+	}
+	run.srcColumnsLoaded = true
+
+	err := p.ValidateNoInvisibleColumns(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -3046,24 +2765,19 @@ func TestValidateNoInvisibleColumnsFansOutPerColumn(t *testing.T) {
 // ValidateNoInvisibleColumns that returns nil unconditionally. Its partner above is what
 // proves the check still fires.
 func TestValidateNoInvisibleColumnsPasses(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// P1 correction (phase 018 review): Columns-shaped fact, no invisible columns.
-	// Single-table graph, so the bind args are deterministic.
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("srcdb", "orders").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	if err := p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p)); err != nil {
+	// Columns-shaped fact, no invisible columns.
+	run := newPreflightRun(p)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "id", Ordinal: 1, DataType: "bigint"},
+		}},
+	}
+	run.srcColumnsLoaded = true
+
+	if err := p.ValidateNoInvisibleColumns(context.Background(), run); err != nil {
 		t.Fatalf("expected pass, got %v", err)
 	}
 }
@@ -3084,30 +2798,28 @@ func TestValidateNoInvisibleColumnsPasses(t *testing.T) {
 // only the stage word would pass against `return err` unwrapped — a plain error that is
 // not a *PreflightError either. Verified empirically, not assumed.
 func TestValidateNoInvisibleColumnsInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// P1 correction (phase 018 review): the fetch now goes through Columns, but the
-	// stage's OWN wrapper text ("preflight invisible_columns inspection failed") is
-	// unchanged and must keep passing unamended (phase 015 pinned this string).
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("srcdb", "orders").
-		WillReturnError(errors.New("query failed"))
+	errInspect := errors.New("query failed")
 
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidateNoInvisibleColumns(context.Background(), newPreflightRun(p))
+	run := newPreflightRun(p)
+	run.srcColumnsErr = errInspect
+	run.srcColumnsLoaded = true
+
+	err := p.ValidateNoInvisibleColumns(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, errInspect) {
+		t.Fatalf("the memoized load error must propagate, got: %v", err)
 	}
 	var pe *PreflightError
 	if errors.As(err, &pe) {
 		t.Fatalf("an inspection failure must be a plain error, got *PreflightError: %v", pe)
 	}
+	// The stage's OWN wrapper text ("preflight invisible_columns inspection failed") is
+	// what must be asserted here (phase 015 pinned this string).
 	if !strings.Contains(err.Error(), "preflight invisible_columns inspection failed") {
 		t.Fatalf("inspection error must carry goarchive's wrapper, got: %v", err)
 	}
@@ -3128,29 +2840,19 @@ func TestValidateNoInvisibleColumnsInspectionErrorIsPlain(t *testing.T) {
 // mock.ExpectationsWereMet() would NOT catch this: the single expectation is consumed
 // either way. The verdict discriminates, not the expectation bookkeeping.
 func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// P1 correction (phase 018 review): Columns-shaped fact, EXTRA = "INVISIBLE" on
-	// "note".
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("srcdb", "orders").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "note", 1, "varchar", "varchar(64)", "INVISIBLE"))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
+	// Columns-shaped fact, EXTRA = "INVISIBLE" on "note".
 	run := newPreflightRun(p)
-	if _, err := run.invisibleColumns(context.Background()); err != nil {
-		t.Fatalf("pre-load of the invisible-column fact failed: %v", err)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "note", Ordinal: 1, DataType: "varchar", Invisible: true},
+		}},
 	}
+	run.srcColumnsLoaded = true
 
-	err = p.ValidateNoInvisibleColumns(context.Background(), run)
+	err := p.ValidateNoInvisibleColumns(context.Background(), run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -3178,25 +2880,16 @@ func TestValidateNoInvisibleColumnsConsumesTheCachedFact(t *testing.T) {
 // expectation is consumed either way — so the verdict (no error at all) is what
 // discriminates.
 func TestValidateNoInvisibleColumnsConsumesSourceColumnsFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("srcdb", "orders").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("orders", "id", 1, "bigint", "bigint", ""))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
 	run := newPreflightRun(p)
-	if _, err := run.sourceColumns(context.Background()); err != nil {
-		t.Fatalf("pre-load of the column fact failed: %v", err)
+	run.srcColumns = []validations.TableColumns{
+		{Table: "orders", Columns: []validations.ColumnInfo{
+			{Name: "id", Ordinal: 1, DataType: "bigint"},
+		}},
 	}
+	run.srcColumnsLoaded = true
 
 	// The accessor's contract is that a table with NO invisible columns is absent from
 	// the result, so an empty slice means "none". Assert it here, on a fixture whose
@@ -3215,9 +2908,6 @@ func TestValidateNoInvisibleColumnsConsumesSourceColumnsFact(t *testing.T) {
 	if err := p.ValidateNoInvisibleColumns(context.Background(), run); err != nil {
 		t.Fatalf("expected pass using the already-cached column fact, got: %v", err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expected exactly one Columns query total, got: %v", err)
-	}
 }
 
 // ============================================================================
@@ -3231,22 +2921,21 @@ func TestValidateNoInvisibleColumnsConsumesSourceColumnsFact(t *testing.T) {
 //
 // The assertion is on goarchive's WRAPPER text, not the bare stage word.
 func TestValidateTriggersInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("srcdb", "DELETE").
-		WillReturnError(errors.New("query failed"))
+	errInspect := errors.New("query failed")
 
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
-	err = p.ValidateTriggers(context.Background(), newPreflightRun(p), false)
+	run := newPreflightRun(p)
+	run.srcDelTriggersErr = errInspect
+	run.srcDelTriggersLoaded = true
+
+	err := p.ValidateTriggers(context.Background(), run, false)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, errInspect) {
+		t.Fatalf("the memoized load error must propagate, got: %v", err)
 	}
 	var pe *PreflightError
 	if errors.As(err, &pe) {
@@ -3267,27 +2956,16 @@ func TestValidateTriggersInspectionErrorIsPlain(t *testing.T) {
 // inspection error — a plain error, so the *PreflightError assertion fails.
 // mock.ExpectationsWereMet() would NOT catch this; the verdict discriminates.
 func TestValidateTriggersConsumesTheCachedFact(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	mock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("srcdb", "DELETE").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}).AddRow("orders", "trg_del", "DELETE", "AFTER"))
-
 	g := graph.NewGraph("orders", "id")
-	p, _ := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
+	p := newSourceOnlyChecker(g, "srcdb")
 
 	run := newPreflightRun(p)
-	if _, err := run.sourceDeleteTriggers(context.Background()); err != nil {
-		t.Fatalf("pre-load of the source trigger fact failed: %v", err)
+	run.srcDelTriggers = []validations.TriggerInfo{
+		{Table: "orders", Name: "trg_del", Event: "DELETE", Timing: "AFTER"},
 	}
+	run.srcDelTriggersLoaded = true
 
-	err = p.ValidateTriggers(context.Background(), run, false)
+	err := p.ValidateTriggers(context.Background(), run, false)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -3305,26 +2983,21 @@ func TestValidateTriggersConsumesTheCachedFact(t *testing.T) {
 // counterpart. Both sides are required: the stages use different accessors on different
 // pools, so the source test proves nothing about this path.
 func TestValidateDestinationInsertTriggersInspectionErrorIsPlain(t *testing.T) {
-	srcDB, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = srcDB.Close() }()
-	dstDB, dstMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = dstDB.Close() }()
+	errInspect := errors.New("query failed")
 
-	dstMock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("dstdb", "INSERT").
-		WillReturnError(errors.New("query failed"))
+	g := graph.NewGraph("orders", "id")
+	p := newDestChecker(t, g, "srcdb", "dstdb", "dstdb")
 
-	p := chrDestCheckerForFacts(t, srcDB, dstDB)
+	run := newPreflightRun(p)
+	run.dstInsTriggersErr = errInspect
+	run.dstInsTriggersLoaded = true
 
-	err = p.ValidateDestinationInsertTriggers(context.Background(), newPreflightRun(p))
+	err := p.ValidateDestinationInsertTriggers(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(err, errInspect) {
+		t.Fatalf("the memoized load error must propagate, got: %v", err)
 	}
 	var pe *PreflightError
 	if errors.As(err, &pe) {
@@ -3338,32 +3011,17 @@ func TestValidateDestinationInsertTriggersInspectionErrorIsPlain(t *testing.T) {
 // TestValidateDestinationInsertTriggersConsumesTheCachedFact is the destination
 // counterpart of the cached-fact proof.
 func TestValidateDestinationInsertTriggersConsumesTheCachedFact(t *testing.T) {
-	srcDB, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = srcDB.Close() }()
-	dstDB, dstMock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = dstDB.Close() }()
-
-	dstMock.ExpectQuery("information_schema.TRIGGERS").
-		WithArgs("dstdb", "INSERT").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"EVENT_OBJECT_TABLE", "TRIGGER_NAME", "EVENT_MANIPULATION", "ACTION_TIMING",
-		}).AddRow("orders", "trg_ins", "INSERT", "BEFORE"))
-
-	p := chrDestCheckerForFacts(t, srcDB, dstDB)
+	g := graph.NewGraph("orders", "id")
+	p := newDestChecker(t, g, "srcdb", "dstdb", "dstdb")
 	run := newPreflightRun(p)
 	ctx := context.Background()
 
-	if _, err := run.destInsertTriggers(ctx); err != nil {
-		t.Fatalf("pre-load of the destination trigger fact failed: %v", err)
+	run.dstInsTriggers = []validations.TriggerInfo{
+		{Table: "orders", Name: "trg_ins", Event: "INSERT", Timing: "BEFORE"},
 	}
+	run.dstInsTriggersLoaded = true
 
-	err = p.ValidateDestinationInsertTriggers(ctx, run)
+	err := p.ValidateDestinationInsertTriggers(ctx, run)
 
 	var pe *PreflightError
 	if !errors.As(err, &pe) {
@@ -3384,27 +3042,21 @@ func TestValidateDestinationInsertTriggersConsumesTheCachedFact(t *testing.T) {
 // already contains its op name ("primary_keys") — the prefix assertion below checks for
 // goarchive's own prefix, not the library's.
 func TestValidateSingleColumnPrimaryKeyInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("boom")
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("srcdb").
-		WillReturnError(wantErr)
 
 	g := graph.NewGraph("orders", "id")
-	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	p := newSourceOnlyChecker(g, "srcdb")
+
 	run := newPreflightRun(p)
+	run.pksErr = wantErr
+	run.pksLoaded = true
 
 	gotErr := p.ValidateSingleColumnPrimaryKey(context.Background(), run)
 	if gotErr == nil {
 		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, gotErr)
 	}
 	if !strings.Contains(gotErr.Error(), "COMPOSITE_PK_LOOKUP:") {
 		t.Fatalf("expected COMPOSITE_PK_LOOKUP: prefix, got: %v", gotErr)
@@ -3418,27 +3070,21 @@ func TestValidateSingleColumnPrimaryKeyInspectionErrorIsPlain(t *testing.T) {
 // TestValidateRootPKNumericInspectionErrorIsPlain is the ValidateRootPKNumeric
 // counterpart, on the ROOT_PK_TYPE_LOOKUP prefix.
 func TestValidateRootPKNumericInspectionErrorIsPlain(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock.New: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	wantErr := errors.New("boom")
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("srcdb").
-		WillReturnError(wantErr)
 
 	g := graph.NewGraph("orders", "id")
-	p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	p := newSourceOnlyChecker(g, "srcdb")
+
 	run := newPreflightRun(p)
+	run.pksErr = wantErr
+	run.pksLoaded = true
 
 	gotErr := p.ValidateRootPKNumeric(context.Background(), run)
 	if gotErr == nil {
 		t.Fatal("expected an inspection error, got nil")
+	}
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("inspection error must wrap %v, got: %v", wantErr, gotErr)
 	}
 	if !strings.Contains(gotErr.Error(), "ROOT_PK_TYPE_LOOKUP:") {
 		t.Fatalf("expected ROOT_PK_TYPE_LOOKUP: prefix, got: %v", gotErr)
@@ -3450,52 +3096,47 @@ func TestValidateRootPKNumericInspectionErrorIsPlain(t *testing.T) {
 }
 
 // TestPKStagesShareOneCachedFact proves both PK stages consume a single run-level fact.
-// Exactly ONE PrimaryKeys expectation is registered per case, and the two stages run in
-// sequence exactly as RunWithProfile calls them (positions 3 and 4). A stage that built
-// its own Inspector would issue a second query, receive "all expectations were already
-// fulfilled", and fail here — which no other test catches.
+// One pks fact is preloaded per case, and the two stages run in sequence exactly as
+// RunWithProfile calls them (positions 3 and 4), against that SAME fact. A stage that
+// built its own Inspector would query a nil source handle and fail here — which no other
+// test catches.
 //
 // The varchar case is what keeps this non-vacuous. ValidateSingleColumnPrimaryKey passes
 // on it (the key IS single-column) while ValidateRootPKNumeric must reject it, so the
 // second stage can only produce the right answer by reading the shared fact. Without that
-// case a ValidateRootPKNumeric that silently returned nil would pass: the sole expectation
-// is already consumed by the first stage.
+// case a ValidateRootPKNumeric that silently returned nil would pass: the fact is already
+// populated by the first stage either way.
 //
 // This replaces a GetRootPKMeta assertion that covered the graph write-back deleted in
 // phase 032. There is no write-back to assert on any more.
 func TestPKStagesShareOneCachedFact(t *testing.T) {
 	cases := []struct {
-		name       string
-		dataType   string
-		columnType string
-		wantErr    string // "" means the root-PK stage must pass
+		name      string
+		dataType  string
+		isInteger bool
+		unsigned  bool
+		wantErr   string // "" means the root-PK stage must pass
 	}{
-		{"integer key passes both stages", "bigint", "bigint unsigned", ""},
+		{"integer key passes both stages", "bigint", true, true, ""},
 		{"varchar key passes the shape stage and fails the root-PK stage",
-			"varchar", "varchar(36)", "ROOT_PK_TYPE_UNSUPPORTED"},
+			"varchar", false, false, "ROOT_PK_TYPE_UNSUPPORTED"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatalf("sqlmock.New: %v", err)
-			}
-			defer func() { _ = db.Close() }()
-
-			mock.ExpectQuery("information_schema.STATISTICS AS s").
-				WithArgs("srcdb").
-				WillReturnRows(sqlmock.NewRows([]string{
-					"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-				}).AddRow("orders", "id", tc.dataType, tc.columnType))
-
 			g := graph.NewGraph("orders", "id")
-			p, err := NewPreflightChecker(db, "srcdb", g, logger.NewDefault())
-			if err != nil {
-				t.Fatalf("NewPreflightChecker: %v", err)
-			}
+			p := newSourceOnlyChecker(g, "srcdb")
 
 			run := newPreflightRun(p)
+			run.pks = []validations.PKInfo{{
+				Table:     "orders",
+				Kind:      validations.PKSingle,
+				Columns:   []string{"id"},
+				DataType:  tc.dataType,
+				IsInteger: tc.isInteger,
+				Unsigned:  tc.unsigned,
+			}}
+			run.pksLoaded = true
 			ctx := context.Background()
 
 			if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
@@ -3512,10 +3153,6 @@ func TestPKStagesShareOneCachedFact(t *testing.T) {
 				if gotErr == nil || !strings.Contains(gotErr.Error(), tc.wantErr) {
 					t.Fatalf("expected %s from the SAME cached fact, got %v", tc.wantErr, gotErr)
 				}
-			}
-
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Fatalf("the single PrimaryKeys expectation was not observed: %v", err)
 			}
 		})
 	}

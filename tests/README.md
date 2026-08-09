@@ -8,7 +8,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | Test Type | Description | Command |
 |-----------|-------------|---------|
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
-| **Unit** | Fast, in-memory (sqlmock); no DB required | `go test ./... -count=1` |
+| **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
@@ -27,7 +27,7 @@ summary:
   estate             test estate reachable on 3305, 3307, 3308
   fmt-check          ok
   ...
-  integration        PASS=1026 FAIL=0 SKIP=1
+  integration        PASS=1029 FAIL=0 SKIP=1
   characterization   OK (60 / 304 / 364 / 0 / 0)
   e2e                Passed: 7  Failed: 0
   e2e-examples       Passed: 4  Failed: 0
@@ -578,7 +578,7 @@ succeeding locally and failing in CI. Integration residue lives in **`goarchive_
 Every Go layer the runner executes reports:
 
 ```
-[INFO] integration: PASS=1026 FAIL=0 SKIP=1 (go test exit 0)
+[INFO] integration: PASS=1029 FAIL=0 SKIP=1 (go test exit 0)
 ```
 
 and **fails when nothing ran**. `go test` prints `ok` and exits 0 for a `-run` pattern that
@@ -587,7 +587,7 @@ only counts failures passes all three. The runner counts passes instead, which r
 so `-v` is always on internally; the full log prints only with `--verbose` or on failure.
 
 Skips are reported by name rather than swallowed. `MIN_PASS=<n>` requires at least n passing
-tests — inclusive, so `MIN_PASS=1026` accepts exactly 1026. It defaults to 1, which only
+tests — inclusive, so `MIN_PASS=1029` accepts exactly 1029. It defaults to 1, which only
 catches a run that did nothing.
 
 ## Environment Variables
