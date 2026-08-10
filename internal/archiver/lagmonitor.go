@@ -93,9 +93,11 @@ func (lm *LagMonitor) GetReplicationStatus(ctx context.Context) (*ReplicationSta
 		return nil, nil
 	}
 
-	// GA-P3-F5-T1: Try SHOW REPLICA STATUS (MySQL 8.0.22+)
-	// Fall back to SHOW SLAVE STATUS for older versions. When a named channel is
-	// configured, scope both forms to it with FOR CHANNEL '<name>'.
+	// Application-owned administrative exception: lag monitoring owns the modern
+	// SHOW REPLICA STATUS command, its legacy SHOW SLAVE STATUS fallback, and named
+	// channel scoping. These are operational status reads, not validation metadata.
+	// Retain their exact-SQL tests locally and reconsider a dbsgomysql port only after
+	// the documented post-2.2 review horizon.
 	channelClause := ""
 	if lm.channel != "" {
 		channelClause = " FOR CHANNEL " + quoteSQLString(lm.channel)

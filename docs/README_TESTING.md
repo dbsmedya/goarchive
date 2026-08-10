@@ -66,6 +66,22 @@ non-test code names `information_schema` in a string literal, the other pins how
 the converted files may still contain. If you need a mock in a pinned file, preload the fact
 instead — the guard's failure message names the pattern to copy.
 
+### Retained application-owned MySQL probes
+
+The boundary is ownership, not whether a statement happens to inspect MySQL. Two focused
+exceptions remain GoArchive SQL and therefore keep exact `sqlmock` coverage:
+
+- Dry-run reads `SHOW VARIABLES LIKE 'max_allowed_packet'` to decide whether the INSERT
+  payload GoArchive itself constructs fits the destination. This application-specific
+  safety check stays local; it does not justify a generic dbsgomysql server-variable API.
+- Replication lag monitoring owns `SHOW REPLICA STATUS`, its `SHOW SLAVE STATUS` fallback,
+  and optional `FOR CHANNEL` clause. These administrative reads retain their current tests
+  and have a separate post-2.2 horizon for reconsidering a dbsgomysql port.
+
+Neither exception permits unit tests to reproduce dbsgomysql metadata queries, aliases,
+result columns, or fallback choreography. Preflight metadata tests continue to inject the
+library's exported typed facts.
+
 ---
 
 ## Integration tests

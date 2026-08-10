@@ -102,6 +102,10 @@ func (p *PayloadValidator) Validate(ctx context.Context) error {
 
 func (p *PayloadValidator) maxAllowedPacket(ctx context.Context) (int64, error) {
 	var name, valStr string
+	// Application-owned server-variable probe: dry-run needs the destination packet
+	// ceiling to judge GoArchive's generated INSERT payload. This is not validation
+	// metadata and deliberately remains local rather than requiring a generic
+	// dbsgomysql server-variable API.
 	row := p.dest.QueryRowContext(ctx, "SHOW VARIABLES LIKE 'max_allowed_packet'")
 	if err := row.Scan(&name, &valStr); err != nil {
 		return 0, err
