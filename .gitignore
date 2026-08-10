@@ -23,6 +23,7 @@ vendor/
 .product
 .agents
 .github
+.codex/
 
 # Include
 !cmd/goarchive/**
