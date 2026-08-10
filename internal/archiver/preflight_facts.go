@@ -8,6 +8,37 @@ import (
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 )
 
+// preflightInspector is GoArchive's semantic boundary with dbsgomysql. Its
+// methods deliberately mirror only the exported operations used by one
+// preflight run; query text, aliases, row layouts, and fallback choreography
+// remain private to the library.
+type preflightInspector interface {
+	Tables(context.Context, []string) ([]validations.TableInfo, error)
+	Columns(context.Context, []string) ([]validations.TableColumns, error)
+	PrimaryKeys(context.Context, []string) ([]validations.PKInfo, error)
+	Triggers(context.Context, []string, validations.TriggerEvent) ([]validations.TriggerInfo, error)
+	ForeignKeys(context.Context, validations.FKSelector) (validations.ForeignKeyResult, error)
+	TableSpec(context.Context, validations.TableRef, ...validations.SpecOption) (validations.TableSpec, error)
+	Grants(context.Context) (validations.Grants, error)
+}
+
+var _ preflightInspector = (*validations.Inspector)(nil)
+
+type preflightInspectorFactory func(validations.Querier, string) preflightInspector
+
+func newPreflightInspector(q validations.Querier, schema string) preflightInspector {
+	return validations.NewInspector(q, schema)
+}
+
+func (p *PreflightChecker) makePreflightInspector(q validations.Querier, schema string) preflightInspector {
+	if p.inspectorFactory != nil {
+		return p.inspectorFactory(q, schema)
+	}
+	// A few package tests construct PreflightChecker literals. Keep those values
+	// production-safe without introducing package-global mutable state.
+	return newPreflightInspector(q, schema)
+}
+
 // preflightRun holds everything one preflight run acquires from the servers.
 //
 // It exists for exactly the duration of RunWithProfile and is never stored on
@@ -23,7 +54,7 @@ import (
 //     mutate that error after return, and it does not retain the connection.
 //
 // The inspectors are deliberately NOT exposed by any accessor. A check that could
-// reach an *Inspector could issue its own query and bypass the memoized fact
+// reach an inspector could issue its own query and bypass the memoized fact
 // methods, which would defeat both properties above. Fields, loaders and helpers
 // are added by the phase that introduces their first production consumer.
 //
@@ -31,8 +62,8 @@ import (
 type preflightRun struct {
 	tables []string
 
-	srcInspector *validations.Inspector
-	dstInspector *validations.Inspector
+	srcInspector preflightInspector
+	dstInspector preflightInspector
 
 	srcTables       []validations.TableInfo
 	srcTablesErr    error
@@ -92,11 +123,11 @@ type preflightRun struct {
 func newPreflightRun(p *PreflightChecker) *preflightRun {
 	r := &preflightRun{
 		tables:       p.graph.AllNodes(),
-		srcInspector: validations.NewInspector(p.db, p.sourceDBName),
+		srcInspector: p.makePreflightInspector(p.db, p.sourceDBName),
 		checker:      p,
 	}
 	if p.destinationDB != nil && p.destinationDBName != "" {
-		r.dstInspector = validations.NewInspector(p.destinationDB, p.destinationDBName)
+		r.dstInspector = p.makePreflightInspector(p.destinationDB, p.destinationDBName)
 	}
 	return r
 }
@@ -283,12 +314,17 @@ func (r *preflightRun) rootPKInfo(ctx context.Context) (validations.PKInfo, bool
 //
 // GoArchive never issues SET ROLE, so no session affinity survives the read and none is
 // needed. What is cached by the caller is the detached Grants VALUE, never the Conn.
-func readGrants(ctx context.Context, db *sql.DB, schema string) (validations.Grants, error) {
+func readGrants(
+	ctx context.Context,
+	db *sql.DB,
+	schema string,
+	newInspector preflightInspectorFactory,
+) (validations.Grants, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return validations.Grants{}, fmt.Errorf("acquire connection for privilege inspection: %w", err)
 	}
-	grants, gerr := validations.NewInspector(conn, schema).Grants(ctx)
+	grants, gerr := newInspector(conn, schema).Grants(ctx)
 	if cerr := conn.Close(); cerr != nil && gerr == nil {
 		return validations.Grants{}, fmt.Errorf("release privilege-inspection connection: %w", cerr)
 	}
@@ -306,7 +342,12 @@ func (r *preflightRun) destGrants(ctx context.Context) (validations.Grants, erro
 		return validations.Grants{}, fmt.Errorf("destination database not configured; call ConfigureDestination first")
 	}
 	if !r.dstGrantsLoaded {
-		r.dstGrants, r.dstGrantsErr = readGrants(ctx, r.checker.destinationDB, r.checker.destinationDBName)
+		r.dstGrants, r.dstGrantsErr = readGrants(
+			ctx,
+			r.checker.destinationDB,
+			r.checker.destinationDBName,
+			r.checker.makePreflightInspector,
+		)
 		r.dstGrantsLoaded = true
 	}
 	return r.dstGrants, r.dstGrantsErr
@@ -315,7 +356,12 @@ func (r *preflightRun) destGrants(ctx context.Context) (validations.Grants, erro
 // sourceGrants returns the source account's privilege fact, read once per run.
 func (r *preflightRun) sourceGrants(ctx context.Context) (validations.Grants, error) {
 	if !r.srcGrantsLoaded {
-		r.srcGrants, r.srcGrantsErr = readGrants(ctx, r.checker.db, r.checker.sourceDBName)
+		r.srcGrants, r.srcGrantsErr = readGrants(
+			ctx,
+			r.checker.db,
+			r.checker.sourceDBName,
+			r.checker.makePreflightInspector,
+		)
 		r.srcGrantsLoaded = true
 	}
 	return r.srcGrants, r.srcGrantsErr

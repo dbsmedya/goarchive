@@ -52,6 +52,7 @@ type PreflightChecker struct {
 	graph             *graph.Graph
 	logger            *logger.Logger
 	verification      config.VerificationConfig
+	inspectorFactory  preflightInspectorFactory
 }
 
 // NewPreflightChecker creates a new preflight checker.
@@ -76,6 +77,7 @@ func NewPreflightChecker(db *sql.DB, sourceDBName string, g *graph.Graph, log *l
 		destinationDBName: "",
 		graph:             g,
 		logger:            log,
+		inspectorFactory:  newPreflightInspector,
 	}, nil
 }
 
