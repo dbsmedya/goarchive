@@ -47,6 +47,7 @@ type CopyOnlyOrchestrator struct {
 	processingCfg   config.ProcessingConfig
 	verificationCfg config.VerificationConfig
 	promptReader    io.Reader
+	loadRootPKMeta  rootPKMetaLoader
 	staleAtStartup  bool
 	stopCh          <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
 }
@@ -76,6 +77,7 @@ func NewCopyOnlyOrchestrator(cfg *config.Config, jobName string, jobCfg *config.
 		processingCfg:   processingCfg,
 		verificationCfg: verificationCfg,
 		promptReader:    os.Stdin,
+		loadRootPKMeta:  loadRootPKMeta,
 	}, nil
 }
 
@@ -156,7 +158,11 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	jobState := startup.jobState
 	o.staleAtStartup = startup.staleAtStartup
 	ctx = startup.runCtx
-	if err := loadRootPKMeta(ctx, o.dbManager.Source, o.config.Source.Database, o.graph); err != nil {
+	rootPKLoader := o.loadRootPKMeta
+	if rootPKLoader == nil {
+		rootPKLoader = loadRootPKMeta
+	}
+	if err := rootPKLoader(ctx, o.dbManager.Source, o.config.Source.Database, o.graph); err != nil {
 		return fail("failed to load root PK metadata: %w", err)
 	}
 	shouldResume, err := resumeMgr.ShouldResume(ctx, o.jobName)

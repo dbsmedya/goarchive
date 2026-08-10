@@ -10,6 +10,8 @@ import (
 	"github.com/dbsmedya/goarchive/internal/graph"
 )
 
+type rootPKMetaLoader func(context.Context, *sql.DB, string, *graph.Graph) error
+
 // isIntegerRootPKType reports whether dataType (information_schema.COLUMNS.DATA_TYPE,
 // e.g. "bigint") is one of GoArchive's supported integer root primary-key types.
 //

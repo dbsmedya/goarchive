@@ -113,18 +113,17 @@ type sqlmockBudget struct {
 // ExpectationsWereMet() call that returns nil unconditionally when nothing was programmed
 // (sqlmock.go:187). That reads as a tripwire and asserts nothing.
 //
-// EQUALITY, NOT A CEILING. A `<=` bound would silently absorb the day someone deletes one of
-// the two RunAllChecks tests, which is a coverage loss this guard is well placed to notice.
-// Both directions are a decision worth making deliberately, so both fail here.
+// EQUALITY, NOT A CEILING. The remaining handles each exercise a named constructor,
+// destination guard, or context-cancellation contract. Removing one may be correct, but it
+// must update the inventory explicitly; both additions and removals therefore fail here.
 var sqlmockBudgets = []sqlmockBudget{
 	{
-		file: "preflight_test.go", mocks: 4, handles: 10,
-		why: "4 mocks in TestRunAllChecks_MissingTables and TestRunAllChecks_NonInnoDBTables: " +
-			"RunWithProfile builds its own preflightRun and preflightRun deliberately exposes no " +
-			"inspector accessor, so there is no seam to inject a preloaded fact through. " +
-			"10 handles: 1 shared deny-all stub in newDestChecker (serving all 12 destination " +
+		file: "preflight_test.go", mocks: 0, handles: 8,
+		why: "RunWithProfile tests now inject typed inspectors through the checker factory, so " +
+			"no dbsgomysql metadata SQL remains. 8 handles: 1 shared deny-all stub in " +
+			"newDestChecker (serving all 12 destination " +
 			"tests), 4 in TestNewPreflightChecker_*, 2 in TestConfigureDestination_Success, " +
-			"2 in the RunAllChecks pair, and 1 in TestValidateTablesExist_ContextCancellation " +
+			"and 1 in TestValidateTablesExist_ContextCancellation " +
 			"— where Inspector.Tables validates the Querier before consulting ctx, so a nil " +
 			"handle would mask context.Canceled and the handle is the mechanism under test",
 	},

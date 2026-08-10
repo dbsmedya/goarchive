@@ -109,112 +109,12 @@ func (p *PreflightChecker) RunWithProfile(ctx context.Context, profile Preflight
 	// Facts are acquired per stage and memoized for this run only (spec §2). The run
 	// is discarded when this function returns and is never stored on the checker.
 	run := newPreflightRun(p)
-
-	// GA-P4-F3-T2: Table existence check
-	if err := p.ValidateTablesExist(ctx, run); err != nil {
+	if err := executePreflightStages(
+		ctx,
+		run,
+		p.preflightStages(profile, forceTriggers, enforceFKVisibility),
+	); err != nil {
 		return err
-	}
-
-	// Validate configured PK columns exist and are explicitly defined.
-	if err := p.ValidatePrimaryKeyColumns(ctx, run); err != nil {
-		return err
-	}
-
-	// Reject composite primary keys: GoArchive identifies and DELETES rows by a
-	// single PK column, so a multi-column PK would over-match (review P1-1).
-	if err := p.ValidateSingleColumnPrimaryKey(ctx, run); err != nil {
-		return err
-	}
-
-	if err := p.ValidateRootPKNumeric(ctx, run); err != nil {
-		return err
-	}
-
-	// GA-P4-F3-T1: Storage engine check
-	if err := p.ValidateStorageEngine(ctx, run); err != nil {
-		return err
-	}
-
-	// INVISIBLE_COLUMN_CHECK: reject participating INVISIBLE columns. Rows are
-	// copied with SELECT *, which omits invisible columns, so their values would
-	// be silently dropped from the copy and the verification hash and then
-	// deleted from the source (issue #23). Runs for every profile.
-	if err := p.ValidateNoInvisibleColumns(ctx, run); err != nil {
-		return err
-	}
-
-	// Tracking-schema privileges are needed by every command that writes
-	// archiver_job / per-job logs (archive, purge, copy-only), independent of
-	// the data-table destination checks below.
-	if p.destinationDB != nil && p.jobSchemaName != "" {
-		if err := p.ValidateJobSchemaPermissions(ctx, run); err != nil {
-			return err
-		}
-	}
-
-	// Destination checks ensure copy target is safe before archive execution.
-	if profile != PreflightProfileSourceOnly && p.destinationDB != nil && p.destinationDBName != "" {
-		if err := p.ValidateDestinationTablesExist(ctx, run); err != nil {
-			return err
-		}
-		if err := p.ValidateDestinationSchemaCompatibility(ctx, run); err != nil {
-			return err
-		}
-		if err := p.ValidateDestinationWritePermissions(ctx, run); err != nil {
-			return err
-		}
-		if err := p.ValidateDestinationInsertTriggers(ctx, run); err != nil {
-			return err
-		}
-	}
-
-	// GA-P4-F3-T3: FK index check
-	if err := p.ValidateForeignKeyIndexes(ctx, run); err != nil {
-		return err
-	}
-
-	// FK_COVERAGE_VISIBILITY_CHECK: coverage is only trustworthy if we can see
-	// constraints in every schema. Fail closed before relying on it — except for
-	// copy-only, which never deletes from source (no external cascade can fire).
-	if enforceFKVisibility {
-		if err := p.ValidateForeignKeyMetadataVisibility(ctx, run); err != nil {
-			return err
-		}
-	}
-
-	// FK_COVERAGE_CHECK: Validate all FK constraints are covered by relations
-	// This MUST be checked before triggers - missing relations are a bigger problem
-	if err := p.ValidateForeignKeyCoverage(ctx, run); err != nil {
-		return err
-	}
-
-	// INTERNAL_FK_COVERAGE: Validate all internal FK relationships match graph edges
-	if err := p.ValidateInternalFKCoverage(ctx, run); err != nil {
-		return err
-	}
-
-	// SOURCE_SELECT_PERMISSION_CHECK (deviation D4, invariant I3): every command reads
-	// source rows or estimates from them, so this runs for ALL profiles — deliberately
-	// OUTSIDE the delete-capable block below. Its position is fixed by spec §3.2: after
-	// INTERNAL_FK_COVERAGE and immediately before the conditional delete-permission slot.
-	if err := p.ValidateSourceSelectPermissions(ctx, run); err != nil {
-		return err
-	}
-
-	if profile == PreflightProfileFull || profile == PreflightProfileSourceOnly {
-		if err := p.ValidateSourceDeletePermissions(ctx, run); err != nil {
-			return err
-		}
-
-		// GA-P4-F3-T4 & T5: DELETE trigger detection (with force flag)
-		if err := p.ValidateTriggers(ctx, run, forceTriggers); err != nil {
-			return err
-		}
-
-		// GA-P4-F3-T6: CASCADE rule warning
-		if err := p.WarnCascadeRules(ctx, run); err != nil {
-			return err
-		}
 	}
 
 	p.logger.Info("All preflight checks PASSED")
