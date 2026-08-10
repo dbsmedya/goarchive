@@ -16,9 +16,11 @@ import (
 //   - Per-stage laziness. Each fact is fetched by the first stage that needs it, at
 //     that stage's position in the fixed check order. A late stage's query error can
 //     therefore never surface ahead of an earlier stage's finding.
-//   - Detached values only. The cache holds plain values — []TableInfo, Grants,
-//     ForeignKeyResult. It never holds a *sql.Conn or anything else that pins a pool
-//     slot, so a max_connections:1 configuration cannot self-deadlock.
+//   - Detached resources only. The cache holds exported result values — []TableInfo,
+//     Grants, ForeignKeyResult — never a *sql.Conn, *sql.Rows, or anything else that
+//     pins a pool slot, so a max_connections:1 configuration cannot self-deadlock.
+//     ForeignKeyResult may retain PrimaryError for diagnostics; dbsgomysql does not
+//     mutate that error after return, and it does not retain the connection.
 //
 // The inspectors are deliberately NOT exposed by any accessor. A check that could
 // reach an *Inspector could issue its own query and bypass the memoized fact
