@@ -2,6 +2,8 @@ package archiver
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 	"github.com/dbsmedya/goarchive/internal/verifier"
 )
@@ -304,16 +307,12 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 	mock.ExpectQuery("SELECT RELEASE_LOCK").
 		WillReturnRows(sqlmock.NewRows([]string{"RELEASE_LOCK"}).AddRow(int64(1)))
 
-	// loadRootPKMeta returns a non-integer root PK type, forcing a deterministic
-	// post-Running failure with the documented ROOT_PK_TYPE_UNSUPPORTED category. After
-	// phase 018's migration to Inspector.Columns, the query is the six-column
-	// projection and the schema leads the bind args ("test" is createTestConfig's
-	// Source.Database).
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WithArgs("test", "users").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).AddRow("users", "id", 1, "varchar", "varchar(36)", ""))
+	// Force a deterministic post-Running metadata-policy failure without reproducing
+	// dbsgomysql Inspector.Columns SQL. This test owns status cleanup, not metadata
+	// acquisition; applyRootPKMeta has the typed ColumnInfo policy coverage.
+	orch.loadRootPKMeta = func(context.Context, *sql.DB, string, *graph.Graph) error {
+		return errors.New("ROOT_PK_TYPE_UNSUPPORTED: configured root PK is varchar")
+	}
 
 	// Cleanup must write JobStatusFailed (not Idle) because Execute returned an error.
 	mock.ExpectExec("UPDATE .*archiver_job` SET job_status").

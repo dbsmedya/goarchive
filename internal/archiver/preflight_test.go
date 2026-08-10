@@ -191,20 +191,16 @@ func TestNewPreflightChecker_DefaultLogger(t *testing.T) {
 // ============================================================================
 
 func TestRunAllChecks_MissingTables(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
+	inspector := &fakePreflightInspector{tablesResult: []validations.TableInfo{
+		{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+		{Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+	}}
+	checker.inspectorFactory = func(validations.Querier, string) preflightInspector {
+		return inspector
+	}
 	ctx := context.Background()
-
-	// Table existence check - only 2 of 3 tables exist
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "InnoDB"))
-	// Missing: order_items
 
 	err := checker.RunAllChecks(ctx, false)
 
@@ -219,6 +215,9 @@ func TestRunAllChecks_MissingTables(t *testing.T) {
 
 	if preflightErr.Check != "TABLE_EXISTENCE_CHECK" {
 		t.Errorf("Expected check 'TABLE_EXISTENCE_CHECK', got %s", preflightErr.Check)
+	}
+	if inspector.tablesCalls != 1 {
+		t.Fatalf("Tables calls = %d, want 1", inspector.tablesCalls)
 	}
 }
 
@@ -257,46 +256,29 @@ func TestPreflightChecker_ValidateRootPKNumeric(t *testing.T) {
 }
 
 func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
-	db, mock, _ := sqlmock.New()
-	defer func() { _ = db.Close() }()
-
 	g := createPreflightTestGraph()
-	log := logger.NewDefault()
-	checker, _ := NewPreflightChecker(db, "testdb", g, log)
+	checker := newSourceOnlyChecker(g, "testdb")
+	inspector := &fakePreflightInspector{
+		tablesResult: []validations.TableInfo{
+			{Table: "users", Type: "BASE TABLE", Engine: "InnoDB"},
+			{Table: "orders", Type: "BASE TABLE", Engine: "MyISAM"},
+			{Table: "order_items", Type: "BASE TABLE", Engine: "InnoDB"},
+		},
+		columnsResult: []validations.TableColumns{
+			{Table: "users", Columns: []validations.ColumnInfo{{Name: "id", DataType: "bigint", Unsigned: true}}},
+			{Table: "orders", Columns: []validations.ColumnInfo{{Name: "id", DataType: "bigint"}}},
+			{Table: "order_items", Columns: []validations.ColumnInfo{{Name: "id", DataType: "bigint"}}},
+		},
+		primaryKeysResult: []validations.PKInfo{
+			{Table: "users", Kind: validations.PKSingle, Columns: []string{"id"}, DataType: "bigint", IsInteger: true, Unsigned: true},
+			{Table: "orders", Kind: validations.PKSingle, Columns: []string{"id"}, DataType: "bigint", IsInteger: true},
+			{Table: "order_items", Kind: validations.PKSingle, Columns: []string{"id"}, DataType: "bigint", IsInteger: true},
+		},
+	}
+	checker.inspectorFactory = func(validations.Querier, string) preflightInspector {
+		return inspector
+	}
 	ctx := context.Background()
-
-	// Table existence check - all exist. The storage-engine stage now reads this same
-	// memoized fact (position 1) instead of issuing its own query, so the MyISAM
-	// defect must live in THIS row set.
-	mock.ExpectQuery("information_schema.TABLES").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-			AddRow("users", "BASE TABLE", "InnoDB").
-			AddRow("orders", "BASE TABLE", "MyISAM"). // Not allowed!
-			AddRow("order_items", "BASE TABLE", "InnoDB"))
-
-	// Primary key column existence check: each configured PK ("id") exists with the
-	// exact same case in the general column fact. Graph.AllNodes() ranges over a map,
-	// so the trailing bind args (one per requested table, after the schema) are
-	// nondeterministic for this three-node graph — WithArgs is deliberately omitted
-	// (phase 018, Step 7b).
-	mock.ExpectQuery("SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "ORDINAL_POSITION", "DATA_TYPE", "COLUMN_TYPE", "EXTRA",
-		}).
-			AddRow("users", "id", 1, "bigint", "bigint unsigned", "").
-			AddRow("orders", "id", 1, "bigint", "bigint", "").
-			AddRow("order_items", "id", 1, "bigint", "bigint", ""))
-	// PK shape + root PK type now share ONE memoized Inspector.PrimaryKeys fact, so a
-	// single query covers positions 3 and 4. Root is "users" and must be integer, or
-	// position 4 aborts before the storage-engine check under test.
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).
-			AddRow("users", "id", "bigint", "bigint unsigned").
-			AddRow("orders", "id", "bigint", "bigint").
-			AddRow("order_items", "id", "bigint", "bigint"))
 
 	err := checker.RunAllChecks(ctx, false)
 
@@ -311,6 +293,10 @@ func TestRunAllChecks_NonInnoDBTables(t *testing.T) {
 
 	if preflightErr.Check != "STORAGE_ENGINE_CHECK" {
 		t.Errorf("Expected check 'STORAGE_ENGINE_CHECK', got %s", preflightErr.Check)
+	}
+	if inspector.tablesCalls != 1 || inspector.columnsCalls != 1 || inspector.primaryKeysCalls != 1 {
+		t.Fatalf("fact calls tables/columns/PKs = %d/%d/%d, want 1/1/1",
+			inspector.tablesCalls, inspector.columnsCalls, inspector.primaryKeysCalls)
 	}
 }
 
