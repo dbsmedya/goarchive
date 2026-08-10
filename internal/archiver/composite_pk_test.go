@@ -6,35 +6,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
 
+func runWithPrimaryKeyFacts(g *graph.Graph, facts []validations.PKInfo) (*PreflightChecker, *preflightRun) {
+	checker := &PreflightChecker{graph: g, logger: logger.NewDefault()}
+	return checker, &preflightRun{
+		tables:    g.AllNodes(),
+		pks:       facts,
+		pksLoaded: true,
+		checker:   checker,
+	}
+}
+
 func TestValidateSingleColumnPrimaryKey_Composite(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	g := graph.NewGraph("account", "user")
-	checker, err := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	checker, run := runWithPrimaryKeyFacts(g, []validations.PKInfo{{
+		Table: "account", Kind: validations.PKComposite, Columns: []string{"user", "host"},
+	}})
 
-	// account has a 2-column PRIMARY KEY → must be rejected.
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).
-			AddRow("account", "user", "varchar", "varchar(64)").
-			AddRow("account", "host", "varchar", "varchar(64)"))
-
-	err = checker.ValidateSingleColumnPrimaryKey(context.Background(), newPreflightRun(checker))
+	err := checker.ValidateSingleColumnPrimaryKey(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected composite-PK rejection, got nil")
 	}
@@ -47,29 +40,12 @@ func TestValidateSingleColumnPrimaryKey_Composite(t *testing.T) {
 }
 
 func TestValidateSingleColumnPrimaryKey_NoPrimaryKey(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	g := graph.NewGraph("orders", "id")
-	checker, err := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	checker, run := runWithPrimaryKeyFacts(g, []validations.PKInfo{{
+		Table: "orders", Kind: validations.PKNone,
+	}})
 
-	// orders has NO PRIMARY KEY: the LEFT JOIN yields a row with NULL COLUMN_NAME,
-	// not zero rows → must be rejected (review 003): the configured primary_key is
-	// then almost certainly non-unique, so delete-by-it would over-match rows
-	// outside the archived set.
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).AddRow("orders", nil, nil, nil))
-
-	err = checker.ValidateSingleColumnPrimaryKey(context.Background(), newPreflightRun(checker))
+	err := checker.ValidateSingleColumnPrimaryKey(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected no-PRIMARY-KEY rejection, got nil")
 	}
@@ -82,28 +58,16 @@ func TestValidateSingleColumnPrimaryKey_NoPrimaryKey(t *testing.T) {
 }
 
 func TestValidateSingleColumnPrimaryKey_ConfiguredPKNotPrimary(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	// The graph configures orders.primary_key = "id", but the table's real
 	// PRIMARY KEY column is "legacy_id" → the mismatch must be rejected (review
 	// 003): if "id" is non-unique, delete-by-it over-matches.
 	g := graph.NewGraph("orders", "id")
-	checker, err := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	checker, run := runWithPrimaryKeyFacts(g, []validations.PKInfo{{
+		Table: "orders", Kind: validations.PKSingle, Columns: []string{"legacy_id"},
+		DataType: "bigint", IsInteger: true,
+	}})
 
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).AddRow("orders", "legacy_id", "bigint", "bigint"))
-
-	err = checker.ValidateSingleColumnPrimaryKey(context.Background(), newPreflightRun(checker))
+	err := checker.ValidateSingleColumnPrimaryKey(context.Background(), run)
 	if err == nil {
 		t.Fatal("expected configured-PK-mismatch rejection, got nil")
 	}
@@ -116,35 +80,16 @@ func TestValidateSingleColumnPrimaryKey_ConfiguredPKNotPrimary(t *testing.T) {
 }
 
 func TestValidateSingleColumnPrimaryKey_SingleColumnPasses(t *testing.T) {
-	db, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
 	g := graph.NewGraph("orders", "id")
 	g.AddNode("order_items", &graph.Node{Name: "order_items", ForeignKey: "order_id", ReferenceKey: "id", DependencyType: "1-N"})
 	g.SetPK("order_items", "id")
-	checker, err := NewPreflightChecker(db, "testdb", g, logger.NewDefault())
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
+	checker, run := runWithPrimaryKeyFacts(g, []validations.PKInfo{
+		{Table: "orders", Kind: validations.PKSingle, Columns: []string{"id"}, DataType: "bigint", IsInteger: true},
+		{Table: "order_items", Kind: validations.PKSingle, Columns: []string{"id"}, DataType: "bigint", IsInteger: true},
+	})
 
-	// Two tables, each with a single-column PRIMARY KEY matching the graph PK
-	// ("id") → pass.
-	mock.ExpectQuery("information_schema.STATISTICS AS s").
-		WithArgs("testdb").
-		WillReturnRows(sqlmock.NewRows([]string{
-			"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE",
-		}).
-			AddRow("orders", "id", "bigint", "bigint").
-			AddRow("order_items", "id", "bigint", "bigint"))
-
-	if err := checker.ValidateSingleColumnPrimaryKey(context.Background(), newPreflightRun(checker)); err != nil {
+	if err := checker.ValidateSingleColumnPrimaryKey(context.Background(), run); err != nil {
 		t.Fatalf("expected single-column PKs to pass, got: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("unmet expectations: %v", err)
 	}
 }
 

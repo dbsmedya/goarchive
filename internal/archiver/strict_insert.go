@@ -32,26 +32,34 @@ func shouldUseStrictInsert(method string, skipVerification, destHasUniqueIndex b
 	return method == "count" || skipVerification || destHasUniqueIndex
 }
 
-// destinationSecondaryUniqueIndexes returns "table.index" descriptors for every
-// participating destination table that carries a non-PRIMARY UNIQUE index.
-// Their presence forces strict insert (see shouldUseStrictInsert) because
-// INSERT IGNORE can silently drop a row that collides on such an index — a
-// silent partial copy that would precede a source delete.
-//
-// The index fact comes from validations.TableSpec(WithIndexes), which reports full index
-// definitions, so a COMPOSITE unique index is detected too (review P1-2). It runs in the
-// orchestrator rather than preflight so it is enforced even when preflight is skipped
-// with --skip-validate-preflight.
-func destinationSecondaryUniqueIndexes(ctx context.Context, db *sql.DB, schema string, tables []string) ([]string, error) {
-	if db == nil || schema == "" || len(tables) == 0 {
-		return nil, nil
+// destinationTableSpecReader is the exact dbsgomysql operation needed by the
+// strict-insert decision. Tests provide exported TableSpec values through this
+// boundary and never reproduce the library's metadata SQL.
+type destinationTableSpecReader interface {
+	TableSpec(context.Context, validations.TableRef, ...validations.SpecOption) (validations.TableSpec, error)
+}
+
+var _ destinationTableSpecReader = (*validations.Inspector)(nil)
+
+func secondaryUniqueIndexDescriptors(table string, spec validations.TableSpec) []string {
+	var found []string
+	for _, idx := range spec.Indexes {
+		if idx.Unique && idx.Name != "PRIMARY" {
+			found = append(found, fmt.Sprintf("%s.%s", table, idx.Name))
+		}
 	}
+	return found
+}
 
-	inspector := validations.NewInspector(db, schema)
-
+func destinationSecondaryUniqueIndexesFrom(
+	ctx context.Context,
+	reader destinationTableSpecReader,
+	schema string,
+	tables []string,
+) ([]string, error) {
 	var found []string
 	for _, table := range tables {
-		spec, err := inspector.TableSpec(ctx, validations.Ref(schema, table), validations.WithIndexes())
+		spec, err := reader.TableSpec(ctx, validations.Ref(schema, table), validations.WithIndexes())
 		if err != nil {
 			// An absent table, or an object that is not a base table, carries no unique
 			// index for INSERT IGNORE to collide on. 1.8 read information_schema
@@ -68,18 +76,30 @@ func destinationSecondaryUniqueIndexes(ctx context.Context, db *sql.DB, schema s
 			}
 			return nil, fmt.Errorf("failed to inspect destination unique indexes: %w", err)
 		}
-		for _, idx := range spec.Indexes {
-			if idx.Unique && idx.Name != "PRIMARY" {
-				found = append(found, fmt.Sprintf("%s.%s", table, idx.Name))
-			}
-		}
+		found = append(found, secondaryUniqueIndexDescriptors(table, spec)...)
 	}
 
-	// 1.8 ordered by TABLE_NAME, INDEX_NAME in SQL. TableSpec orders indexes within one
-	// table, but nothing orders across the per-table loop, so sort explicitly. Callers use
-	// this list two ways: len(...) > 0 decides strict insert (order-independent) and
-	// strings.Join(...) builds a log line (order-visible), so this affects diagnostics
-	// only — an output improvement inside decision section 1.1, outside ledger scope.
+	// 1.8 ordered by TABLE_NAME, INDEX_NAME in SQL. Sort the detached verdict so
+	// both table input order and index fact order are irrelevant to diagnostics.
 	sort.Strings(found)
 	return found, nil
+}
+
+// destinationSecondaryUniqueIndexes returns "table.index" descriptors for every
+// participating destination table that carries a non-PRIMARY UNIQUE index.
+// Their presence forces strict insert (see shouldUseStrictInsert) because
+// INSERT IGNORE can silently drop a row that collides on such an index — a
+// silent partial copy that would precede a source delete.
+//
+// The index fact comes from validations.TableSpec(WithIndexes), which reports full index
+// definitions, so a COMPOSITE unique index is detected too (review P1-2). It runs in the
+// orchestrator rather than preflight so it is enforced even when preflight is skipped
+// with --skip-validate-preflight.
+func destinationSecondaryUniqueIndexes(ctx context.Context, db *sql.DB, schema string, tables []string) ([]string, error) {
+	if db == nil || schema == "" || len(tables) == 0 {
+		return nil, nil
+	}
+
+	inspector := validations.NewInspector(db, schema)
+	return destinationSecondaryUniqueIndexesFrom(ctx, inspector, schema, tables)
 }
