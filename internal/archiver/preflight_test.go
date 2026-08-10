@@ -3,6 +3,7 @@ package archiver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -1011,6 +1012,56 @@ func TestConfigureDestination_Success(t *testing.T) {
 	}
 }
 
+func TestConfigureDestination_RejectsInvalidConfiguration(t *testing.T) {
+	// ConfigureDestination only validates and stores the handle; these rejection
+	// branches must not open sqlmock databases or increase the consumer-policy budget.
+	destDB := new(sql.DB)
+
+	tests := []struct {
+		name              string
+		db                *sql.DB
+		destinationDBName string
+		jobSchema         string
+		want              string
+	}{
+		{
+			name:              "nil destination database",
+			destinationDBName: "destdb",
+			jobSchema:         "jobschemadb",
+			want:              "destination database is nil",
+		},
+		{
+			name:      "empty destination database name",
+			db:        destDB,
+			jobSchema: "jobschemadb",
+			want:      "destination database name is required",
+		},
+		{
+			name:              "empty job schema",
+			db:                destDB,
+			destinationDBName: "destdb",
+			want:              "job schema is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := &PreflightChecker{}
+			err := checker.ConfigureDestination(tt.db, tt.destinationDBName, tt.jobSchema)
+			if err == nil {
+				t.Fatalf("ConfigureDestination returned nil, want %q", tt.want)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("ConfigureDestination error = %q, want %q", err, tt.want)
+			}
+			if checker.destinationDB != nil || checker.destinationDBName != "" || checker.jobSchemaName != "" {
+				t.Fatalf("rejected configuration mutated checker: db=%v destination=%q job_schema=%q",
+					checker.destinationDB, checker.destinationDBName, checker.jobSchemaName)
+			}
+		})
+	}
+}
+
 // TestValidateDestinationTablesExist_MissingTables — REFERENCE SHAPE 3: a
 // destination-side fact. ValidateDestinationTablesExist guards on
 // p.destinationDB == nil before it reads the run, so this one keeps a handle — a
@@ -1854,6 +1905,89 @@ func TestValidateForeignKeyMetadataVisibilityConsumesTheCachedFact(t *testing.T)
 	}
 }
 
+func TestValidateForeignKeyMetadataVisibilityDowngradeDiagnostics(t *testing.T) {
+	primaryErr := errors.New("sentinel primary registry failure: private server detail")
+	tests := []struct {
+		name      string
+		reason    validations.ForeignKeyDowngradeReason
+		want      string
+		forbidden string
+	}{
+		{
+			name:   "primary query error",
+			reason: validations.ForeignKeyDowngradePrimaryQueryError,
+			want:   "privileges, connectivity, server state, or another query error",
+		},
+		{
+			name:      "primary read error",
+			reason:    validations.ForeignKeyDowngradePrimaryReadError,
+			want:      "rows could not be read or decoded",
+			forbidden: "PROCESS",
+		},
+		{
+			name:      "missing downgrade reason",
+			reason:    validations.ForeignKeyDowngradeNone,
+			want:      "reported reason: none",
+			forbidden: "GRANT PROCESS",
+		},
+		{
+			name:      "unknown downgrade reason",
+			reason:    validations.ForeignKeyDowngradeReason(255),
+			want:      "ForeignKeyDowngradeReason(255)",
+			forbidden: "GRANT PROCESS",
+		},
+	}
+
+	seenMessages := make(map[string]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := newSourceOnlyChecker(createPreflightTestGraph(), "testdb")
+			core, recorded := observer.New(zapcore.DebugLevel)
+			checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
+
+			run := newPreflightRun(checker)
+			run.fkIn = validations.ForeignKeyResult{
+				Visibility:      validations.VisibilityUnconfirmed,
+				DowngradeReason: tt.reason,
+				PrimaryError:    primaryErr,
+			}
+			run.fkInLoaded = true
+
+			err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run)
+			preflightErr, ok := err.(*PreflightError)
+			if !ok {
+				t.Fatalf("error = %T %v, want *PreflightError", err, err)
+			}
+			if preflightErr.Check != "FK_COVERAGE_VISIBILITY_CHECK" {
+				t.Fatalf("Check = %q, want FK_COVERAGE_VISIBILITY_CHECK", preflightErr.Check)
+			}
+			if !strings.Contains(preflightErr.Message, tt.want) {
+				t.Fatalf("message %q does not contain %q", preflightErr.Message, tt.want)
+			}
+			if tt.forbidden != "" && strings.Contains(preflightErr.Message, tt.forbidden) {
+				t.Fatalf("message %q unexpectedly contains %q", preflightErr.Message, tt.forbidden)
+			}
+			if strings.Contains(preflightErr.Message, primaryErr.Error()) {
+				t.Fatalf("operator error leaked raw primary error: %q", preflightErr.Message)
+			}
+
+			errorLogs := recorded.FilterLevelExact(zapcore.ErrorLevel).All()
+			if len(errorLogs) != 1 {
+				t.Fatalf("error-level logs = %d, want exactly 1: %v", len(errorLogs), errorLogs)
+			}
+			if !strings.Contains(errorLogs[0].Message, primaryErr.Error()) {
+				t.Fatalf("error log %q does not retain primary error %q",
+					errorLogs[0].Message, primaryErr)
+			}
+
+			if previous, duplicate := seenMessages[preflightErr.Message]; duplicate {
+				t.Fatalf("diagnostic duplicates %q branch: %q", previous, preflightErr.Message)
+			}
+			seenMessages[preflightErr.Message] = tt.name
+		})
+	}
+}
+
 // TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete is Step 6's
 // positive counterpart: VisibilityComplete preloaded, zero sqlmock expectations.
 // The pass/fail err check alone cannot distinguish "the PASSED branch ran" from any
@@ -1867,7 +2001,13 @@ func TestValidateForeignKeyMetadataVisibilityPassesOnVisibilityComplete(t *testi
 	checker.logger = &logger.Logger{SugaredLogger: zap.New(core).Sugar()}
 
 	run := newPreflightRun(checker)
-	run.fkIn = validations.ForeignKeyResult{Visibility: validations.VisibilityComplete}
+	// The deliberately inconsistent downgrade reason proves findings/visibility remain
+	// the verdict authority. A reason can select failure wording, but cannot manufacture
+	// a failure when CheckFKClosure reports no visibility finding.
+	run.fkIn = validations.ForeignKeyResult{
+		Visibility:      validations.VisibilityComplete,
+		DowngradeReason: validations.ForeignKeyDowngradePrimaryQueryError,
+	}
 	run.fkInLoaded = true
 
 	if err := checker.ValidateForeignKeyMetadataVisibility(context.Background(), run); err != nil {
@@ -2545,6 +2685,12 @@ func TestSchemaCompatibility_CharsetMismatchAllowedUnderSHA256(t *testing.T) {
 // destinationDBName instead of destinationDB would not trip here and would go on
 // to dereference the nil run.
 func TestValidateJobSchemaPermissions_NilDestination(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("nil-destination guard dereferenced the nil run: %v", recovered)
+		}
+	}()
+
 	p := &PreflightChecker{
 		logger:            logger.NewDefault(),
 		jobSchemaName:     "goarchive",

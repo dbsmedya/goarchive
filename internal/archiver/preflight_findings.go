@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
@@ -9,8 +10,9 @@ import (
 )
 
 // findingsToPreflightError converts the findings whose Check equals want into one
-// *PreflightError carrying goarchive's own check id. Table names are taken in finding
-// order, which the library documents as deterministic per check.
+// *PreflightError carrying goarchive's own check id. Table names are copied from the
+// findings and sorted at this presentation boundary because the caller may have built
+// its request from graph map iteration.
 //
 // Findings whose Check is NOT want are ignored here on purpose: a stage that can
 // receive more than one kind must partition them itself and call this once per kind,
@@ -31,6 +33,7 @@ func findingsToPreflightError(
 	if len(tables) == 0 {
 		return nil
 	}
+	sort.Strings(tables)
 	return &PreflightError{Check: id, Message: message, Tables: tables}
 }
 

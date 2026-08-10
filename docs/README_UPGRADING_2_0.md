@@ -58,7 +58,12 @@ schema is readable — a revoked schema stays invisible, including any foreign k
 in it that points into your archive graph. An external `ON DELETE CASCADE` from such a
 table would delete rows GoArchive never copied. 1.8 passed those configurations.
 
-**Fix**
+**Diagnosis and fix.** The error now distinguishes a failure to start the primary query
+from a failure while reading its returned rows. A query-stage failure is not automatically
+a privilege failure: inspect the error-level log for the retained MySQL cause. A read-stage
+failure is a decoding/compatibility problem, and changing grants will not repair it.
+
+When the logged query-stage cause is a privilege rejection, grant:
 
 ```sql
 GRANT PROCESS ON *.* TO '<user>'@'<host>';
@@ -66,6 +71,8 @@ GRANT PROCESS ON *.* TO '<user>'@'<host>';
 
 `PROCESS` has no narrower scope in MySQL. A `PROCESS` held through an active role is
 accepted — see [Why roles behave differently here](#why-roles-behave-differently-for-process).
+GoArchive logs the primary failure once for diagnosis but does not copy raw driver text into
+the structured preflight error.
 
 **Not affected:** `copy-only`, which never deletes from the source and is exempt from this
 check (unchanged from 1.8).

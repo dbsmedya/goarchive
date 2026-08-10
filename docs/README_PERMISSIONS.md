@@ -142,7 +142,9 @@ privileges directly to the account GoArchive connects as.
 GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
 
 -- Required for foreign-key metadata completeness (I1) on archive/purge/dry-run/validate.
--- See "What preflight actually enforces" above.
+-- If validation reports a query-stage downgrade, inspect the logged MySQL cause first:
+-- connectivity and server errors can produce the same unconfirmed state. A read-stage
+-- downgrade is not repaired by changing privileges.
 GRANT PROCESS ON *.* TO 'archiver'@'%';
 ```
 

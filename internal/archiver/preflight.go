@@ -569,6 +569,27 @@ func (p *PreflightChecker) WarnCascadeRules(ctx context.Context, run *preflightR
 	return nil
 }
 
+// foreignKeyVisibilityDiagnostic translates the public downgrade reason into remediation
+// without treating it as the visibility verdict.
+func foreignKeyVisibilityDiagnostic(reason validations.ForeignKeyDowngradeReason) string {
+	switch reason {
+	case validations.ForeignKeyDowngradePrimaryQueryError:
+		return "The primary InnoDB metadata query failed before rows were available. " +
+			"This can be caused by privileges, connectivity, server state, or another query error; " +
+			"inspect the error log first. If MySQL rejected the query for privilege, grant it with " +
+			"GRANT PROCESS ON *.* TO <user>; a role-held PROCESS is equally acceptable"
+	case validations.ForeignKeyDowngradePrimaryReadError:
+		return "The primary InnoDB metadata query started, but its rows could not be read or decoded. " +
+			"Changing privileges will not repair this read-stage failure; inspect the error log and " +
+			"verify MySQL and dbsgomysql compatibility"
+	default:
+		return fmt.Sprintf(
+			"The validation library did not report a recognized primary-source downgrade cause "+
+				"(reported reason: %s); inspect the error log and verify dbsgomysql compatibility before retrying",
+			reason)
+	}
+}
+
 // ValidateForeignKeyMetadataVisibility fails closed when foreign-key discovery cannot be
 // proven complete.
 //
@@ -599,6 +620,11 @@ func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Cont
 	if err != nil {
 		return inspectionError("fk_metadata_visibility", err)
 	}
+	if result.PrimaryError != nil {
+		p.logger.Errorf(
+			"Foreign-key metadata primary-source failure retained after fallback: %v",
+			result.PrimaryError)
+	}
 
 	_, visibility, err := partitionClosureFindings(
 		validations.CheckFKClosure(result, p.sourceDBName, run.graphTables()))
@@ -616,10 +642,8 @@ func (p *PreflightChecker) ValidateForeignKeyMetadataVisibility(ctx context.Cont
 			"foreign-key metadata completeness is not established (state: %s), so GoArchive cannot "+
 				"verify there are no foreign keys in other schemas referencing the archive graph "+
 				"(an external ON DELETE CASCADE/SET NULL would delete or mutate uncopied rows). "+
-				"GoArchive 2.0 proves completeness by reading the InnoDB metadata registry, which "+
-				"requires the PROCESS privilege: GRANT PROCESS ON *.* TO <user>. A role-held "+
-				"PROCESS is equally acceptable — the proof is that the read succeeded",
-			visibility[0]),
+				"%s",
+			visibility[0], foreignKeyVisibilityDiagnostic(result.DowngradeReason)),
 	}
 }
 

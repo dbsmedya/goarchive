@@ -13,8 +13,8 @@ import (
 // *PreflightError carrying goarchive's ID and the finding's table names.
 func TestFindingsToPreflightErrorMapsExpectedCheck(t *testing.T) {
 	findings := []validations.Finding{
-		{Check: validations.IDTablesExist, Tables: []string{"orders"}},
 		{Check: validations.IDTablesExist, Tables: []string{"lines"}},
+		{Check: validations.IDTablesExist, Tables: []string{"orders"}},
 	}
 	err := findingsToPreflightError("TABLE_EXISTENCE_CHECK", "Tables not found in source database",
 		findings, validations.IDTablesExist)
@@ -24,8 +24,35 @@ func TestFindingsToPreflightErrorMapsExpectedCheck(t *testing.T) {
 	if err.Check != "TABLE_EXISTENCE_CHECK" {
 		t.Fatalf("Check = %q", err.Check)
 	}
-	if strings.Join(err.Tables, ",") != "orders,lines" {
-		t.Fatalf("Tables = %v, want [orders lines] in finding order", err.Tables)
+	if strings.Join(err.Tables, ",") != "lines,orders" {
+		t.Fatalf("Tables = %v, want [lines orders] in sorted presentation order", err.Tables)
+	}
+}
+
+// TestFindingsToPreflightErrorTableOrderIsStable proves presentation does not inherit
+// graph map iteration order. Both inputs contain the same findings in a different order;
+// deleting the sort in findingsToPreflightError makes the second assertion fail.
+func TestFindingsToPreflightErrorTableOrderIsStable(t *testing.T) {
+	forward := []validations.Finding{
+		{Check: validations.IDTablesExist, Tables: []string{"zebra", "alpha"}},
+		{Check: validations.IDTablesExist, Tables: []string{"middle"}},
+	}
+	reversed := []validations.Finding{
+		{Check: validations.IDTablesExist, Tables: []string{"middle"}},
+		{Check: validations.IDTablesExist, Tables: []string{"alpha", "zebra"}},
+	}
+
+	first := findingsToPreflightError("TABLE_EXISTENCE_CHECK", "missing", forward, validations.IDTablesExist)
+	second := findingsToPreflightError("TABLE_EXISTENCE_CHECK", "missing", reversed, validations.IDTablesExist)
+	if first == nil || second == nil {
+		t.Fatal("matching findings must produce errors")
+	}
+	const want = "alpha,middle,zebra"
+	if got := strings.Join(first.Tables, ","); got != want {
+		t.Fatalf("forward Tables = %q, want %q", got, want)
+	}
+	if got := strings.Join(second.Tables, ","); got != want {
+		t.Fatalf("reversed Tables = %q, want %q", got, want)
 	}
 }
 

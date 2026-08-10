@@ -325,7 +325,15 @@ only shows constraints on tables the account is privileged for — and the state
 means no completeness proof was populated at all. **Only `complete` passes**, and the error
 names the state it saw.
 
-**Grant:**
+For `unconfirmed`, GoArchive also reports which primary-source stage failed. A query-stage
+failure can be caused by missing privileges, but also by connectivity, server state, or
+another query error; inspect the error-level log before changing grants. A read-stage
+failure means rows were returned but could not be scanned or decoded. Changing privileges
+does not repair that case—inspect the logged cause and verify MySQL and `dbsgomysql`
+compatibility. An absent or unrecognized reason remains a generic fail-closed diagnostic.
+The raw MySQL error is logged once and is not copied into the structured preflight error.
+
+**Grant, when the logged query-stage cause is a privilege rejection:**
 
 ```sql
 GRANT PROCESS ON *.* TO '<user>'@'<host>';
