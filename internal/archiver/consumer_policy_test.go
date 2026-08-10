@@ -129,9 +129,9 @@ var sqlmockBudgets = []sqlmockBudget{
 			"handle would mask context.Canceled and the handle is the mechanism under test",
 	},
 	{
-		file: "composite_pk_test.go", mocks: 4, handles: 4,
-		why: "not yet converted; pinned at its current count so it cannot grow while the " +
-			"conversion is pending. Lowering these to 0 is that phase's job",
+		file: "composite_pk_test.go", mocks: 0, handles: 0,
+		why: "converted to typed validations.PKInfo facts; this file must remain independent " +
+			"of dbsgomysql query text and sqlmock database handles",
 	},
 }
 
