@@ -76,7 +76,7 @@ func TestResumeManager_InitializeTables_Success(t *testing.T) {
 
 	// Legacy probe: archiver_job does not yet exist (fresh schema). PrimaryKeys is
 	// never reached — checkLegacySchema returns before consulting it.
-	mock.ExpectQuery("information_schema").WithArgs("testdb").
+	mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	// Create archiver_job only (per-job log table is created later).
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -130,7 +130,7 @@ func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
 	// Legacy probe (fresh schema), then job table creation failure.
-	mock.ExpectQuery("information_schema").WithArgs("testdb").
+	mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnError(assert.AnError)
 
@@ -179,10 +179,10 @@ func TestResumeManager_CheckLegacySchema_Shapes(t *testing.T) {
 			rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
 			// archiver_job already exists.
-			mock.ExpectQuery("information_schema").WithArgs("testdb").
+			mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
 				WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
 					AddRow("archiver_job", "BASE TABLE", "InnoDB"))
-			mock.ExpectQuery("information_schema").WithArgs("testdb").
+			mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
 				WillReturnRows(tc.pkRows)
 			if tc.wantErr == "" {
 				mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").
