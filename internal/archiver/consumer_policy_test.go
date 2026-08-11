@@ -213,50 +213,6 @@ type wireViolation struct {
 	line        int
 }
 
-type wireExemption struct {
-	file          string
-	function      string
-	sites         int
-	allowed       map[string]int
-	reason        string
-	deletionOwner string
-}
-
-// phase028WireExemptions are the six legacy-probe sites that PR-07 deletes together with
-// ResumeManager.checkLegacySchema. The fingerprint counts are exact, so adding another
-// private query or row schema to an exempt function still fails the policy.
-var phase028WireExemptions = []wireExemption{
-	{
-		file: "internal/archiver/copyonly_orchestrator_test.go", function: "TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout", sites: 1,
-		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
-		reason:  "startup still traverses the legacy tracking-table shape probe", deletionOwner: "Phase 5 / PR-07 removes checkLegacySchema and this setup",
-	},
-	{
-		file: "internal/archiver/copyonly_orchestrator_test.go", function: "TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError", sites: 1,
-		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
-		reason:  "startup still traverses the legacy tracking-table shape probe", deletionOwner: "Phase 5 / PR-07 removes checkLegacySchema and this setup",
-	},
-	{
-		file: "internal/archiver/resume_test.go", function: "TestResumeManager_InitializeTables_Success", sites: 1,
-		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
-		reason:  "fresh-schema initialization still calls the legacy shape probe", deletionOwner: "Phase 5 / PR-07 replaces the probe with the revision marker",
-	},
-	{
-		file: "internal/archiver/resume_test.go", function: "TestResumeManager_InitializeTables_JobTableError", sites: 1,
-		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
-		reason:  "the create-error path still passes through the legacy shape probe", deletionOwner: "Phase 5 / PR-07 replaces the probe with the revision marker",
-	},
-	{
-		file: "internal/archiver/resume_test.go", function: "TestResumeManager_CheckLegacySchema_Shapes", sites: 2,
-		allowed: map[string]int{
-			"literal:information-schema": 2,
-			"columns:tables":             1,
-			"columns:primary-keys":       1,
-		},
-		reason: "the test directly characterizes the obsolete table and primary-key probes", deletionOwner: "Phase 5 / PR-07 deletes the characterized behavior and test",
-	},
-}
-
 // TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests enforces the unit-test side of the
 // consumer boundary. Integration tests may inspect a real estate; unit tests must inject
 // dbsgomysql's exported typed facts instead of teaching sqlmock the library's private SQL
@@ -265,32 +221,6 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 	root := moduleRoot(t)
 	rules := loadDBSGOMySQLWireRules(t, root)
 	fset := token.NewFileSet()
-
-	type exemptionKey struct {
-		file     string
-		function string
-	}
-	type exemptionState struct {
-		exemption wireExemption
-		used      map[string]int
-	}
-
-	exemptions := make(map[exemptionKey]*exemptionState, len(phase028WireExemptions))
-	totalSites := 0
-	for _, exemption := range phase028WireExemptions {
-		key := exemptionKey{file: exemption.file, function: exemption.function}
-		if _, duplicate := exemptions[key]; duplicate {
-			t.Fatalf("duplicate phase-028 exemption for %s:%s", exemption.file, exemption.function)
-		}
-		if exemption.reason == "" || exemption.deletionOwner == "" {
-			t.Fatalf("phase-028 exemption %s:%s must name its reason and deletion owner", exemption.file, exemption.function)
-		}
-		totalSites += exemption.sites
-		exemptions[key] = &exemptionState{exemption: exemption, used: make(map[string]int)}
-	}
-	if totalSites != 6 {
-		t.Fatalf("phase-028 exemption inventory names %d sites, want exactly 6", totalSites)
-	}
 
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -328,11 +258,6 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 				node = fn.Body
 			}
 			for _, violation := range findWireViolations(fset, node, rules) {
-				state := exemptions[exemptionKey{file: rel, function: function}]
-				if state != nil && state.used[violation.fingerprint] < state.exemption.allowed[violation.fingerprint] {
-					state.used[violation.fingerprint]++
-					continue
-				}
 				t.Errorf("%s:%d (%s): %s encodes dbsgomysql private metadata wire format; inject exported typed facts instead",
 					rel, violation.line, function, violation.fingerprint)
 			}
@@ -341,15 +266,6 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 	})
 	if walkErr != nil {
 		t.Fatalf("walk unit tests: %v", walkErr)
-	}
-
-	for _, state := range exemptions {
-		for fingerprint, want := range state.exemption.allowed {
-			if got := state.used[fingerprint]; got != want {
-				t.Errorf("stale phase-028 exemption %s:%s for %s: used %d, want %d; remove or update it with the owning Phase-5 change",
-					state.exemption.file, state.exemption.function, fingerprint, got, want)
-			}
-		}
 	}
 }
 
