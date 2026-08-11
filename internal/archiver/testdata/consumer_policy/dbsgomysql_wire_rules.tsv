@@ -1,0 +1,24 @@
+# kind	name	value
+literal	information-schema	information_schema
+literal	innodb-foreign	INNODB_FOREIGN
+literal	key-column-usage	KEY_COLUMN_USAGE
+literal	referential-constraints	REFERENTIAL_CONSTRAINTS
+literal	enabled-roles	ENABLED_ROLES
+literal	user-privileges	USER_PRIVILEGES
+literal	schema-privileges	SCHEMA_PRIVILEGES
+literal	table-privileges	TABLE_PRIVILEGES
+literal	current-user	CURRENT_USER()
+literal	tables-select	TABLE_NAME, TABLE_TYPE, ENGINE
+literal	columns-select	TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE, COLUMN_TYPE, EXTRA
+literal	primary-keys-select	TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
+literal	indexes-select	TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX
+literal	triggers-select	EVENT_OBJECT_TABLE, TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING
+literal	schema-grants-select	GRANTEE, TABLE_SCHEMA, PRIVILEGE_TYPE
+literal	table-grants-select	GRANTEE, TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE
+columns	tables	TABLE_NAME,TABLE_TYPE,ENGINE
+columns	columns	TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,DATA_TYPE,COLUMN_TYPE,EXTRA
+columns	primary-keys	TABLE_NAME,COLUMN_NAME,DATA_TYPE,COLUMN_TYPE
+columns	indexes	TABLE_SCHEMA,TABLE_NAME,INDEX_NAME,COLUMN_NAME,SEQ_IN_INDEX
+columns	triggers	EVENT_OBJECT_TABLE,TRIGGER_NAME,EVENT_MANIPULATION,ACTION_TIMING
+columns	schema-grants	GRANTEE,TABLE_SCHEMA,PRIVILEGE_TYPE
+columns	table-grants	GRANTEE,TABLE_SCHEMA,TABLE_NAME,PRIVILEGE_TYPE

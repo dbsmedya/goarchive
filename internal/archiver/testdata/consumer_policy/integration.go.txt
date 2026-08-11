@@ -1,0 +1,7 @@
+//go:build integration
+
+package fixture
+
+func realEstateFixture() {
+	db.Query("SELECT TABLE_NAME FROM information_schema.TABLES")
+}

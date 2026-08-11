@@ -18,6 +18,8 @@ The test layers, how to run each, and what they need.
 
 - [Test layers](#test-layers)
 - [Unit tests](#unit-tests)
+- [Consumer-policy enforcement](#consumer-policy-enforcement)
+- [Coverage on demand](#coverage-on-demand)
 - [Integration tests](#integration-tests)
 - [End-to-end (Sakila) tests](#end-to-end-sakila-tests)
 - [The reseed requirement](#the-reseed-requirement)
@@ -61,10 +63,38 @@ the test to the library's API, which the compiler checks.
 A stage that ignores the injected fact and issues its own query fails with
 `validations: nil Querier`, so the absence of a handle is itself the assertion.
 
-`internal/archiver/consumer_policy_test.go` holds the guards for this: one fails the build if
-non-test code names `information_schema` in a string literal, the other pins how much `sqlmock`
-the converted files may still contain. If you need a mock in a pinned file, preload the fact
-instead — the guard's failure message names the pattern to copy.
+A metadata-policy test should preload an exported fact and assert the semantic result plus
+the reader call count:
+
+```go
+fake := &fakePreflightInspector{
+    tablesResult: []validations.TableInfo{
+        {Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
+    },
+}
+_, run, _ := newTypedFactRun(t, fake, nil)
+
+first, err := run.sourceTables(context.Background())
+// Assert the returned fact and error, call again, then prove memoization.
+second, err := run.sourceTables(context.Background())
+if fake.tablesCalls != 1 {
+    t.Fatalf("Tables calls = %d, want 1", fake.tablesCalls)
+}
+```
+
+For SQL GoArchive owns, keep an exact expectation and assert both the behavior and mock
+completion:
+
+```go
+mock.ExpectQuery(regexp.QuoteMeta(maxAllowedPacketQuery)).
+    WillReturnRows(sqlmock.NewRows([]string{"Variable_name", "Value"}).
+        AddRow("max_allowed_packet", "67108864"))
+// Call the GoArchive method, assert its value/error, then ExpectationsWereMet.
+```
+
+`internal/archiver/consumer_policy_test.go` holds the production-query, `sqlmock`-inventory,
+and unit wire-format guards. If you need a mock in a pinned file, preload the fact instead —
+the guard's failure message names the pattern to copy.
 
 ### Retained application-owned MySQL probes
 
@@ -81,6 +111,58 @@ exceptions remain GoArchive SQL and therefore keep exact `sqlmock` coverage:
 Neither exception permits unit tests to reproduce dbsgomysql metadata queries, aliases,
 result columns, or fallback choreography. Preflight metadata tests continue to inject the
 library's exported typed facts.
+
+## Consumer-policy enforcement
+
+Run the repository boundary gate directly with:
+
+```bash
+make consumer-policy
+```
+
+The target runs every `TestConsumerPolicy*` guard in `internal/archiver`:
+
+- production Go files may not query the metadata catalog owned by dbsgomysql;
+- the remaining application-owned `sqlmock` budgets must match their reviewed inventory;
+- non-integration unit tests may not encode dbsgomysql query fragments, aliases, result
+  column layouts, or fallback choreography.
+
+Integration-tagged files and `*_integration_test.go` files are explicitly classified as
+real-estate tests and are outside the unit wire-format invariant. The detector patterns are
+stored in `internal/archiver/testdata/consumer_policy/dbsgomysql_wire_rules.tsv`, keeping
+the guard's own Go source from exempting itself.
+
+Six legacy tracking-schema probe sites remain as exact temporary exemptions: two in
+`copyonly_orchestrator_test.go` and four in `resume_test.go`. Each exemption records its
+function, fingerprint count, rationale, and Phase 5 / PR-07 deletion owner. The gate fails
+if any site grows, moves, or disappears without the exemption inventory changing. Do not
+add another exemption; Phase 5 deletes the probe and all six existing sites.
+
+The migration inventory, mutation evidence, measured coverage, and deferred integration
+scope are recorded in the [PR-06 consumer-boundary review](reviews/2026-08-11-dbsgomysql-consumer-boundary.md).
+
+When changing the guard, prove both directions before review:
+
+1. Temporarily add a forbidden metadata literal to a non-integration unit test.
+2. Run `make consumer-policy` and record the non-zero result.
+3. Revert only the temporary mutation.
+4. Run `make consumer-policy` again and record the green result.
+
+## Coverage on demand
+
+Coverage is generated from the current checkout instead of maintained as a percentage
+snapshot. From the repository root:
+
+```bash
+go test -short ./... -count=1 -coverprofile=/tmp/goarchive-short.cover
+go tool cover -func=/tmp/goarchive-short.cover
+go tool cover -html=/tmp/goarchive-short.cover -o /tmp/goarchive-short.html
+```
+
+For focused archiver work, replace `./...` with `./internal/archiver`. Keep generated
+profiles and HTML outside the repository. A review may record the measured command and
+result, but documentation must not present a percentage as current unless that same change
+generated it.
 
 ---
 
@@ -270,6 +352,7 @@ preflight at startup.
 | `make e2e-setup` | Step 2 alone: bootstrap and seed the estate |
 | `make e2e-tests-must-run-after-setup` | Step 3 alone: the tests; refuses unless seeded |
 | `make e2e-examples` | Validation-failure demo suite; refuses unless seeded |
+| `make consumer-policy` | Production-query, sqlmock-budget, and unit wire-format guards |
 | `make deadcode` | Dead-code guard — must stay clean |
 | `make lint` / `make vet` / `make fmt-check` | Static analysis |
 

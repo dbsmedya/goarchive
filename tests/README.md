@@ -20,6 +20,10 @@ It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `dea
 integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`, and ends with a
 summary:
 
+Unit-test ownership rules, typed-fake examples, and reproducible coverage commands live in
+[`docs/README_TESTING.md`](../docs/README_TESTING.md); coverage is measured from the current
+checkout rather than copied into a hand-maintained snapshot.
+
 ```
 ================================================
   GATE SUMMARY

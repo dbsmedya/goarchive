@@ -168,8 +168,8 @@ deadcode: ## Fail if the production binary carries unreachable functions
 	echo "deadcode: clean"
 
 .PHONY: consumer-policy
-consumer-policy: ## Fail if GoArchive queries information_schema directly (spec §2)
-	@go test ./internal/archiver/ -run TestNoResidualInformationSchemaQueries -count=1 \
+consumer-policy: ## Enforce production-query, sqlmock-budget, and unit wire-format boundaries
+	@go test ./internal/archiver/ -run '^TestConsumerPolicy' -count=1 \
 		&& echo "consumer-policy: clean"
 
 # Integration test configuration
