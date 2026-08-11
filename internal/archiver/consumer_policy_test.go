@@ -3,6 +3,7 @@ package archiver
 import (
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -13,8 +14,8 @@ import (
 	"testing"
 )
 
-// TestNoResidualInformationSchemaQueries fails when any non-test Go file in this module
-// contains a string literal naming information_schema.
+// TestConsumerPolicyNoResidualInformationSchemaQueries fails when any non-test Go file in
+// this module contains a string literal naming the metadata catalog owned by dbsgomysql.
 //
 // This is the structural form of the consumer-policy rule (spec section 2). GoArchive
 // performs no low-level discovery of databases, schemas, tables, grants, primary keys or
@@ -31,8 +32,9 @@ import (
 // Stated limit: a query assembled from fragments that never spell information_schema in a
 // single literal is not detected. The guard makes the rule visible and the obvious
 // regression loud. It is not a proof.
-func TestNoResidualInformationSchemaQueries(t *testing.T) {
+func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 	root := moduleRoot(t)
+	metadataCatalog := wireRuleByName(t, loadDBSGOMySQLWireRules(t, root), "information-schema").needle
 	fset := token.NewFileSet()
 
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -74,14 +76,14 @@ func TestNoResidualInformationSchemaQueries(t *testing.T) {
 			if unquoteErr != nil {
 				value = lit.Value // raw form is still searchable
 			}
-			if !strings.Contains(strings.ToLower(value), "information_schema") {
+			if !strings.Contains(strings.ToLower(value), metadataCatalog) {
 				return true
 			}
-			t.Errorf("%s:%d: string literal names information_schema. GoArchive 2.0 obtains "+
+			t.Errorf("%s:%d: string literal names %s. GoArchive 2.0 obtains "+
 				"every database fact from dbsgomysql/pkg/validations, which verifies them "+
 				"against MySQL 8.0, 8.4 and 9.7. If the library cannot answer this, file an "+
 				"upstream issue (spec section 5) — do not query it here",
-				rel, fset.Position(lit.Pos()).Line)
+				rel, fset.Position(lit.Pos()).Line, metadataCatalog)
 			return true
 		})
 
@@ -134,7 +136,7 @@ var sqlmockBudgets = []sqlmockBudget{
 	},
 }
 
-// TestSqlmockBudgetsHold fails when a budgeted file's sqlmock usage moves in either
+// TestConsumerPolicySqlmockBudgetsHold fails when a budgeted file's sqlmock usage moves in either
 // direction.
 //
 // It counts AST call expressions, not text, for the same reason the guard above inspects
@@ -142,7 +144,7 @@ var sqlmockBudgets = []sqlmockBudget{
 // would match the call itself. Six such comments already exist in preflight_test.go, so a
 // textual count could only be made green by deleting the explanations — trading real
 // documentation for no additional safety.
-func TestSqlmockBudgetsHold(t *testing.T) {
+func TestConsumerPolicySqlmockBudgetsHold(t *testing.T) {
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -196,6 +198,411 @@ func TestSqlmockBudgetsHold(t *testing.T) {
 					budget.file, handles, budget.handles, budget.why)
 			}
 		})
+	}
+}
+
+type wireRule struct {
+	kind    string
+	name    string
+	needle  string
+	columns []string
+}
+
+type wireViolation struct {
+	fingerprint string
+	line        int
+}
+
+type wireExemption struct {
+	file          string
+	function      string
+	sites         int
+	allowed       map[string]int
+	reason        string
+	deletionOwner string
+}
+
+// phase028WireExemptions are the six legacy-probe sites that PR-07 deletes together with
+// ResumeManager.checkLegacySchema. The fingerprint counts are exact, so adding another
+// private query or row schema to an exempt function still fails the policy.
+var phase028WireExemptions = []wireExemption{
+	{
+		file: "internal/archiver/copyonly_orchestrator_test.go", function: "TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout", sites: 1,
+		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
+		reason:  "startup still traverses the legacy tracking-table shape probe", deletionOwner: "Phase 5 / PR-07 removes checkLegacySchema and this setup",
+	},
+	{
+		file: "internal/archiver/copyonly_orchestrator_test.go", function: "TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError", sites: 1,
+		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
+		reason:  "startup still traverses the legacy tracking-table shape probe", deletionOwner: "Phase 5 / PR-07 removes checkLegacySchema and this setup",
+	},
+	{
+		file: "internal/archiver/resume_test.go", function: "TestResumeManager_InitializeTables_Success", sites: 1,
+		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
+		reason:  "fresh-schema initialization still calls the legacy shape probe", deletionOwner: "Phase 5 / PR-07 replaces the probe with the revision marker",
+	},
+	{
+		file: "internal/archiver/resume_test.go", function: "TestResumeManager_InitializeTables_JobTableError", sites: 1,
+		allowed: map[string]int{"literal:information-schema": 1, "columns:tables": 1},
+		reason:  "the create-error path still passes through the legacy shape probe", deletionOwner: "Phase 5 / PR-07 replaces the probe with the revision marker",
+	},
+	{
+		file: "internal/archiver/resume_test.go", function: "TestResumeManager_CheckLegacySchema_Shapes", sites: 2,
+		allowed: map[string]int{
+			"literal:information-schema": 2,
+			"columns:tables":             1,
+			"columns:primary-keys":       1,
+		},
+		reason: "the test directly characterizes the obsolete table and primary-key probes", deletionOwner: "Phase 5 / PR-07 deletes the characterized behavior and test",
+	},
+}
+
+// TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests enforces the unit-test side of the
+// consumer boundary. Integration tests may inspect a real estate; unit tests must inject
+// dbsgomysql's exported typed facts instead of teaching sqlmock the library's private SQL
+// or result-column layout.
+func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
+	root := moduleRoot(t)
+	rules := loadDBSGOMySQLWireRules(t, root)
+	fset := token.NewFileSet()
+
+	type exemptionKey struct {
+		file     string
+		function string
+	}
+	type exemptionState struct {
+		exemption wireExemption
+		used      map[string]int
+	}
+
+	exemptions := make(map[exemptionKey]*exemptionState, len(phase028WireExemptions))
+	totalSites := 0
+	for _, exemption := range phase028WireExemptions {
+		key := exemptionKey{file: exemption.file, function: exemption.function}
+		if _, duplicate := exemptions[key]; duplicate {
+			t.Fatalf("duplicate phase-028 exemption for %s:%s", exemption.file, exemption.function)
+		}
+		if exemption.reason == "" || exemption.deletionOwner == "" {
+			t.Fatalf("phase-028 exemption %s:%s must name its reason and deletion owner", exemption.file, exemption.function)
+		}
+		totalSites += exemption.sites
+		exemptions[key] = &exemptionState{exemption: exemption, used: make(map[string]int)}
+	}
+	if totalSites != 6 {
+		t.Fatalf("phase-028 exemption inventory names %d sites, want exactly 6", totalSites)
+	}
+
+	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "vendor", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+
+		file, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if parseErr != nil {
+			return fmt.Errorf("parse %s: %w", path, parseErr)
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return fmt.Errorf("relativize %s: %w", path, relErr)
+		}
+		rel = filepath.ToSlash(rel)
+		if isIntegrationTestFile(rel, file) {
+			return nil
+		}
+
+		for _, decl := range file.Decls {
+			function := "<package>"
+			node := ast.Node(decl)
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				function = fn.Name.Name
+				node = fn.Body
+			}
+			for _, violation := range findWireViolations(fset, node, rules) {
+				state := exemptions[exemptionKey{file: rel, function: function}]
+				if state != nil && state.used[violation.fingerprint] < state.exemption.allowed[violation.fingerprint] {
+					state.used[violation.fingerprint]++
+					continue
+				}
+				t.Errorf("%s:%d (%s): %s encodes dbsgomysql private metadata wire format; inject exported typed facts instead",
+					rel, violation.line, function, violation.fingerprint)
+			}
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk unit tests: %v", walkErr)
+	}
+
+	for _, state := range exemptions {
+		for fingerprint, want := range state.exemption.allowed {
+			if got := state.used[fingerprint]; got != want {
+				t.Errorf("stale phase-028 exemption %s:%s for %s: used %d, want %d; remove or update it with the owning Phase-5 change",
+					state.exemption.file, state.exemption.function, fingerprint, got, want)
+			}
+		}
+	}
+}
+
+func loadDBSGOMySQLWireRules(t *testing.T, root string) []wireRule {
+	t.Helper()
+	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "dbsgomysql_wire_rules.tsv")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dbsgomysql wire rules: %v", err)
+	}
+
+	var rules []wireRule
+	for lineNumber, raw := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != 3 {
+			t.Fatalf("%s:%d: rule must have kind, name, and value", path, lineNumber+1)
+		}
+		rule := wireRule{kind: parts[0], name: parts[1]}
+		switch rule.kind {
+		case "literal":
+			rule.needle = strings.ToLower(parts[2])
+		case "columns":
+			for _, column := range strings.Split(parts[2], ",") {
+				rule.columns = append(rule.columns, strings.ToLower(strings.TrimSpace(column)))
+			}
+		default:
+			t.Fatalf("%s:%d: unknown rule kind %q", path, lineNumber+1, rule.kind)
+		}
+		rules = append(rules, rule)
+	}
+	if len(rules) == 0 {
+		t.Fatalf("%s: no dbsgomysql wire rules loaded", path)
+	}
+	return rules
+}
+
+func wireRuleByName(t *testing.T, rules []wireRule, name string) wireRule {
+	t.Helper()
+	for _, rule := range rules {
+		if rule.name == name {
+			return rule
+		}
+	}
+	t.Fatalf("dbsgomysql wire rule %q not found", name)
+	return wireRule{}
+}
+
+func findWireViolations(fset *token.FileSet, node ast.Node, rules []wireRule) []wireViolation {
+	if node == nil {
+		return nil
+	}
+	var violations []wireViolation
+	ast.Inspect(node, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.BasicLit:
+			if typed.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(typed.Value)
+			if err != nil {
+				value = typed.Value
+			}
+			lower := strings.ToLower(value)
+			for _, rule := range rules {
+				if rule.kind == "literal" && strings.Contains(lower, rule.needle) {
+					violations = append(violations, wireViolation{
+						fingerprint: "literal:" + rule.name,
+						line:        fset.Position(typed.Pos()).Line,
+					})
+				}
+			}
+		case *ast.CallExpr:
+			columns, ok := sqlmockNewRowsColumns(typed)
+			if !ok {
+				return true
+			}
+			for _, rule := range rules {
+				if rule.kind == "columns" && equalStrings(columns, rule.columns) {
+					violations = append(violations, wireViolation{
+						fingerprint: "columns:" + rule.name,
+						line:        fset.Position(typed.Pos()).Line,
+					})
+				}
+			}
+		}
+		return true
+	})
+	return violations
+}
+
+func sqlmockNewRowsColumns(call *ast.CallExpr) ([]string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "NewRows" || len(call.Args) != 1 {
+		return nil, false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || pkg.Name != "sqlmock" {
+		return nil, false
+	}
+	list, ok := call.Args[0].(*ast.CompositeLit)
+	if !ok {
+		return nil, false
+	}
+	columns := make([]string, 0, len(list.Elts))
+	for _, element := range list.Elts {
+		literal, ok := element.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			return nil, false
+		}
+		column, err := strconv.Unquote(literal.Value)
+		if err != nil {
+			return nil, false
+		}
+		columns = append(columns, strings.ToLower(column))
+	}
+	return columns, true
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func isIntegrationTestFile(path string, file *ast.File) bool {
+	base := filepath.Base(path)
+	if base == "integration_test.go" || strings.HasSuffix(base, "_integration_test.go") {
+		return true
+	}
+	for _, group := range file.Comments {
+		if group.Pos() > file.Package {
+			break
+		}
+		for _, comment := range group.List {
+			if !strings.HasPrefix(comment.Text, "//go:build") {
+				continue
+			}
+			expr, err := constraint.Parse(comment.Text)
+			if err == nil && constraintContainsPositiveTag(expr, "integration", false) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func constraintContainsPositiveTag(expr constraint.Expr, tag string, negated bool) bool {
+	switch typed := expr.(type) {
+	case *constraint.TagExpr:
+		return typed.Tag == tag && !negated
+	case *constraint.NotExpr:
+		return constraintContainsPositiveTag(typed.X, tag, !negated)
+	case *constraint.AndExpr:
+		return constraintContainsPositiveTag(typed.X, tag, negated) ||
+			constraintContainsPositiveTag(typed.Y, tag, negated)
+	case *constraint.OrExpr:
+		return constraintContainsPositiveTag(typed.X, tag, negated) ||
+			constraintContainsPositiveTag(typed.Y, tag, negated)
+	default:
+		return false
+	}
+}
+
+func TestConsumerPolicyWireDetectorPatterns(t *testing.T) {
+	root := moduleRoot(t)
+	rules := loadDBSGOMySQLWireRules(t, root)
+	fset := token.NewFileSet()
+	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "forbidden.go.txt")
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse detector fixture: %v", err)
+	}
+
+	got := make(map[string]int)
+	for _, violation := range findWireViolations(fset, file, rules) {
+		got[violation.fingerprint]++
+	}
+	want := make(map[string]int)
+	for _, fingerprint := range []string{
+		"literal:information-schema",
+		"literal:innodb-foreign",
+		"literal:key-column-usage",
+		"literal:referential-constraints",
+		"literal:enabled-roles",
+		"literal:user-privileges",
+		"literal:schema-privileges",
+		"literal:table-privileges",
+		"literal:current-user",
+		"literal:tables-select",
+		"literal:columns-select",
+		"literal:primary-keys-select",
+		"literal:indexes-select",
+		"literal:triggers-select",
+		"literal:schema-grants-select",
+		"literal:table-grants-select",
+		"columns:tables",
+		"columns:columns",
+		"columns:primary-keys",
+		"columns:indexes",
+		"columns:triggers",
+		"columns:schema-grants",
+		"columns:table-grants",
+	} {
+		want[fingerprint] = 1
+	}
+	if len(got) != len(want) {
+		t.Fatalf("detector fingerprints = %v, want %v", got, want)
+	}
+	for fingerprint, count := range want {
+		if got[fingerprint] != count {
+			t.Errorf("detector fingerprint %s count = %d, want %d", fingerprint, got[fingerprint], count)
+		}
+	}
+
+	allowedPath := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "allowed.go.txt")
+	allowedFile, err := parser.ParseFile(fset, allowedPath, nil, 0)
+	if err != nil {
+		t.Fatalf("parse allowed detector fixture: %v", err)
+	}
+	if violations := findWireViolations(fset, allowedFile, rules); len(violations) != 0 {
+		t.Fatalf("legitimate GoArchive SQL produced wire violations: %v", violations)
+	}
+}
+
+func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "integration.go.txt")
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse integration fixture: %v", err)
+	}
+	if !isIntegrationTestFile("internal/archiver/characterization_fixture_test.go", file) {
+		t.Fatal("integration build constraint was not classified")
+	}
+
+	nonIntegrationPath := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "nonintegration.go.txt")
+	nonIntegrationFile, err := parser.ParseFile(fset, nonIntegrationPath, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse non-integration fixture: %v", err)
+	}
+	if isIntegrationTestFile("internal/archiver/unit_fixture_test.go", nonIntegrationFile) {
+		t.Fatal("negated integration build constraint was classified as integration")
 	}
 }
 

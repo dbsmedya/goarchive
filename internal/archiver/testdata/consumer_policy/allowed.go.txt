@@ -1,0 +1,7 @@
+package fixture
+
+func applicationOwnedSQL() {
+	mock.ExpectQuery("SHOW VARIABLES LIKE 'max_allowed_packet'")
+	mock.ExpectQuery("SHOW REPLICA STATUS")
+	sqlmock.NewRows([]string{"Variable_name", "Value"})
+}
