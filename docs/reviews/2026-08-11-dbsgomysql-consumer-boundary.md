@@ -65,6 +65,21 @@ No mutation file remains in the tree.
 | `make fmt-check` | PASS |
 | `go build ./...` | PASS |
 | `go mod tidy -diff` | Empty diff |
+| Independent Luna `make gate` | PASS; every canonical stage exited 0 |
+
+The independent full gate started the three-server estate and verified reachability on
+ports 3305, 3307, and 3308. Its measured results were:
+
+- unit: 783 test passes, 4 skips, 0 failures; nine test-bearing packages passed and two had
+  no tests;
+- integration: `PASS=1072 FAIL=0 SKIP=1`;
+- characterization: `60 / 304 / 364 / 0 / 0`;
+- working E2E: 7 passed, 0 failed;
+- validation demos: 4 passed, 0 failed, with every expected failure category matched.
+
+Formatting, vet, lint, consumer policy, and dead-code stages also passed. The gate performed
+its documented test-estate reset and reseed for E2E, made no source edits, and left the
+tracked worktree clean at `a955d6f`.
 
 The generated profile lived outside the repository and is not committed. Percentages in
 this review are evidence for this exact change, not a maintained snapshot.
