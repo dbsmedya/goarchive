@@ -106,6 +106,34 @@ func TestResumeManager_EnsureSchemaVersion_StampsFreshSchema(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestResumeManager_EnsureSchemaVersion_ConcurrentUnrecognizedStampIsRefused(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	// Another writer wins the id=1 race, so INSERT IGNORE changes no row.
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow("99.0"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "99.0")
+	assert.Contains(t, err.Error(), "does not recognize")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestResumeManager_EnsureSchemaVersion_RecognizedRevisionDoesNotRewrite(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

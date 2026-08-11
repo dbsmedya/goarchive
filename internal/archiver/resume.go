@@ -203,6 +203,23 @@ func (r *ResumeManager) createLogTableSQL() string {
 ) ENGINE=InnoDB`, r.logTable)
 }
 
+func (r *ResumeManager) readTrackingSchemaVersion(ctx context.Context) (string, error) {
+	var found string
+	err := r.db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT schema_version FROM %s WHERE id = 1", r.metaTable)).Scan(&found)
+	return found, err
+}
+
+func (r *ResumeManager) validateTrackingSchemaVersion(found string) error {
+	if _, ok := recognizedTrackingSchemaVersions[found]; !ok {
+		return fmt.Errorf(
+			"tracking tables in schema %q report schema_version %q, which this GoArchive does not recognize (it understands %q).\n"+
+				"They were written by a newer release; upgrade the GoArchive binary to one that supports %q, or point job_schema at a different schema",
+			r.jobSchema, found, trackingSchemaVersion, found)
+	}
+	return nil
+}
+
 // ensureSchemaVersion stamps a compatible schema that has no marker and refuses
 // revisions this binary does not recognize. It issues only GoArchive-owned SQL
 // against GoArchive-owned tables: no metadata queries or MySQL error-code checks.
@@ -212,9 +229,7 @@ func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
 			r.jobSchema, r.jobSchema, err)
 	}
 
-	var found string
-	err := r.db.QueryRowContext(ctx,
-		fmt.Sprintf("SELECT schema_version FROM %s WHERE id = 1", r.metaTable)).Scan(&found)
+	found, err := r.readTrackingSchemaVersion(ctx)
 	if err == sql.ErrNoRows {
 		// A later release will trust this declaration, so prove the current table
 		// has the id-bearing shape before stamping it. LIMIT 0 reads no data. Any
@@ -230,11 +245,27 @@ func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
 					"If the account simply lacks SELECT on that table, grant it and re-run",
 				r.jobTable, r.jobSchema, probeErr)
 		}
-		if _, insertErr := r.db.ExecContext(ctx,
+		result, insertErr := r.db.ExecContext(ctx,
 			fmt.Sprintf("INSERT IGNORE INTO %s (id, schema_version) VALUES (1, ?)", r.metaTable),
-			trackingSchemaVersion); insertErr != nil {
+			trackingSchemaVersion)
+		if insertErr != nil {
 			return fmt.Errorf("failed to stamp tracking-schema version %s in schema %q: %w",
 				trackingSchemaVersion, r.jobSchema, insertErr)
+		}
+		affected, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("failed to confirm tracking-schema version %s was stamped in schema %q: %w",
+				trackingSchemaVersion, r.jobSchema, affectedErr)
+		}
+		if affected != 1 {
+			// INSERT IGNORE changed no row, so another writer won id=1 after our
+			// initial read. Validate the winning declaration before proceeding.
+			concurrent, readErr := r.readTrackingSchemaVersion(ctx)
+			if readErr != nil {
+				return fmt.Errorf("failed to read concurrently stamped tracking-schema version from schema %q: %w",
+					r.jobSchema, readErr)
+			}
+			return r.validateTrackingSchemaVersion(concurrent)
 		}
 		r.logger.Infow("Tracking schema stamped",
 			"schema", r.jobSchema, "schema_version", trackingSchemaVersion)
@@ -244,13 +275,7 @@ func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
 		return fmt.Errorf("failed to read tracking-schema version from schema %q: %w", r.jobSchema, err)
 	}
 
-	if _, ok := recognizedTrackingSchemaVersions[found]; !ok {
-		return fmt.Errorf(
-			"tracking tables in schema %q report schema_version %q, which this GoArchive does not recognize (it understands %q).\n"+
-				"They were written by a newer release; upgrade the GoArchive binary to one that supports %q, or point job_schema at a different schema",
-			r.jobSchema, found, trackingSchemaVersion, found)
-	}
-	return nil
+	return r.validateTrackingSchemaVersion(found)
 }
 
 // InitializeTables creates the archiver_job table if it doesn't exist and

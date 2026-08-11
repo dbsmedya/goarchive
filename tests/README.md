@@ -31,7 +31,7 @@ checkout rather than copied into a hand-maintained snapshot.
   estate             test estate reachable on 3305, 3307, 3308
   fmt-check          ok
   ...
-  integration        PASS=1076 FAIL=0 SKIP=1
+  integration        PASS=1077 FAIL=0 SKIP=1
   characterization   OK (60 / 304 / 364 / 0 / 0)
   e2e                Passed: 7  Failed: 0
   e2e-examples       Passed: 4  Failed: 0
@@ -582,7 +582,7 @@ succeeding locally and failing in CI. Integration residue lives in **`goarchive_
 Every Go layer the runner executes reports:
 
 ```
-[INFO] integration: PASS=1076 FAIL=0 SKIP=1 (go test exit 0)
+[INFO] integration: PASS=1077 FAIL=0 SKIP=1 (go test exit 0)
 ```
 
 and **fails when nothing ran**. `go test` prints `ok` and exits 0 for a `-run` pattern that
@@ -591,7 +591,7 @@ only counts failures passes all three. The runner counts passes instead, which r
 so `-v` is always on internally; the full log prints only with `--verbose` or on failure.
 
 Skips are reported by name rather than swallowed. `MIN_PASS=<n>` requires at least n passing
-tests — inclusive, so `MIN_PASS=1076` accepts exactly 1076. It defaults to 1, which only
+tests — inclusive, so `MIN_PASS=1077` accepts exactly 1077. It defaults to 1, which only
 catches a run that did nothing.
 
 ## Environment Variables
