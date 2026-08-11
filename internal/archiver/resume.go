@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
 
@@ -34,7 +33,21 @@ const (
 	LogStatusFailed    LogStatus = 3
 )
 
-const defaultResumeChunkSize = 1000
+const (
+	defaultResumeChunkSize = 1000
+
+	// trackingSchemaVersion is the tracking-table layout revision, not the
+	// GoArchive binary version. Releases that do not reshape the tracking tables
+	// leave it unchanged.
+	trackingSchemaVersion = "2.0"
+)
+
+// recognizedTrackingSchemaVersions is the exact set of revisions this binary
+// can safely operate on. Unknown values fail closed; there is deliberately no
+// ordering comparison or semantic-version parsing.
+var recognizedTrackingSchemaVersions = map[string]struct{}{
+	trackingSchemaVersion: {},
+}
 
 // String renders the status name for logs (e.g. "copied"), not the raw int.
 func (s LogStatus) String() string {
@@ -88,6 +101,7 @@ type ResumeManager struct {
 
 	jobSchema string // resolved tracking schema (defaults to destination DB); never empty
 	jobTable  string // quoted qualified name, e.g. `goarchive`.`archiver_job`
+	metaTable string // quoted qualified name, e.g. `goarchive`.`goarchive_meta`
 	jobID     int64  // resolved in GetOrCreateJobWithType
 	logTable  string // quoted qualified name, e.g. `goarchive`.`archiver_job_log_42`; empty until resolved
 }
@@ -109,6 +123,7 @@ func NewResumeManager(db *sql.DB, log *logger.Logger, jobSchema string) (*Resume
 		logger:    log,
 		jobSchema: jobSchema,
 		jobTable:  sqlutil.QuoteIdentifier(jobSchema) + "." + sqlutil.QuoteIdentifier("archiver_job"),
+		metaTable: sqlutil.QuoteIdentifier(jobSchema) + "." + sqlutil.QuoteIdentifier("goarchive_meta"),
 	}, nil
 }
 
@@ -165,6 +180,18 @@ func (r *ResumeManager) createJobTableSQL() string {
 ) ENGINE=InnoDB`, r.jobTable)
 }
 
+// createMetaTableSQL builds the DDL for the one-row tracking-schema marker.
+// Reads always target the fixed primary key id=1, so stray rows cannot make the
+// marker ambiguous.
+func (r *ResumeManager) createMetaTableSQL() string {
+	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
+	id TINYINT NOT NULL PRIMARY KEY,
+	schema_version VARCHAR(16) NOT NULL,
+	created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB`, r.metaTable)
+}
+
 func (r *ResumeManager) createLogTableSQL() string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 	id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -176,63 +203,83 @@ func (r *ResumeManager) createLogTableSQL() string {
 ) ENGINE=InnoDB`, r.logTable)
 }
 
-// checkLegacySchema rejects pre-1.2.x tracking tables (archiver_job without the
-// new integer id PK). Replaces the old in-place ALTER migrations.
-func (r *ResumeManager) checkLegacySchema(ctx context.Context) error {
-	inspector := validations.NewInspector(r.db, r.jobSchema)
+func (r *ResumeManager) readTrackingSchemaVersion(ctx context.Context) (string, error) {
+	var found string
+	err := r.db.QueryRowContext(ctx,
+		fmt.Sprintf("SELECT schema_version FROM %s WHERE id = 1", r.metaTable)).Scan(&found)
+	return found, err
+}
 
-	found, err := inspector.Tables(ctx, []string{"archiver_job"})
-	if err != nil {
-		return fmt.Errorf("failed to probe for legacy archiver_job: %w", err)
-	}
-	if len(found) == 0 {
-		return nil // fresh schema
-	}
-
-	pks, err := inspector.PrimaryKeys(ctx, []string{"archiver_job"})
-	if err != nil {
-		return fmt.Errorf("failed to probe legacy archiver_job columns: %w", err)
-	}
-
-	// The predicate is 1.8's, reproduced deliberately: does `id` PARTICIPATE in the
-	// PRIMARY KEY? 1.8 asked information_schema for COLUMN_KEY='PRI' on a column named
-	// `id`, which MySQL reports for EVERY member of a composite key and matches
-	// case-insensitively. PKInfo is exact on both counts, so the leniency lives here, in
-	// goarchive policy over the library's fact — NOT in a goarchive query.
-	//
-	// Tightening this to "single-column PRIMARY KEY named exactly id" would reject an
-	// archiver_job that passes today, which is a pass/fail change and needs a ledger
-	// deviation (design section 4, ledger scope). An audit phase does not introduce one.
-	//
-	// This still rejects both shapes it was written for: the old job_name-PK table (no
-	// `id` in the key at all) and the partially-migrated table where `id` exists as a
-	// plain column while job_name remains the PRIMARY KEY (`id` is not in Columns).
-	idInPrimaryKey := false
-	for _, pk := range pks {
-		if pk.Kind == validations.PKNone {
-			continue
-		}
-		for _, col := range pk.Columns {
-			if strings.EqualFold(col, "id") {
-				idInPrimaryKey = true
-			}
-		}
-	}
-	if !idInPrimaryKey {
+func (r *ResumeManager) validateTrackingSchemaVersion(found string) error {
+	if _, ok := recognizedTrackingSchemaVersions[found]; !ok {
 		return fmt.Errorf(
-			"legacy GoArchive tracking tables detected in schema %q (archiver_job lacks the new 'id' column).\n"+
-				"This release reshapes tracking tables and is not state-compatible with prior versions.\n"+
-				"Drain in-flight jobs, then drop the old tables:\n"+
-				"  DROP TABLE IF EXISTS `%s`.archiver_job_log;\n"+
-				"  DROP TABLE IF EXISTS `%s`.archiver_job;\n"+
-				"new tables are recreated automatically on next run",
-			r.jobSchema, r.jobSchema, r.jobSchema)
+			"tracking tables in schema %q report schema_version %q, which this GoArchive does not recognize (it understands %q).\n"+
+				"They were written by a newer release; upgrade the GoArchive binary to one that supports %q, or point job_schema at a different schema",
+			r.jobSchema, found, trackingSchemaVersion, found)
 	}
 	return nil
 }
 
-// InitializeTables creates the archiver_job table if it doesn't exist (and
-// probes for legacy-shape tables). Per-job log tables are created lazily in
+// ensureSchemaVersion stamps a compatible schema that has no marker and refuses
+// revisions this binary does not recognize. It issues only GoArchive-owned SQL
+// against GoArchive-owned tables: no metadata queries or MySQL error-code checks.
+func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
+	if _, err := r.db.ExecContext(ctx, r.createMetaTableSQL()); err != nil {
+		return fmt.Errorf("failed to create goarchive_meta in schema %q (does the schema exist and does the account hold CREATE? a DBA must `CREATE DATABASE %s` and grant CREATE,SELECT,INSERT,UPDATE): %w",
+			r.jobSchema, r.jobSchema, err)
+	}
+
+	found, err := r.readTrackingSchemaVersion(ctx)
+	if err == sql.ErrNoRows {
+		// A later release will trust this declaration, so prove the current table
+		// has the id-bearing shape before stamping it. LIMIT 0 reads no data. Any
+		// failure is deliberately generic and fail-closed.
+		rows, probeErr := r.db.QueryContext(ctx, fmt.Sprintf("SELECT id FROM %s LIMIT 0", r.jobTable))
+		if probeErr == nil {
+			probeErr = rows.Close()
+		}
+		if probeErr != nil {
+			return fmt.Errorf(
+				"cannot confirm that %s in schema %q has the shape this release requires, so its schema_version was not stamped: %w.\n"+
+					"If these tracking tables predate the integer `id` column, upgrade to GoArchive 1.8 first — 1.2 to 2.0 is not a supported path.\n"+
+					"If the account simply lacks SELECT on that table, grant it and re-run",
+				r.jobTable, r.jobSchema, probeErr)
+		}
+		result, insertErr := r.db.ExecContext(ctx,
+			fmt.Sprintf("INSERT IGNORE INTO %s (id, schema_version) VALUES (1, ?)", r.metaTable),
+			trackingSchemaVersion)
+		if insertErr != nil {
+			return fmt.Errorf("failed to stamp tracking-schema version %s in schema %q: %w",
+				trackingSchemaVersion, r.jobSchema, insertErr)
+		}
+		affected, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("failed to confirm tracking-schema version %s was stamped in schema %q: %w",
+				trackingSchemaVersion, r.jobSchema, affectedErr)
+		}
+		if affected != 1 {
+			// INSERT IGNORE changed no row, so another writer won id=1 after our
+			// initial read. Validate the winning declaration before proceeding.
+			concurrent, readErr := r.readTrackingSchemaVersion(ctx)
+			if readErr != nil {
+				return fmt.Errorf("failed to read concurrently stamped tracking-schema version from schema %q: %w",
+					r.jobSchema, readErr)
+			}
+			return r.validateTrackingSchemaVersion(concurrent)
+		}
+		r.logger.Infow("Tracking schema stamped",
+			"schema", r.jobSchema, "schema_version", trackingSchemaVersion)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read tracking-schema version from schema %q: %w", r.jobSchema, err)
+	}
+
+	return r.validateTrackingSchemaVersion(found)
+}
+
+// InitializeTables creates the archiver_job table if it doesn't exist and
+// stamps the tracking-schema revision. Per-job log tables are created lazily in
 // GetOrCreateJobWithType, once the integer job id is known.
 //
 // This method is idempotent and safe to call on every startup.
@@ -240,15 +287,18 @@ func (r *ResumeManager) checkLegacySchema(ctx context.Context) error {
 // GA-P3-F4-T1: Create archiver_job table
 func (r *ResumeManager) InitializeTables(ctx context.Context) error {
 	r.logger.Debug("Initializing resume log tables")
-	if err := r.checkLegacySchema(ctx); err != nil {
-		return err
-	}
 	if _, err := r.db.ExecContext(ctx, r.createJobTableSQL()); err != nil {
 		// Most likely cause when job_schema is isolated and the DBA hasn't
 		// created it (MySQL ER 1049 "Unknown database"). Surface guidance —
 		// this is the first place an absent schema is hit when preflight is
 		// skipped via --skip-validate-preflight.
 		return fmt.Errorf("failed to create archiver_job in schema %q (does the schema exist and does the account hold CREATE? a DBA must `CREATE DATABASE %s` and grant CREATE,SELECT,INSERT,UPDATE): %w", r.jobSchema, r.jobSchema, err)
+	}
+	// The marker gate follows the job-table CREATE because its absent-marker
+	// safety probe reads archiver_job.id. CREATE IF NOT EXISTS cannot reshape an
+	// existing table, so reaching a refusal here is safe.
+	if err := r.ensureSchemaVersion(ctx); err != nil {
+		return err
 	}
 	r.logger.Info("Resume job table initialized")
 	return nil

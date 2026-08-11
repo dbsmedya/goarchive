@@ -276,6 +276,20 @@ this is not a state you should expect to encounter while upgrading.
 
 ## Before you upgrade
 
+### Tracking tables: upgrade from 1.8, not from 1.2
+
+2.0 uses the tracking-table shape already written by 1.8: `archiver_job` keyed by
+an integer `id`, plus one `archiver_job_log_<id>` table per job. Upgrading directly
+from a release older than that `id` column is not supported. Upgrade to **1.8 first,
+then 2.0**; alternatively, drain in-flight jobs and drop the old tracking tables,
+accepting that every checkpoint is discarded.
+
+2.0 also adds `goarchive_meta`, a one-row declaration of the tracking schema's
+revision. It is created and stamped automatically on first use. No new privilege is
+required: the existing `CREATE`, `SELECT`, `INSERT`, and `UPDATE` grant on
+`job_schema` covers it. From this release onward, GoArchive refuses a revision it
+does not recognize instead of guessing compatibility.
+
 1. Run `goarchive validate` with your existing configuration, on the 2.0 binary. It runs
    every check and changes nothing.
 2. Fix whatever it reports, using the sections above.

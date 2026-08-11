@@ -19,7 +19,7 @@ contain, and when it is safe to clean them up.
 - [Inspection cookbook](#inspection-cookbook)
 - [Maintenance: what is safe to delete](#maintenance-what-is-safe-to-delete)
 - [Clearing a stale running job](#clearing-a-stale-running-job)
-- [Upgrading from legacy tracking tables](#upgrading-from-legacy-tracking-tables)
+- [Tracking-schema version marker](#tracking-schema-version-marker)
 - [Backup and replication notes](#backup-and-replication-notes)
 
 ---
@@ -36,12 +36,13 @@ destination:
   job_schema: goarchive     # optional; omit to use `archive`
 ```
 
-Two structures exist:
+Three structures exist:
 
 | Object | Cardinality | Holds |
 |--------|-------------|-------|
 | `archiver_job` | one table, one row per job | Checkpoint, status, heartbeat |
 | `archiver_job_log_<id>` | **one table per job** | Per-root-PK processing status |
+| `goarchive_meta` | one table, one row | The tracking schema's own revision |
 
 The log table is named by the job's integer `id` — **not** by job name. Resolve it
 first:
@@ -52,7 +53,7 @@ SELECT id, job_name, root_table, job_type FROM goarchive.archiver_job;
 ```
 
 > GoArchive never issues `CREATE DATABASE`. If `job_schema` names a schema that
-> does not exist, a DBA must create it. GoArchive **does** create both tables,
+> does not exist, a DBA must create it. GoArchive **does** create its tracking tables,
 > which is why the account needs `CREATE` at runtime — see
 > [Permissions](README_PERMISSIONS.md).
 
@@ -180,8 +181,9 @@ that invariant.
 
 ## Lifecycle
 
-1. **First run of any job in the schema** — `archiver_job` is created if absent
-   (`CREATE TABLE IF NOT EXISTS`), after a legacy-shape probe.
+1. **First run of any job in the schema** — `archiver_job` and `goarchive_meta` are
+   created if absent (`CREATE TABLE IF NOT EXISTS`). If no revision marker exists,
+   GoArchive verifies the compatible `archiver_job` shape and stamps revision `2.0`.
 2. **First run of a specific job** — a row is inserted, `id` is assigned, and
    `archiver_job_log_<id>` is created.
 3. **During a run** — `job_status = 1`, heartbeat every 15s, log rows transition
@@ -296,6 +298,15 @@ WHERE t.table_schema = 'goarchive'
 > **Rule zero: never touch tracking tables while the job is running.** Confirm
 > `job_status = 0`, or `job_status = 1` with a heartbeat older than 60 seconds
 > *and* a verified-dead process, before doing anything below.
+
+### ⚠️ Never drop `goarchive_meta` on its own
+
+Dropping it makes the schema look unstamped. The next run would stamp it with the
+running binary's revision, which may be false if another release wrote the tracking
+tables and would discard the signal needed for a future migration.
+
+If you intentionally clear all tracking state, remove `goarchive_meta`, `archiver_job`,
+and every `archiver_job_log_<id>` table together. Never reset only the declaration.
 
 ### ⚠️ Never `TRUNCATE archiver_job` on its own
 
@@ -414,6 +425,7 @@ counter.
 | `DELETE FROM archiver_job WHERE job_name = …` | ⚠️ | Loses the checkpoint — see table above |
 | `DELETE ... WHERE log_status IN (0,1)` | ❌ | Discards recovery state |
 | `TRUNCATE archiver_job` alone | ❌ | Reuses ids and adopts stale log tables |
+| `DROP TABLE goarchive_meta` alone | ❌ | Discards the declared schema revision |
 | Anything while `job_status = 1` and heartbeat fresh | ❌ | Job is live |
 
 ---
@@ -456,31 +468,42 @@ proof the old process is gone. See
 
 ---
 
-## Upgrading from legacy tracking tables
+## Tracking-schema version marker
 
-Releases before the per-job log scheme used a single shared `archiver_job_log`
-table and keyed `archiver_job` by `job_name` rather than an integer `id`.
+`goarchive_meta` declares which revision of the tracking-table layout a schema holds:
 
-GoArchive **detects the old shape at startup and refuses to run**. There is no
-auto-migration:
-
-```
-legacy GoArchive tracking tables detected in schema "goarchive"
-(archiver_job lacks the new 'id' column).
-This release reshapes tracking tables and is not state-compatible with prior versions.
-Drain in-flight jobs, then drop the old tables:
-  DROP TABLE IF EXISTS `goarchive`.archiver_job_log;
-  DROP TABLE IF EXISTS `goarchive`.archiver_job;
-new tables are recreated automatically on next run
+```sql
+CREATE TABLE IF NOT EXISTS goarchive_meta (
+    id TINYINT NOT NULL PRIMARY KEY,
+    schema_version VARCHAR(16) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
 ```
 
-The probe also catches a partially-migrated shape — an `id` column present but
-`job_name` still the primary key.
+It has one authoritative row, always `id = 1`. GoArchive 2.0 writes
+`schema_version = '2.0'`. This is the tracking-schema revision, not the binary
+version; a release that does not reshape tracking tables leaves it unchanged.
 
-> **Drain in-flight jobs first.** Dropping the tables discards every checkpoint,
-> so any interrupted job restarts from the beginning of its `where` clause. For
-> `copy-only` jobs, review the re-copy consequences in
-> [Retiring a job](#maintenance-what-is-safe-to-delete) before dropping.
+At startup, GoArchive stamps a compatible schema when the marker is absent and
+**refuses to run when it finds a revision it does not recognize**:
+
+```
+tracking tables in schema "goarchive" report schema_version "2.1", which this
+GoArchive does not recognize (it understands "2.0").
+They were written by a newer release; upgrade the GoArchive binary to one that
+supports "2.1", or point job_schema at a different schema.
+```
+
+There is no inferred version and no automatic migration. Leave the marker intact so
+future releases can provide an explicit migration path.
+
+> **Upgrading from a release older than the integer `id` column:** 2.0 does not
+> support that upgrade directly. Upgrade to **1.8 first, then 2.0**. Alternatively,
+> drain every in-flight job and drop the old shared `archiver_job_log` and
+> `archiver_job` tables, accepting that every checkpoint is discarded. For
+> `copy-only`, review [Retiring a job](#maintenance-what-is-safe-to-delete) before
+> choosing the destructive path.
 
 ---
 

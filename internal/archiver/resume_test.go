@@ -2,6 +2,8 @@ package archiver
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,18 +70,231 @@ func TestNewResumeManager_Validation(t *testing.T) {
 	}
 }
 
+func TestResumeManager_MetaTableNameIsQualifiedAndQuoted(t *testing.T) {
+	db, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "trackdb")
+	require.NoError(t, err)
+
+	ddl := rm.createMetaTableSQL()
+	assert.Contains(t, ddl, "`trackdb`.`goarchive_meta`")
+	assert.Contains(t, ddl, "CREATE TABLE IF NOT EXISTS")
+	assert.Contains(t, ddl, "ENGINE=InnoDB")
+}
+
+func TestResumeManager_EnsureSchemaVersion_StampsFreshSchema(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	require.NoError(t, rm.ensureSchemaVersion(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_ConcurrentUnrecognizedStampIsRefused(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	// Another writer wins the id=1 race, so INSERT IGNORE changes no row.
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow("99.0"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "99.0")
+	assert.Contains(t, err.Error(), "does not recognize")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_RecognizedRevisionDoesNotRewrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow(trackingSchemaVersion))
+
+	require.NoError(t, rm.ensureSchemaVersion(context.Background()))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_UnrecognizedRevisionRefuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow("2.1"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	for _, want := range []string{"2.1", trackingSchemaVersion, "upgrade"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_MalformedRevisionRefuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow("not-a-revision"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not-a-revision")
+	assert.Contains(t, err.Error(), "does not recognize")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_CreateFailureIsAttributed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "trackdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnError(errors.New("access denied"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	for _, want := range []string{"goarchive_meta", "trackdb", "CREATE"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_ReadFailureIsAttributed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "trackdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnError(errors.New("read failed"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read tracking-schema version")
+	assert.Contains(t, err.Error(), "trackdb")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_StampFailureIsAttributed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "trackdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnError(errors.New("write failed"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to stamp tracking-schema version")
+	assert.Contains(t, err.Error(), "trackdb")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_RefusesToStampAnUnexpectedShape(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnError(errors.New("unknown column 'id'"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	for _, want := range []string{"archiver_job", "1.8"} {
+		assert.True(t, strings.Contains(err.Error(), want), "error must contain %q: %v", want, err)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestResumeManager_InitializeTables_Success(t *testing.T) {
 	db, mock, _ := sqlmock.New()
 	defer func() { _ = db.Close() }()
 
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	// Legacy probe: archiver_job does not yet exist (fresh schema). PrimaryKeys is
-	// never reached — checkLegacySchema returns before consulting it.
-	mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
-	// Create archiver_job only (per-job log table is created later).
+	// Create archiver_job, then create and stamp the tracking-schema marker.
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	ctx := context.Background()
 	err := rm.InitializeTables(ctx)
@@ -129,9 +344,6 @@ func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {
 
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	// Legacy probe (fresh schema), then job table creation failure.
-	mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnError(assert.AnError)
 
 	ctx := context.Background()
@@ -140,67 +352,6 @@ func TestResumeManager_InitializeTables_JobTableError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create archiver_job in schema")
 	assert.NoError(t, mock.ExpectationsWereMet())
-}
-
-// TestResumeManager_CheckLegacySchema_Shapes covers checkLegacySchema's preserved 1.8
-// leniency (RULED B3): a composite key containing "id" and a case-insensitive "id" both
-// still pass, exactly as they did against 1.8's COLUMN_KEY='PRI' predicate. Row shapes
-// match what validations.Inspector.PrimaryKeys scans (TABLE_NAME, COLUMN_NAME, DATA_TYPE,
-// COLUMN_TYPE, one row per primary-key column) — the SELECT list itself is not asserted,
-// per the consumer-policy rule (goarchive does not encode the library's private SQL).
-func TestResumeManager_CheckLegacySchema_Shapes(t *testing.T) {
-	pkCols := func(cols ...string) *sqlmock.Rows {
-		rows := sqlmock.NewRows([]string{"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "COLUMN_TYPE"})
-		for _, col := range cols {
-			rows.AddRow("archiver_job", col, "bigint", "bigint unsigned")
-		}
-		return rows
-	}
-
-	cases := []struct {
-		name    string
-		pkRows  *sqlmock.Rows
-		wantErr string // "" means InitializeTables must pass
-	}{
-		{"new shape: single-column id PK", pkCols("id"), ""},
-		{"composite key containing id passes (1.8 leniency 1)", pkCols("id", "job_name"), ""},
-		{"uppercase ID passes case-insensitively (1.8 leniency 2)", pkCols("ID"), ""},
-		{"old shape: job_name is the PK, no id at all", pkCols("job_name"),
-			"legacy GoArchive tracking tables detected"},
-		{"partially migrated: id exists but job_name is still PK", pkCols("job_name"),
-			"legacy GoArchive tracking tables detected"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			db, mock, _ := sqlmock.New()
-			defer func() { _ = db.Close() }()
-
-			rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
-
-			// archiver_job already exists.
-			mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
-				WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}).
-					AddRow("archiver_job", "BASE TABLE", "InnoDB"))
-			mock.ExpectQuery("information_schema").WithArgs("testdb", "archiver_job").
-				WillReturnRows(tc.pkRows)
-			if tc.wantErr == "" {
-				mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").
-					WillReturnResult(sqlmock.NewResult(0, 0))
-			}
-
-			ctx := context.Background()
-			err := rm.InitializeTables(ctx)
-
-			if tc.wantErr == "" {
-				assert.NoError(t, err)
-			} else {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), tc.wantErr)
-			}
-			assert.NoError(t, mock.ExpectationsWereMet())
-		})
-	}
 }
 
 func TestResumeManager_UpdateJobStatus_Success(t *testing.T) {

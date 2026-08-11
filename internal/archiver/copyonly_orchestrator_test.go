@@ -202,11 +202,16 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
-	mock.ExpectQuery("information_schema").
-		WithArgs(cfg.Destination.EffectiveJobSchema(), "archiver_job").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
+	// InitializeTables: create archiver_job, then create and stamp goarchive_meta.
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Root-table lock acquired for the startup critical section.
 	mock.ExpectQuery("SELECT GET_LOCK").
@@ -258,11 +263,16 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 		t.Fatalf("Initialize failed: %v", err)
 	}
 
-	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
-	mock.ExpectQuery("information_schema").
-		WithArgs(cfg.Destination.EffectiveJobSchema(), "archiver_job").
-		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
+	// InitializeTables: create archiver_job, then create and stamp goarchive_meta.
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
+		WithArgs(trackingSchemaVersion).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Root-table lock + heartbeat staleness + same-root concurrency check (all clean).
 	mock.ExpectQuery("SELECT GET_LOCK").
