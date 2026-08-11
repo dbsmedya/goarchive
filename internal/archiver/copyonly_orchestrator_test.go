@@ -204,7 +204,7 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 
 	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
 	mock.ExpectQuery("information_schema").
-		WithArgs(cfg.Destination.EffectiveJobSchema()).
+		WithArgs(cfg.Destination.EffectiveJobSchema(), "archiver_job").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -260,7 +260,7 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 
 	// InitializeTables: legacy probe (fresh; PrimaryKeys never reached) + CREATE archiver_job only.
 	mock.ExpectQuery("information_schema").
-		WithArgs(cfg.Destination.EffectiveJobSchema()).
+		WithArgs(cfg.Destination.EffectiveJobSchema(), "archiver_job").
 		WillReturnRows(sqlmock.NewRows([]string{"TABLE_NAME", "TABLE_TYPE", "ENGINE"}))
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*archiver_job`").WillReturnResult(sqlmock.NewResult(0, 0))
 
