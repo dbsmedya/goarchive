@@ -73,7 +73,7 @@ destination-only and ignored on `source`.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `job_schema` | Schema holding GoArchive's tracking tables (`archiver_job`, `archiver_job_log_<id>`) | same as `database` |
+| `job_schema` | Schema holding GoArchive's tracking tables (`archiver_job`, `archiver_job_log_<id>`, `goarchive_meta`) | same as `database` |
 
 Use it to keep tracking tables out of the archive data schema:
 
@@ -442,8 +442,9 @@ SELECT id, job_name FROM <job_schema>.archiver_job;
 -- per-job log table: archiver_job_log_<id>
 ```
 
-Legacy single-shared-table layouts from before this scheme are detected at
-startup and **rejected with upgrade guidance**. There is no auto-migration.
+A third table, `goarchive_meta`, records the tracking schema's own revision.
+GoArchive stamps it when absent and **refuses to run against a revision it does
+not recognize**. There is no auto-migration.
 
 📖 Full DDL, inspection queries, and what is safe to prune or truncate:
 [Job Tracking Schema — DBA Maintenance Guide](README_JOBS_SCHEMA.md).

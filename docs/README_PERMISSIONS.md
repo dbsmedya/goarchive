@@ -84,7 +84,7 @@ for **all five commands** — every command reads source rows or estimates from 
 | **Source** | `PROCESS` (global) | Foreign-key metadata completeness (I1) — required for `archive`, `purge`, `dry-run`, `validate`; not required for `copy-only` |
 | **Source** | `SELECT ON *.*` (global) | Convenient alternative to a per-schema `SELECT` grant (I3); not required if `SELECT` is already granted directly on the source schema |
 | **Destination** (data tables) | `SELECT`, `INSERT` | Copying rows into archive tables |
-| **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job` and the per-job `archiver_job_log_<id>` tables |
+| **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job`, the per-job `archiver_job_log_<id>` tables, and the one-row `goarchive_meta` revision marker |
 | **Tracking schema** (optional) | `DELETE`, `DROP` | DBA cleanup only. `DROP` is additionally needed for `TRUNCATE`. |
 | **Replica** (optional) | `REPLICATION CLIENT` | Lag monitoring via `SHOW REPLICA STATUS` |
 
