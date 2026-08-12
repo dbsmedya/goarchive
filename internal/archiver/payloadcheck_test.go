@@ -139,7 +139,7 @@ func TestPayloadValidateWrapsMaxAllowedPacketErrorBeforeTableProcessing(t *testi
 	mock.ExpectQuery(regexp.QuoteMeta(maxAllowedPacketQuery)).WillReturnError(queryErr)
 
 	jobCfg := &config.JobConfig{RootTable: "customers", PrimaryKey: "id"}
-	validator := NewPayloadValidator(nil, db, graph.NewGraph("customers", "id"), jobCfg,
+	validator := NewPayloadValidator(nil, db, graph.NewGraph("customers", "id"), "test", jobCfg,
 		config.SafetyConfig{}, 100, nil)
 
 	err = validator.Validate(context.Background())
