@@ -246,6 +246,16 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	// root fetch (issue #8, Problem 2). Must run before recovery and the batch loop.
 	o.applyChunkSizing(copyPhase, dataVerifier, resumeMgr)
 
+	// One explicit-column fetch per run: rows are never read with SELECT *,
+	// which MySQL omits INVISIBLE columns from (issue #23). Cached for the
+	// whole run — mid-run DDL is out of contract (see README_LIMITATIONS.md).
+	columnLists, err := sourceColumnLists(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
+	if err != nil {
+		return fail("failed to load source column lists: %w", err)
+	}
+	copyPhase.SetColumnLists(columnLists)
+	dataVerifier.SetColumnLists(columnLists)
+
 	pipeline := &batchPipeline{
 		jobName:         o.jobName,
 		mainMode:        batchCopyVerify,
