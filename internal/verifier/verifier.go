@@ -66,6 +66,12 @@ type Verifier struct {
 	method      VerificationMethod
 	chunkSize   int // For chunked SHA256 (GA-P4-F1-T3)
 	logger      *logger.Logger
+
+	// columnLists maps each graph table to its full source column list
+	// (ordinal order, invisible columns included). The SAME list is used for
+	// the source and destination hash reads, so both sides hash the same
+	// column set regardless of visibility (issue #23).
+	columnLists map[string][]string
 }
 
 // NewVerifier creates a new verifier for data integrity checks.
@@ -303,6 +309,23 @@ func (v *Verifier) verifyBySHA256(ctx context.Context, table string, pks []inter
 	return result, nil
 }
 
+// buildHashQuery builds the explicit-column verification fetch, preserving the
+// historical query shape with * replaced by explicit names.
+func buildHashQuery(table, pkColumn string, columns []string, pkCount int) string {
+	quoted := make([]string, len(columns))
+	for i, col := range columns {
+		quoted[i] = sqlutil.QuoteIdentifier(col)
+	}
+	placeholders := make([]string, pkCount)
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	return fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s) ORDER BY %s",
+		strings.Join(quoted, ", "), sqlutil.QuoteIdentifier(table),
+		sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","),
+		sqlutil.QuoteIdentifier(pkColumn))
+}
+
 // computeTableHash computes a SHA256 hash of all rows in the specified table for the given PKs.
 //
 // GA-P4-F1-T2: SHA256 hash computation
@@ -311,9 +334,24 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs for all tables)
 	pkColumn := v.graph.GetPK(table)
 
+	columns, ok := v.columnLists[table]
+	if !ok || len(columns) == 0 {
+		return "", 0, fmt.Errorf("no column list for table %s: SetColumnLists was not called with this table", table)
+	}
+
 	// GA-P4-F1-T3: Process in chunks to avoid memory issues
 	hasher := sha256.New()
 	var totalRows int64
+
+	// Allocate scan targets and the serializer once for the whole call; the
+	// column set no longer varies per chunk. Scan overwrites values in place
+	// on every row.
+	serializer := newRowSerializer(columns)
+	values := make([]interface{}, len(columns))
+	valuePtrs := make([]interface{}, len(columns))
+	for j := range values {
+		valuePtrs[j] = &values[j]
+	}
 
 	for i := 0; i < len(pks); i += v.chunkSize {
 		end := i + v.chunkSize
@@ -322,20 +360,11 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		}
 		chunk := pks[i:end]
 
-		// Build query
-		placeholders := make([]string, len(chunk))
-		args := make([]interface{}, len(chunk))
-		for j, pk := range chunk {
-			placeholders[j] = "?"
-			args[j] = pk
-		}
-
 		// Fetch all rows ordered by PK for deterministic hashing
-		query := fmt.Sprintf("SELECT * FROM %s WHERE %s IN (%s) ORDER BY %s",
-			sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","), sqlutil.QuoteIdentifier(pkColumn))
+		query := buildHashQuery(table, pkColumn, columns, len(chunk))
 
 		if err := func() error {
-			rows, err := db.QueryContext(ctx, query, args...)
+			rows, err := db.QueryContext(ctx, query, chunk...)
 			if err != nil {
 				return fmt.Errorf("query failed: %w", err)
 			}
@@ -344,21 +373,6 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 					v.logger.Warnf("Failed to close rows: %v", err)
 				}
 			}()
-
-			// Get column names
-			columns, err := rows.Columns()
-			if err != nil {
-				return fmt.Errorf("failed to get columns: %w", err)
-			}
-
-			// Allocate scan targets and the serializer once per chunk;
-			// Scan overwrites values in place on every row.
-			serializer := newRowSerializer(columns)
-			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
-			for j := range values {
-				valuePtrs[j] = &values[j]
-			}
 
 			// Hash each row
 			for rows.Next() {
@@ -457,4 +471,10 @@ func (v *Verifier) SetChunkSize(size int) {
 	if size > 0 {
 		v.chunkSize = size
 	}
+}
+
+// SetColumnLists installs the per-table explicit column lists used for SHA256
+// verification reads on both source and destination.
+func (v *Verifier) SetColumnLists(lists map[string][]string) {
+	v.columnLists = lists
 }

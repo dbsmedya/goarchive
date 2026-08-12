@@ -185,6 +185,7 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name", "email"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -198,7 +199,7 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Mock source query for customers table
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "email"}).
 			AddRow(1, "Alice", "alice@example.com"))
@@ -234,6 +235,10 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 	g := createMultiLevelGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{
+		"customers": {"id", "name"},
+		"orders":    {"id", "customer_id", "total"},
+	})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -249,7 +254,7 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 
 	// Copy order: customers -> orders (parent-first via Kahn's algorithm)
 	// Mock customers copy
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
@@ -258,7 +263,7 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// Mock orders copy
-	sourceMock.ExpectQuery("SELECT \\* FROM `orders` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `customer_id`, `total` FROM `orders` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(101)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "customer_id", "total"}).
 			AddRow(101, 1, 100.50))
@@ -326,6 +331,7 @@ func TestCopyPhase_SourceQueryError_Rollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -339,7 +345,7 @@ func TestCopyPhase_SourceQueryError_Rollback(t *testing.T) {
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Mock source query failure
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnError(sql.ErrConnDone)
 	destMock.ExpectRollback()
@@ -363,6 +369,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -376,7 +383,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Mock source query success
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
@@ -435,6 +442,7 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -446,7 +454,7 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	// Mock successful copy but commit failure
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "Alice"))
@@ -482,6 +490,7 @@ func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -495,7 +504,7 @@ func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
 
 	// Force a source-side error to trigger rollback before the pre-commit
 	// reset path runs. The defer must then restore FK_CHECKS=1 on the conn.
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers`").
 		WithArgs(int64(1)).
 		WillReturnError(sql.ErrConnDone)
 	destMock.ExpectRollback()
@@ -524,6 +533,7 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: false}, log)
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -537,7 +547,7 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 	// via setForeignKeyChecks even when not disabling; only this one SET is expected.
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers`").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "Alice"))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
@@ -565,6 +575,7 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 	// SafetyConfig{} => FK checks NOT disabled => Copy issues "SET FOREIGN_KEY_CHECKS = 1".
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
 	cp.SetBatchSize(2) // force 2 PKs per chunk
+	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1), int64(2), int64(3)},
@@ -577,7 +588,7 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	// Chunk 1: SELECT ids (1,2) -> 2 rows, then one INSERT.
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
 		WithArgs(int64(1), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(1, "a").AddRow(2, "b"))
@@ -585,7 +596,7 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
 	// Chunk 2: SELECT id (3) -> 1 row, then one INSERT.
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).
 			AddRow(3, "c"))
@@ -634,13 +645,21 @@ func anyArgValues(n int) []driver.Value {
 	return args
 }
 
-// wideRowsSource builds a sqlmock.Rows with numCols synthetic columns and
-// numRows synthetic rows, used by the placeholder-clamp split tests below.
-func wideRowsSource(numCols, numRows int) *sqlmock.Rows {
+// wideColumnNames returns numCols synthetic column names ("col0".."colN-1"),
+// shared by wideRowsSource (mock row shape) and the tests' SetColumnLists
+// calls (explicit-column-list plumbing) so both agree on the same names.
+func wideColumnNames(numCols int) []string {
 	columns := make([]string, numCols)
 	for i := range columns {
 		columns[i] = fmt.Sprintf("col%d", i)
 	}
+	return columns
+}
+
+// wideRowsSource builds a sqlmock.Rows with numCols synthetic columns and
+// numRows synthetic rows, used by the placeholder-clamp split tests below.
+func wideRowsSource(numCols, numRows int) *sqlmock.Rows {
+	columns := wideColumnNames(numCols)
 	rows := sqlmock.NewRows(columns)
 	for r := 0; r < numRows; r++ {
 		rowVals := make([]driver.Value, numCols)
@@ -670,6 +689,8 @@ func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
 	const numCols = 1000
 	const numRows = 66
 
+	cp.SetColumnLists(map[string][]string{"customers": wideColumnNames(numCols)})
+
 	pks := make([]interface{}, numRows)
 	for i := range pks {
 		pks[i] = int64(i + 1)
@@ -684,7 +705,7 @@ func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+	sourceMock.ExpectQuery("SELECT .+ FROM `customers`").
 		WillReturnRows(wideRowsSource(numCols, numRows))
 
 	// First sub-batch: 65 rows x 1000 columns = 65000 args.
@@ -726,6 +747,8 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 	const numCols = 1000
 	const numRows = 66
 
+	cp.SetColumnLists(map[string][]string{"customers": wideColumnNames(numCols)})
+
 	pks := make([]interface{}, numRows)
 	for i := range pks {
 		pks[i] = int64(i + 1)
@@ -740,7 +763,7 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers`").
+	sourceMock.ExpectQuery("SELECT .+ FROM `customers`").
 		WillReturnRows(wideRowsSource(numCols, numRows))
 
 	// First sub-batch succeeds.

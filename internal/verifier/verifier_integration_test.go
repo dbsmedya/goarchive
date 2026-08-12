@@ -117,6 +117,7 @@ func TestVerifier_SHA256_RealMySQLTypes_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
+	v.SetColumnLists(map[string][]string{"ga9_verify_types": {"id", "d", "ts", "vb", "s", "f"}})
 	pks := []interface{}{uint64(1), uint64(2), uint64(18446744073709551615)}
 
 	result, err := v.verifyBySHA256(context.Background(), "ga9_verify_types", pks)

@@ -52,7 +52,7 @@ Many teams use both: pt-archiver for high-volume single-table nibbling, GoArchiv
 - An **integer primary key on the root table** (child tables may use any single-column type)
 - 1:1 or 1:N relationships
 
-**Not supported:** composite (multi-column) primary keys · UUID, VARCHAR, or datetime root keys · many-to-many (N:M) join tables as first-class citizens · self-referential tree hierarchies · MyISAM · MySQL 5.x · `INVISIBLE` columns.
+**Not supported:** composite (multi-column) primary keys · UUID, VARCHAR, or datetime root keys · many-to-many (N:M) join tables as first-class citizens · self-referential tree hierarchies · MyISAM · MySQL 5.x.
 
 Preflight rejects an unsupported schema before any data moves — see [Limitations](docs/README_LIMITATIONS.md) for the full list and [Validation](docs/README_VALIDATION.md) for what each check does.
 
@@ -97,14 +97,14 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 - **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
 - **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
 
-GoArchive also operates under deliberate constraints — single-column primary keys, integer root keys, InnoDB only, 1:1 and 1:N relationships, no invisible columns. Several are enforced by preflight and will stop a run before it starts. **Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.**
+GoArchive also operates under deliberate constraints — single-column primary keys, integer root keys, InnoDB only, 1:1 and 1:N relationships. Several are enforced by preflight and will stop a run before it starts. **Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.**
 
 ## Documentation
 
 | Document | Covers |
 |----------|--------|
 | [Configuration](docs/README_CONFIGURATION.md) | Every config block, option, default, and precedence rule |
-| [Validation & Preflight](docs/README_VALIDATION.md) | All 20 preflight checks, what fails and how to fix it |
+| [Validation & Preflight](docs/README_VALIDATION.md) | All 19 preflight checks, what fails and how to fix it |
 | [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, what preflight actually enforces |
 | [Limitations](docs/README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions |
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
@@ -120,7 +120,7 @@ GoArchive also operates under deliberate constraints — single-column primary k
 - **Crash recovery and resume** - Per-row checkpoint state persisted in MySQL; an interrupted archive resumes where it stopped instead of restarting
 - **Zero-lock batch processing** - Configurable batch sizes and delays keep long-term locks off production tables
 - **Replication lag monitoring** - Pauses automatically when replica lag exceeds a threshold
-- **Trigger and schema safety** - Detects DELETE triggers, destination INSERT triggers, incompatible destination schemas, composite primary keys, and invisible columns before any data moves
+- **Trigger and schema safety** - Detects DELETE triggers, destination INSERT triggers, incompatible destination schemas, and composite primary keys before any data moves
 - **Dry-run mode** - Preview the execution plan and filtered row counts without making changes
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
@@ -377,8 +377,8 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `2.0.0-community` (**stable**)
-- **Stable release**: `2.0.0-community` — the current production line, built on the stable [dbsgomysql v1.0.0 integration](docs/README_dbsgomysql.md).
+- **Version**: `2.0.1-community` (**stable**)
+- **Stable release**: `2.0.1-community` — the current production line, built on the stable [dbsgomysql v1.0.0 integration](docs/README_dbsgomysql.md).
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
@@ -390,7 +390,7 @@ Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md).
 
 Complete end-to-end archive, purge, and copy-only workflows:
 - Dependency graph + topological copy / reverse-topological delete order
-- 20 preflight checks: storage engine, primary key shape, invisible columns, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
+- 19 preflight checks: storage engine, primary key shape, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
 - Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
 - Advisory locks serialize job-name execution across all three commands
 - Replication lag monitor (pauses batches when replica lag exceeds threshold)

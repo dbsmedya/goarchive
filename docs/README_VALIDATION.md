@@ -59,7 +59,7 @@ GoArchive selects one of three profiles per command:
 
 ## Which checks run for which command
 
-20 named checks exist. ✅ = enforced, ❌ = not run.
+19 named checks exist. ✅ = enforced, ❌ = not run.
 
 | Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
 |-------|:---------:|:-------:|:-----------:|:---------:|:----------:|
@@ -70,7 +70,6 @@ GoArchive selects one of three profiles per command:
 | `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `ROOT_PK_TYPE_UNSUPPORTED` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `STORAGE_ENGINE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `INVISIBLE_COLUMN_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `JOB_SCHEMA_PERMISSION_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `DEST_TABLE_EXISTENCE_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
 | `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
@@ -131,19 +130,6 @@ expect in normal operation — MySQL associates NULL-heavy
 `TABLE_EXISTENCE_CHECK`), so a NULL `ENGINE` on a genuine `BASE TABLE` typically
 indicates a corrupted or unknown-engine table. (Previously this aborted preflight
 with a raw `database/sql` scan error naming neither a check nor a table.)
-
-### `INVISIBLE_COLUMN_CHECK`
-
-Hard-fails if any participating table has an `INVISIBLE` column.
-
-GoArchive copies rows with `SELECT *`, which MySQL **omits invisible columns
-from**. Their stored values would be silently dropped from both the destination
-INSERT and the verification hash, and then deleted from the source — silent data
-loss. Detected via `information_schema.COLUMNS.EXTRA`, which catches both plain
-`INVISIBLE` and `STORED GENERATED INVISIBLE`.
-
-**Fix:** `ALTER TABLE <table> ALTER COLUMN <col> SET VISIBLE;` or remove the
-table from the archive until explicit-column support exists.
 
 ---
 

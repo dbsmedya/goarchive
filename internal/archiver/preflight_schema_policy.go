@@ -190,9 +190,9 @@ func disposeDiff(
 
 	// ---- recognized and deliberately ignored --------------------------------------
 	case validations.ColumnVisibilityMismatch:
-		// Invisible SOURCE columns are already fatal via INVISIBLE_COLUMN_CHECK, which
-		// runs earlier. Destination-side invisibility is not checked today and stays
-		// unchecked.
+		// Visibility is irrelevant to the copy and to verification: every row
+		// read and every INSERT names its columns explicitly (issue #23), so an
+		// INVISIBLE column on either side is still copied and hashed.
 		return nil, nil
 
 	case validations.IndexAbsent,

@@ -65,16 +65,24 @@ primary-key column (`WHERE pk IN (...)`).
 If your schema uses composite keys on the tables you want to archive, Community
 edition cannot safely archive them.
 
-#### Invisible columns are not supported
+#### No DDL and no concurrent writes during a run (contract)
 
-GoArchive copies rows with `SELECT *`, which MySQL **omits `INVISIBLE` columns
-from**. Their values would be silently dropped from both the copy and the
-verification hash, and then deleted from the source.
+`INVISIBLE` columns are fully supported: the copy, both verification reads, and
+dry-run payload sampling name every column explicitly, so hidden columns are
+copied and hashed like any other.
 
-Preflight hard-fails (`INVISIBLE_COLUMN_CHECK`) if any participating table has an
-invisible column, plain or generated. Make the column visible
-(`ALTER TABLE … ALTER COLUMN … SET VISIBLE`) or exclude the table until
-explicit-column support lands.
+That correctness rests on two operating contracts:
+
+1. **No DDL on participating tables while a job runs.** Column lists are read
+   once at startup. A column renamed or dropped mid-run fails the next batch
+   with a MySQL "unknown column" error before that batch reaches deletion;
+   previously completed batches remain deleted. A column **added** mid-run is
+   *not detected*: it is not copied, and DDL alone can diverge source and
+   destination (an add on one side only, or adds with differing defaults) —
+   with no error raised.
+2. **GoArchive archives cold data.** Concurrent transactions on the archived
+   row range are unsupported, including column additions and column-default
+   changes taking effect mid-run.
 
 #### InnoDB only
 

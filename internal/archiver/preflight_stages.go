@@ -44,7 +44,6 @@ func (p *PreflightChecker) preflightStages(
 		{name: "ValidateSingleColumnPrimaryKey", enabled: true, run: p.ValidateSingleColumnPrimaryKey},
 		{name: "ValidateRootPKNumeric", enabled: true, run: p.ValidateRootPKNumeric},
 		{name: "ValidateStorageEngine", enabled: true, run: p.ValidateStorageEngine},
-		{name: "ValidateNoInvisibleColumns", enabled: true, run: p.ValidateNoInvisibleColumns},
 
 		// Tracking-schema permission is independent of destination data checks:
 		// source-only commands still write job state when a job schema is configured.

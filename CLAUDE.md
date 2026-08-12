@@ -260,7 +260,7 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The Phase-028 measured integration baseline is `PASS=1077 FAIL=0 SKIP=1`. Re-measure it
+The Phase-028 measured integration baseline is `PASS=1056 FAIL=0 SKIP=1`. Re-measure it
 through the integration runner after adding or removing tagged tests; do not calculate it
 from the diff.
 
@@ -276,7 +276,7 @@ Run the steps individually only if you know why. Step 3 refuses unless step 2 ha
 `make e2e-examples` (validation demos) has the same precondition.
 
 The characterization baseline lives in **`tests/characterization-baseline.txt`** and is checked
-by **`make characterization`**. It is currently `60 / 304 / 364 / 0 / 0` (top-level / subtests /
+by **`make characterization`**. It is currently `58 / 287 / 345 / 0 / 0` (top-level / subtests /
 PASS / FAIL / SKIP) and stays unamended unless an increase is authorized in advance — change the
 file and this line together.
 

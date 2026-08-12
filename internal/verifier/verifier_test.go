@@ -364,6 +364,7 @@ func TestVerify_SHA256_Success(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100) // Small chunk for testing
+	v.SetColumnLists(map[string][]string{"users": {"id", "name", "email"}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1},
@@ -376,14 +377,14 @@ func TestVerify_SHA256_Success(t *testing.T) {
 	// Setup expectations for source query
 	rows := sqlmock.NewRows([]string{"id", "name", "email"}).
 		AddRow(1, "John Doe", "john@example.com")
-	sourceMock.ExpectQuery("SELECT \\* FROM `users`").
+	sourceMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `users`").
 		WithArgs(1).
 		WillReturnRows(rows)
 
 	// Setup expectations for destination query (same data)
 	destRows := sqlmock.NewRows([]string{"id", "name", "email"}).
 		AddRow(1, "John Doe", "john@example.com")
-	destMock.ExpectQuery("SELECT \\* FROM `users`").
+	destMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `users`").
 		WithArgs(1).
 		WillReturnRows(destRows)
 
@@ -412,6 +413,7 @@ func TestVerify_SHA256_Mismatch(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100)
+	v.SetColumnLists(map[string][]string{"users": {"id", "name", "email"}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1},
@@ -424,14 +426,14 @@ func TestVerify_SHA256_Mismatch(t *testing.T) {
 	// Source has different data
 	rows := sqlmock.NewRows([]string{"id", "name", "email"}).
 		AddRow(1, "John Doe", "john@example.com")
-	sourceMock.ExpectQuery("SELECT \\* FROM `users`").
+	sourceMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `users`").
 		WithArgs(1).
 		WillReturnRows(rows)
 
 	// Destination has different data
 	destRows := sqlmock.NewRows([]string{"id", "name", "email"}).
 		AddRow(1, "Jane Doe", "jane@example.com")
-	destMock.ExpectQuery("SELECT \\* FROM `users`").
+	destMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `users`").
 		WithArgs(1).
 		WillReturnRows(destRows)
 
@@ -456,6 +458,7 @@ func TestVerify_SHA256_CountMismatch(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100)
+	v.SetColumnLists(map[string][]string{"users": {"id", "name"}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1, 2},
@@ -469,14 +472,14 @@ func TestVerify_SHA256_CountMismatch(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "name"}).
 		AddRow(1, "User1").
 		AddRow(2, "User2")
-	sourceMock.ExpectQuery("SELECT \\* FROM `users`").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `users`").
 		WithArgs(1, 2).
 		WillReturnRows(rows)
 
 	// Destination has only 1 row
 	destRows := sqlmock.NewRows([]string{"id", "name"}).
 		AddRow(1, "User1")
-	destMock.ExpectQuery("SELECT \\* FROM `users`").
+	destMock.ExpectQuery("SELECT `id`, `name` FROM `users`").
 		WithArgs(1, 2).
 		WillReturnRows(destRows)
 

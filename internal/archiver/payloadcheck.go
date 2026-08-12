@@ -32,21 +32,31 @@ func checkPlaceholderLimit(table string, columnCount, batchSize int) error {
 // PayloadValidator validates that batch_size copy chunks fit the destination's
 // limits. Used by dry-run only.
 type PayloadValidator struct {
-	source    *sql.DB
-	dest      *sql.DB
-	graph     *graph.Graph
-	jobCfg    *config.JobConfig
-	safetyCfg config.SafetyConfig
-	batchSize int
-	logger    *logger.Logger
+	source       *sql.DB
+	dest         *sql.DB
+	graph        *graph.Graph
+	sourceSchema string
+	jobCfg       *config.JobConfig
+	safetyCfg    config.SafetyConfig
+	batchSize    int
+	logger       *logger.Logger
 }
 
 // NewPayloadValidator creates a new PayloadValidator.
-func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, jobCfg *config.JobConfig, safetyCfg config.SafetyConfig, batchSize int, log *logger.Logger) *PayloadValidator {
+func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, sourceSchema string, jobCfg *config.JobConfig, safetyCfg config.SafetyConfig, batchSize int, log *logger.Logger) *PayloadValidator {
 	if log == nil {
 		log = logger.NewDefault()
 	}
-	return &PayloadValidator{source, dest, g, jobCfg, safetyCfg, batchSize, log}
+	return &PayloadValidator{
+		source:       source,
+		dest:         dest,
+		graph:        g,
+		sourceSchema: sourceSchema,
+		jobCfg:       jobCfg,
+		safetyCfg:    safetyCfg,
+		batchSize:    batchSize,
+		logger:       log,
+	}
 }
 
 // Validate runs, per table in copy order: an exact placeholder check (always)
@@ -64,11 +74,13 @@ func (p *PayloadValidator) Validate(ctx context.Context) error {
 	}
 	p.logger.Infof("Destination max_allowed_packet = %d bytes", maxPacket)
 
+	columnLists, err := sourceColumnLists(ctx, p.source, p.sourceSchema, copyOrder)
+	if err != nil {
+		return fmt.Errorf("failed to load source column lists: %w", err)
+	}
+
 	for _, table := range copyOrder {
-		columns, err := p.tableColumns(ctx, table)
-		if err != nil {
-			return fmt.Errorf("table %q: %w", table, err)
-		}
+		columns := columnLists[table]
 		// Exact check (valid even for empty tables).
 		if err := checkPlaceholderLimit(table, len(columns), p.batchSize); err != nil {
 			return err
@@ -117,14 +129,18 @@ func (p *PayloadValidator) maxAllowedPacket(ctx context.Context) (int64, error) 
 	return val, nil
 }
 
-func (p *PayloadValidator) tableColumns(ctx context.Context, table string) ([]string, error) {
-	rows, err := p.source.QueryContext(ctx,
-		fmt.Sprintf("SELECT * FROM %s LIMIT 0", sqlutil.QuoteIdentifier(table)))
-	if err != nil {
-		return nil, err
+// buildSampleQuery builds the dry-run sampling fetch — the same explicit
+// column list the real copy uses. rootWhere is non-empty only for the job's
+// root table with a WHERE clause; that branch orders ASC to mirror the real
+// copy fetch (see the comment at the call site).
+func buildSampleQuery(table, pkColumn string, columns []string, rootWhere string, limit int) string {
+	if rootWhere != "" {
+		return fmt.Sprintf("SELECT %s FROM %s WHERE (%s) ORDER BY %s ASC LIMIT %d",
+			quotedColumnList(columns), sqlutil.QuoteIdentifier(table), rootWhere,
+			sqlutil.QuoteIdentifier(pkColumn), limit)
 	}
-	defer func() { _ = rows.Close() }()
-	return rows.Columns()
+	return fmt.Sprintf("SELECT %s FROM %s LIMIT %d",
+		quotedColumnList(columns), sqlutil.QuoteIdentifier(table), limit)
 }
 
 // measureSample fetches up to batchSize rows, builds the real INSERT, executes
@@ -132,7 +148,7 @@ func (p *PayloadValidator) tableColumns(ctx context.Context, table string) ([]st
 // approximate INSERT byte size, error).
 func (p *PayloadValidator) measureSample(ctx context.Context, table string, columns []string) (int, int, error) {
 	pkColumn := p.graph.GetPK(table)
-	var query string
+	rootWhere := ""
 	if p.jobCfg.RootTable == table && strings.TrimSpace(p.jobCfg.Where) != "" {
 		// Order ASC to mirror the real copy fetch (batch.go uses ORDER BY pk ASC):
 		// the sample becomes exactly the first batch the archive would process. ASC
@@ -141,13 +157,9 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 		// DESC would start at the newest rows (all failing the WHERE) and scan
 		// backward across the whole table before reaching qualifying rows, which on
 		// a large production table looks like an indefinite hang.
-		query = fmt.Sprintf("SELECT * FROM %s WHERE (%s) ORDER BY %s ASC LIMIT %d",
-			sqlutil.QuoteIdentifier(table), p.jobCfg.Where,
-			sqlutil.QuoteIdentifier(pkColumn), p.batchSize)
-	} else {
-		query = fmt.Sprintf("SELECT * FROM %s LIMIT %d",
-			sqlutil.QuoteIdentifier(table), p.batchSize)
+		rootWhere = p.jobCfg.Where
 	}
+	query := buildSampleQuery(table, pkColumn, columns, rootWhere, p.batchSize)
 
 	rows, err := p.source.QueryContext(ctx, query)
 	if err != nil {
