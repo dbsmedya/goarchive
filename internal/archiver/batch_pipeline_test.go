@@ -30,6 +30,10 @@ func newTestPipeline(t *testing.T, mainMode batchMode) (*batchPipeline, sqlmock.
 
 	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	// Every test built on this fixture that reaches copyChunk mocks "customers"
+	// rows shaped {"id", "name"} — matching the explicit column list here keeps
+	// buildSelectColumnsQuery's output aligned with each ExpectQuery below.
+	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
@@ -61,7 +65,7 @@ func TestProcessBatchCopyVerifySkipsDelete(t *testing.T) {
 	stub := &stubLagWaiter{}
 	p.lagMonitor = stub // present but must NOT be consulted in batchCopyVerify
 
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "a"))
 	destMock.ExpectBegin()
@@ -111,7 +115,7 @@ func TestProcessBatchErrorLeavesNoStatusWrites(t *testing.T) {
 
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN").
 		WillReturnError(errors.New("source gone"))
 	destMock.ExpectRollback()
 
@@ -214,7 +218,7 @@ func TestRecoverCopyOnlyPendingAdvancesCheckpointPerChunk(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("3").AddRow("1").AddRow("2"))
 
 	// Chunk [1,2]: copy pipeline then CompleteBatch with checkpoint "2".
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
 		WithArgs(int64(1), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "a").AddRow(2, "b"))
 	destMock.ExpectBegin()
@@ -234,7 +238,7 @@ func TestRecoverCopyOnlyPendingAdvancesCheckpointPerChunk(t *testing.T) {
 	archMock.ExpectCommit()
 
 	// Chunk [3]: same shape, checkpoint "3".
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(3, "c"))
 	destMock.ExpectBegin()
@@ -281,7 +285,7 @@ func TestRecoverCopyOnlyMixedStatusesAscendGlobally(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("9"))
 
 	// Run 1 — pending [9]: full copy pipeline, then CompleteBatch(checkpoint=9).
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(9, "i"))
 	destMock.ExpectBegin()
@@ -366,7 +370,7 @@ func TestRecoverCopyOnlyRespectsCheckpointFloor(t *testing.T) {
 		WithArgs(LogStatusPending).
 		WillReturnRows(sqlmock.NewRows([]string{"root_pk_id"}).AddRow("9"))
 
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(9, "i"))
 	destMock.ExpectBegin()

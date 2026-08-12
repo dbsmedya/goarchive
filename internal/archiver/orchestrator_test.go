@@ -562,6 +562,7 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 
 	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
@@ -569,7 +570,7 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	resumeMgr.setJobID(7)
 
 	// Copy phase: must fire (proves the re-check runs AFTER copy/verify).
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(20)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(20, "p"))
 	destMock.ExpectBegin()
@@ -625,6 +626,7 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 
 	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
+	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
@@ -676,7 +678,7 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(10)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	sourceMock.ExpectQuery("SELECT \\* FROM `customers` WHERE `id` IN \\(\\?\\)").
+	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(20)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(20, "p"))
 	sourceMock.ExpectExec("DELETE FROM `customers` WHERE `id` IN \\(\\?\\)").

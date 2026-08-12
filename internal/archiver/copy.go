@@ -45,6 +45,11 @@ type CopyPhase struct {
 	logger       *logger.Logger
 	strictInsert bool
 	batchSize    int // fetch+insert chunk size; 0 => defaultCopyBatchSize
+
+	// columnLists maps each graph table to its full source column list
+	// (ordinal order, invisible and generated columns included), fetched once
+	// per run via sourceColumnLists. copyChunk fails closed without it.
+	columnLists map[string][]string
 }
 
 const defaultCopyBatchSize = 200
@@ -118,6 +123,13 @@ func (cp *CopyPhase) SetBatchSize(n int) {
 	if n > 0 {
 		cp.batchSize = n
 	}
+}
+
+// SetColumnLists installs the per-table explicit column lists used for the
+// copy SELECT and INSERT. Rows are never fetched with SELECT *, which MySQL
+// omits INVISIBLE columns from (issue #23).
+func (cp *CopyPhase) SetColumnLists(lists map[string][]string) {
+	cp.columnLists = lists
 }
 
 // effectiveBatchSize returns the configured chunk size or the default.
@@ -307,17 +319,12 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
 	pkColumn := cp.graph.GetPK(table)
 
-	placeholders := make([]string, len(pks))
-	for i := range placeholders {
-		placeholders[i] = "?"
+	columns, ok := cp.columnLists[table]
+	if !ok || len(columns) == 0 {
+		return 0, fmt.Errorf("no column list for table %s: SetColumnLists was not called with this table", table)
 	}
-	selectQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s IN (%s)",
-		sqlutil.QuoteIdentifier(table),
-		sqlutil.QuoteIdentifier(pkColumn),
-		strings.Join(placeholders, ", "),
-	)
 
+	selectQuery := buildSelectColumnsQuery(table, pkColumn, columns, len(pks))
 	rows, err := cp.sourceDB.QueryContext(ctx, selectQuery, pks...)
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows from source for %s: %w", table, err)
@@ -327,11 +334,6 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 			cp.logger.Warnf("Failed to close rows: %v", cerr)
 		}
 	}()
-
-	columns, err := rows.Columns()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get columns for %s: %w", table, err)
-	}
 
 	batchValues := make([]interface{}, 0, len(columns)*len(pks))
 	rowsInBatch := 0
@@ -388,6 +390,23 @@ func maxRowsPerInsert(columnCount int) int {
 		return 1
 	}
 	return n
+}
+
+// buildSelectColumnsQuery builds the explicit-column chunk fetch:
+// SELECT `c1`, `c2` FROM `t` WHERE `pk` IN (?, ?, ...). Explicit naming is
+// what carries INVISIBLE columns, which SELECT * silently omits.
+func buildSelectColumnsQuery(table, pkColumn string, columns []string, pkCount int) string {
+	placeholders := make([]string, pkCount)
+	for i := range placeholders {
+		placeholders[i] = "?"
+	}
+	return fmt.Sprintf(
+		"SELECT %s FROM %s WHERE %s IN (%s)",
+		quotedColumnList(columns),
+		sqlutil.QuoteIdentifier(table),
+		sqlutil.QuoteIdentifier(pkColumn),
+		strings.Join(placeholders, ", "),
+	)
 }
 
 // execInsertBatch inserts rowCount rows (values already flattened in
