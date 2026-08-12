@@ -158,7 +158,7 @@ func TestPreflightRunDestinationFactsRequireConfiguration(t *testing.T) {
 	}
 }
 
-func TestPreflightRunMemoizesColumnFactsAndInvisibleProjection(t *testing.T) {
+func TestPreflightRunMemoizesColumnFacts(t *testing.T) {
 	ctx := context.Background()
 	want := []validations.TableColumns{{
 		Table: "orders",
@@ -181,18 +181,6 @@ func TestPreflightRunMemoizesColumnFactsAndInvisibleProjection(t *testing.T) {
 	if !reflect.DeepEqual(first, want) || !reflect.DeepEqual(second, want) {
 		t.Fatalf("columns = %v and %v, want %v", first, second, want)
 	}
-	invisibleFirst, err := run.invisibleColumns(ctx)
-	if err != nil {
-		t.Fatalf("first invisibleColumns: %v", err)
-	}
-	invisibleSecond, err := run.invisibleColumns(ctx)
-	if err != nil {
-		t.Fatalf("second invisibleColumns: %v", err)
-	}
-	wantInvisible := []validations.InvisibleColumns{{Table: "orders", Columns: []string{"secret"}}}
-	if !reflect.DeepEqual(invisibleFirst, wantInvisible) || !reflect.DeepEqual(invisibleSecond, wantInvisible) {
-		t.Fatalf("invisible columns = %v and %v, want %v", invisibleFirst, invisibleSecond, wantInvisible)
-	}
 	if source.columnsCalls != 1 || !reflect.DeepEqual(source.columnsArgs, [][]string{{"orders"}}) {
 		t.Fatalf("Columns calls/args = %d/%v, want 1/[[orders]]", source.columnsCalls, source.columnsArgs)
 	}
@@ -205,9 +193,8 @@ func TestPreflightRunMemoizesColumnErrors(t *testing.T) {
 	ctx := context.Background()
 
 	assertMemoizedError(t, func() ([]validations.TableColumns, error) { return run.sourceColumns(ctx) }, wantErr)
-	assertMemoizedError(t, func() ([]validations.InvisibleColumns, error) { return run.invisibleColumns(ctx) }, wantErr)
 	if source.columnsCalls != 1 {
-		t.Fatalf("Columns calls = %d, want 1 across both projections", source.columnsCalls)
+		t.Fatalf("Columns calls = %d, want 1", source.columnsCalls)
 	}
 }
 

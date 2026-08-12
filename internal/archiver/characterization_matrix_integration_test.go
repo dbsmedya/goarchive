@@ -132,7 +132,6 @@ var chrCheckOrder = []string{
 	"COMPOSITE_PK_CHECK",       // and PRIMARY_KEY_CHECK, same validator
 	"ROOT_PK_TYPE_UNSUPPORTED", // plain error, not *PreflightError
 	"STORAGE_ENGINE_CHECK",
-	"INVISIBLE_COLUMN_CHECK",
 	"JOB_SCHEMA_PERMISSION_CHECK",
 	"DEST_TABLE_EXISTENCE_CHECK",
 	"DEST_SCHEMA_COMPATIBILITY_CHECK",
@@ -283,17 +282,6 @@ var chrMatrix = []chrMatrixRow{
 		Fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
 			f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=MyISAM")
 			f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
-			return graph.NewGraph("orders", "id")
-		},
-	},
-	{
-		ID:      "INVISIBLE_COLUMN_CHECK",
-		Applies: chrAll,
-		Fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
-			const ddl = "CREATE TABLE orders (id bigint NOT NULL, note varchar(64) NULL, PRIMARY KEY (id)) ENGINE=InnoDB"
-			f.ExecSource(t, ctx, ddl)
-			f.ExecSource(t, ctx, "ALTER TABLE orders ALTER COLUMN note SET INVISIBLE")
-			f.ExecDest(t, ctx, ddl)
 			return graph.NewGraph("orders", "id")
 		},
 	},
@@ -528,19 +516,6 @@ func TestCharacterizationFirstFailureOrdering(t *testing.T) {
 			fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
 				f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (id, tenant_id)) ENGINE=MyISAM")
 				f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (id, tenant_id)) ENGINE=InnoDB")
-				return graph.NewGraph("orders", "id")
-			},
-		},
-		{
-			// Invisible column AND a destination type mismatch. INVISIBLE_COLUMN_CHECK
-			// is a source check and precedes every destination check.
-			name:     "invisible_column_beats_dest_compat",
-			wantID:   "INVISIBLE_COLUMN_CHECK",
-			otherIDs: []string{"DEST_SCHEMA_COMPATIBILITY_CHECK"},
-			fixture: func(t *testing.T, ctx context.Context, f *chrFixture) *graph.Graph {
-				f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, amount decimal(10,2) NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
-				f.ExecSource(t, ctx, "ALTER TABLE orders ALTER COLUMN amount SET INVISIBLE")
-				f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, amount decimal(12,2) NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
 				return graph.NewGraph("orders", "id")
 			},
 		},

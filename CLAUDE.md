@@ -276,7 +276,7 @@ Run the steps individually only if you know why. Step 3 refuses unless step 2 ha
 `make e2e-examples` (validation demos) has the same precondition.
 
 The characterization baseline lives in **`tests/characterization-baseline.txt`** and is checked
-by **`make characterization`**. It is currently `60 / 304 / 364 / 0 / 0` (top-level / subtests /
+by **`make characterization`**. It is currently `58 / 287 / 345 / 0 / 0` (top-level / subtests /
 PASS / FAIL / SKIP) and stays unamended unless an increase is authorized in advance — change the
 file and this line together.
 

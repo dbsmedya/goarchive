@@ -298,60 +298,6 @@ func (p *PreflightChecker) ValidateStorageEngine(ctx context.Context, run *prefl
 // engines cannot provide the integrity a copy-verify-delete cycle depends on.
 const requiredStorageEngine = "InnoDB"
 
-// ValidateNoInvisibleColumns rejects any participating (graph) table that has an
-// INVISIBLE column. GoArchive copies rows with SELECT *, which MySQL excludes
-// invisible columns from, so their stored values would be silently dropped from both
-// the destination INSERT and the SHA/count verification and then deleted from the
-// source (issue #23). Until explicit-column support exists, an invisible column in a
-// participating table is a fatal data-loss hazard.
-//
-// The library's query uses the same EXTRA LIKE '%INVISIBLE%' predicate 1.8 used, which
-// catches both plain invisible columns (EXTRA = "INVISIBLE") and generated ones
-// (EXTRA = "STORED GENERATED INVISIBLE"). What changes is the shape of the answer, not
-// the question.
-func (p *PreflightChecker) ValidateNoInvisibleColumns(ctx context.Context, run *preflightRun) error {
-	p.logger.Debug("Checking for invisible columns...")
-
-	facts, err := run.invisibleColumns(ctx)
-	if err != nil {
-		return inspectionError("invisible_columns", err)
-	}
-
-	findings := validations.CheckInvisibleColumns(facts)
-
-	// The library reports one finding per TABLE with a Columns slice; goarchive has
-	// always reported one entry per COLUMN, as "<table>.<column>". Fan out so the
-	// operator-visible shape is unchanged.
-	var offenders []string
-	for _, f := range findings {
-		if f.Check != validations.IDInvisibleColumns {
-			return unexpectedFindingError("invisible_columns", f)
-		}
-		fact, ok := f.Facts.(validations.InvisibleColumns)
-		if !ok {
-			return unexpectedFactsError("invisible_columns", f, "validations.InvisibleColumns")
-		}
-		for _, col := range fact.Columns {
-			offenders = append(offenders, fact.Table+"."+col)
-		}
-	}
-
-	if len(offenders) > 0 {
-		return &PreflightError{
-			Check: "INVISIBLE_COLUMN_CHECK",
-			Message: "This version of GoArchive does not support INVISIBLE columns. Rows are copied " +
-				"with SELECT *, which omits invisible columns, so their values would be silently dropped " +
-				"from the copy and the verification hash and then deleted from the source. Make these " +
-				"columns visible (ALTER TABLE ... ALTER COLUMN ... SET VISIBLE) or remove these tables " +
-				"from the archive until explicit-column support exists",
-			Tables: offenders,
-		}
-	}
-
-	p.logger.Debug("Invisible column check PASSED (no invisible columns)")
-	return nil
-}
-
 // ValidateForeignKeyIndexes checks that every in-graph child table's foreign key has the
 // supporting leftmost-prefix index MySQL guarantees for registered InnoDB constraints.
 //
