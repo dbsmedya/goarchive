@@ -118,6 +118,7 @@ func explicitColsRoundTrip(t *testing.T, ctx context.Context, setup *Integration
 // the copy and the hash. This is issue #23's exact reproduction scenario.
 func TestExplicitColumnsInvisibleValueCopiedAndVerified(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
 	const table = "exp_inv_value"
 	ddl := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, payload VARCHAR(255) INVISIBLE DEFAULT 'default-value') ENGINE=InnoDB"
 	dstDB := explicitColsRoundTrip(t, ctx, setup, table, ddl, ddl,
@@ -142,6 +143,7 @@ func TestExplicitColumnsInvisibleValueCopiedAndVerified(t *testing.T) {
 // INVISIBLE PRIMARY KEY`; the copied values must survive.
 func TestExplicitColumnsGeneratedInvisiblePrimaryKey(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
 	srcDB, dstDB, srcSchema := explicitColsDBs(t, setup)
 	const table = "exp_gipk"
 
@@ -170,13 +172,17 @@ func TestExplicitColumnsGeneratedInvisiblePrimaryKey(t *testing.T) {
 		_, _ = dstDB.ExecContext(cctx, "DROP TABLE IF EXISTS "+table)
 	})
 
-	// Prove MySQL actually generated the invisible PK before relying on it.
-	if err := srcDB.QueryRowContext(ctx, "SELECT my_row_id FROM "+table+" LIMIT 1").Err(); err != nil {
-		t.Fatalf("GIPK column my_row_id was not generated: %v", err)
-	}
-
 	if _, err := srcDB.ExecContext(ctx, "INSERT INTO "+table+" (data) VALUES ('alpha'), ('beta')"); err != nil {
 		t.Fatalf("seed: %v", err)
+	}
+
+	// Prove MySQL actually generated the invisible PK before relying on it.
+	var firstID int64
+	if err := srcDB.QueryRowContext(ctx, "SELECT my_row_id FROM "+table+" ORDER BY my_row_id LIMIT 1").Scan(&firstID); err != nil {
+		t.Fatalf("GIPK column my_row_id was not generated: %v", err)
+	}
+	if firstID != 1 {
+		t.Fatalf("GIPK my_row_id = %d, want 1", firstID)
 	}
 
 	explicitColsCopyVerify(t, ctx, srcDB, dstDB, srcSchema, table, "my_row_id",
@@ -213,6 +219,7 @@ func TestExplicitColumnsGeneratedInvisiblePrimaryKey(t *testing.T) {
 // preflight, so the destination side is always plain).
 func TestExplicitColumnsInvisibleStoredGenerated(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
 	const table = "exp_inv_gen"
 	srcDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, amount INT NOT NULL, doubled INT GENERATED ALWAYS AS (amount * 2) STORED INVISIBLE) ENGINE=InnoDB"
 	dstDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, amount INT NOT NULL, doubled INT) ENGINE=InnoDB"
@@ -234,6 +241,7 @@ func TestExplicitColumnsInvisibleStoredGenerated(t *testing.T) {
 // failed spuriously; the shared explicit list reads it on both sides.
 func TestExplicitColumnsDestinationInvisible(t *testing.T) {
 	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
 	const table = "exp_dst_inv"
 	srcDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, note VARCHAR(50)) ENGINE=InnoDB"
 	dstDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, note VARCHAR(50) INVISIBLE) ENGINE=InnoDB"
@@ -258,7 +266,8 @@ func TestExplicitColumnsDestinationInvisible(t *testing.T) {
 // uses the characterization fixture (throwaway schemas on both servers) for
 // preflight+data and the realdb env helpers for the orchestrator's config.
 func TestExplicitColumnsFullArchive(t *testing.T) {
-	_, ctx := SetupIntegrationTest(t)
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
 	f := newChrFixture(t, ctx)
 
 	const table = "exp_full_archive"
