@@ -10,7 +10,7 @@ want to know what each check does, read [Validation & Preflight](README_VALIDATI
 
 ## The problem it solves
 
-Every one of GoArchive's 20 preflight checks answers a question about MySQL metadata —
+Every one of GoArchive's 19 preflight checks answers a question about MySQL metadata —
 does this table exist, is it InnoDB, is this column the primary key, can this account
 prove it holds `DELETE` here, does a foreign key point into the archive graph from outside
 it. Through 1.8, GoArchive answered all of those itself, with hand-written

@@ -260,7 +260,7 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The Phase-028 measured integration baseline is `PASS=1077 FAIL=0 SKIP=1`. Re-measure it
+The Phase-028 measured integration baseline is `PASS=1056 FAIL=0 SKIP=1`. Re-measure it
 through the integration runner after adding or removing tagged tests; do not calculate it
 from the diff.
 
