@@ -38,14 +38,14 @@ type DatabaseConfig struct {
 // ReplicaConfig is the removed 2.0 replica: block, kept declared only so that a
 // config still carrying it can be detected and rejected with a migration error.
 //
-// Legacy 2.0 sentinel — detection only; see validateLegacyReplicaKeys.
+// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 type ReplicaConfig struct {
 	Enabled  bool   `yaml:"enabled" mapstructure:"enabled"`
 	Host     string `yaml:"host" mapstructure:"host"`
 	Port     int    `yaml:"port" mapstructure:"port"`
 	User     string `yaml:"user" mapstructure:"user"`
 	Password string `yaml:"password" mapstructure:"password"`
-	// Legacy 2.0 sentinel — detection only; see validateLegacyReplicaKeys.
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 	ReplicationChannel string `yaml:"replication_channel" mapstructure:"replication_channel"`
 }
 
@@ -150,9 +150,9 @@ type ProcessingConfig struct {
 
 // SafetyConfig represents safety settings for archive operations.
 type SafetyConfig struct {
-	// Legacy 2.0 sentinel — detection only; see validateLegacyReplicaKeys.
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 	LagThreshold int `yaml:"lag_threshold" mapstructure:"lag_threshold"`
-	// Legacy 2.0 sentinel — detection only; see validateLegacyReplicaKeys.
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 	CheckInterval           int  `yaml:"check_interval" mapstructure:"check_interval"`
 	DisableForeignKeyChecks bool `yaml:"disable_foreign_key_checks" mapstructure:"disable_foreign_key_checks"`
 }
