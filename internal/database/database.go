@@ -22,12 +22,23 @@ const (
 	defaultConnMaxIdle  = 5 * time.Minute
 )
 
-// Manager handles database connections for source, destination, and replica.
+// Manager handles database connections for source, destination, and the
+// monitored replica fleet.
 type Manager struct {
 	Source      *sql.DB
 	Destination *sql.DB
-	Replica     *sql.DB
-	config      *config.Config
+	// Replicas is index-paired with config.Replication.Servers, so
+	// Replicas[i] is the handle for Servers[i] and Servers[i].Addr() is its
+	// identity in logs and errors.
+	Replicas []*sql.DB
+	config   *config.Config
+}
+
+// replicaDatabaseConfig maps a fleet entry onto the DSN builder's input.
+// TLS now propagates (the old inline replicaCfg dropped it — fixed here).
+func replicaDatabaseConfig(s config.ReplicationServerConfig) *config.DatabaseConfig {
+	return &config.DatabaseConfig{Host: s.Host, Port: s.Port, User: s.User,
+		Password: s.Password, TLS: s.TLS}
 }
 
 // NewManager creates a new database manager from configuration.
@@ -66,21 +77,28 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to destination database: %w", err)
 	}
 
-	// Connect to replica if enabled
-	if m.config.Replica.Enabled {
-		replicaCfg := &config.DatabaseConfig{
-			Host:     m.config.Replica.Host,
-			Port:     m.config.Replica.Port,
-			User:     m.config.Replica.User,
-			Password: m.config.Replica.Password,
-		}
-		m.Replica, err = m.connectWithRetry(ctx, "replica", replicaCfg)
-		if err != nil {
-			_ = m.Source.Close()      // Ignore error during cleanup of failed connection
-			_ = m.Destination.Close() // Ignore error during cleanup of failed connection
-			m.Source = nil
-			m.Destination = nil
-			return fmt.Errorf("failed to connect to replica database: %w", err)
+	// Connect to every monitored replica. Startup is fail-closed per server:
+	// one unreachable member aborts Connect and releases every handle already
+	// opened, including the healthy replicas ahead of it.
+	if m.config.Replication.Enabled {
+		for _, s := range m.config.Replication.Servers {
+			addr := s.Addr()
+
+			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s))
+			if replicaErr != nil {
+				// Ignore errors during cleanup of a failed connection set.
+				for _, opened := range m.Replicas {
+					_ = opened.Close()
+				}
+				_ = m.Destination.Close()
+				_ = m.Source.Close()
+				m.Replicas = nil
+				m.Destination = nil
+				m.Source = nil
+				return fmt.Errorf("failed to connect to replica %s: %w", addr, replicaErr)
+			}
+
+			m.Replicas = append(m.Replicas, replica)
 		}
 	}
 
@@ -191,12 +209,15 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 func (m *Manager) Close() error {
 	var errs []error
 
-	if m.Replica != nil {
-		if err := m.Replica.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("replica close: %w", err))
+	for i, replica := range m.Replicas {
+		if replica == nil {
+			continue
 		}
-		m.Replica = nil
+		if err := replica.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("replica %s close: %w", m.replicaAddr(i), err))
+		}
 	}
+	m.Replicas = nil
 
 	if m.Destination != nil {
 		if err := m.Destination.Close(); err != nil {
@@ -236,11 +257,24 @@ func (m *Manager) Ping(ctx context.Context) error {
 		}
 	}
 
-	if m.Replica != nil {
-		if err := m.Replica.PingContext(ctx); err != nil {
-			return fmt.Errorf("replica ping failed: %w", err)
+	for i, replica := range m.Replicas {
+		if replica == nil {
+			continue
+		}
+		if err := replica.PingContext(ctx); err != nil {
+			return fmt.Errorf("replica %s ping failed: %w", m.replicaAddr(i), err)
 		}
 	}
 
 	return nil
+}
+
+// replicaAddr names fleet member i for logs and errors. Replicas is
+// index-paired with the configured servers; the index itself is the fallback
+// if a caller ever populates the fleet without matching config (tests do).
+func (m *Manager) replicaAddr(i int) string {
+	if m.config != nil && i < len(m.config.Replication.Servers) {
+		return m.config.Replication.Servers[i].Addr()
+	}
+	return "#" + strconv.Itoa(i)
 }

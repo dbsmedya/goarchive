@@ -360,6 +360,135 @@ func TestDisplayExecutionPlanShowsWhere(t *testing.T) {
 	}
 }
 
+// displayPlanWithReplication renders the dry-run plan for a config carrying rc.
+func displayPlanWithReplication(t *testing.T, rc config.ReplicationConfig) string {
+	t.Helper()
+	cfg := &config.Config{
+		Processing:   config.ProcessingConfig{BatchSize: 100, BatchDeleteSize: 50},
+		Verification: config.VerificationConfig{Method: "count"},
+		Replication:  rc,
+	}
+	jobCfg := &config.JobConfig{RootTable: "orders", PrimaryKey: "id"}
+	g := graph.NewGraph("orders", "id")
+	e := NewEstimator(nil, cfg, jobCfg, g, logger.NewDefault())
+	result := &EstimateResult{RootTable: "orders", RootCount: 10, ChildCounts: map[string]int64{},
+		BatchSize: 100, Config: cfg, JobConfig: jobCfg}
+
+	return captureStdout(t, func() { e.DisplayExecutionPlan(result) })
+}
+
+// TestDisplayExecutionPlan_ReplicationEnabled pins the dry-run replication block
+// for a two-server fleet, including the two channel-selection renderings that
+// must stay unambiguous: [] → "all", ["", "billing"] → "<default>, billing".
+func TestDisplayExecutionPlan_ReplicationEnabled(t *testing.T) {
+	out := displayPlanWithReplication(t, config.ReplicationConfig{
+		Enabled:                   true,
+		SecondsBehindSourceWithin: 30,
+		CheckInterval:             5,
+		CacheTTL:                  15,
+		Servers: []config.ReplicationServerConfig{
+			{Host: "replica-a", Port: 3306, User: "monitor", Password: "sup3rs3cret", TLS: "disable", Type: "async"},
+			{Host: "replica-b", Port: 3307, User: "monitor", Password: "sup3rs3cret", TLS: "disable", Type: "async",
+				Channels: []string{"", "billing"}},
+		},
+	})
+
+	want := []string{
+		"  Replication lag monitoring: enabled (2 server(s))\n",
+		"    Tolerance (seconds_behind_source_within): 30s\n",
+		"    Check interval: 5s\n",
+		"    Cache TTL: 15s\n",
+		"    Server replica-a:3306: channels: all\n",
+		"    Server replica-b:3307: channels: <default>, billing\n",
+	}
+	for _, line := range want {
+		if !strings.Contains(out, line) {
+			t.Errorf("dry-run output missing line %q; got:\n%s", line, out)
+		}
+	}
+
+	if strings.Contains(out, "disabled") {
+		t.Errorf("enabled fleet must not render the disabled line; got:\n%s", out)
+	}
+	if strings.Contains(out, "sup3rs3cret") {
+		t.Error("dry-run output leaked a replication server password")
+	}
+}
+
+// TestDisplayExecutionPlan_ChannelNameCannotSplitALine proves the rendered plan
+// keeps one physical line per server even when a channel name carries \n or \r.
+func TestDisplayExecutionPlan_ChannelNameCannotSplitALine(t *testing.T) {
+	out := displayPlanWithReplication(t, config.ReplicationConfig{
+		Enabled:                   true,
+		SecondsBehindSourceWithin: 30,
+		CheckInterval:             5,
+		CacheTTL:                  15,
+		Servers: []config.ReplicationServerConfig{
+			{Host: "replica-a", Port: 3306, User: "monitor", TLS: "disable", Type: "async",
+				Channels: []string{"billing\nforged: replication is fine"}},
+		},
+	})
+
+	if !strings.Contains(out, "    Server replica-a:3306: channels: billing forged: replication is fine\n") {
+		t.Errorf("channel name was not collapsed onto one line; got:\n%s", out)
+	}
+
+	// The forged fragment must never appear at the start of its own line.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "forged") {
+			t.Errorf("a channel name split the dry-run output into an extra line %q; full output:\n%s", line, out)
+		}
+	}
+}
+
+// TestDisplayExecutionPlan_ReplicationDisabled pins the unchanged disabled line.
+func TestDisplayExecutionPlan_ReplicationDisabled(t *testing.T) {
+	out := displayPlanWithReplication(t, config.ReplicationConfig{Enabled: false})
+
+	if !strings.Contains(out, "  Replication lag monitoring: disabled\n") {
+		t.Errorf("dry-run output missing the disabled line; got:\n%s", out)
+	}
+	if strings.Contains(out, "Replication lag monitoring: enabled") {
+		t.Errorf("disabled config must not render the enabled block; got:\n%s", out)
+	}
+	if strings.Contains(out, "Tolerance") || strings.Contains(out, "Cache TTL") {
+		t.Errorf("disabled config must not render fleet detail lines; got:\n%s", out)
+	}
+}
+
+// TestDescribeChannels covers the three selection modes the dry-run must keep
+// distinguishable.
+func TestDescribeChannels(t *testing.T) {
+	tests := []struct {
+		name     string
+		channels []string
+		want     string
+	}{
+		{"nil means all channels", nil, "all"},
+		{"empty slice means all channels", []string{}, "all"},
+		{"empty string means the default channel", []string{""}, "<default>"},
+		{"default plus named", []string{"", "billing"}, "<default>, billing"},
+		{"named only", []string{"billing"}, "billing"},
+		{"several named", []string{"billing", "reporting"}, "billing, reporting"},
+		// Line integrity: config validation rejects duplicate channel names but
+		// never their content, so a name carrying \n or \r must be collapsed to
+		// spaces exactly as internal/replication.renderChannel does. Asserted
+		// here rather than by importing that package.
+		{"newline in a named channel", []string{"billing\nforged"}, "billing forged"},
+		{"carriage return in a named channel", []string{"billing\rforged"}, "billing forged"},
+		{"crlf in a named channel", []string{"billing\r\nforged"}, "billing  forged"},
+		{"newline alongside the default channel", []string{"", "billing\nforged"}, "<default>, billing forged"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := describeChannels(tt.channels); got != tt.want {
+				t.Errorf("describeChannels(%#v) = %q, want %q", tt.channels, got, tt.want)
+			}
+		})
+	}
+}
+
 // captureStdout redirects os.Stdout for the duration of fn.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()

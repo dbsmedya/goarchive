@@ -17,7 +17,7 @@ GoArchive day to day.
 - [Recommended operator workflow](#recommended-operator-workflow)
 - [Tuning throughput](#tuning-throughput)
 - [Pausing a run: `sentinel_file`](#pausing-a-run-sentinel_file)
-- [Replication lag monitoring](#replication-lag-monitoring)
+- [Replication gating](#replication-gating)
 - [Crash recovery](#crash-recovery)
 - [Resume semantics](#resume-semantics)
 - [Concurrency and locking](#concurrency-and-locking)
@@ -192,31 +192,70 @@ Notes:
 
 ---
 
-## Replication lag monitoring
+## Replication gating
 
-When `replica.enabled: true`, GoArchive checks replica lag and **pauses batch
-processing** while it exceeds `safety.lag_threshold` seconds, polling every
-`safety.check_interval` seconds.
+When `replication.enabled: true`, GoArchive checks every configured replica
+before each batch **and before each recovery chunk**, and **holds the job** while
+any of them is unhealthy. The same invocation resumes once the whole fleet is
+healthy again — a hold is a pause, not a failure.
+
+> **`archive` and `purge` gate; `copy-only` does not.** `copy-only` never deletes
+> from source, so it is not gated on replication. Throttle it with
+> `processing.sleep_seconds` and `delete_sleep_seconds`, or pause it with
+> [`sentinel_file`](#pausing-a-run-sentinel_file).
+>
+> `purge` gained replication gating in 2.1.0
+> ([#19](https://github.com/dbsmedya/goarchive/issues/19)). In every earlier
+> release it deleted without checking, even with monitoring configured and
+> enabled.
 
 ```yaml
-replica:
+replication:
   enabled: true
-  host: replica-db.internal
-  user: repl_user
-  password: change_me
-  replication_channel: ""      # empty = default/unnamed channel
-
-safety:
-  lag_threshold: 10
+  seconds_behind_source_within: 10
   check_interval: 5
+  cache_ttl: 15
+  servers:
+    - host: replica1.internal
+      user: monitor
+      password: change_me
 ```
 
-The lag check runs before each batch **and before each recovery chunk**. The
-replica account needs `REPLICATION CLIENT`. Set `replication_channel` to scope
-the check to a named channel (`SHOW REPLICA STATUS FOR CHANNEL '<name>'`).
+A replica is unhealthy when it is unreachable, when replication is not configured
+or not running, or when it is further behind than
+`seconds_behind_source_within`. Each monitored account needs
+`REPLICATION CLIENT`.
 
-`check_interval` must be positive whenever the replica is enabled — validation
-rejects `0`.
+**Every channel counts.** By default the gate reads every replication channel a
+server reports and holds if *any* one of them is unhealthy. Narrow that with
+`channels` — see [Configuration](README_CONFIGURATION.md#replication). MySQL's
+default channel is named `""`, and renders as `<default>` in logs.
+
+### What you see while it holds
+
+One line per unhealthy server per check, at `WARN`, naming the server and the
+reason, with the accumulated hold duration:
+
+```
+replication hold: server replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s); job held, retrying in 5s
+```
+
+Healthy servers stay silent. When a server recovers you get one `INFO` line for
+that server, and once the last one recovers, one more announcing the job is
+resuming and how long it was held in total. If the reason changes while a server
+is still down — say it goes from lagging to unreachable — the hold duration keeps
+accumulating rather than resetting, so the log shows how long the job has really
+been waiting.
+
+### `cache_ttl` and the bounded detection delay
+
+A **passing** verdict is cached for `cache_ttl` seconds, so a fast batch loop does
+not re-query the same healthy replicas on every batch. Failures are never cached.
+
+The trade-off is explicit: for up to `cache_ttl` seconds after a passing check,
+a replica that has just become unhealthy will not be noticed. Set `cache_ttl: 0`
+to check every time and remove the delay entirely, at the cost of a status query
+per batch.
 
 ---
 

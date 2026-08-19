@@ -110,6 +110,7 @@ GoArchive also operates under deliberate constraints — single-column primary k
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
 | [Job Tracking Schema](docs/README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, safe cleanup |
 | [Testing](docs/README_TESTING.md) | Test layers and how to run them |
+| [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
 | [INSTALL.md](INSTALL.md) | Installation and build reference |
 
 ## Features
@@ -119,7 +120,7 @@ GoArchive also operates under deliberate constraints — single-column primary k
 - **Verification before deletion** - Optional row count or SHA256 comparison between source and destination; a mismatch aborts before anything is deleted
 - **Crash recovery and resume** - Per-row checkpoint state persisted in MySQL; an interrupted archive resumes where it stopped instead of restarting
 - **Zero-lock batch processing** - Configurable batch sizes and delays keep long-term locks off production tables
-- **Replication lag monitoring** - Pauses automatically when replica lag exceeds a threshold
+- **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
 - **Trigger and schema safety** - Detects DELETE triggers, destination INSERT triggers, incompatible destination schemas, and composite primary keys before any data moves
 - **Dry-run mode** - Preview the execution plan and filtered row counts without making changes
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source
@@ -189,10 +190,15 @@ processing:
   batch_delete_size: 500
   sleep_seconds: 1
 
-# Safety settings
-safety:
-  lag_threshold: 10
+# Replication gating (optional)
+replication:
+  enabled: true
+  seconds_behind_source_within: 10
   check_interval: 5
+  servers:
+    - host: replica-db.internal
+      user: monitor
+      password: change_me
 ```
 
 `where` is required on every job — use `where: "1=1"` to deliberately process a whole table. See [configs/archiver.yaml.example](configs/archiver.yaml.example) for a complete annotated example.
@@ -377,14 +383,16 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `2.0.1-community` (**stable**)
-- **Stable release**: `2.0.1-community` — the current production line, built on the stable [dbsgomysql v1.0.0 integration](docs/README_dbsgomysql.md).
+- **Version**: `2.1.0-community` (**stable**)
+- **Stable release**: `2.1.0-community` — the current production line, built on the stable [dbsgomysql v1.1.0 integration](docs/README_dbsgomysql.md).
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
 ⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.** It covers the preflight-enforced hard constraints, what the dependency model cannot express, and the operational cautions (memory growth on deep graphs, copy-transaction scope, `--force` semantics, partial deletes after interruption).
 
-Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md).
+Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
+and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are
+rejected. Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md) first.
 
 ### What's Included in Community
 

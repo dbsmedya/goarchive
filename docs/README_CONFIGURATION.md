@@ -14,7 +14,7 @@ Complete reference for every block, option, default, and precedence rule in
 
 - [How configuration is loaded](#how-configuration-is-loaded)
 - [`source:` / `destination:`](#source--destination)
-- [`replica:`](#replica)
+- [`replication:`](#replication)
 - [`jobs:`](#jobs)
 - [`processing:`](#processing)
 - [`safety:`](#safety)
@@ -91,33 +91,80 @@ required grant — see [Permissions](README_PERMISSIONS.md).
 
 ---
 
-## `replica:`
+## `replication:`
 
-Optional. Enables replication lag monitoring, which pauses batch processing while
-the replica is behind. Absent from the configuration, monitoring is off.
+Optional. Holds batch processing while any monitored replica is unhealthy, and
+resumes the same run once every one of them recovers. Absent from the
+configuration, replication monitoring is off.
+
+> **Applies to `archive` and `purge`.** `copy-only` does not gate on replication
+> even when this block is enabled — it never deletes from source. See
+> [Replication gating](README_OPERATIONS.md#replication-gating).
+
+> **Replaces the 2.0 `replica:` block** and `safety.lag_threshold` /
+> `safety.check_interval`. Those keys are now **rejected** — a config carrying
+> them fails validation with a migration message. See
+> [Upgrading to 2.1](README_UPGRADING_2_1.md).
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `enabled` | Turn lag monitoring on | `false` |
-| `host` | Replica host | required **when enabled** |
+| `enabled` | Turn replication gating on | `false` |
+| `seconds_behind_source_within` | Lag tolerance in seconds. `0` demands exact sync. Must not be negative. | `10` |
+| `check_interval` | Seconds between re-checks while holding. Must be positive **when enabled**. | `5` |
+| `cache_ttl` | Seconds a **passing** verdict stays fresh. `0` checks every time. Must not be negative. | `15` |
+| `servers` | One or more replicas to monitor. At least one is required **when enabled**. | — |
+
+### `servers[]`
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `host` | Replica host. Must not contain a newline or carriage return. | required |
 | `port` | Replica port (1–65535) | `3306` |
-| `user` | Replica username | required **when enabled** |
-| `password` | Replica password | — |
-| `replication_channel` | Named channel to monitor — `SHOW REPLICA STATUS FOR CHANNEL '<name>'`. Empty monitors the default/unnamed channel. | _(empty)_ |
+| `user` | Account used to read replication status | required |
+| `password` | Account password | — |
+| `tls` | `disable`, `preferred`, `skip-verify`, or `required` | `preferred` |
+| `type` | Only `async` is supported in 2.1; any other value is rejected | `async` |
+| `channels` | Which replication channels to gate on. Omitted or `[]` gates on **every** channel the server reports. | _(all)_ |
 
 ```yaml
-replica:
+replication:
   enabled: true
-  host: replica-db.internal
-  port: 3306
-  user: repl_user
-  password: change_me
-  replication_channel: ""
+  seconds_behind_source_within: 10
+  check_interval: 5
+  cache_ttl: 15
+  servers:
+    - host: replica1.internal
+      user: monitor
+      password: change_me
+    - host: replica2.internal
+      port: 3307
+      user: monitor
+      password: change_me
+      channels: ["", "billing"]
 ```
 
-`host` and `user` are validated only when `enabled: true`, so a disabled block
-may be left as a stub. Thresholds live in [`safety:`](#safety). The replica
-account needs `REPLICATION CLIENT`.
+### Channel selection
+
+MySQL's default channel is **named `""` — an empty name, not an absence**. That
+distinction is the one non-obvious spelling in this block:
+
+| `channels` value | Gates on |
+|---|---|
+| omitted, or `[]` | every channel the server reports |
+| `[""]` | the default (unnamed) channel only |
+| `["", "billing"]` | the default channel **and** `billing` |
+
+Every listed channel must exist on that server; a missing one fails the check
+rather than being silently ignored. In logs the default channel renders as
+`<default>`.
+
+Two servers may not share a `host:port`, and one server may not list the same
+channel twice. Each monitored account needs `REPLICATION CLIENT` — see
+[Permissions](README_PERMISSIONS.md).
+
+Per-server settings are validated **whenever they are present**, even with
+`enabled: false`, so a disabled block cannot hide a typo that would only surface
+the day someone turns it on.
 
 ---
 
@@ -229,9 +276,12 @@ for `sentinel_file`.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `lag_threshold` | Max replication lag in seconds before processing pauses. Must not be negative. | `10` |
-| `check_interval` | Lag check frequency in seconds. Must be positive **when `replica.enabled` is true**. | `5` |
 | `disable_foreign_key_checks` | Set `FOREIGN_KEY_CHECKS = 0` on the destination during copy | `false` |
+
+> `lag_threshold` and `check_interval` were **removed in 2.1** and now live in
+> [`replication:`](#replication) as `seconds_behind_source_within` and
+> `check_interval`. A config still carrying them fails validation. See
+> [Upgrading to 2.1](README_UPGRADING_2_1.md).
 
 ### `disable_foreign_key_checks`
 
@@ -478,13 +528,17 @@ destination:
   max_idle_connections: 5
   job_schema: goarchive        # DBA must CREATE DATABASE goarchive first
 
-replica:
+replication:
   enabled: false
-  host: replica-db.internal
-  port: 3306
-  user: repl_user
-  password: change_me
-  replication_channel: ""
+  seconds_behind_source_within: 10
+  check_interval: 5
+  cache_ttl: 15
+  servers:
+    - host: replica-db.internal
+      port: 3306
+      user: monitor
+      password: change_me
+      channels: []            # [] = every channel; [""] = default channel only
 
 jobs:
   archive_old_orders:
@@ -519,8 +573,6 @@ processing:
   sentinel_file: ""
 
 safety:
-  lag_threshold: 10
-  check_interval: 5
   disable_foreign_key_checks: false
 
 verification:

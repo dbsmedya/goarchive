@@ -98,19 +98,24 @@ the guard's failure message names the pattern to copy.
 
 ### Retained application-owned MySQL probes
 
-The boundary is ownership, not whether a statement happens to inspect MySQL. Two focused
-exceptions remain GoArchive SQL and therefore keep exact `sqlmock` coverage:
+The boundary is ownership, not whether a statement happens to inspect MySQL. One focused
+exception remains GoArchive SQL and therefore keeps exact `sqlmock` coverage:
 
 - Dry-run reads `SHOW VARIABLES LIKE 'max_allowed_packet'` to decide whether the INSERT
   payload GoArchive itself constructs fits the destination. This application-specific
   safety check stays local; it does not justify a generic dbsgomysql server-variable API.
-- Replication lag monitoring owns `SHOW REPLICA STATUS`, its `SHOW SLAVE STATUS` fallback,
-  and optional `FOR CHANNEL` clause. These administrative reads retain their current tests
-  and have a separate post-2.2 horizon for reconsidering a dbsgomysql port.
 
-Neither exception permits unit tests to reproduce dbsgomysql metadata queries, aliases,
-result columns, or fallback choreography. Preflight metadata tests continue to inject the
-library's exported typed facts.
+**Retired 2026-08-19 (2.1.0-community):** replication lag monitoring used to own
+`SHOW REPLICA STATUS`, its `SHOW SLAVE STATUS` fallback, and the optional `FOR CHANNEL`
+clause, on a post-2.2 horizon for reconsidering a dbsgomysql port. That port happened in 2.1:
+`dbsgomysql/pkg/replication` owns those reads and verifies their field layout against the
+supported MySQL versions, `internal/archiver/lagmonitor.go` was deleted, and
+`TestConsumerPolicyNoReplicationStatusSQL` now **fails the build** on either statement in a
+production string literal. Do not reintroduce them.
+
+The remaining exception does not permit unit tests to reproduce dbsgomysql metadata queries,
+aliases, result columns, or fallback choreography. Preflight metadata tests continue to
+inject the library's exported typed facts.
 
 ## Consumer-policy enforcement
 
@@ -123,6 +128,8 @@ make consumer-policy
 The target runs every `TestConsumerPolicy*` guard in `internal/archiver`:
 
 - production Go files may not query the metadata catalog owned by dbsgomysql;
+- production Go files may not name `SHOW REPLICA STATUS` or `SHOW SLAVE STATUS` in a string
+  literal — since 2.1 those reads belong to `dbsgomysql/pkg/replication`;
 - the remaining application-owned `sqlmock` budgets must match their reviewed inventory;
 - non-integration unit tests may not encode dbsgomysql query fragments, aliases, result
   column layouts, or fallback choreography.
@@ -264,7 +271,7 @@ make test-down    # stop containers
 |------|--------|
 | `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
 | `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
-| `TestOrchestrator_ReplicationLagPause_Integration` | Lag monitoring behaviour |
+| `TestOrchestrator_ReplicationGate_Integration` | Replication gating against a live replica: healthy pass, stopped-applier hold, and lag hold — each proving the job resumes on the same invocation |
 | `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
 | `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown |
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |

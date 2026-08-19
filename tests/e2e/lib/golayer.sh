@@ -143,7 +143,7 @@ run_integration_tests() {
     rm -f "$TESTS_DIR/.e2e-ready"
 
     if [ -z "$GO_TEST_ARGS" ]; then
-        GO_TEST_ARGS="./internal/archiver/..."
+        GO_TEST_ARGS="./internal/archiver/... ./internal/database/..."
     fi
 
     # Real-DB tests live behind the `integration` build tag and several are not

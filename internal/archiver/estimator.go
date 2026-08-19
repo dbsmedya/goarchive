@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -230,14 +231,50 @@ func (e *Estimator) DisplayExecutionPlan(result *EstimateResult) {
 	fmt.Println()
 	fmt.Printf("  Foreign key checks: %v\n", !e.cfg.Safety.DisableForeignKeyChecks)
 
-	if result.Config.Replica.Enabled {
-		fmt.Printf("  Replication lag monitoring: enabled\n")
-		fmt.Printf("    Max lag: %ds\n", result.Config.Safety.LagThreshold)
-		fmt.Printf("    Check interval: %ds\n", result.Config.Safety.CheckInterval)
+	if result.Config.Replication.Enabled {
+		rc := result.Config.Replication
+		fmt.Printf("  Replication lag monitoring: enabled (%d server(s))\n", len(rc.Servers))
+		fmt.Printf("    Tolerance (seconds_behind_source_within): %ds\n", rc.SecondsBehindSourceWithin)
+		fmt.Printf("    Check interval: %ds\n", rc.CheckInterval)
+		fmt.Printf("    Cache TTL: %ds\n", rc.CacheTTL)
+		for _, s := range rc.Servers {
+			fmt.Printf("    Server %s: channels: %s\n", s.Addr(), describeChannels(s.Channels))
+		}
 	} else {
 		fmt.Printf("  Replication lag monitoring: disabled\n")
 	}
 
 	fmt.Println("\n=== End of Dry-Run ===")
 	fmt.Println("\nℹ️  No data was modified. Use 'archive' command to execute.")
+}
+
+// describeChannels renders a server's channel selection for the dry-run plan.
+// The three modes must stay unambiguous: no entries means every channel, and
+// the default (unnamed) channel shows as <default> rather than as an empty gap.
+//
+// A named channel is sanitized before it is printed. Config validation rejects
+// duplicate channel names but never their content, so a name carrying a newline
+// would split one plan line into two and could forge a second status line. This
+// mirrors internal/replication.renderChannel; the symmetry is asserted by test
+// rather than by importing that package, since this renders config, not problems.
+func describeChannels(channels []string) string {
+	if len(channels) == 0 {
+		return "all"
+	}
+
+	names := make([]string, 0, len(channels))
+	for _, c := range channels {
+		if c == "" {
+			names = append(names, "<default>")
+			continue
+		}
+		names = append(names, sanitizeChannelName(c))
+	}
+	return strings.Join(names, ", ")
+}
+
+// sanitizeChannelName collapses newlines and carriage returns to spaces so that
+// no configured name can split one physical line into several.
+func sanitizeChannelName(s string) string {
+	return strings.NewReplacer("\n", " ", "\r", " ").Replace(s)
 }

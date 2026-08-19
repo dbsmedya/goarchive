@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -279,5 +280,148 @@ func TestApplyOverridesPartial(t *testing.T) {
 	}
 	if cfg.Verification.SkipVerification != true {
 		t.Error("expected skip_verify to be true after override")
+	}
+}
+
+// TestLoadNormalizesReplication pins the normalization pass Load() runs over
+// replication server entries: YAML-created slice elements arrive zero-valued,
+// so per-server defaults cannot come from DefaultConfig. Channels are never
+// normalized — [""] (default channel only) must stay distinct from [] (all
+// channels) — and the block-level tolerance must survive an explicit 0.
+func TestLoadNormalizesReplication(t *testing.T) {
+	// block: extra lines at the replication block level (2-space indent).
+	// server: extra lines under servers[0] (6-space indent).
+	const skeleton = `source: {host: h, port: 3306, user: u, password: p, database: d}
+destination: {host: h, port: 3306, user: u, password: p, database: d}
+replication:
+  enabled: true
+%s  servers:
+    - host: r1
+      user: monitor
+      password: pw
+%sjobs: {}
+`
+
+	tests := []struct {
+		name   string
+		block  string
+		server string
+		check  func(t *testing.T, r ReplicationConfig)
+	}{
+		{
+			name: "omitted port gets 3306",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].Port != 3306 {
+					t.Fatalf("Port = %d, want 3306", r.Servers[0].Port)
+				}
+			},
+		},
+		{
+			name:   "explicit zero port gets 3306",
+			server: "      port: 0\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].Port != 3306 {
+					t.Fatalf("Port = %d, want 3306", r.Servers[0].Port)
+				}
+			},
+		},
+		{
+			name:   "explicit port survives",
+			server: "      port: 3307\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].Port != 3307 {
+					t.Fatalf("Port = %d, want 3307", r.Servers[0].Port)
+				}
+			},
+		},
+		{
+			name: "omitted tls gets preferred",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].TLS != "preferred" {
+					t.Fatalf("TLS = %q, want %q", r.Servers[0].TLS, "preferred")
+				}
+			},
+		},
+		{
+			name:   "explicit tls survives",
+			server: "      tls: required\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].TLS != "required" {
+					t.Fatalf("TLS = %q, want %q", r.Servers[0].TLS, "required")
+				}
+			},
+		},
+		{
+			name: "omitted type gets async",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].Type != "async" {
+					t.Fatalf("Type = %q, want %q", r.Servers[0].Type, "async")
+				}
+			},
+		},
+		{
+			name:   "explicit type survives",
+			server: "      type: async\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.Servers[0].Type != "async" {
+					t.Fatalf("Type = %q, want %q", r.Servers[0].Type, "async")
+				}
+			},
+		},
+		{
+			name:   "channels are not normalized",
+			server: "      channels: [\"\"]\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				got := r.Servers[0].Channels
+				if len(got) != 1 || got[0] != "" {
+					t.Fatalf("Channels = %#v, want []string{\"\"}", got)
+				}
+			},
+		},
+		{
+			name:   "empty channels stay empty",
+			server: "      channels: []\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if len(r.Servers[0].Channels) != 0 {
+					t.Fatalf("Channels = %#v, want empty", r.Servers[0].Channels)
+				}
+			},
+		},
+		{
+			name:  "explicit zero tolerance survives loading",
+			block: "  seconds_behind_source_within: 0\n",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.SecondsBehindSourceWithin != 0 {
+					t.Fatalf("SecondsBehindSourceWithin = %d, want 0", r.SecondsBehindSourceWithin)
+				}
+			},
+		},
+		{
+			name: "omitted tolerance gets default",
+			check: func(t *testing.T, r ReplicationConfig) {
+				if r.SecondsBehindSourceWithin != 10 {
+					t.Fatalf("SecondsBehindSourceWithin = %d, want 10", r.SecondsBehindSourceWithin)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			content := fmt.Sprintf(skeleton, tt.block, tt.server)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v\nconfig:\n%s", err, content)
+			}
+			if len(cfg.Replication.Servers) != 1 {
+				t.Fatalf("loaded %d servers, want 1", len(cfg.Replication.Servers))
+			}
+			tt.check(t, cfg.Replication)
+		})
 	}
 }

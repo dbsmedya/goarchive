@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -102,7 +103,7 @@ func TestNewManager(t *testing.T) {
 			Password: "secret",
 			Database: "archivedb",
 		},
-		Replica: config.ReplicaConfig{
+		Replication: config.ReplicationConfig{
 			Enabled: false,
 		},
 	}
@@ -124,8 +125,8 @@ func TestNewManager(t *testing.T) {
 		t.Error("Destination should be nil before Connect()")
 	}
 
-	if manager.Replica != nil {
-		t.Error("Replica should be nil when not enabled")
+	if len(manager.Replicas) != 0 {
+		t.Errorf("Replicas should be empty when replication is not enabled, got %d", len(manager.Replicas))
 	}
 }
 
@@ -133,7 +134,7 @@ func TestManagerCloseWithoutConnect(t *testing.T) {
 	cfg := &config.Config{
 		Source:      config.DatabaseConfig{Host: "localhost"},
 		Destination: config.DatabaseConfig{Host: "archive"},
-		Replica:     config.ReplicaConfig{Enabled: false},
+		Replication: config.ReplicationConfig{Enabled: false},
 	}
 
 	manager := NewManager(cfg)
@@ -244,12 +245,11 @@ func TestNewManager_WithReplicaEnabled(t *testing.T) {
 			Password: "secret",
 			Database: "archivedb",
 		},
-		Replica: config.ReplicaConfig{
-			Enabled:  true,
-			Host:     "replica-host",
-			Port:     3306,
-			User:     "replica",
-			Password: "secret",
+		Replication: config.ReplicationConfig{
+			Enabled: true,
+			Servers: []config.ReplicationServerConfig{
+				{Host: "replica-host", Port: 3306, User: "replica", Password: "secret", TLS: "preferred", Type: "async"},
+			},
 		},
 	}
 
@@ -258,12 +258,12 @@ func TestNewManager_WithReplicaEnabled(t *testing.T) {
 		t.Fatal("NewManager() returned nil")
 	}
 
-	if manager.config.Replica.Enabled != true {
-		t.Error("Replica should be enabled in manager config")
+	if manager.config.Replication.Enabled != true {
+		t.Error("Replication should be enabled in manager config")
 	}
 
-	if manager.Replica != nil {
-		t.Error("Replica should be nil before Connect()")
+	if len(manager.Replicas) != 0 {
+		t.Errorf("Replicas should be empty before Connect(), got %d", len(manager.Replicas))
 	}
 }
 
@@ -345,7 +345,7 @@ func TestManager_FieldsInitialization(t *testing.T) {
 	cfg := &config.Config{
 		Source:      config.DatabaseConfig{Host: "localhost"},
 		Destination: config.DatabaseConfig{Host: "archive"},
-		Replica:     config.ReplicaConfig{Enabled: false},
+		Replication: config.ReplicationConfig{Enabled: false},
 	}
 
 	manager := NewManager(cfg)
@@ -357,8 +357,8 @@ func TestManager_FieldsInitialization(t *testing.T) {
 	if manager.Destination != nil {
 		t.Error("Destination should be nil before Connect()")
 	}
-	if manager.Replica != nil {
-		t.Error("Replica should be nil before Connect()")
+	if manager.Replicas != nil {
+		t.Error("Replicas should be nil before Connect()")
 	}
 
 	// Verify config is set
@@ -368,6 +368,162 @@ func TestManager_FieldsInitialization(t *testing.T) {
 	if manager.config.Source.Host != "localhost" {
 		t.Error("Source host should match config")
 	}
+}
+
+// TestReplicaDatabaseConfig_MapsAllFields pins the fleet-entry → DSN-input
+// mapping. TLS is the field the old inline replicaCfg silently dropped, so it
+// is asserted through BuildDSN rather than by struct comparison alone.
+func TestReplicaDatabaseConfig_MapsAllFields(t *testing.T) {
+	server := config.ReplicationServerConfig{
+		Host:     "replica-host",
+		Port:     3308,
+		User:     "monitor",
+		Password: "s3cret",
+		TLS:      "required",
+		Type:     "async",
+		Channels: []string{"billing"},
+	}
+
+	got := replicaDatabaseConfig(server)
+
+	if got.Host != "replica-host" {
+		t.Errorf("Host = %q, want %q", got.Host, "replica-host")
+	}
+	if got.Port != 3308 {
+		t.Errorf("Port = %d, want %d", got.Port, 3308)
+	}
+	if got.User != "monitor" {
+		t.Errorf("User = %q, want %q", got.User, "monitor")
+	}
+	if got.Password != "s3cret" {
+		t.Errorf("Password = %q, want %q", got.Password, "s3cret")
+	}
+	if got.TLS != "required" {
+		t.Errorf("TLS = %q, want %q", got.TLS, "required")
+	}
+
+	dsn := BuildDSN(got)
+	if !contains(dsn, "tls=true") {
+		t.Errorf("BuildDSN(replicaDatabaseConfig(...)) = %q, should carry TLS required as %q", dsn, "tls=true")
+	}
+	if !contains(dsn, "replica-host:3308") {
+		t.Errorf("BuildDSN(replicaDatabaseConfig(...)) = %q, should address %q", dsn, "replica-host:3308")
+	}
+}
+
+// TestManagerConnect_ReplicationDisabled_LeavesFleetEmpty proves the disabled
+// path never populates the fleet AND that Connect's opening
+// closeExistingConnections() resets a fleet left over from a previous Connect.
+// A stale handle is seeded first so the assertion cannot pass vacuously.
+func TestManagerConnect_ReplicationDisabled_LeavesFleetEmpty(t *testing.T) {
+	cfg := &config.Config{
+		// Port 1 is unbound: Connect fails at the source, well before any
+		// replica would be dialed.
+		Source:      config.DatabaseConfig{Host: "127.0.0.1", Port: 1, User: "u", Password: "p", Database: "d"},
+		Destination: config.DatabaseConfig{Host: "127.0.0.1", Port: 1, User: "u", Password: "p", Database: "d"},
+		Replication: config.ReplicationConfig{Enabled: false},
+	}
+
+	manager := NewManager(cfg)
+	manager.Replicas = []*sql.DB{openLazyHandle(t), openLazyHandle(t)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // keep connectWithRetry's backoff from sleeping through 3 retries
+
+	if err := manager.Connect(ctx); err == nil {
+		t.Fatal("Connect() to an unbound port returned nil error")
+	}
+
+	if manager.Replicas != nil {
+		t.Errorf("Replicas = %d entries, want nil when replication is disabled", len(manager.Replicas))
+	}
+}
+
+// TestManagerClose_PopulatedFleet proves Close() closes every fleet member,
+// nils the slice, and is idempotent.
+func TestManagerClose_PopulatedFleet(t *testing.T) {
+	cfg := &config.Config{
+		Source:      config.DatabaseConfig{Host: "localhost"},
+		Destination: config.DatabaseConfig{Host: "archive"},
+		Replication: config.ReplicationConfig{Enabled: true},
+	}
+
+	manager := NewManager(cfg)
+	first, second := openLazyHandle(t), openLazyHandle(t)
+	manager.Replicas = []*sql.DB{first, second}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() with a populated fleet returned error: %v", err)
+	}
+	if manager.Replicas != nil {
+		t.Errorf("Replicas = %d entries after Close(), want nil", len(manager.Replicas))
+	}
+
+	// Every member is genuinely closed, not merely dropped from the slice.
+	for i, db := range []*sql.DB{first, second} {
+		err := db.PingContext(context.Background())
+		if err == nil || !contains(err.Error(), "database is closed") {
+			t.Errorf("Replicas[%d] after Close(): Ping error = %v, want a closed-database error", i, err)
+		}
+	}
+
+	// Idempotent: the second Close() on the now-nil fleet returns nil.
+	if err := manager.Close(); err != nil {
+		t.Errorf("second Close() returned error: %v", err)
+	}
+}
+
+// TestManagerReplicaAddr covers both branches of the fleet-member naming
+// helper: the config-mapped address, and the fallback used when the index has
+// no matching server entry (or the manager carries no config at all).
+func TestManagerReplicaAddr(t *testing.T) {
+	cfg := &config.Config{
+		Replication: config.ReplicationConfig{
+			Enabled: true,
+			Servers: []config.ReplicationServerConfig{
+				{Host: "replica-a", Port: 3306, User: "monitor", TLS: "disable", Type: "async"},
+				{Host: "2001:db8::1", Port: 3308, User: "monitor", TLS: "disable", Type: "async"},
+			},
+		},
+	}
+
+	t.Run("config-mapped address", func(t *testing.T) {
+		m := NewManager(cfg)
+		if got, want := m.replicaAddr(0), "replica-a:3306"; got != want {
+			t.Errorf("replicaAddr(0) = %q, want %q", got, want)
+		}
+		// IPv6 arrives bracketed via net.JoinHostPort.
+		if got, want := m.replicaAddr(1), "[2001:db8::1]:3308"; got != want {
+			t.Errorf("replicaAddr(1) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("index beyond the configured servers", func(t *testing.T) {
+		m := NewManager(cfg)
+		if got, want := m.replicaAddr(2), "#2"; got != want {
+			t.Errorf("replicaAddr(2) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("manager without config", func(t *testing.T) {
+		m := &Manager{}
+		if got, want := m.replicaAddr(0), "#0"; got != want {
+			t.Errorf("replicaAddr(0) with no config = %q, want %q", got, want)
+		}
+	})
+}
+
+// openLazyHandle returns a real *sql.DB that has never dialed anything —
+// sql.Open does not connect — so fleet lifecycle can be tested without a server.
+func openLazyHandle(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("mysql", BuildDSN(&config.DatabaseConfig{
+		Host: "127.0.0.1", Port: 1, User: "u", Password: "p", Database: "d",
+	}))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	return db
 }
 
 // Helper function

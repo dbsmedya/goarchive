@@ -162,6 +162,19 @@ setup_environment() {
         exit 1
     fi
     
+    # Attach db3 to db1 LAST, after the source has been seeded: the replica
+    # seeds itself by replaying db1's GTID history, so it must not start
+    # replicating until there is something to replay.
+    #
+    # This fails the whole setup rather than warning. A silently non-replicating
+    # db3 does not break anything visibly -- it makes the replication tests pass
+    # while measuring nothing, which is worse than a stopped setup.
+    log_info "Attaching replica to source..."
+    if ! "$SCRIPT_DIR/setup-replication.sh"; then
+        log_error "Replication setup failed"
+        exit 1
+    fi
+
     log_info "Environment setup complete!"
 }
 

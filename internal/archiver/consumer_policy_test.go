@@ -94,6 +94,193 @@ func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 	}
 }
 
+// replicationStatusNeedles are the replication-status statements that dbsgomysql owns as of
+// 2.1. GoArchive reads replication state exclusively through dbsgomysql/pkg/replication,
+// which verifies the field layout of both statements against the supported MySQL versions;
+// a statement issued here would be an unverifiable claim about MySQL, and the 1.8-era
+// lagmonitor's hand-rolled parsing of these exact fields is what 2.1 removed.
+//
+// Lowercase, and matched case-insensitively: the ban is on the statement, not on a spelling.
+var replicationStatusNeedles = []string{
+	"show replica status",
+	"show slave status",
+}
+
+// replicationViolation is one string literal naming a replication-status statement.
+type replicationViolation struct {
+	needle string
+	line   int
+}
+
+// findReplicationStatusViolations reports every string literal under node that names a
+// replication-status statement.
+//
+// Like the information-schema guard above it inspects STRING LITERALS, not file text. A
+// statement lives in a literal, so that is where a violation can be; comments legitimately
+// name these statements when recording what 1.8 used to read or which library call replaced
+// them. Callers therefore parse with Mode 0, which leaves comments off the AST entirely.
+func findReplicationStatusViolations(fset *token.FileSet, node ast.Node) []replicationViolation {
+	if node == nil {
+		return nil
+	}
+	var violations []replicationViolation
+	ast.Inspect(node, func(node ast.Node) bool {
+		lit, ok := node.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		value, unquoteErr := strconv.Unquote(lit.Value)
+		if unquoteErr != nil {
+			value = lit.Value // raw form is still searchable
+		}
+		lower := strings.ToLower(value)
+		for _, needle := range replicationStatusNeedles {
+			if strings.Contains(lower, needle) {
+				violations = append(violations, replicationViolation{
+					needle: needle,
+					line:   fset.Position(lit.Pos()).Line,
+				})
+			}
+		}
+		return true
+	})
+	return violations
+}
+
+// TestConsumerPolicyNoReplicationStatusSQL fails when any non-test Go file in this module
+// contains a string literal naming SHOW REPLICA STATUS or SHOW SLAVE STATUS.
+//
+// This is the 2.1 extension of the consumer-policy rule to replication state. Until 2.0 the
+// statement was carved out as an "application-owned administrative" exception, because
+// dbsgomysql had no replication surface and internal/archiver/lagmonitor.go issued and parsed
+// it directly. dbsgomysql/pkg/replication closed that gap, the monitor was deleted, and the
+// carve-out is retired — so the statements are now banned in production code the same way
+// information_schema is.
+//
+// The walk covers internal/ and cmd/, which includes the new internal/replication package.
+// Stated limit is the same as the information-schema guard: a statement assembled from
+// fragments that never spell it in a single literal is not detected. The guard makes the rule
+// visible and the obvious regression loud. It is not a proof.
+func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+
+	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			// testdata is skipped because Go tooling ignores it and a fixture there may
+			// deliberately not parse; .git and vendor hold no first-party source.
+			switch entry.Name() {
+			case ".git", "vendor", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+
+		// Mode 0: comments are not attached to the AST, so ast.Inspect never sees them.
+		file, parseErr := parser.ParseFile(fset, path, nil, 0)
+		if parseErr != nil {
+			return fmt.Errorf("parse %s: %w", path, parseErr)
+		}
+
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+
+		for _, violation := range findReplicationStatusViolations(fset, file) {
+			t.Errorf("%s:%d: string literal names %q. GoArchive 2.1 reads replication "+
+				"state through dbsgomysql/pkg/replication, which verifies the field layout "+
+				"of this statement against the supported MySQL versions. The 2.0 "+
+				"application-owned carve-out for it is retired. If the library cannot answer "+
+				"this, file an upstream issue — do not query it here",
+				rel, violation.line, violation.needle)
+		}
+
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk module: %v", walkErr)
+	}
+}
+
+// TestConsumerPolicyReplicationDetectorPatterns proves the replication needle scanner can
+// actually fail, and pins every independently meaningful branch of its matcher.
+//
+// Without this, TestConsumerPolicyNoReplicationStatusSQL is green on a clean tree whether the
+// scanner works or matches nothing at all. Each fixture line closes a specific hole:
+//
+//   - line 5 spells the replica statement in MIXED case, so dropping the case-folding in
+//     findReplicationStatusViolations fails here. An all-uppercase fixture would not notice.
+//   - line 6 is a real lowercase SHOW SLAVE STATUS *literal*, so deleting that needle from
+//     replicationStatusNeedles fails here. Spelling the statement only in the comment would
+//     leave the second needle permanently unexercised.
+//   - line 3 names SHOW SLAVE STATUS in a COMMENT and must never be flagged. The Mode-0
+//     parse keeps comments off the AST; a future rewrite of the scanner into a whole-file
+//     text search fails here rather than silently forcing every explanatory comment out of
+//     the tree.
+//
+// The assertion is exact — needle AND line for both violations, and no third — because
+// "some violations were found" would survive most of those regressions.
+func TestConsumerPolicyReplicationDetectorPatterns(t *testing.T) {
+	const (
+		commentLine          = 3 // // SHOW SLAVE STATUS is legacy — comment-invisibility control
+		mixedCaseReplicaLine = 5 // mixedCaseReplicaQuery = "Show Replica Status"
+		lowercaseSlaveLine   = 6 // lowercaseSlaveQuery   = "show slave status for channel 'billing'"
+	)
+
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "replication_forbidden.go.txt")
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse replication detector fixture: %v", err)
+	}
+
+	want := map[replicationViolation]int{
+		{needle: "show replica status", line: mixedCaseReplicaLine}: 1,
+		{needle: "show slave status", line: lowercaseSlaveLine}:     1,
+	}
+
+	got := findReplicationStatusViolations(fset, file)
+	gotCounts := make(map[replicationViolation]int, len(got))
+	for _, violation := range got {
+		gotCounts[violation]++
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("replication detector found %d violations (%+v), want exactly %d: the "+
+			"mixed-case replica literal on line %d and the lowercase slave literal on line %d. "+
+			"Fewer means a needle or the case-folding was lost and the production guard is "+
+			"partly vacuous; more means the comment on line %d was scanned too",
+			len(got), got, len(want), mixedCaseReplicaLine, lowercaseSlaveLine, commentLine)
+	}
+
+	for violation, count := range want {
+		if gotCounts[violation] != count {
+			t.Errorf("violation %+v found %d times, want %d", violation, gotCounts[violation], count)
+		}
+	}
+
+	for violation := range gotCounts {
+		if _, expected := want[violation]; !expected {
+			t.Errorf("unexpected violation %+v; want only %+v", violation, want)
+		}
+		if violation.line == commentLine {
+			t.Errorf("comment on line %d was flagged as %q; comments are documentation and "+
+				"must stay invisible to the scanner (parse Mode 0)", commentLine, violation.needle)
+		}
+	}
+}
+
 // sqlmockBudget pins how much sqlmock a converted test file is still allowed to contain.
 type sqlmockBudget struct {
 	file    string

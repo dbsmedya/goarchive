@@ -14,6 +14,7 @@ import (
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/replication"
 	"github.com/dbsmedya/goarchive/internal/types"
 	"github.com/dbsmedya/goarchive/internal/verifier"
 )
@@ -52,7 +53,7 @@ type lagWaiter interface {
 	WaitForLag(context.Context) error
 }
 
-type lagMonitorFactory func(*sql.DB, config.SafetyConfig, *logger.Logger) (lagWaiter, error)
+type lagMonitorFactory func([]*sql.DB, config.ReplicationConfig, *logger.Logger) (lagWaiter, error)
 
 // ArchiveOrchestrator coordinates the archive operation using the dependency graph
 // to determine the correct order for copying and deleting records.
@@ -103,13 +104,8 @@ func NewOrchestrator(cfg *config.Config, jobName string, jobCfg *config.JobConfi
 		logger:          log,
 		processingCfg:   processingCfg,
 		verificationCfg: verificationCfg,
-		lagFactory: func(db *sql.DB, safety config.SafetyConfig, log *logger.Logger) (lagWaiter, error) {
-			lm, err := NewLagMonitor(db, safety, log)
-			if err != nil {
-				return nil, err
-			}
-			lm.channel = cfg.Replica.ReplicationChannel
-			return lm, nil
+		lagFactory: func(dbs []*sql.DB, rc config.ReplicationConfig, log *logger.Logger) (lagWaiter, error) {
+			return replication.New(rc, dbs, log)
 		},
 	}, nil
 }
@@ -227,6 +223,21 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		o.logger.Warn(skipVerificationBanner)
 	}
 
+	// Initialize the replication gate if enabled. This runs BEFORE
+	// beginJobStartup so an enabled replication block with an empty fleet is
+	// rejected before any advisory lock is acquired or any archiver_job state
+	// is created — the invariant is fail-fast, not fail-after-side-effects.
+	var lagMonitor lagWaiter
+	if o.config.Replication.Enabled {
+		if len(o.dbManager.Replicas) == 0 {
+			return fail("replication monitoring enabled but no replica connections")
+		}
+		lagMonitor, err = o.lagFactory(o.dbManager.Replicas, o.config.Replication, o.logger)
+		if err != nil {
+			return fail("failed to create replication gate: %w", err)
+		}
+	}
+
 	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypeArchive, "archive", o.force, o.config.Destination.EffectiveJobSchema())
 	if err != nil {
 		return fail("%w", err)
@@ -257,19 +268,6 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			"job", o.jobName,
 			"checkpoint", jobState.LastProcessedRootPKID,
 		)
-	}
-
-	// Initialize lag monitor if enabled
-	var lagMonitor lagWaiter
-	if o.config.Replica.Enabled {
-		replica := o.dbManager.Replica
-		if replica == nil {
-			return fail("replication monitoring enabled but no replica connection")
-		}
-		lagMonitor, err = o.lagFactory(replica, o.config.Safety, o.logger)
-		if err != nil {
-			return fail("failed to create lag monitor: %w", err)
-		}
 	}
 
 	// Create component instances

@@ -343,7 +343,41 @@ runs.
 Default topology:
 - **Source** (db1): `127.0.0.1:3305/sakila`
 - **Archive** (db2): `127.0.0.1:3307/sakila_archive`
-- **Replica** (db3): `127.0.0.1:3308` (optional, replication-lag tests)
+- **Replica** (db3): `127.0.0.1:3308` — a **live replica of db1**, attached by
+  `--setup` (see below)
+
+#### Replication topology
+
+`run-tests.sh --setup` finishes by running `tests/scripts/setup-replication.sh`, which
+attaches db3 to db1 so the replication-gate tests observe a real replica rather than a
+simulated one. Three things about it are worth knowing before you touch the estate:
+
+- **db3 reaches the source as `db1:3306`** — the compose service name and the *in-container*
+  port. `127.0.0.1:3305` is the host mapping and is not routable from inside the container.
+- **The replica seeds itself by replaying db1's GTID history**, which is why the attach runs
+  after Sakila is loaded, and why `REPL_POSITIONING=gtid` requires `Auto_Position=1`.
+- **The script does not return until the replica reports zero lag** (bounded at 120s). An
+  estate that is connected but still replaying Sakila would make the next test measure
+  catch-up and call it replication lag. Zero is required on two consecutive polls, because
+  `Seconds_Behind_Source` is derived from the last *applied* event and reads 0 for an instant
+  whenever the applier drains ahead of the receiver.
+- **The script never repairs a divergent config.** It compares source host/port, the
+  replication user, both threads, `SQL_Delay` and `Auto_Position` against what the estate
+  requires; on any mismatch it prints the diff plus remediation SQL and exits 1. Re-pointing
+  a live replica would silently discard whatever produced the current state — a lag scenario
+  mid-flight, a deliberately stopped applier, or a different source. Checking only "both
+  threads are running" would accept a replica pointed at the wrong server, or one still
+  carrying a `SOURCE_DELAY` left over from a lag test.
+
+To reset the topology deliberately:
+
+```bash
+tests/scripts/mysql-query.sh 3308 "STOP REPLICA;"
+tests/scripts/mysql-query.sh 3308 "RESET REPLICA ALL;"
+tests/scripts/setup-replication.sh          # re-attaches; safe to run twice
+```
+
+That discards db3's replication config, not its data.
 
 ### 2. Build the binary
 
@@ -611,6 +645,9 @@ catches a run that did nothing.
 | `TEST_DEST_DB` | sakila_archive | Destination database name |
 | `TEST_REPLICA_HOST` | 127.0.0.1 | Replica MySQL host (replication-lag tests) |
 | `TEST_REPLICA_PORT` | 3308 | Replica MySQL port |
+| `REPL_USER` | repl | Replication account created on db1 and used by db3 |
+| `REPL_PASSWORD` | (from .env) | Its password. Injected into SQL as a single-quoted literal, so a value containing a single quote is **rejected**, not escaped. |
+| `REPL_POSITIONING` | gtid | `gtid` or `snapshot`. The setup script enforces the matching `Auto_Position` (1 or 0), so a snapshot estate never silently accepts a stray GTID config. |
 | `SAKILA_DIR` | `tests/sakila-db` | Sakila SQL files location (auto-defaulted by run-tests.sh) |
 | `DUMP_DIR` | `/tmp/db1_schema_dump` | Temp dir for destination schema dump |
 | `GOARCHIVE_BIN` | `bin/goarchive` | Binary the Sakila E2E suite runs. Set it to test a **different build** — an older release, say — against the same suite. |

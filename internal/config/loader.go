@@ -27,6 +27,11 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Per-server defaults DefaultConfig cannot reach: YAML-created slice
+	// elements arrive zero-valued. Validation and the Gate may assume
+	// normalized values.
+	cfg.normalizeReplication()
+
 	return cfg, nil
 }
 
