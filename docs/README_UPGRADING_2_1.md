@@ -140,6 +140,10 @@ is rejected rather than assumed.
 - The check still runs **before each batch and before each recovery chunk**.
 - An unreachable or erroring replica still **holds** the job. 2.0 did this too; 2.1 only says
   why.
+- **`purge` and `copy-only` still do not gate on replication.** They did not in 2.0 either, and
+  2.1 does not change it — the rewrite improved the gate without widening which commands call
+  it. If you enable `replication:` for a purge job expecting it to throttle, it will not.
+  Tracked as [#19](https://github.com/dbsmedya/goarchive/issues/19).
 - `REPLICATION CLIENT` is still the required grant — but it is needed **on every server in
   `replication.servers`**, granted to the account that entry names. See
   [Permissions](README_PERMISSIONS.md).

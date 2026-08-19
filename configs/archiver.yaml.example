@@ -31,6 +31,9 @@ destination:
 # Replication gating (optional). While any monitored replica is lagging, stopped
 # or unreachable, the job is HELD and the same run resumes once all recover.
 # Replaces the 2.0 'replica:' block - see docs/README_UPGRADING_2_1.md.
+#
+# APPLIES TO 'archive' ONLY. 'purge' and 'copy-only' do NOT gate on replication
+# even when this is enabled - see github.com/dbsmedya/goarchive/issues/19.
 replication:
   enabled: false
   seconds_behind_source_within: 10   # lag tolerance in seconds; 0 demands exact sync
