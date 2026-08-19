@@ -131,6 +131,144 @@ func (g *Gate) logStartup() {
 	}
 }
 
+// holdInfo is one server's hold state within a single WaitForLag call: why it
+// is held, and since when.
+type holdInfo struct {
+	cause holdCause
+	since time.Time
+}
+
+// WaitForLag holds the caller until every monitored replica satisfies
+// replication policy, or until ctx is cancelled. It is the gate's only public
+// behavior, and it satisfies the archiver's lag-waiter seam.
+//
+// A passing verdict is cached for the configured TTL, so a fast batch pays no
+// round trip. Only passes are cached: once a hold begins, every tick re-probes
+// at full fidelity, and the job resumes within one check interval of recovery.
+// The trade is a bounded detection delay — a failure that begins after a
+// cached pass goes unnoticed for up to the TTL.
+//
+// The hold state machine is scoped to this call: a hold spanning two calls
+// logs a fresh entry line in the second, because from the job's perspective it
+// is a new hold.
+func (g *Gate) WaitForLag(ctx context.Context) error {
+	if !g.enabled {
+		return nil
+	}
+
+	g.mu.Lock()
+	fresh := g.ttl > 0 && !g.lastPass.IsZero() && g.now().Sub(g.lastPass) < g.ttl
+	g.mu.Unlock()
+	if fresh {
+		return nil
+	}
+
+	holds := make(map[string]holdInfo)
+	var firstHold time.Time
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		allOK := true
+		for _, srv := range g.servers {
+			snapshot, err := srv.reader.ReplicaStatus(ctx)
+			// Before classifying or logging: a query aborted by shutdown is
+			// not evidence that the server is unreachable.
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+
+			var cause holdCause
+			var detail string
+			ok := true
+			switch {
+			case err != nil:
+				ok, cause, detail = false, classify(err), sanitizeLine(err.Error())
+			default:
+				if ps := evaluate(snapshot, srv.channels, g.tolerance); len(ps) > 0 {
+					ok, cause, detail = false, causeUnhealthy, renderProblems(ps, g.tolerance)
+				}
+			}
+
+			g.transition(holds, &firstHold, srv.id, ok, cause, detail)
+			if !ok {
+				allOK = false
+			}
+		}
+
+		if allOK {
+			g.mu.Lock()
+			g.lastPass = g.now()
+			g.mu.Unlock()
+
+			if !firstHold.IsZero() {
+				g.logger.Infof("replication gate passed: all %d servers healthy; job resuming after %s held",
+					len(g.servers), g.now().Sub(firstHold).Round(time.Second))
+			}
+
+			return nil
+		}
+
+		if err := g.sleep(ctx, g.interval); err != nil {
+			return err
+		}
+	}
+}
+
+// transition advances one server's hold state and emits exactly one log line
+// per failing server per tick. Healthy servers that were already healthy say
+// nothing. No line is logged above Warn: zap attaches a stack trace at Error
+// level, and an unreachable replica must not produce a stack-trace storm.
+func (g *Gate) transition(
+	holds map[string]holdInfo,
+	firstHold *time.Time,
+	id string,
+	ok bool,
+	cause holdCause,
+	detail string,
+) {
+	prev, holding := holds[id]
+	now := g.now()
+
+	if ok {
+		if !holding {
+			return
+		}
+		delete(holds, id)
+		g.logger.Infof("replication recovered: server %s healthy; held %s",
+			id, now.Sub(prev.since).Round(time.Second))
+
+		return
+	}
+
+	if !holding {
+		holds[id] = holdInfo{cause: cause, since: now}
+		if firstHold.IsZero() {
+			*firstHold = now
+		}
+		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s",
+			id, cause, detail, g.interval)
+
+		return
+	}
+
+	held := now.Sub(prev.since).Round(time.Second)
+	if prev.cause == cause {
+		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
+			id, cause, detail, g.interval, held)
+
+		return
+	}
+
+	// A cause change keeps the original entry time: the job has been held
+	// continuously, and the duration must not restart.
+	holds[id] = holdInfo{cause: cause, since: prev.since}
+	g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
+		id, cause, detail, g.interval, prev.cause, held)
+}
+
 // renderChannelList spells a server's channel selection, where an empty
 // selection gates every channel the server reports.
 func renderChannelList(channels []string) string {
