@@ -2,6 +2,7 @@ package archiver
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/dbsmedya/goarchive/internal/database"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/replication"
 )
 
 // PurgeResult contains statistics and status of purge operation.
@@ -32,6 +34,7 @@ type PurgeOrchestrator struct {
 	logger         *logger.Logger
 	initialized    bool
 	processingCfg  config.ProcessingConfig
+	lagFactory     lagMonitorFactory
 	force          bool
 	staleAtStartup bool
 	stopCh         <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
@@ -56,6 +59,9 @@ func NewPurgeOrchestrator(cfg *config.Config, jobName string, jobCfg *config.Job
 		dbManager:     dbManager,
 		logger:        logger.NewDefault(),
 		processingCfg: jobCfg.GetJobProcessing(cfg.Processing),
+		lagFactory: func(dbs []*sql.DB, rc config.ReplicationConfig, log *logger.Logger) (lagWaiter, error) {
+			return replication.New(rc, dbs, log)
+		},
 	}, nil
 }
 
@@ -92,6 +98,21 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		JobName:   o.jobName,
 		StartedAt: time.Now(),
 		Success:   false,
+	}
+
+	// Initialize the replication gate if enabled. This runs BEFORE
+	// beginJobStartup so an enabled replication block with an empty fleet is
+	// rejected before any advisory lock is acquired or any archiver_job state
+	// is created — the invariant is fail-fast, not fail-after-side-effects.
+	var lagMonitor lagWaiter
+	if o.config.Replication.Enabled {
+		if len(o.dbManager.Replicas) == 0 {
+			return nil, fmt.Errorf("replication monitoring enabled but no replica connections")
+		}
+		lagMonitor, err = o.lagFactory(o.dbManager.Replicas, o.config.Replication, o.logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create replication gate: %w", err)
+		}
 	}
 
 	startup, err := beginJobStartup(ctx, o.dbManager.Destination, o.logger, o.jobName, o.jobConfig.RootTable, JobTypePurge, "purge", o.force, o.config.Destination.EffectiveJobSchema())
@@ -154,6 +175,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		deletePhase:   deletePhase,
 		resumeMgr:     resumeMgr,
 		fetcher:       fetcher,
+		lagMonitor:    lagMonitor,
 	}
 
 	if shouldResume {
@@ -203,6 +225,11 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 			return nil, fmt.Errorf("failed to log pending batch entries: %w", err)
 		}
 
+		if lagMonitor != nil {
+			if err := lagMonitor.WaitForLag(ctx); err != nil {
+				return nil, fmt.Errorf("lag monitor error: %w", err)
+			}
+		}
 		batchStats, err := pipeline.processBatch(ctx, rootIDs, batchDeleteOnly,
 			rootIDs[len(rootIDs)-1], nil)
 		if err != nil {
