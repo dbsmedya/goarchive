@@ -64,10 +64,13 @@ func estateDatabaseConfig(t *testing.T, prefix string) config.DatabaseConfig {
 	}
 }
 
-// estateReplicaServer returns the estate replica (3308) as a fleet entry.
-func estateReplicaServer(t *testing.T) config.ReplicationServerConfig {
+// estateFleetServer returns one estate server as a fleet entry. Any reachable
+// MySQL server can stand in as a fleet member for connection-lifecycle and Ping
+// tests: those exercise the handle, not replication itself, so a second member
+// only has to be real and carry a distinct Addr().
+func estateFleetServer(t *testing.T, prefix string) config.ReplicationServerConfig {
 	t.Helper()
-	db := estateDatabaseConfig(t, "TEST_REPLICA")
+	db := estateDatabaseConfig(t, prefix)
 	return config.ReplicationServerConfig{
 		Host:     db.Host,
 		Port:     db.Port,
@@ -83,7 +86,7 @@ func estateReplicaServer(t *testing.T) config.ReplicationServerConfig {
 // Connect, the error names that server, and every already-opened handle —
 // source, destination and the healthy replica — is closed and nilled.
 func TestManagerConnect_ReplicaFleetPartialFailure_Integration(t *testing.T) {
-	good := estateReplicaServer(t)
+	good := estateFleetServer(t, "TEST_REPLICA")
 
 	// Port 1 is unbound: connectWithRetry fails at its PingContext.
 	bad := config.ReplicationServerConfig{
@@ -125,10 +128,23 @@ func TestManagerConnect_ReplicaFleetPartialFailure_Integration(t *testing.T) {
 	}
 }
 
-// TestManagerPing_ReplicaFleet_Integration pins fleet Ping: a healthy estate
-// pings clean, and a dead fleet member produces an error naming that server.
+// TestManagerPing_ReplicaFleet_Integration pins fleet Ping over a TWO-member
+// fleet: a healthy estate pings clean, and killing only the SECOND member still
+// produces an error naming that member.
+//
+// The two-member shape is the point. A single-member version of this test was
+// insufficient: an implementation hardcoded to Replicas[0] passes it, so it
+// proved per-server naming but never that Ping iterates the fleet. Failing the
+// LAST member is what demonstrates iteration reached it.
 func TestManagerPing_ReplicaFleet_Integration(t *testing.T) {
-	replica := estateReplicaServer(t)
+	// Two distinct, reachable estate servers. Only the handle and the Addr()
+	// identity matter here — neither has to be replicating for Ping.
+	first := estateFleetServer(t, "TEST_REPLICA")
+	second := estateFleetServer(t, "TEST_DEST")
+
+	if first.Addr() == second.Addr() {
+		t.Fatalf("precondition failed: both fleet members resolve to %s; the test cannot distinguish them", first.Addr())
+	}
 
 	cfg := &config.Config{
 		Source:      estateDatabaseConfig(t, "TEST_SOURCE"),
@@ -138,7 +154,7 @@ func TestManagerPing_ReplicaFleet_Integration(t *testing.T) {
 			SecondsBehindSourceWithin: 10,
 			CheckInterval:             5,
 			CacheTTL:                  15,
-			Servers:                   []config.ReplicationServerConfig{replica},
+			Servers:                   []config.ReplicationServerConfig{first, second},
 		},
 	}
 
@@ -148,26 +164,31 @@ func TestManagerPing_ReplicaFleet_Integration(t *testing.T) {
 	if err := m.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect() to the estate failed: %v", err)
 	}
-	if len(m.Replicas) != 1 {
-		t.Fatalf("len(Replicas) = %d, want 1", len(m.Replicas))
+	if len(m.Replicas) != 2 {
+		t.Fatalf("len(Replicas) = %d, want 2", len(m.Replicas))
 	}
 
 	if err := m.Ping(context.Background()); err != nil {
-		t.Fatalf("Ping() on a healthy estate returned error: %v", err)
+		t.Fatalf("Ping() on a healthy two-member fleet returned error: %v", err)
 	}
 
-	// Kill the fleet member only; source and destination stay alive, so the
-	// error can only come from the fleet leg of Ping.
-	if err := m.Replicas[0].Close(); err != nil {
-		t.Fatalf("closing Replicas[0]: %v", err)
+	// Kill ONLY the second member. Source, destination and the first member all
+	// stay alive, so an error can only come from Ping reaching member two.
+	if err := m.Replicas[1].Close(); err != nil {
+		t.Fatalf("closing Replicas[1]: %v", err)
 	}
 
 	err := m.Ping(context.Background())
 	if err == nil {
-		t.Fatal("Ping() with a closed fleet member returned nil error")
+		t.Fatal("Ping() with a closed SECOND fleet member returned nil error; Ping is not iterating the whole fleet")
 	}
-	want := "replica " + replica.Addr()
+
+	want := "replica " + second.Addr()
 	if !containsSubstring(err.Error(), want) {
-		t.Errorf("Ping() error = %q, should contain %q", err.Error(), want)
+		t.Errorf("Ping() error = %q, should contain %q (the configured identity of the dead member)", err.Error(), want)
+	}
+	// The healthy first member must not be blamed for the second's failure.
+	if containsSubstring(err.Error(), "replica "+first.Addr()) {
+		t.Errorf("Ping() error = %q, should not name the healthy member %q", err.Error(), first.Addr())
 	}
 }
