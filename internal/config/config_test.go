@@ -23,9 +23,9 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected destination port 3306, got %d", cfg.Destination.Port)
 	}
 
-	// Test replica defaults
-	if cfg.Replica.Enabled != false {
-		t.Errorf("expected replica disabled by default")
+	// Test replica defaults — the legacy block is a zeroed sentinel in 2.1
+	if cfg.Replica != (ReplicaConfig{}) {
+		t.Errorf("expected legacy replica block to default to its zero value")
 	}
 
 	// Test processing defaults
@@ -36,9 +36,13 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected batch_delete_size 500, got %d", cfg.Processing.BatchDeleteSize)
 	}
 
-	// Test safety defaults
-	if cfg.Safety.LagThreshold != 10 {
-		t.Errorf("expected lag_threshold 10, got %d", cfg.Safety.LagThreshold)
+	// Test safety defaults — lag_threshold/check_interval moved to the
+	// replication block in 2.1 and remain zeroed sentinels here.
+	if cfg.Safety.DisableForeignKeyChecks {
+		t.Errorf("expected disable_foreign_key_checks false by default")
+	}
+	if cfg.Safety.LagThreshold != 0 {
+		t.Errorf("expected lag_threshold sentinel 0, got %d", cfg.Safety.LagThreshold)
 	}
 
 	// Test verification defaults
@@ -52,6 +56,39 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Logging.Format != "json" {
 		t.Errorf("expected logging format 'json', got %s", cfg.Logging.Format)
+	}
+}
+
+func TestDefaultConfigReplication(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// new block defaults
+	if cfg.Replication.Enabled {
+		t.Fatal("replication must default disabled")
+	}
+	if cfg.Replication.SecondsBehindSourceWithin != 10 {
+		t.Fatalf("tolerance default = %d, want 10", cfg.Replication.SecondsBehindSourceWithin)
+	}
+	if cfg.Replication.CheckInterval != 5 {
+		t.Fatalf("check_interval default = %d, want 5", cfg.Replication.CheckInterval)
+	}
+	if cfg.Replication.CacheTTL != 15 {
+		t.Fatalf("cache_ttl default = %d, want 15", cfg.Replication.CacheTTL)
+	}
+
+	// sentinels must be zero so legacy detection works
+	if cfg.Replica != (ReplicaConfig{}) {
+		t.Fatal("legacy replica block must default to zero value")
+	}
+	if cfg.Safety.LagThreshold != 0 || cfg.Safety.CheckInterval != 0 {
+		t.Fatal("legacy safety fields must default to zero")
+	}
+}
+
+func TestReplicationServerAddrIPv6(t *testing.T) {
+	s := ReplicationServerConfig{Host: "::1", Port: 3306}
+	if got := s.Addr(); got != "[::1]:3306" {
+		t.Fatalf("Addr() = %q", got)
 	}
 }
 

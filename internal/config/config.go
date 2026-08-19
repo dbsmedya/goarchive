@@ -1,11 +1,17 @@
 // Package config provides configuration structures and loading for GoArchive.
 package config
 
+import (
+	"net"
+	"strconv"
+)
+
 // Config represents the complete application configuration.
 type Config struct {
 	Source       DatabaseConfig       `yaml:"source" mapstructure:"source"`
 	Destination  DatabaseConfig       `yaml:"destination" mapstructure:"destination"`
 	Replica      ReplicaConfig        `yaml:"replica" mapstructure:"replica"`
+	Replication  ReplicationConfig    `yaml:"replication" mapstructure:"replication"`
 	Jobs         map[string]JobConfig `yaml:"jobs" mapstructure:"jobs"`
 	Processing   ProcessingConfig     `yaml:"processing" mapstructure:"processing"`
 	Safety       SafetyConfig         `yaml:"safety" mapstructure:"safety"`
@@ -29,17 +35,46 @@ type DatabaseConfig struct {
 	MaxIdleConnections int    `yaml:"max_idle_connections" mapstructure:"max_idle_connections"`
 }
 
-// ReplicaConfig represents the replica database for replication lag monitoring.
+// ReplicaConfig is the removed 2.0 replica: block, kept declared only so that a
+// config still carrying it can be detected and rejected with a migration error.
+//
+// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 type ReplicaConfig struct {
 	Enabled  bool   `yaml:"enabled" mapstructure:"enabled"`
 	Host     string `yaml:"host" mapstructure:"host"`
 	Port     int    `yaml:"port" mapstructure:"port"`
 	User     string `yaml:"user" mapstructure:"user"`
 	Password string `yaml:"password" mapstructure:"password"`
-	// ReplicationChannel scopes lag checks to a named replication channel via
-	// SHOW REPLICA STATUS FOR CHANNEL '<name>'. Empty (default) queries the
-	// default/unnamed channel.
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 	ReplicationChannel string `yaml:"replication_channel" mapstructure:"replication_channel"`
+}
+
+// ReplicationConfig configures the replication gate: the fleet of replicas to
+// monitor and the tolerance, cadence and cache lifetime applied to them.
+type ReplicationConfig struct {
+	Enabled                   bool                      `yaml:"enabled" mapstructure:"enabled"`
+	SecondsBehindSourceWithin int                       `yaml:"seconds_behind_source_within" mapstructure:"seconds_behind_source_within"`
+	CheckInterval             int                       `yaml:"check_interval" mapstructure:"check_interval"`
+	CacheTTL                  int                       `yaml:"cache_ttl" mapstructure:"cache_ttl"`
+	Servers                   []ReplicationServerConfig `yaml:"servers" mapstructure:"servers"`
+}
+
+// ReplicationServerConfig is one monitored replica. Channels selects which
+// replication channels are gated: an empty slice means all channels, while a
+// slice containing "" means the default (unnamed) channel only.
+type ReplicationServerConfig struct {
+	Host     string   `yaml:"host" mapstructure:"host"`
+	Port     int      `yaml:"port" mapstructure:"port"`
+	User     string   `yaml:"user" mapstructure:"user"`
+	Password string   `yaml:"password" mapstructure:"password"`
+	TLS      string   `yaml:"tls" mapstructure:"tls"`
+	Type     string   `yaml:"type" mapstructure:"type"`
+	Channels []string `yaml:"channels" mapstructure:"channels"`
+}
+
+// Addr returns the IPv6-safe "host:port" identity used in logs and pairing.
+func (s ReplicationServerConfig) Addr() string {
+	return net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 }
 
 // JobConfig represents an archive job configuration.
@@ -96,7 +131,9 @@ type ProcessingConfig struct {
 
 // SafetyConfig represents safety settings for archive operations.
 type SafetyConfig struct {
-	LagThreshold            int  `yaml:"lag_threshold" mapstructure:"lag_threshold"`
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
+	LagThreshold int `yaml:"lag_threshold" mapstructure:"lag_threshold"`
+	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
 	CheckInterval           int  `yaml:"check_interval" mapstructure:"check_interval"`
 	DisableForeignKeyChecks bool `yaml:"disable_foreign_key_checks" mapstructure:"disable_foreign_key_checks"`
 }
@@ -149,9 +186,11 @@ func DefaultConfig() *Config {
 			MaxConnections:     10,
 			MaxIdleConnections: 5,
 		},
-		Replica: ReplicaConfig{
-			Enabled: false,
-			Port:    3306,
+		Replication: ReplicationConfig{
+			Enabled:                   false,
+			SecondsBehindSourceWithin: 10,
+			CheckInterval:             5,
+			CacheTTL:                  15,
 		},
 		Processing: ProcessingConfig{
 			BatchSize:       1000,
@@ -159,8 +198,6 @@ func DefaultConfig() *Config {
 			SleepSeconds:    1,
 		},
 		Safety: SafetyConfig{
-			LagThreshold:            10,
-			CheckInterval:           5,
 			DisableForeignKeyChecks: false,
 		},
 		Verification: VerificationConfig{
