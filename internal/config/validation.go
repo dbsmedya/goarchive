@@ -222,6 +222,17 @@ func (c *Config) validateReplication() ValidationErrors {
 			})
 		}
 
+		// Addr() is at once the log identity, the duplicate-detection key above,
+		// and the identity the database and estimator wiring consume, so a host
+		// carrying \n or \r would both split a log line and admit two spellings
+		// of one server. The message is fixed: it must never echo the value.
+		if strings.ContainsAny(server.Host, "\n\r") {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".host",
+				Message: "host must not contain newline or carriage return",
+			})
+		}
+
 		if server.User == "" {
 			errors = append(errors, ValidationError{
 				Field:   prefix + ".user",

@@ -1085,6 +1085,39 @@ func TestValidateReplication(t *testing.T) {
 			mutate: func(c *Config) { c.Replication.Servers[0].TLS = "required" },
 		},
 		{
+			name:    "host containing newline",
+			mutate:  func(c *Config) { c.Replication.Servers[0].Host = "r1\nforged" },
+			field:   "replication.servers[0].host",
+			message: "host must not contain newline or carriage return",
+		},
+		{
+			name:    "host containing carriage return",
+			mutate:  func(c *Config) { c.Replication.Servers[0].Host = "r1\rforged" },
+			field:   "replication.servers[0].host",
+			message: "host must not contain newline or carriage return",
+		},
+		{
+			name:   "dns host is valid",
+			mutate: func(c *Config) { c.Replication.Servers[0].Host = "replica-1.db.internal" },
+		},
+		{
+			name:   "ipv4 host is valid",
+			mutate: func(c *Config) { c.Replication.Servers[0].Host = "127.0.0.1" },
+		},
+		{
+			name:   "ipv6 host is valid",
+			mutate: func(c *Config) { c.Replication.Servers[0].Host = "2001:db8::1" },
+		},
+		{
+			name: "host content rule applies to a disabled block",
+			mutate: func(c *Config) {
+				c.Replication.Enabled = false
+				c.Replication.Servers[0].Host = "r1\nforged"
+			},
+			field:   "replication.servers[0].host",
+			message: "host must not contain newline or carriage return",
+		},
+		{
 			name:   "fully valid enabled block",
 			mutate: func(c *Config) {},
 		},
