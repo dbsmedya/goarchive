@@ -45,11 +45,14 @@ func (c *Config) Validate() error {
 		errors = append(errors, err...)
 	}
 
-	// Validate replica if enabled
-	if c.Replica.Enabled {
-		if err := c.validateReplica(); err != nil {
-			errors = append(errors, err...)
-		}
+	// Validate the replication block
+	if err := c.validateReplication(); err != nil {
+		errors = append(errors, err...)
+	}
+
+	// Reject configs still carrying the 2.0 replica/lag keys
+	if err := c.validateLegacyReplicaKeys(); err != nil {
+		errors = append(errors, err...)
 	}
 
 	// Validate jobs
@@ -155,27 +158,145 @@ func (c *Config) validateDatabase(prefix string, db *DatabaseConfig) ValidationE
 	return errors
 }
 
-func (c *Config) validateReplica() ValidationErrors {
+// validReplicationTLS is the TLS mode enum BuildDSN understands. Unlike
+// validateDatabase's copy, "" is not accepted: the loader's normalization pass
+// fills it in, and an empty value reaching BuildDSN's default-less switch would
+// silently connect unencrypted.
+var validReplicationTLS = map[string]bool{
+	"disable": true, "preferred": true, "skip-verify": true, "required": true,
+}
+
+// renderChannel renders a channel name for operator-facing messages: the
+// default (unnamed) channel is "" on the wire and <default> on the page.
+func renderChannel(name string) string {
+	if name == "" {
+		return "<default>"
+	}
+	return name
+}
+
+// validateReplication checks the replication block. Per-server rules apply to
+// whatever servers are declared, so a typo is caught before the block is
+// enabled; the fleet-size and cadence rules apply only when it is enabled.
+// Values are assumed normalized (see Config.normalizeReplication).
+func (c *Config) validateReplication() ValidationErrors {
 	var errors ValidationErrors
 
-	if c.Replica.Host == "" {
+	if c.Replication.Enabled && len(c.Replication.Servers) == 0 {
 		errors = append(errors, ValidationError{
-			Field:   "replica.host",
-			Message: "host is required when replica is enabled",
+			Field:   "replication.servers",
+			Message: "at least one server is required when replication.enabled is true",
 		})
 	}
 
-	if c.Replica.Port <= 0 || c.Replica.Port > 65535 {
+	if c.Replication.SecondsBehindSourceWithin < 0 {
 		errors = append(errors, ValidationError{
-			Field:   "replica.port",
-			Message: "port must be between 1 and 65535",
+			Field:   "replication.seconds_behind_source_within",
+			Message: "seconds_behind_source_within cannot be negative",
 		})
 	}
 
-	if c.Replica.User == "" {
+	if c.Replication.CacheTTL < 0 {
 		errors = append(errors, ValidationError{
-			Field:   "replica.user",
-			Message: "user is required when replica is enabled",
+			Field:   "replication.cache_ttl",
+			Message: "cache_ttl cannot be negative",
+		})
+	}
+
+	if c.Replication.Enabled && c.Replication.CheckInterval <= 0 {
+		errors = append(errors, ValidationError{
+			Field:   "replication.check_interval",
+			Message: "check_interval must be positive when replication is enabled",
+		})
+	}
+
+	seenAddr := make(map[string]bool, len(c.Replication.Servers))
+	for i, server := range c.Replication.Servers {
+		prefix := fmt.Sprintf("replication.servers[%d]", i)
+		addr := server.Addr()
+
+		if server.Host == "" {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".host",
+				Message: "host is required",
+			})
+		}
+
+		if server.User == "" {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".user",
+				Message: "user is required",
+			})
+		}
+
+		if server.Port < 1 || server.Port > 65535 {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".port",
+				Message: "port must be between 1 and 65535",
+			})
+		}
+
+		if seenAddr[addr] {
+			errors = append(errors, ValidationError{
+				Field:   prefix,
+				Message: fmt.Sprintf("duplicate server address %q", addr),
+			})
+		}
+		seenAddr[addr] = true
+
+		if server.Type != "async" {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".type",
+				Message: fmt.Sprintf("unsupported replication type %q for server %s; supported: async", server.Type, addr),
+			})
+		}
+
+		if !validReplicationTLS[server.TLS] {
+			errors = append(errors, ValidationError{
+				Field:   prefix + ".tls",
+				Message: fmt.Sprintf("unsupported tls value %q for server %s; supported: disable, preferred, skip-verify, required", server.TLS, addr),
+			})
+		}
+
+		seenChannel := make(map[string]bool, len(server.Channels))
+		for _, channel := range server.Channels {
+			if seenChannel[channel] {
+				errors = append(errors, ValidationError{
+					Field:   prefix + ".channels",
+					Message: fmt.Sprintf("duplicate channel %q for server %s", renderChannel(channel), addr),
+				})
+			}
+			seenChannel[channel] = true
+		}
+	}
+
+	return errors
+}
+
+// validateLegacyReplicaKeys rejects configs still carrying the 2.0 keys that
+// 2.1 removed. The fields survive as zero-valued sentinels for exactly this
+// detection, so any non-zero value means the operator has not migrated.
+func (c *Config) validateLegacyReplicaKeys() ValidationErrors {
+	var errors ValidationErrors
+
+	if c.Replica != (ReplicaConfig{}) {
+		errors = append(errors, ValidationError{
+			Field:   "replica",
+			Message: "the replica: block was removed in 2.1 — replication monitoring is now configured by the replication: block; see docs/README_UPGRADING_2_1.md",
+		})
+	}
+
+	if c.Safety.LagThreshold != 0 {
+		errors = append(errors, ValidationError{
+			Field:   "safety.lag_threshold",
+			Message: "lag_threshold was removed in 2.1 — use replication.seconds_behind_source_within; see docs/README_UPGRADING_2_1.md",
+		})
+	}
+
+	if c.Safety.CheckInterval != 0 {
+		errors = append(errors, ValidationError{
+			Field:   "safety.check_interval",
+			Message: "safety.check_interval was removed in 2.1 — use replication.check_interval; see docs/README_UPGRADING_2_1.md",
 		})
 	}
 
@@ -348,24 +469,13 @@ func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingC
 	return errors
 }
 
+// validateSafety checks the safety block. Its lag_threshold and check_interval
+// rules moved to validateReplication in 2.1; the removed keys are now rejected
+// outright by validateLegacyReplicaKeys, leaving only
+// disable_foreign_key_checks, a bool with nothing to reject.
 func (c *Config) validateSafety() ValidationErrors {
-	var errors ValidationErrors
-
-	if c.Safety.LagThreshold < 0 {
-		errors = append(errors, ValidationError{
-			Field:   "safety.lag_threshold",
-			Message: "lag_threshold cannot be negative",
-		})
-	}
-
-	if c.Replica.Enabled && c.Safety.CheckInterval <= 0 {
-		errors = append(errors, ValidationError{
-			Field:   "safety.check_interval",
-			Message: "check_interval must be positive when replica is enabled",
-		})
-	}
-
-	return errors
+	// disable_foreign_key_checks is a bool; there is nothing left to reject.
+	return nil
 }
 
 func (c *Config) validateVerification() ValidationErrors {
