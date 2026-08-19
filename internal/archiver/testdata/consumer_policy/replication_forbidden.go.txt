@@ -1,4 +1,7 @@
 package fixture
 
-// SHOW SLAVE STATUS is legacy
-const replicaStatusQuery = "SHOW REPLICA STATUS"
+// SHOW SLAVE STATUS is legacy — comment-invisibility control, must never be flagged.
+const (
+	mixedCaseReplicaQuery = "Show Replica Status"
+	lowercaseSlaveQuery   = "show slave status for channel 'billing'"
+)

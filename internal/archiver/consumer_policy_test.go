@@ -213,18 +213,28 @@ func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
 }
 
 // TestConsumerPolicyReplicationDetectorPatterns proves the replication needle scanner can
-// actually fail, and that it distinguishes a literal from a comment.
+// actually fail, and pins every independently meaningful branch of its matcher.
 //
 // Without this, TestConsumerPolicyNoReplicationStatusSQL is green on a clean tree whether the
-// scanner works or matches nothing at all. The fixture pins both halves on known lines: the
-// const's literal on line 4 MUST be flagged, and the comment naming the other statement on
-// line 3 MUST NOT be — the Mode-0 parse keeps comments off the AST, and a future rewrite of
-// the scanner into a whole-file text search would fail here rather than silently forcing
-// every explanatory comment out of the tree.
+// scanner works or matches nothing at all. Each fixture line closes a specific hole:
+//
+//   - line 5 spells the replica statement in MIXED case, so dropping the case-folding in
+//     findReplicationStatusViolations fails here. An all-uppercase fixture would not notice.
+//   - line 6 is a real lowercase SHOW SLAVE STATUS *literal*, so deleting that needle from
+//     replicationStatusNeedles fails here. Spelling the statement only in the comment would
+//     leave the second needle permanently unexercised.
+//   - line 3 names SHOW SLAVE STATUS in a COMMENT and must never be flagged. The Mode-0
+//     parse keeps comments off the AST; a future rewrite of the scanner into a whole-file
+//     text search fails here rather than silently forcing every explanatory comment out of
+//     the tree.
+//
+// The assertion is exact — needle AND line for both violations, and no third — because
+// "some violations were found" would survive most of those regressions.
 func TestConsumerPolicyReplicationDetectorPatterns(t *testing.T) {
 	const (
-		commentLine = 3 // // SHOW SLAVE STATUS is legacy
-		literalLine = 4 // const replicaStatusQuery = "SHOW REPLICA STATUS"
+		commentLine          = 3 // // SHOW SLAVE STATUS is legacy — comment-invisibility control
+		mixedCaseReplicaLine = 5 // mixedCaseReplicaQuery = "Show Replica Status"
+		lowercaseSlaveLine   = 6 // lowercaseSlaveQuery   = "show slave status for channel 'billing'"
 	)
 
 	root := moduleRoot(t)
@@ -235,28 +245,38 @@ func TestConsumerPolicyReplicationDetectorPatterns(t *testing.T) {
 		t.Fatalf("parse replication detector fixture: %v", err)
 	}
 
-	violations := findReplicationStatusViolations(fset, file)
-	if len(violations) != 1 {
-		t.Fatalf("replication detector found %d violations (%v), want exactly 1: the const "+
-			"literal on line %d. More than one means the comment on line %d was scanned too; "+
-			"zero means the scanner matches nothing and the production guard is vacuous",
-			len(violations), violations, literalLine, commentLine)
+	want := map[replicationViolation]int{
+		{needle: "show replica status", line: mixedCaseReplicaLine}: 1,
+		{needle: "show slave status", line: lowercaseSlaveLine}:     1,
 	}
 
-	if violations[0].needle != "show replica status" {
-		t.Errorf("flagged needle = %q, want %q", violations[0].needle, "show replica status")
+	got := findReplicationStatusViolations(fset, file)
+	gotCounts := make(map[replicationViolation]int, len(got))
+	for _, violation := range got {
+		gotCounts[violation]++
 	}
-	if violations[0].line != literalLine {
-		t.Errorf("flagged line = %d, want %d (the const literal)", violations[0].line, literalLine)
+
+	if len(got) != len(want) {
+		t.Fatalf("replication detector found %d violations (%+v), want exactly %d: the "+
+			"mixed-case replica literal on line %d and the lowercase slave literal on line %d. "+
+			"Fewer means a needle or the case-folding was lost and the production guard is "+
+			"partly vacuous; more means the comment on line %d was scanned too",
+			len(got), got, len(want), mixedCaseReplicaLine, lowercaseSlaveLine, commentLine)
 	}
-	for _, violation := range violations {
+
+	for violation, count := range want {
+		if gotCounts[violation] != count {
+			t.Errorf("violation %+v found %d times, want %d", violation, gotCounts[violation], count)
+		}
+	}
+
+	for violation := range gotCounts {
+		if _, expected := want[violation]; !expected {
+			t.Errorf("unexpected violation %+v; want only %+v", violation, want)
+		}
 		if violation.line == commentLine {
 			t.Errorf("comment on line %d was flagged as %q; comments are documentation and "+
 				"must stay invisible to the scanner (parse Mode 0)", commentLine, violation.needle)
-		}
-		if violation.needle == "show slave status" {
-			t.Errorf("needle %q was matched, but the fixture spells it only in the comment on "+
-				"line %d — the scanner is reading comments", violation.needle, commentLine)
 		}
 	}
 }
