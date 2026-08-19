@@ -383,14 +383,16 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `2.0.1-community` (**stable**)
-- **Stable release**: `2.0.1-community` — the current production line, built on the stable [dbsgomysql v1.0.0 integration](docs/README_dbsgomysql.md).
+- **Version**: `2.1.0-community` (**stable**)
+- **Stable release**: `2.1.0-community` — the current production line, built on the stable [dbsgomysql v1.1.0 integration](docs/README_dbsgomysql.md).
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
 ⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.** It covers the preflight-enforced hard constraints, what the dependency model cannot express, and the operational cautions (memory growth on deep graphs, copy-transaction scope, `--force` semantics, partial deletes after interruption).
 
-Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md).
+Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
+and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are
+rejected. Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md) first.
 
 ### What's Included in Community
 
