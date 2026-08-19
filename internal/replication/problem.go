@@ -77,12 +77,17 @@ func newChannelNotFound(configured string, observed []string) problem {
 
 // renderChannel spells a channel name for operators, turning the default
 // channel's empty name into a visible label.
+//
+// A name is sanitized like every other supplied string: server-reported names
+// and operator-configured ones alike reach a log line, config validation
+// permits arbitrary content in them, and an embedded newline would split one
+// line into two.
 func renderChannel(name string) string {
 	if name == "" {
 		return defaultChannelLabel
 	}
 
-	return name
+	return sanitizeLine(name)
 }
 
 // sanitizeLine collapses newlines and carriage returns to spaces so that no

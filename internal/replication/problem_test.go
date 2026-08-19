@@ -56,6 +56,75 @@ func TestProblemRenderChannel(t *testing.T) {
 	}
 }
 
+// A channel name is server-supplied or operator-supplied text like any other,
+// and validation permits arbitrary content in it. It must not be able to split
+// one log line into several.
+func TestProblemRenderChannelNameSanitized(t *testing.T) {
+	// The name carries both a newline and a carriage return.
+	const forged = "billing\nforged\rsecond"
+	const clean = "billing forged second"
+
+	t.Run("renderChannel", func(t *testing.T) {
+		if got := renderChannel(forged); got != clean {
+			t.Errorf("renderChannel(%q) = %q, want %q", forged, got, clean)
+		}
+	})
+
+	t.Run("running failure", func(t *testing.T) {
+		p := problem{
+			check: dbsrepl.IDReplicationChannelsRunning,
+			facts: dbsrepl.ChannelStatus{ChannelName: forged, IORunning: "Yes", SQLRunning: "No"},
+		}
+
+		got := renderProblems([]problem{p}, 10)
+
+		want := "channel " + clean + ": io=Yes sql=No"
+		if got != want {
+			t.Errorf("rendered %q, want %q", got, want)
+		}
+		if strings.ContainsAny(got, "\n\r") {
+			t.Errorf("rendered %q, want a single physical line", got)
+		}
+	})
+
+	t.Run("lag failure", func(t *testing.T) {
+		p := problem{
+			check: dbsrepl.IDSecondsBehindSourceWithin,
+			facts: dbsrepl.ChannelStatus{
+				ChannelName:         forged,
+				SecondsBehindSource: sql.NullInt64{Int64: 99, Valid: true},
+			},
+		}
+
+		got := renderProblems([]problem{p}, 10)
+
+		want := "channel " + clean + ": lag=99s tolerance=10s"
+		if got != want {
+			t.Errorf("rendered %q, want %q", got, want)
+		}
+		if strings.ContainsAny(got, "\n\r") {
+			t.Errorf("rendered %q, want a single physical line", got)
+		}
+	})
+
+	// Both name sources at once: configured is the operator's, observed is the
+	// server's.
+	t.Run("missing channel, configured and observed", func(t *testing.T) {
+		const forgedObserved = "main\r\nalso-forged"
+		const cleanObserved = "main  also-forged"
+
+		got := renderProblems([]problem{newChannelNotFound(forged, []string{forgedObserved})}, 10)
+
+		want := "channel " + clean + " not found (server reports: " + cleanObserved + ")"
+		if got != want {
+			t.Errorf("rendered %q, want %q", got, want)
+		}
+		if strings.ContainsAny(got, "\n\r") {
+			t.Errorf("rendered %q, want a single physical line", got)
+		}
+	})
+}
+
 // Case 3: a running failure renders receiver/applier states plus the non-empty
 // last-error data, and omits the error pair that carries nothing.
 func TestProblemRenderRunningFailure(t *testing.T) {
