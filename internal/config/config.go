@@ -77,6 +77,25 @@ func (s ReplicationServerConfig) Addr() string {
 	return net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 }
 
+// normalizeReplication applies per-server defaults that struct-level defaults
+// cannot reach: YAML-created slice elements arrive zero-valued (loader.go).
+// Channels is deliberately untouched — [""] (default channel only) must stay
+// distinct from [] (all channels).
+func (c *Config) normalizeReplication() {
+	for i := range c.Replication.Servers {
+		s := &c.Replication.Servers[i]
+		if s.Port == 0 {
+			s.Port = 3306
+		}
+		if s.TLS == "" {
+			s.TLS = "preferred"
+		}
+		if s.Type == "" {
+			s.Type = "async"
+		}
+	}
+}
+
 // JobConfig represents an archive job configuration.
 type JobConfig struct {
 	RootTable    string                 `yaml:"root_table" mapstructure:"root_table"`
