@@ -355,6 +355,44 @@ func TestExecute_NilContext(t *testing.T) {
 	}
 }
 
+// TestExecute_ReplicationEnabledWithoutReplicas guards the fleet-shaped
+// construction site: replication is enabled but Connect produced no replica
+// handles, so the run must refuse rather than proceed ungated.
+func TestExecute_ReplicationEnabledWithoutReplicas(t *testing.T) {
+	cfg := createTestConfig()
+	cfg.Replication = config.ReplicationConfig{
+		Enabled:                   true,
+		SecondsBehindSourceWithin: 10,
+		CheckInterval:             5,
+		CacheTTL:                  15,
+		Servers: []config.ReplicationServerConfig{
+			{Host: "127.0.0.1", Port: 3308, User: "monitor", Password: "pw", TLS: "disable", Type: "async"},
+		},
+	}
+	jobCfg := createTestJobConfig()
+	dbManager := mockDBManager(cfg)
+
+	if len(dbManager.Replicas) != 0 {
+		t.Fatalf("precondition failed: fleet is not empty (%d handles)", len(dbManager.Replicas))
+	}
+
+	orch, err := NewOrchestrator(cfg, "test_job", jobCfg, dbManager)
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.Initialize(); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	_, err = orch.Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("Execute() with replication enabled and an empty fleet returned nil error")
+	}
+	if !strings.Contains(err.Error(), "no replica connections") {
+		t.Errorf("Execute() error = %q, want it to contain %q", err.Error(), "no replica connections")
+	}
+}
+
 // ============================================================================
 // Integration Tests
 // ============================================================================
