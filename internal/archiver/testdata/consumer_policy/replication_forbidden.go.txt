@@ -1,0 +1,4 @@
+package fixture
+
+// SHOW SLAVE STATUS is legacy
+const replicaStatusQuery = "SHOW REPLICA STATUS"

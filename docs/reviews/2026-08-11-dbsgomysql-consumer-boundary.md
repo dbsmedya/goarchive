@@ -32,9 +32,13 @@ classified as real-estate tests rather than silently ignored.
 
 - `SHOW VARIABLES LIKE 'max_allowed_packet'` remains GoArchive's dry-run payload safety
   query with exact success, query, scan, parse, and caller-wrap coverage.
-- `SHOW REPLICA STATUS`, the legacy `SHOW SLAVE STATUS` fallback, and optional channel
-  clause remain GoArchive's documented administrative exception with a post-2.2 review
-  horizon.
+- **Retired 2026-08-19 (2.1.0-community).** `SHOW REPLICA STATUS`, the legacy
+  `SHOW SLAVE STATUS` fallback, and the optional channel clause were this review's
+  administrative exception, held open on a post-2.2 review horizon. That horizon closed
+  early: `dbsgomysql/pkg/replication` now owns replication status reads and verifies their
+  field layout against the supported MySQL versions, `internal/archiver/lagmonitor.go` was
+  deleted, and the consumer-policy gate **bans both statements in production code** via
+  `TestConsumerPolicyNoReplicationStatusSQL`. They are no longer an exception.
 - Tracking tables, advisory locks, checkpoints, batch DML, copy, verification, and deletion
   remain valid exact-SQL unit-test responsibilities.
 
