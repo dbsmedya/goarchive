@@ -97,10 +97,9 @@ Optional. Holds batch processing while any monitored replica is unhealthy, and
 resumes the same run once every one of them recovers. Absent from the
 configuration, replication monitoring is off.
 
-> **Applies to `archive` only.** `purge` and `copy-only` do not gate on
-> replication even when this block is enabled — see
-> [Replication gating](README_OPERATIONS.md#replication-gating) and
-> [#19](https://github.com/dbsmedya/goarchive/issues/19).
+> **Applies to `archive` and `purge`.** `copy-only` does not gate on replication
+> even when this block is enabled — it never deletes from source. See
+> [Replication gating](README_OPERATIONS.md#replication-gating).
 
 > **Replaces the 2.0 `replica:` block** and `safety.lag_threshold` /
 > `safety.check_interval`. Those keys are now **rejected** — a config carrying

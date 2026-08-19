@@ -199,15 +199,15 @@ before each batch **and before each recovery chunk**, and **holds the job** whil
 any of them is unhealthy. The same invocation resumes once the whole fleet is
 healthy again — a hold is a pause, not a failure.
 
-> **`archive` only.** Replication gating is wired into the `archive` command.
-> **`purge` and `copy-only` do not gate on replication**, even with
-> `replication.enabled: true` and a healthy configuration — the check is silently
-> skipped for them. This matters most for `purge`, which is nothing but source
-> `DELETE`s and is the mode most able to generate lag. Tracked as
-> [#19](https://github.com/dbsmedya/goarchive/issues/19); it predates the 2.1
-> rewrite and is not introduced by it. Until it is fixed, throttle those two
-> commands with `processing.sleep_seconds` and `delete_sleep_seconds`, or pause
-> them with [`sentinel_file`](#pausing-a-run-sentinel_file).
+> **`archive` and `purge` gate; `copy-only` does not.** `copy-only` never deletes
+> from source, so it is not gated on replication. Throttle it with
+> `processing.sleep_seconds` and `delete_sleep_seconds`, or pause it with
+> [`sentinel_file`](#pausing-a-run-sentinel_file).
+>
+> `purge` gained replication gating in 2.1.0
+> ([#19](https://github.com/dbsmedya/goarchive/issues/19)). In every earlier
+> release it deleted without checking, even with monitoring configured and
+> enabled.
 
 ```yaml
 replication:
