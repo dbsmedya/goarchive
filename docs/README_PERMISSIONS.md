@@ -86,7 +86,7 @@ for **all five commands** — every command reads source rows or estimates from 
 | **Destination** (data tables) | `SELECT`, `INSERT` | Copying rows into archive tables |
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job`, the per-job `archiver_job_log_<id>` tables, and the one-row `goarchive_meta` revision marker |
 | **Tracking schema** (optional) | `DELETE`, `DROP` | DBA cleanup only. `DROP` is additionally needed for `TRUNCATE`. |
-| **Replica** (optional) | `REPLICATION CLIENT` | Lag monitoring via `SHOW REPLICA STATUS` |
+| **Each monitored replica** (optional) | `REPLICATION CLIENT` | Replication gating via `SHOW REPLICA STATUS`. Granted **on every server listed in `replication.servers`**, to the account that entry names. |
 
 Source `DELETE` is required for `archive`, `purge`, and `validate` — `validate`
 enforces the privilege without deleting anything, so a `validate`-only run still
@@ -173,13 +173,17 @@ GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO 'archiver'@'%';
 -- GRANT DELETE, DROP ON goarchive.* TO 'archiver'@'%';
 ```
 
-### Replica (optional)
+### Monitored replicas (optional)
 
 ```sql
-GRANT REPLICATION CLIENT ON *.* TO 'archiver'@'%';
+-- Run on EACH server listed in replication.servers, as that entry's user.
+GRANT REPLICATION CLIENT ON *.* TO 'monitor'@'%';
 ```
 
-Only needed when `replica.enabled: true`.
+Only needed when `replication.enabled: true`. The grant is per replica, not
+global to the fleet: a server whose account lacks it makes the gate hold that
+server rather than skip it, so a missing grant stalls the job instead of
+silently disabling the check.
 
 ---
 

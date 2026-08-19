@@ -212,7 +212,7 @@ INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./inter
 |------|-------------|
 | `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
 | `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
-| `TestOrchestrator_ReplicationLagPause_Integration` | Lag monitoring behavior |
+| `TestOrchestrator_ReplicationGate_Integration` | Replication gating: healthy pass, hold, and resume (needs a live replica) |
 | `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
 | `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown handling |
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |

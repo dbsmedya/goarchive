@@ -271,7 +271,7 @@ make test-down    # stop containers
 |------|--------|
 | `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
 | `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
-| `TestOrchestrator_ReplicationLagPause_Integration` | Lag monitoring behaviour |
+| `TestOrchestrator_ReplicationGate_Integration` | Replication gating against a live replica: healthy pass, stopped-applier hold, and lag hold — each proving the job resumes on the same invocation |
 | `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
 | `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown |
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |

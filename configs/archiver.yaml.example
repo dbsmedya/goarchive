@@ -28,16 +28,25 @@ destination:
   #                         #   GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO <user>;
   #                         # The tool does NOT create schemas automatically.
 
-# Replica database (optional - for replication lag monitoring)
-replica:
+# Replication gating (optional). While any monitored replica is lagging, stopped
+# or unreachable, the job is HELD and the same run resumes once all recover.
+# Replaces the 2.0 'replica:' block - see docs/README_UPGRADING_2_1.md.
+replication:
   enabled: false
-  host: replica-db.internal
-  port: 3306
-  user: repl_user
-  password: change_me
-  # Named replication channel to monitor (SHOW REPLICA STATUS FOR CHANNEL '<name>').
-  # Leave empty to monitor the default/unnamed channel.
-  replication_channel: ""
+  seconds_behind_source_within: 10   # lag tolerance in seconds; 0 demands exact sync
+  check_interval: 5                  # seconds between re-checks while holding
+  cache_ttl: 15                      # seconds a PASSING verdict stays fresh; 0 = always check
+  servers:
+    - host: replica-db.internal
+      port: 3306
+      user: monitor                  # needs REPLICATION CLIENT
+      password: change_me
+      tls: preferred                 # disable, preferred, skip-verify, required
+      type: async                    # only 'async' is supported in 2.1
+      # Which replication channels to gate on. Omitted or [] gates on EVERY
+      # channel the server reports. MySQL's default channel is named "" - an
+      # empty name, not an absence - so [""] selects the default channel only.
+      channels: []
 
 # Archive jobs configuration
 jobs:
@@ -87,9 +96,9 @@ processing:
   sleep_seconds: 1           # Pause between batches
 
 # Safety settings
+# NOTE: lag_threshold and check_interval were removed in 2.1 - they now live in
+# the 'replication:' block above. A config still carrying them is REJECTED.
 safety:
-  lag_threshold: 10          # Max replication lag (seconds)
-  check_interval: 5          # Lag check frequency (seconds)
   disable_foreign_key_checks: false
 
 # Verification settings
