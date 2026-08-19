@@ -625,8 +625,21 @@ func TestOrchestrator_FullArchiveCycle_Integration(t *testing.T) {
 	verifyRowCount(t, verifyDest, "orders", 4)    // Orders 101-104
 }
 
-// TestOrchestrator_CrashRecovery_Integration tests resume after simulated crash
+// TestOrchestrator_CrashRecovery_Integration tests resume after simulated crash.
+//
+// SKIPPED as flaky -- see https://github.com/dbsmedya/goarchive/issues/97. The crash
+// is simulated by cancelling after a hardcoded 100ms sleep, and nothing pins where
+// that cancellation lands, so the test exercises a different path on every run: it
+// either leaves non-terminal root PKs that the count-mode resume gate correctly
+// refuses, or completes the job outright and simulates no crash at all.
+//
+// Do NOT re-enable this by nudging the sleep or widening a tolerance. Both moves push
+// it toward the region where it never interrupts anything and passes unconditionally,
+// which is worse than no test -- it also removes the pressure to write a real one. The
+// fix is deterministic seeding, as in pipeline_resume_integration_test.go.
 func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
+	t.Skip("flaky: timing-dependent crash simulation -- see https://github.com/dbsmedya/goarchive/issues/97")
+
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
