@@ -145,9 +145,6 @@ function, fingerprint count, rationale, and Phase 5 / PR-07 deletion owner. The 
 if any site grows, moves, or disappears without the exemption inventory changing. Do not
 add another exemption; Phase 5 deletes the probe and all six existing sites.
 
-The migration inventory, mutation evidence, measured coverage, and deferred integration
-scope are recorded in the [PR-06 consumer-boundary review](reviews/2026-08-11-dbsgomysql-consumer-boundary.md).
-
 When changing the guard, prove both directions before review:
 
 1. Temporarily add a forbidden metadata literal to a non-integration unit test.
