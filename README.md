@@ -26,11 +26,11 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 [pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. The table below is the comparison — weigh it before choosing.
 
-**Table count is not the deciding factor.** GoArchive archives a single table too, and adds preflight validation, verification before deletion, and per-row crash recovery on the way — none of which pt-archiver offers at any table count. What GoArchive exists for is the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it, then verifies every batch before deleting and checkpoints for crash recovery.
+GoArchive exists for the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it.
 
 | | pt-archiver | GoArchive |
 |---|---|---|
-| Tables per run | one | root + full child subgraph |
+| Tables per run | one | one, or a root plus its full child subgraph |
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
