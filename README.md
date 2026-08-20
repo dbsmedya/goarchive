@@ -24,7 +24,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 ## GoArchive vs pt-archiver
 
-[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. Choose it when your schema falls outside GoArchive's envelope — composite or non-integer primary keys, MyISAM, MySQL 5.x — or when you need something GoArchive has no answer for: file/CSV output, `LOAD DATA INFILE` bulk loading, `--txn-size` transaction control, progress and statistics output, PXC flow control, or its nine plugin hooks. Nineteen years of production use against GoArchive's months is itself worth weighing in a tool that deletes data.
+[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. The table below is the comparison — weigh it before choosing.
 
 **Table count is not the deciding factor.** GoArchive archives a single table too, and adds preflight validation, verification before deletion, and per-row crash recovery on the way — none of which pt-archiver offers at any table count. What GoArchive exists for is the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it, then verifies every batch before deleting and checkpoints for crash recovery.
 
@@ -36,9 +36,13 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
 | Composite / non-integer PKs | ✅ | ❌ |
-| File / CSV output | ✅ | ❌ |
+| File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
 | MyISAM, MySQL 5.x | ✅ | ❌ |
 | Progress & statistics output | ✅ | ❌ |
+| Transaction sizing | ✅ `--txn-size`, down to one row | ❌ one transaction per copy phase |
+| Bulk insert / bulk delete | ✅ | ❌ |
+| PXC flow control | ✅ | ❌ |
+| Extensibility | ✅ 9 plugin hooks | ❌ |
 | Maturity | ~19 years | ~6 months |
 
 Many teams use both: pt-archiver where raw throughput dominates, GoArchive where ordering and verification matter more.
