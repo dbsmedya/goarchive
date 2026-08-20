@@ -16,9 +16,9 @@ This document provides detailed instructions for installing, building, and testi
 
 ### Required
 
-- **Go**: Version 1.21 or later (1.24.0+ recommended)
+- **Go** and **MySQL** — supported versions are listed under
+  [Environment](docs/README_LIMITATIONS.md#environment), the single source of truth for both
 - **Git**: For cloning the repository
-- **MySQL**: Version 8.0+ with InnoDB storage engine (for running the application)
 
 ### Optional (for development)
 

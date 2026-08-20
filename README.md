@@ -1,6 +1,6 @@
 # GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-blue)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-blue)](https://golang.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -45,16 +45,14 @@ Many teams use both: pt-archiver for high-volume single-table nibbling, GoArchiv
 
 ## Is GoArchive right for your schema?
 
-**Requires:**
+GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
+where every participating table has a **single-column primary key**. Preflight rejects anything
+outside that envelope before any data moves.
 
-- MySQL 8.0+ with the InnoDB storage engine
-- A **single-column `PRIMARY KEY`** on every participating table
-- An **integer primary key on the root table** (child tables may use any single-column type)
-- 1:1 or 1:N relationships
-
-**Not supported:** composite (multi-column) primary keys · UUID, VARCHAR, or datetime root keys · many-to-many (N:M) join tables as first-class citizens · self-referential tree hierarchies · MyISAM · MySQL 5.x.
-
-Preflight rejects an unsupported schema before any data moves — see [Limitations](docs/README_LIMITATIONS.md) for the full list and [Validation](docs/README_VALIDATION.md) for what each check does.
+**[Limitations & Constraints](docs/README_LIMITATIONS.md)** carries the complete list — the
+hard constraints, what the dependency model cannot express, the operational cautions, and the
+supported versions. **[Validation & Preflight](docs/README_VALIDATION.md)** describes what each
+check does.
 
 ## The Philosophy
 
@@ -97,7 +95,7 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 - **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
 - **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
 
-GoArchive also operates under deliberate constraints — single-column primary keys, integer root keys, InnoDB only, 1:1 and 1:N relationships. Several are enforced by preflight and will stop a run before it starts. **Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.**
+**Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.** GoArchive operates under deliberate constraints, several enforced by preflight, which will stop a run before it starts.
 
 ## Documentation
 
@@ -304,7 +302,7 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 1. **Preflight Checks** - Validate configuration, check triggers, verify InnoDB
 2. **Graph Build** - Parse table relations → Kahn's algorithm → copy order (parent-first), delete order (child-first)
 3. **Batch Loop** - Fetch root IDs → BFS discovery → copy transaction → verify → delete
-4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; replication lag monitoring pauses processing
+4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
 
 ### Key Components
 
@@ -348,37 +346,18 @@ Delete Order:  shipment_items → shipments → order_items → order_payments �
 
 ## Requirements
 
-- **Go**: 1.21 or later
-- **MySQL**: 8.0+ with InnoDB storage engine
-- **Network**: Access to source, destination, and optionally replica databases
+Supported Go and MySQL versions, and the network access GoArchive needs, are listed under
+[Environment](docs/README_LIMITATIONS.md#environment).
 
-### Database Permissions
-
-```sql
--- On source database
-GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
-
--- On archive/destination database (data tables)
-GRANT SELECT, INSERT ON archive.* TO 'archiver'@'%';
-
--- On the tracking schema (job_schema; defaults to the destination database)
-GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO 'archiver'@'%';
-```
-
-📖 **The source account also needs `PROCESS`** (`GRANT PROCESS ON *.* TO …`) for
-cross-schema foreign key visibility on `archive`, `purge`, `dry-run`, and
-`validate`. Full matrix, grant recipes for both `job_schema` layouts, and
-troubleshooting in **[Permissions](docs/README_PERMISSIONS.md)**.
+The source account needs `SELECT` and `DELETE`, the destination needs `SELECT` and `INSERT`,
+and the tracking schema needs `CREATE`/`SELECT`/`INSERT`/`UPDATE` — plus `PROCESS` on the
+source for cross-schema foreign key visibility. 📖 The full matrix, ready-to-paste grant
+recipes for both `job_schema` layouts, and troubleshooting are in
+**[Permissions](docs/README_PERMISSIONS.md)**.
 
 ## Testing
 
-```bash
-go test -short ./...      # unit tests, no database required
-make test-integration     # integration tests (requires database setup)
-make e2e                  # Sakila end-to-end: reset, bootstrap, then run
-```
-
-📖 See **[Testing](docs/README_TESTING.md)** for the test layers, and **[tests/README.md](tests/README.md)** — the source of truth for the full integration and E2E matrix.
+📖 **[Testing](docs/README_TESTING.md)** covers the test layers; **[tests/README.md](tests/README.md)** is the source of truth for the full integration and E2E command matrix.
 
 ## Project Status
 
@@ -388,7 +367,7 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
-⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.** It covers the preflight-enforced hard constraints, what the dependency model cannot express, and the operational cautions (memory growth on deep graphs, copy-transaction scope, `--force` semantics, partial deletes after interruption).
+⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.**
 
 Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
 and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are
@@ -398,10 +377,10 @@ rejected. Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.m
 
 Complete end-to-end archive, purge, and copy-only workflows:
 - Dependency graph + topological copy / reverse-topological delete order
-- 19 preflight checks: storage engine, primary key shape, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
+- 19 preflight checks — enumerated in [Validation & Preflight](docs/README_VALIDATION.md)
 - Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
 - Advisory locks serialize job-name execution across all three commands
-- Replication lag monitor (pauses batches when replica lag exceeds threshold)
+- Replication gating across a fleet of replicas and all their channels
 - Verification by row count or SHA256
 - Dry-run mode with execution plan output
 

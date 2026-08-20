@@ -202,8 +202,9 @@ memory**. A deeply nested schema (parent → child → grandchild → great-gran
 each 1-N with high fanout) can grow that accumulator without bound.
 
 If your root table has ~1M matching rows and each root has many descendants per
-level, start with a small `batch_size` — e.g. `100` — and scale up only after
-observing actual memory use.
+level, start with a small `batch_size` and scale up only after observing actual
+memory use. Sizing guidance lives in
+[Tuning throughput](README_OPERATIONS.md#tuning-throughput).
 
 #### The copy-phase transaction spans all tables
 
@@ -215,9 +216,9 @@ concurrently.
 
 #### Sequential by design
 
-One batch at a time, one job at a time per destination. Advisory locks plus
-heartbeat-aware same-root checks prevent concurrent runs of the same job name or
-root table. There is no parallelism in Community edition.
+One batch at a time, one job at a time per destination. **There is no parallelism
+in Community edition.** The mechanisms that enforce it are described in
+[Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking).
 
 #### No built-in metrics or telemetry
 
@@ -257,15 +258,13 @@ mid-run will see the gap.
 
 #### Verification method controls dirty-destination behaviour
 
-- **`verification.method: count`** — archive uses plain `INSERT` and **aborts on
-  any pre-existing destination row with the same key**, before deleting source
-  data.
-- **`verification.method: sha256`** — archive uses `INSERT IGNORE` and verifies
-  destination content by hash. This is the **recommended recovery mode** for
-  interrupted jobs with pending PKs.
-
-The method also determines whether an interrupted job can auto-resume at all —
-see [Resume semantics](README_OPERATIONS.md#resume-semantics).
+The choice of `verification.method` is not only a strictness dial: it decides the
+INSERT strategy, whether a pre-existing destination row aborts the run, and
+whether an interrupted job can auto-resume at all. Pick it deliberately before a
+job you may need to resume — see
+[`verification:`](README_CONFIGURATION.md#verification) for the full comparison
+and [Resume semantics](README_OPERATIONS.md#resume-semantics) for the replay
+rules.
 
 #### Schema-stable assumption
 
@@ -309,9 +308,14 @@ Table and column identifiers are the exception — they are validated against
 
 ## Environment
 
+This section is the single source of truth for supported versions. `README.md` and
+`INSTALL.md` link here rather than restating it.
+
 - **MySQL**: 8.0+ with the **InnoDB** storage engine
-- **Go**: 1.21 or later to build from source
-- **Network**: access to source, destination, and optionally replica databases
+- **Go**: 1.24 or later to build from source — `go.mod` sets `go 1.24.0`, and an older
+  toolchain refuses the module rather than producing a degraded build
+- **Network**: access to the source and destination databases, and to every replica listed
+  in `replication.servers` when the replication gate is enabled
 
 MySQL 5.7 and earlier are not supported.
 
