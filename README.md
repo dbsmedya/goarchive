@@ -396,30 +396,29 @@ Complete end-to-end archive, purge, and copy-only workflows:
 
 ## Related tools
 
-Worth evaluating before adopting GoArchive — one of these may fit your problem better:
-
-- **[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html)** (Percona Toolkit) — the mature, widely-adopted single-table MySQL archiver. Better for most archiving work; see the [comparison above](#goarchive-vs-pt-archiver).
-- **MySQL native partitioning** — if the table is partitioned by date, archiving a whole partition is far faster than any row-by-row tool. Detach the partition into a standalone table with `EXCHANGE PARTITION`, move that table to the archive server, then drop the now-empty partition:
+- **[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html)** — the mature
+  single-table archiver whose one structural limit GoArchive exists to cover. See
+  [the comparison above](#goarchive-vs-pt-archiver).
+- **MySQL native partitioning** — if the table is partitioned by date, exchanging a whole
+  partition beats any row-by-row tool:
 
   ```sql
-  -- 1. Empty table with identical structure, unpartitioned
   CREATE TABLE orders_2024 LIKE orders;
   ALTER TABLE orders_2024 REMOVE PARTITIONING;
 
-  -- 2. Swap the partition's rows into it — a metadata operation, near-instant
+  -- near-instant metadata swap
   ALTER TABLE orders EXCHANGE PARTITION p2024 WITH TABLE orders_2024;
 
-  -- 3. Move orders_2024 to the archive server: mysqldump, or
-  --    FLUSH TABLES orders_2024 FOR EXPORT + transportable tablespace (.ibd/.cfg)
-
-  -- 4. The partition is now empty — drop it
+  -- move orders_2024 to the archive server (mysqldump, or FLUSH TABLES ... FOR EXPORT
+  -- plus transportable tablespace), then drop the now-empty partition
   ALTER TABLE orders DROP PARTITION p2024;
   ```
 
-  Do **not** simply `DROP PARTITION` unless you intend to destroy the rows — that deletes, it does not archive. Note that `EXCHANGE PARTITION` fires no triggers and resets `AUTO_INCREMENT` on the exchanged table.
+  `DROP PARTITION` on its own destroys the rows rather than archiving them, and
+  `EXCHANGE PARTITION` fires no triggers and resets `AUTO_INCREMENT` on the exchanged table.
 
-  This never competes with GoArchive: MySQL forbids foreign keys on partitioned InnoDB tables **in both directions** — a partitioned table can neither hold foreign keys nor be referenced by them — so a partitioned table has no child subgraph to archive in the first place.
-- **[gh-ost](https://github.com/github/gh-ost)** / **[pt-online-schema-change](https://docs.percona.com/percona-toolkit/pt-online-schema-change.html)** — online schema migration, not archiving. Reach for these if what you actually need is a schema change.
+  It never competes with GoArchive: MySQL forbids foreign keys on partitioned InnoDB tables
+  **in both directions**, so a partitioned table has no child subgraph to archive.
 
 ## Contributing
 
