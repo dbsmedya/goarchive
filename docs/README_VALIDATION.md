@@ -548,6 +548,7 @@ constraints would reject or silently skip rows.
 | Column defaults dropped (`DEFAULT_GENERATED`, `ON UPDATE`) | Copy supplies explicit values |
 | `NOT NULL` relaxed to nullable | Strictly more permissive |
 | Source column generated, destination plain | `SELECT` materialises the value; a plain column accepts it |
+| Column `INVISIBLE` on one side, visible on the other | Visibility never reaches the copy: every read and every `INSERT` names its columns explicitly rather than using `SELECT *`, so an `INVISIBLE` column is copied, verified, and hashed like any other. Dry-run payload sampling names them too. |
 | Integer display width differs (`bigint(20)` vs `bigint`) | Cosmetic. Normalised away — MySQL 8.0.17+ no longer reports it, so a schema dumped from an older server would otherwise false-fail. `unsigned`/`zerofill` **are** preserved: they change the value range. |
 
 ### Fatal — destination must not be stricter
