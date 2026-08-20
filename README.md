@@ -24,9 +24,9 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 ## GoArchive vs pt-archiver
 
-[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving, and it remains the better choice for most work. Use pt-archiver when you are archiving a **single table**, or need file/CSV output, `LOAD DATA INFILE` bulk loading, composite primary keys, MyISAM, MySQL 5.x, progress reporting, or multi-replica lag checks.
+[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving, and it remains the better choice for most work. Use pt-archiver when you are archiving a **single table**, or need file/CSV output, `LOAD DATA INFILE` bulk loading, composite primary keys, MyISAM, MySQL 5.x, progress reporting, or PXC flow control.
 
-GoArchive exists for the one case pt-archiver cannot express without writing a Perl plugin: **archiving a parent row together with its child subgraph**. It adds verification before deletion and persistent crash recovery.
+GoArchive exists for the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it, then verifies every batch before deleting and checkpoints for crash recovery.
 
 | | pt-archiver | GoArchive |
 |---|---|---|
