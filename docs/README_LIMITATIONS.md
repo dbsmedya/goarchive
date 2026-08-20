@@ -67,11 +67,7 @@ edition cannot safely archive them.
 
 #### No DDL and no concurrent writes during a run (contract)
 
-`INVISIBLE` columns are fully supported: the copy, both verification reads, and
-dry-run payload sampling name every column explicitly, so hidden columns are
-copied and hashed like any other.
-
-That correctness rests on two operating contracts:
+GoArchive's correctness during a run rests on two operating contracts:
 
 1. **No DDL on participating tables while a job runs.** Column lists are read
    once at startup. A column renamed or dropped mid-run fails the next batch
@@ -313,7 +309,7 @@ This section is the single source of truth for supported versions. `README.md` a
 
 - **MySQL**: **8.0.40+** with the **InnoDB** storage engine. The floor is inherited from
   [dbsgomysql](README_dbsgomysql.md), which supplies every preflight fact and supports Oracle
-  MySQL only from that release onward
+  MySQL and Percona Server for MySQL only from that release onward
 - **Go**: 1.24 or later to build from source — `go.mod` sets `go 1.24.0`, and an older
   toolchain refuses the module rather than producing a degraded build
 - **Network**: access to the source and destination databases, and to every replica listed
