@@ -311,13 +311,17 @@ Table and column identifiers are the exception — they are validated against
 This section is the single source of truth for supported versions. `README.md` and
 `INSTALL.md` link here rather than restating it.
 
-- **MySQL**: 8.0+ with the **InnoDB** storage engine
+- **MySQL**: **8.0.40+** with the **InnoDB** storage engine. The floor is inherited from
+  [dbsgomysql](README_dbsgomysql.md), which supplies every preflight fact and supports Oracle
+  MySQL only from that release onward
 - **Go**: 1.24 or later to build from source — `go.mod` sets `go 1.24.0`, and an older
   toolchain refuses the module rather than producing a degraded build
 - **Network**: access to the source and destination databases, and to every replica listed
   in `replication.servers` when the replication gate is enabled
 
-MySQL 5.7 and earlier are not supported.
+MySQL 5.7 and earlier are not supported, and neither is any 8.0 release below **8.0.40**.
+Nothing in GoArchive enforces the floor today: an older server fails at whichever check
+first meets behaviour the library does not model, rather than being refused up front.
 
 ---
 

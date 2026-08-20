@@ -1,7 +1,7 @@
 # GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
 
 [![Go Version](https://img.shields.io/badge/Go-1.24+-blue)](https://golang.org/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange)](https://www.mysql.com/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
