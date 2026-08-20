@@ -1,7 +1,7 @@
 # GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-blue)](https://golang.org/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0+-orange)](https://www.mysql.com/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-blue)](https://golang.org/)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
@@ -24,37 +24,37 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 ## GoArchive vs pt-archiver
 
-[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving, and it remains the better choice for most work. Use pt-archiver when you are archiving a **single table**, or need file/CSV output, `LOAD DATA INFILE` bulk loading, composite primary keys, MyISAM, MySQL 5.x, progress reporting, or multi-replica lag checks.
+[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. The table below is the comparison — weigh it before choosing.
 
-GoArchive exists for the one case pt-archiver cannot express without writing a Perl plugin: **archiving a parent row together with its child subgraph**. It adds verification before deletion and persistent crash recovery.
+GoArchive exists for the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it.
 
 | | pt-archiver | GoArchive |
 |---|---|---|
-| Tables per run | one | root + full child subgraph |
+| Tables per run | one | one, or a root plus its full child subgraph |
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
 | Composite / non-integer PKs | ✅ | ❌ |
-| File / CSV output | ✅ | ❌ |
+| File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
 | MyISAM, MySQL 5.x | ✅ | ❌ |
 | Progress & statistics output | ✅ | ❌ |
+| Transaction sizing | ✅ `--txn-size`, down to one row | ❌ one transaction per copy phase |
+| Bulk insert / bulk delete | ✅ | ❌ |
+| PXC flow control | ✅ | ❌ |
+| Extensibility | ✅ 9 plugin hooks | ❌ |
 | Maturity | ~19 years | ~6 months |
-
-Many teams use both: pt-archiver for high-volume single-table nibbling, GoArchive for relational subgraphs where ordering and verification matter more than raw throughput.
 
 ## Is GoArchive right for your schema?
 
-**Requires:**
+GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
+where every participating table has a **single-column primary key**. Preflight rejects anything
+outside that envelope before any data moves.
 
-- MySQL 8.0+ with the InnoDB storage engine
-- A **single-column `PRIMARY KEY`** on every participating table
-- An **integer primary key on the root table** (child tables may use any single-column type)
-- 1:1 or 1:N relationships
-
-**Not supported:** composite (multi-column) primary keys · UUID, VARCHAR, or datetime root keys · many-to-many (N:M) join tables as first-class citizens · self-referential tree hierarchies · MyISAM · MySQL 5.x.
-
-Preflight rejects an unsupported schema before any data moves — see [Limitations](docs/README_LIMITATIONS.md) for the full list and [Validation](docs/README_VALIDATION.md) for what each check does.
+**[Limitations & Constraints](docs/README_LIMITATIONS.md)** carries the complete list — the
+hard constraints, what the dependency model cannot express, the operational cautions, and the
+supported versions. **[Validation & Preflight](docs/README_VALIDATION.md)** describes what each
+check does.
 
 ## The Philosophy
 
@@ -97,7 +97,7 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 - **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
 - **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
 
-GoArchive also operates under deliberate constraints — single-column primary keys, integer root keys, InnoDB only, 1:1 and 1:N relationships. Several are enforced by preflight and will stop a run before it starts. **Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.**
+**Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.** GoArchive operates under deliberate constraints, several enforced by preflight, which will stop a run before it starts.
 
 ## Documentation
 
@@ -304,7 +304,7 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 1. **Preflight Checks** - Validate configuration, check triggers, verify InnoDB
 2. **Graph Build** - Parse table relations → Kahn's algorithm → copy order (parent-first), delete order (child-first)
 3. **Batch Loop** - Fetch root IDs → BFS discovery → copy transaction → verify → delete
-4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; replication lag monitoring pauses processing
+4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
 
 ### Key Components
 
@@ -348,37 +348,18 @@ Delete Order:  shipment_items → shipments → order_items → order_payments �
 
 ## Requirements
 
-- **Go**: 1.21 or later
-- **MySQL**: 8.0+ with InnoDB storage engine
-- **Network**: Access to source, destination, and optionally replica databases
+Supported Go and MySQL versions, and the network access GoArchive needs, are listed under
+[Environment](docs/README_LIMITATIONS.md#environment).
 
-### Database Permissions
-
-```sql
--- On source database
-GRANT SELECT, DELETE ON production.* TO 'archiver'@'%';
-
--- On archive/destination database (data tables)
-GRANT SELECT, INSERT ON archive.* TO 'archiver'@'%';
-
--- On the tracking schema (job_schema; defaults to the destination database)
-GRANT CREATE, SELECT, INSERT, UPDATE ON goarchive.* TO 'archiver'@'%';
-```
-
-📖 **The source account also needs `PROCESS`** (`GRANT PROCESS ON *.* TO …`) for
-cross-schema foreign key visibility on `archive`, `purge`, `dry-run`, and
-`validate`. Full matrix, grant recipes for both `job_schema` layouts, and
-troubleshooting in **[Permissions](docs/README_PERMISSIONS.md)**.
+The source account needs `SELECT` and `DELETE`, the destination needs `SELECT` and `INSERT`,
+and the tracking schema needs `CREATE`/`SELECT`/`INSERT`/`UPDATE` — plus `PROCESS` on the
+source for cross-schema foreign key visibility. 📖 The full matrix, ready-to-paste grant
+recipes for both `job_schema` layouts, and troubleshooting are in
+**[Permissions](docs/README_PERMISSIONS.md)**.
 
 ## Testing
 
-```bash
-go test -short ./...      # unit tests, no database required
-make test-integration     # integration tests (requires database setup)
-make e2e                  # Sakila end-to-end: reset, bootstrap, then run
-```
-
-📖 See **[Testing](docs/README_TESTING.md)** for the test layers, and **[tests/README.md](tests/README.md)** — the source of truth for the full integration and E2E matrix.
+📖 **[Testing](docs/README_TESTING.md)** covers the test layers; **[tests/README.md](tests/README.md)** is the source of truth for the full integration and E2E command matrix.
 
 ## Project Status
 
@@ -388,7 +369,7 @@ make e2e                  # Sakila end-to-end: reset, bootstrap, then run
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
-⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.** It covers the preflight-enforced hard constraints, what the dependency model cannot express, and the operational cautions (memory growth on deep graphs, copy-transaction scope, `--force` semantics, partial deletes after interruption).
+⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.**
 
 Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
 and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are
@@ -398,10 +379,10 @@ rejected. Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.m
 
 Complete end-to-end archive, purge, and copy-only workflows:
 - Dependency graph + topological copy / reverse-topological delete order
-- 19 preflight checks: storage engine, primary key shape, FK indexes, FK coverage (external + internal), destination schema compatibility, source/destination/tracking-schema permissions, DELETE triggers, destination INSERT triggers, CASCADE warnings
+- 19 preflight checks — enumerated in [Validation & Preflight](docs/README_VALIDATION.md)
 - Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
 - Advisory locks serialize job-name execution across all three commands
-- Replication lag monitor (pauses batches when replica lag exceeds threshold)
+- Replication gating across a fleet of replicas and all their channels
 - Verification by row count or SHA256
 - Dry-run mode with execution plan output
 
@@ -417,30 +398,29 @@ Complete end-to-end archive, purge, and copy-only workflows:
 
 ## Related tools
 
-Worth evaluating before adopting GoArchive — one of these may fit your problem better:
-
-- **[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html)** (Percona Toolkit) — the mature, widely-adopted single-table MySQL archiver. Better for most archiving work; see the [comparison above](#goarchive-vs-pt-archiver).
-- **MySQL native partitioning** — if the table is partitioned by date, archiving a whole partition is far faster than any row-by-row tool. Detach the partition into a standalone table with `EXCHANGE PARTITION`, move that table to the archive server, then drop the now-empty partition:
+- **[pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html)** — the mature
+  single-table archiver whose one structural limit GoArchive exists to cover. See
+  [the comparison above](#goarchive-vs-pt-archiver).
+- **MySQL native partitioning** — if the table is partitioned by date, exchanging a whole
+  partition beats any row-by-row tool:
 
   ```sql
-  -- 1. Empty table with identical structure, unpartitioned
   CREATE TABLE orders_2024 LIKE orders;
   ALTER TABLE orders_2024 REMOVE PARTITIONING;
 
-  -- 2. Swap the partition's rows into it — a metadata operation, near-instant
+  -- near-instant metadata swap
   ALTER TABLE orders EXCHANGE PARTITION p2024 WITH TABLE orders_2024;
 
-  -- 3. Move orders_2024 to the archive server: mysqldump, or
-  --    FLUSH TABLES orders_2024 FOR EXPORT + transportable tablespace (.ibd/.cfg)
-
-  -- 4. The partition is now empty — drop it
+  -- move orders_2024 to the archive server (mysqldump, or FLUSH TABLES ... FOR EXPORT
+  -- plus transportable tablespace), then drop the now-empty partition
   ALTER TABLE orders DROP PARTITION p2024;
   ```
 
-  Do **not** simply `DROP PARTITION` unless you intend to destroy the rows — that deletes, it does not archive. Note that `EXCHANGE PARTITION` fires no triggers and resets `AUTO_INCREMENT` on the exchanged table.
+  `DROP PARTITION` on its own destroys the rows rather than archiving them, and
+  `EXCHANGE PARTITION` fires no triggers and resets `AUTO_INCREMENT` on the exchanged table.
 
-  This never competes with GoArchive: MySQL forbids foreign keys on partitioned InnoDB tables **in both directions** — a partitioned table can neither hold foreign keys nor be referenced by them — so a partitioned table has no child subgraph to archive in the first place.
-- **[gh-ost](https://github.com/github/gh-ost)** / **[pt-online-schema-change](https://docs.percona.com/percona-toolkit/pt-online-schema-change.html)** — online schema migration, not archiving. Reach for these if what you actually need is a schema change.
+  It never competes with GoArchive: MySQL forbids foreign keys on partitioned InnoDB tables
+  **in both directions**, so a partitioned table has no child subgraph to archive.
 
 ## Contributing
 

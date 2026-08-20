@@ -121,9 +121,10 @@ Two hard limits constrain it, both checked by `dry-run`:
 - **`max_allowed_packet`:** a `batch_size`-sized chunk of the widest table must
   fit in the destination's packet limit.
 
-It also drives memory: BFS discovery accumulates all descendant primary keys for
-the batch in memory. On deep, high-fanout schemas start at `100` and scale up
-while watching memory.
+It also drives memory — BFS discovery holds the batch's whole descendant set. On
+deep, high-fanout schemas start at `100` and scale up while watching memory; see
+[Deep or wide graphs can exhaust memory](README_LIMITATIONS.md#deep-or-wide-graphs-can-exhaust-memory)
+for why the accumulator is unbounded.
 
 ### `batch_delete_size` — delete statement size
 
@@ -374,17 +375,15 @@ globally ascending schedule, which keeps the per-chunk checkpoint monotonic.
 ### Choosing a verification method for recoverability
 
 `verification.method: sha256` is the recommended mode for anything you may need
-to resume. It uses `INSERT IGNORE` and verifies content by hash, making replay
-idempotent. `count` uses plain `INSERT` and trades resumability for a cheaper
-check.
+to resume. The full comparison — INSERT strategy, dirty-destination behaviour,
+and charset detection — is in
+[`verification:`](README_CONFIGURATION.md#verification).
 
 ---
 
 ## Concurrency and locking
 
-GoArchive is **sequential by design**: one batch at a time, one job at a time per
-destination.
-
+GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design).
 Two independent mechanisms prevent overlap:
 
 1. **MySQL advisory lock** (`GET_LOCK()`) serializes execution by job name across
