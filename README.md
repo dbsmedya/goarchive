@@ -45,8 +45,6 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Extensibility | ✅ 9 plugin hooks | ❌ |
 | Maturity | ~19 years | ~6 months |
 
-Many teams use both: pt-archiver where raw throughput dominates, GoArchive where ordering and verification matter more.
-
 ## Is GoArchive right for your schema?
 
 GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
