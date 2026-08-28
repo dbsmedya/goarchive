@@ -7,8 +7,8 @@ github.com/clipperhouse/uax29/v2 v2.2.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJ
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/dbsmedya/dbsgomysql v1.1.0 h1:yGOkaEPNMZd0YhUCMbSRhohEV5nZG6Y9jMnufR0WIYQ=
-github.com/dbsmedya/dbsgomysql v1.1.0/go.mod h1:RXakRpogg3wHRdTwsEDsn+YjfgJ8i9OWbw0T0XIUuYs=
+github.com/dbsmedya/dbsgomysql v1.1.1 h1:CvVtnns9b6bcDsTdzGW0dCqccl4Zu/OMNvkKZ0k4bY4=
+github.com/dbsmedya/dbsgomysql v1.1.1/go.mod h1:RXakRpogg3wHRdTwsEDsn+YjfgJ8i9OWbw0T0XIUuYs=
 github.com/elliotchance/orderedmap/v2 v2.2.0 h1:7/2iwO98kYT4XkOjA9mBEIwvi4KpGB4cyHeOFOnj4Vk=
 github.com/elliotchance/orderedmap/v2 v2.2.0/go.mod h1:85lZyVbpGaGvHvnKa7Qhx7zncAdBIBq6u56Hb1PRU5Q=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
