@@ -38,7 +38,6 @@ GoArchive exists for the case pt-archiver hands back to the operator: **archivin
 | Composite / non-integer PKs | ✅ | ❌ |
 | File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
 | MyISAM, MySQL 5.x | ✅ | ❌ |
-| Progress & statistics output | ✅ | ❌ |
 | Transaction sizing | ✅ `--txn-size`, down to one row | ❌ one transaction per copy phase |
 | Bulk insert / bulk delete | ✅ | ❌ |
 | PXC flow control | ✅ | ❌ |
