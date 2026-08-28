@@ -82,9 +82,10 @@ grep dbsgomysql go.mod
 ```
 
 The 1.9.x release-candidate series validated this integration against successive
-**pre-1.0** library releases. GoArchive `2.0.0-community` now pins the library's stable
-**v1.0.0** contract and is the current stable release. The RC series exercised that
-contract against real archival workloads before its promotion to the production line.
+**pre-1.0** library releases, and GoArchive `2.0.0-community` was the first stable
+release to pin the library's **v1.0.0** contract — the RC series exercised that contract
+against real archival workloads before its promotion to the production line. Later
+releases track the library's stable line; the exact tag, as always, is the one in `go.mod`.
 
 ## See also
 

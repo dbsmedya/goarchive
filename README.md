@@ -364,7 +364,7 @@ recipes for both `job_schema` layouts, and troubleshooting are in
 
 - **Edition**: Community
 - **Version**: `2.1.0-community` (**stable**)
-- **Stable release**: `2.1.0-community` — the current production line, built on the stable [dbsgomysql v1.1.0 integration](docs/README_dbsgomysql.md).
+- **Stable release**: `2.1.0-community` — the current production line, built on the stable [dbsgomysql v1.1.1 integration](docs/README_dbsgomysql.md).
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
 
