@@ -3,6 +3,7 @@
 package archiver
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -244,4 +245,25 @@ func (r *progressReporter) stop() {
 			_, _ = fmt.Fprintln(r.out, formatProgressLine(r.tracker.snapshot(), r.mode))
 		}
 	})
+}
+
+// startProgress is the single --progress activation point shared by the three
+// orchestrators. It must be called after crash recovery so the count uses the
+// fetcher's current checkpoint. The returned stop function is always non-nil.
+func startProgress(ctx context.Context, interval time.Duration, fetcher *RootIDFetcher,
+	mode batchMode, seedCopied, seedDeleted int64, out io.Writer,
+) (*progressTracker, func(), error) {
+	noop := func() {}
+	if interval <= 0 {
+		return nil, noop, nil
+	}
+	total, err := fetcher.CountRemaining(ctx)
+	if err != nil {
+		return nil, noop, fmt.Errorf("--progress startup count failed: %w", err)
+	}
+	tracker := newProgressTracker(total)
+	tracker.SeedRows(seedCopied, seedDeleted)
+	reporter := newProgressReporter(tracker, interval, mode, out)
+	reporter.start()
+	return tracker, reporter.stop, nil
 }

@@ -1,10 +1,15 @@
 package archiver
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -171,3 +176,65 @@ func TestProgressReporter_StopWithoutStartPrintsNothing(t *testing.T) {
 	r.stop()
 	assert.Empty(t, buf.String())
 }
+
+func TestStartProgress_DisabledIsZeroCost(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+
+	tr, stopFn, err := startProgress(context.Background(), 0, f, batchFull, 0, 0, io.Discard)
+	assert.NoError(t, err)
+	assert.Nil(t, tr)
+	stopFn()
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestStartProgress_CountsSeedsAndStops(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM ` + "`orders`").
+		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(250))
+
+	var buf strings.Builder
+	var mu sync.Mutex
+	w := writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	})
+
+	tr, stopFn, err := startProgress(context.Background(), time.Hour, f, batchFull, 11, 7, w)
+	assert.NoError(t, err)
+	assert.NotNil(t, tr)
+	s := tr.snapshot()
+	assert.Equal(t, int64(250), s.total)
+	assert.Equal(t, int64(11), s.copied)
+	assert.Equal(t, int64(7), s.deleted)
+
+	stopFn()
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Contains(t, buf.String(), "progress: ")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestStartProgress_CountFailureFailsTheRun(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	mock.ExpectQuery(`SELECT COUNT\(\*\)`).WillReturnError(fmt.Errorf("boom"))
+
+	tr, stopFn, err := startProgress(context.Background(), time.Second, f, batchFull, 0, 0, io.Discard)
+	assert.Error(t, err)
+	assert.Nil(t, tr)
+	assert.NotNil(t, stopFn)
+	stopFn()
+}
+
+type writerFunc func(p []byte) (int, error)
+
+func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
