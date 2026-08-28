@@ -42,6 +42,23 @@ func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSiz
 	}
 }
 
+// predicate returns the WHERE body shared by FetchNextBatch and
+// CountRemaining so the progress estimate cannot drift from what the fetch
+// will select. It reads the fetcher's current checkpoint.
+func (f *RootIDFetcher) predicate() (string, []interface{}) {
+	where := f.criteria
+	if where == "" {
+		where = "1=1"
+	}
+	clause := fmt.Sprintf("(%s)", where)
+	var args []interface{}
+	if f.checkpoint != nil {
+		clause += fmt.Sprintf(" AND %s > ?", sqlutil.QuoteIdentifier(f.pkColumn))
+		args = append(args, f.checkpoint)
+	}
+	return clause, args
+}
+
 // FetchNextBatch retrieves the next batch of root IDs matching the criteria.
 //
 // The query respects the checkpoint by selecting only PKs greater than the last
@@ -54,45 +71,15 @@ func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSiz
 // GA-P3-F1-T1: Fetches root PKs with checkpoint support
 // GA-P3-F1-T2: Respects batch_size configuration
 func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, error) {
-	// Build WHERE clause with criteria
-	whereClause := f.criteria
-	if whereClause == "" {
-		whereClause = "1=1"
-	}
-
-	// Query format with checkpoint:
-	// SELECT pk FROM table WHERE criteria AND pk > checkpoint ORDER BY pk ASC LIMIT batch_size
-	//
-	// Query format without checkpoint:
-	// SELECT pk FROM table WHERE criteria ORDER BY pk ASC LIMIT batch_size
-	//
-	// This ensures:
-	// 1. Only rows matching criteria are selected
-	// 2. Resume from checkpoint (pk > last_processed), or start unbounded on first run
-	// 3. Deterministic ordering (pk ASC)
-	// 4. Controlled batch size
-	var query string
-	var args []interface{}
-	if f.checkpoint == nil {
-		query = fmt.Sprintf(
-			"SELECT %s FROM %s WHERE (%s) ORDER BY %s ASC LIMIT ?",
-			sqlutil.QuoteIdentifier(f.pkColumn),
-			sqlutil.QuoteIdentifier(f.rootTable),
-			whereClause,
-			sqlutil.QuoteIdentifier(f.pkColumn),
-		)
-		args = []interface{}{f.batchSize}
-	} else {
-		query = fmt.Sprintf(
-			"SELECT %s FROM %s WHERE (%s) AND %s > ? ORDER BY %s ASC LIMIT ?",
-			sqlutil.QuoteIdentifier(f.pkColumn),
-			sqlutil.QuoteIdentifier(f.rootTable),
-			whereClause,
-			sqlutil.QuoteIdentifier(f.pkColumn),
-			sqlutil.QuoteIdentifier(f.pkColumn),
-		)
-		args = []interface{}{f.checkpoint, f.batchSize}
-	}
+	clause, args := f.predicate()
+	query := fmt.Sprintf(
+		"SELECT %s FROM %s WHERE %s ORDER BY %s ASC LIMIT ?",
+		sqlutil.QuoteIdentifier(f.pkColumn),
+		sqlutil.QuoteIdentifier(f.rootTable),
+		clause,
+		sqlutil.QuoteIdentifier(f.pkColumn),
+	)
+	args = append(args, f.batchSize)
 
 	rows, err := f.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -121,6 +108,19 @@ func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, erro
 	}
 
 	return ids, nil
+}
+
+// CountRemaining counts the root rows the forward scan would currently
+// select. It is a point-in-time estimate used only for --progress display.
+func (f *RootIDFetcher) CountRemaining(ctx context.Context) (int64, error) {
+	clause, args := f.predicate()
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
+		sqlutil.QuoteIdentifier(f.rootTable), clause)
+	var n int64
+	if err := f.db.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("failed to count remaining root rows in %s: %w", f.rootTable, err)
+	}
+	return n, nil
 }
 
 // UpdateCheckpoint updates the last processed PK value.

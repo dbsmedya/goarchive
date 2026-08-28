@@ -9,6 +9,52 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestRootIDFetcher_CountRemaining_NoCheckpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	f := NewRootIDFetcher(db, "orders", "id", "created_at < '2026-01-01'", 100, nil)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM ` + "`orders`" + ` WHERE \(created_at < '2026-01-01'\)`).
+		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(12000))
+
+	n, err := f.CountRemaining(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(12000), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRootIDFetcher_CountRemaining_WithCheckpoint(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	f := NewRootIDFetcher(db, "orders", "id", "", 100, int64(500))
+	f.UpdateCheckpoint(int64(900))
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM ` + "`orders`" + ` WHERE \(1=1\) AND ` + "`id`" + ` > \?`).
+		WithArgs(int64(900)).
+		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(42))
+
+	n, err := f.CountRemaining(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, int64(42), n)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRootIDFetcher_CountRemaining_QueryError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).
+		WillReturnError(fmt.Errorf("table gone"))
+
+	_, err = f.CountRemaining(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "orders")
+}
+
 func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
