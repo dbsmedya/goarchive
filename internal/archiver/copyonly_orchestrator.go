@@ -36,20 +36,22 @@ type CopyOnlyResult struct {
 
 // CopyOnlyOrchestrator coordinates copy-only operation using dependency graph.
 type CopyOnlyOrchestrator struct {
-	config          *config.Config
-	jobConfig       *config.JobConfig
-	jobName         string
-	dbManager       *database.Manager
-	graph           *graph.Graph
-	logger          *logger.Logger
-	copyOrder       []string
-	initialized     bool
-	processingCfg   config.ProcessingConfig
-	verificationCfg config.VerificationConfig
-	promptReader    io.Reader
-	loadRootPKMeta  rootPKMetaLoader
-	staleAtStartup  bool
-	stopCh          <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	config           *config.Config
+	jobConfig        *config.JobConfig
+	jobName          string
+	dbManager        *database.Manager
+	graph            *graph.Graph
+	logger           *logger.Logger
+	copyOrder        []string
+	initialized      bool
+	processingCfg    config.ProcessingConfig
+	verificationCfg  config.VerificationConfig
+	promptReader     io.Reader
+	loadRootPKMeta   rootPKMetaLoader
+	staleAtStartup   bool
+	stopCh           <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	progressInterval time.Duration
+	progressOut      io.Writer
 }
 
 // NewCopyOnlyOrchestrator creates a new copy-only orchestrator.
@@ -92,6 +94,11 @@ func (o *CopyOnlyOrchestrator) SetLogger(log *logger.Logger) {
 // next boundary. A nil channel disables cooperative stop.
 func (o *CopyOnlyOrchestrator) SetStopChannel(stop <-chan struct{}) {
 	o.stopCh = stop
+}
+
+// SetProgressInterval enables periodic --progress reporting. Zero disables it.
+func (o *CopyOnlyOrchestrator) SetProgressInterval(d time.Duration) {
+	o.progressInterval = d
 }
 
 // Initialize builds dependency graph and computes copy order.
@@ -282,6 +289,17 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		}
 	}
 
+	progressOut := o.progressOut
+	if progressOut == nil {
+		progressOut = os.Stdout
+	}
+	tracker, stopProgress, err := startProgress(ctx, o.progressInterval, fetcher,
+		batchCopyVerify, result.RecordsCopied, 0, progressOut)
+	if err != nil {
+		return fail("%w", err)
+	}
+	defer stopProgress()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -301,12 +319,13 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 			return fail("failed to fetch root IDs: %w", err)
 		}
 		if len(rootIDs) == 0 {
+			tracker.MarkComplete()
 			break
 		}
 
 		// Operator pause switch: block before processing this batch while the
 		// sentinel file exists.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).withNotifier(tracker).wait(ctx, o.stopCh); err != nil {
 			return fail("%w", err)
 		}
 		if stopRequested(o.stopCh) {
@@ -326,6 +345,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		result.RecordsCopied += batchStats.RecordsCopied
 		result.TablesVerified += batchStats.TablesVerified
 		result.RecordsVerified += batchStats.RecordsVerified
+		tracker.RecordBatch(*batchStats)
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
 	"github.com/dbsmedya/goarchive/internal/config"
@@ -26,18 +28,20 @@ type PurgeResult struct {
 
 // PurgeOrchestrator coordinates purge operation using dependency graph.
 type PurgeOrchestrator struct {
-	config         *config.Config
-	jobConfig      *config.JobConfig
-	jobName        string
-	dbManager      *database.Manager
-	graph          *graph.Graph
-	logger         *logger.Logger
-	initialized    bool
-	processingCfg  config.ProcessingConfig
-	lagFactory     lagMonitorFactory
-	force          bool
-	staleAtStartup bool
-	stopCh         <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	config           *config.Config
+	jobConfig        *config.JobConfig
+	jobName          string
+	dbManager        *database.Manager
+	graph            *graph.Graph
+	logger           *logger.Logger
+	initialized      bool
+	processingCfg    config.ProcessingConfig
+	lagFactory       lagMonitorFactory
+	force            bool
+	staleAtStartup   bool
+	stopCh           <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	progressInterval time.Duration
+	progressOut      io.Writer
 }
 
 // NewPurgeOrchestrator creates a new purge orchestrator.
@@ -188,6 +192,17 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		}
 	}
 
+	progressOut := o.progressOut
+	if progressOut == nil {
+		progressOut = os.Stdout
+	}
+	tracker, stopProgress, perr := startProgress(ctx, o.progressInterval, fetcher,
+		batchDeleteOnly, 0, result.RecordsDeleted, progressOut)
+	if perr != nil {
+		return result, perr
+	}
+	defer stopProgress()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,12 +222,13 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 			return nil, fmt.Errorf("failed to fetch root IDs: %w", err)
 		}
 		if len(rootIDs) == 0 {
+			tracker.MarkComplete()
 			break
 		}
 
 		// Operator pause switch: block before processing this batch while the
 		// sentinel file exists.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).withNotifier(tracker).wait(ctx, o.stopCh); err != nil {
 			return nil, err
 		}
 		if stopRequested(o.stopCh) {
@@ -236,6 +252,7 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 			return nil, fmt.Errorf("processBatch failed: %w", err)
 		}
 		result.RecordsDeleted += batchStats.RecordsDeleted
+		tracker.RecordBatch(*batchStats)
 
 		if o.processingCfg.SleepSeconds > 0 {
 			sleepDuration := time.Duration(o.processingCfg.SleepSeconds * float64(time.Second))
@@ -271,6 +288,11 @@ func (o *PurgeOrchestrator) SetForce(force bool) {
 // next boundary. A nil channel disables cooperative stop.
 func (o *PurgeOrchestrator) SetStopChannel(stop <-chan struct{}) {
 	o.stopCh = stop
+}
+
+// SetProgressInterval enables periodic --progress reporting. Zero disables it.
+func (o *PurgeOrchestrator) SetProgressInterval(d time.Duration) {
+	o.progressInterval = d
 }
 
 // SetLogger sets a custom logger for the orchestrator. Call before

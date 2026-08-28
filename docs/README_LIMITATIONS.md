@@ -218,9 +218,11 @@ in Community edition.** The mechanisms that enforce it are described in
 
 #### No built-in metrics or telemetry
 
-Progress is observable only through the structured log output and by querying the
-per-job `archiver_job_log_<id>` table directly. Look up the `id` from
-`archiver_job` by `job_name`.
+Run-level progress is available through the opt-in `--progress` display on
+`archive`, `copy-only`, and `purge`; see
+[Progress display](README_OPERATIONS.md#progress-display). Structured logs and
+the per-job `archiver_job_log_<id>` table remain the durable sources for batch
+activity and recovery state. Look up the `id` from `archiver_job` by `job_name`.
 
 #### Advisory lock sessions must stay alive
 

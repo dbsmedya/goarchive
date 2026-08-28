@@ -16,6 +16,7 @@ var (
 	copyOnlyJob                   string
 	copyOnlyForce                 bool
 	copyOnlySkipValidatePreflight bool
+	copyOnlyProgress              string
 )
 
 var copyOnlyCmd = &cobra.Command{
@@ -39,6 +40,7 @@ func init() {
 		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Also bypasses destination duplicate preflight checks after confirmation.")
 	copyOnlyCmd.Flags().BoolVar(&copyOnlySkipValidatePreflight, "skip-validate-preflight", false,
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
+	registerProgressFlag(copyOnlyCmd, &copyOnlyProgress)
 	rootCmd.AddCommand(copyOnlyCmd)
 }
 
@@ -52,6 +54,10 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	progressInterval, err := parseProgressInterval(cmd, copyOnlyProgress)
+	if err != nil {
+		return err
 	}
 
 	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
@@ -109,6 +115,7 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("copy-only orchestrator initialization failed: %w", err)
 	}
 	orch.SetStopChannel(stopCh)
+	orch.SetProgressInterval(progressInterval)
 
 	result, err := orch.Execute(ctx, copyOnlyForce)
 	if err != nil {
