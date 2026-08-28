@@ -4,6 +4,8 @@ package archiver
 
 import (
 	"fmt"
+	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -166,4 +168,80 @@ func formatProgressLine(s progressSnapshot, mode batchMode) string {
 		line += fmt.Sprintf(" [PAUSED: %s]", s.pausedReason)
 	}
 	return line
+}
+
+// progressReporter prints one progress line per tick and exactly one final
+// line at stop. It exists only while --progress is active; failures before
+// activation (startup, recovery, COUNT) never construct one, so they print
+// no progress output at all.
+type progressReporter struct {
+	tracker  *progressTracker
+	interval time.Duration
+	mode     batchMode
+	out      io.Writer
+
+	// tickCh is a test seam: when non-nil it replaces the real ticker.
+	tickCh <-chan time.Time
+
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+	started bool
+	once    sync.Once
+}
+
+func newProgressReporter(t *progressTracker, interval time.Duration, mode batchMode, out io.Writer) *progressReporter {
+	return &progressReporter{
+		tracker:  t,
+		interval: interval,
+		mode:     mode,
+		out:      out,
+		stopCh:   make(chan struct{}),
+	}
+}
+
+func (r *progressReporter) start() {
+	ticks := r.tickCh
+	if ticks == nil {
+		ticker := time.NewTicker(r.interval)
+		ticks = ticker.C
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			defer ticker.Stop()
+			r.loop(ticks)
+		}()
+	} else {
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.loop(ticks)
+		}()
+	}
+	r.started = true
+}
+
+func (r *progressReporter) loop(ticks <-chan time.Time) {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case <-ticks:
+			_, _ = fmt.Fprintln(r.out, formatProgressLine(r.tracker.snapshot(), r.mode))
+		}
+	}
+}
+
+// stop terminates the ticker goroutine, waits for it, then prints the final
+// line — exactly once, only if the reporter was started. The snapshot printed
+// is the last completed-batch state: a fatal error mid-batch lands here after
+// rows may have been copied but before RecordBatch, so "true totals" are not
+// guaranteed and not claimed.
+func (r *progressReporter) stop() {
+	r.once.Do(func() {
+		close(r.stopCh)
+		r.wg.Wait()
+		if r.started {
+			_, _ = fmt.Fprintln(r.out, formatProgressLine(r.tracker.snapshot(), r.mode))
+		}
+	})
 }

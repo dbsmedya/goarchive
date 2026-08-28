@@ -117,3 +117,57 @@ func TestProgressTracker_AccumulateAndSnapshot(t *testing.T) {
 	assert.Equal(t, 100.0, done.percent())
 	assert.Equal(t, "0s", done.etaString())
 }
+
+func TestProgressReporter_TicksAndFinalLineOnce(t *testing.T) {
+	tr := newProgressTracker(100)
+	tr.nowFn = func() time.Time { return tr.startedAt.Add(10 * time.Second) }
+
+	var buf strings.Builder
+	r := newProgressReporter(tr, time.Second, batchFull, &buf)
+	ticks := make(chan time.Time)
+	r.tickCh = ticks
+	r.start()
+
+	tr.RecordBatch(BatchStats{RootsProcessed: 10, RecordsCopied: 40})
+	ticks <- time.Time{}
+	ticks <- time.Time{}
+	r.stop()
+	r.stop()
+
+	out := buf.String()
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	assert.Len(t, lines, 3)
+	for _, l := range lines {
+		assert.True(t, strings.HasPrefix(l, "progress: "), l)
+	}
+	assert.Contains(t, lines[0], "roots 10/~100")
+	assert.Equal(t, lines[1], lines[0])
+}
+
+func TestProgressReporter_FinalLineReflectsCompletion(t *testing.T) {
+	tr := newProgressTracker(100)
+	tr.nowFn = func() time.Time { return tr.startedAt.Add(time.Minute) }
+	var buf strings.Builder
+	r := newProgressReporter(tr, time.Second, batchDeleteOnly, &buf)
+	r.tickCh = make(chan time.Time)
+	r.start()
+
+	tr.RecordBatch(BatchStats{RootsProcessed: 60, RecordsDeleted: 500})
+	tr.MarkComplete()
+	r.stop()
+
+	out := strings.TrimSpace(buf.String())
+	assert.Equal(t, 1, strings.Count(out, "\n")+1, "exactly one line")
+	assert.Contains(t, out, "remaining=0")
+	assert.Contains(t, out, "(100.0%)")
+	assert.Contains(t, out, "eta=0s")
+	assert.Contains(t, out, "deleted_rows=500")
+	assert.NotContains(t, out, "copied_rows")
+}
+
+func TestProgressReporter_StopWithoutStartPrintsNothing(t *testing.T) {
+	var buf strings.Builder
+	r := newProgressReporter(newProgressTracker(1), time.Second, batchFull, &buf)
+	r.stop()
+	assert.Empty(t, buf.String())
+}
