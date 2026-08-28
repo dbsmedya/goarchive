@@ -3,6 +3,7 @@ package archiver
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -24,6 +25,7 @@ const sentinelStillPausedEvery = 30
 type sentinelGate struct {
 	path   string
 	logger *logger.Logger
+	notify pauseNotifier
 
 	// statErrWarned ensures a non-not-exist stat error is logged at most once per
 	// gate, so a misconfigured path does not silently disable the pause without
@@ -36,6 +38,13 @@ type sentinelGate struct {
 	sleepFn   func(ctx context.Context, d time.Duration) error
 }
 
+// pauseNotifier receives pause-state transitions. *progressTracker satisfies
+// it; recovery gates and disabled progress leave it unset.
+type pauseNotifier interface {
+	SetPaused(reason string)
+	ClearPaused()
+}
+
 // newSentinelGate builds a gate for the given path. An empty path disables the
 // gate (wait returns immediately).
 func newSentinelGate(path string, log *logger.Logger) *sentinelGate {
@@ -43,6 +52,12 @@ func newSentinelGate(path string, log *logger.Logger) *sentinelGate {
 		log = logger.NewDefault()
 	}
 	return &sentinelGate{path: path, logger: log}
+}
+
+// withNotifier attaches a pause notifier and returns the gate for chaining.
+func (g *sentinelGate) withNotifier(n pauseNotifier) *sentinelGate {
+	g.notify = n
+	return g
 }
 
 // present reports whether the sentinel file currently exists. Any stat error
@@ -103,6 +118,10 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 	}
 
 	g.logger.Warnf("Paused: sentinel file %q is present; remove it to resume", g.path)
+	if g.notify != nil {
+		g.notify.SetPaused(fmt.Sprintf("sentinel file %q present", g.path))
+		defer g.notify.ClearPaused()
+	}
 	waited := 0
 	for {
 		if err := g.sleep(ctx, stop, sentinelPollInterval); err != nil {

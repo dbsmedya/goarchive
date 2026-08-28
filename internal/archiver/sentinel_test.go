@@ -11,6 +11,83 @@ import (
 	"github.com/dbsmedya/goarchive/internal/logger"
 )
 
+type recordingNotifier struct {
+	setReasons []string
+	cleared    int
+}
+
+func (r *recordingNotifier) SetPaused(reason string) { r.setReasons = append(r.setReasons, reason) }
+func (r *recordingNotifier) ClearPaused()            { r.cleared++ }
+
+func TestSentinelGate_NotifierOnActualWaitOnly(t *testing.T) {
+	g := newSentinelGate("/sentinel", logger.NewDefault()).withNotifier(&recordingNotifier{})
+	g.presentFn = func(string) bool { return false }
+	if err := g.wait(context.Background(), nil); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	n := g.notify.(*recordingNotifier)
+	if len(n.setReasons) != 0 || n.cleared != 0 {
+		t.Fatalf("notifier fired without an actual pause: %+v", n)
+	}
+}
+
+func TestSentinelGate_NotifierPauseAndResume(t *testing.T) {
+	n := &recordingNotifier{}
+	g := newSentinelGate("/var/run/pause", logger.NewDefault()).withNotifier(n)
+	calls := 0
+	g.presentFn = func(string) bool { calls++; return calls <= 2 }
+	g.sleepFn = func(context.Context, time.Duration) error { return nil }
+
+	if err := g.wait(context.Background(), nil); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if len(n.setReasons) != 1 {
+		t.Fatalf("SetPaused calls = %d, want 1", len(n.setReasons))
+	}
+	want := `sentinel file "/var/run/pause" present`
+	if n.setReasons[0] != want {
+		t.Fatalf("reason = %q, want %q", n.setReasons[0], want)
+	}
+	if n.cleared != 1 {
+		t.Fatalf("ClearPaused calls = %d, want 1", n.cleared)
+	}
+}
+
+func TestSentinelGate_NotifierClearedOnCancelAndStop(t *testing.T) {
+	n1 := &recordingNotifier{}
+	g1 := newSentinelGate("/s", logger.NewDefault()).withNotifier(n1)
+	g1.presentFn = func(string) bool { return true }
+	g1.sleepFn = func(context.Context, time.Duration) error { return context.Canceled }
+	if err := g1.wait(context.Background(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if n1.cleared != 1 {
+		t.Fatalf("cancel path: ClearPaused = %d, want 1", n1.cleared)
+	}
+
+	n2 := &recordingNotifier{}
+	g2 := newSentinelGate("/s", logger.NewDefault()).withNotifier(n2)
+	g2.presentFn = func(string) bool { return true }
+	stop := make(chan struct{})
+	g2.sleepFn = func(context.Context, time.Duration) error { close(stop); return nil }
+	if err := g2.wait(context.Background(), stop); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if n2.cleared != 1 {
+		t.Fatalf("stop path: ClearPaused = %d, want 1", n2.cleared)
+	}
+}
+
+func TestSentinelGate_NilNotifierSafe(t *testing.T) {
+	g := newSentinelGate("/s", logger.NewDefault())
+	calls := 0
+	g.presentFn = func(string) bool { calls++; return calls <= 2 }
+	g.sleepFn = func(context.Context, time.Duration) error { return nil }
+	if err := g.wait(context.Background(), nil); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+}
+
 func TestSentinelGate_DisabledWhenEmptyPath(t *testing.T) {
 	g := newSentinelGate("", logger.NewDefault())
 	if err := g.wait(context.Background(), nil); err != nil {
