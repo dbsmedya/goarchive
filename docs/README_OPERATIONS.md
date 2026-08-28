@@ -60,9 +60,9 @@ per command.
 
 | Command | Flags |
 |---------|-------|
-| `archive` | `-j`, `--job` · `--force` · `--skip-validate-preflight` · `--force-triggers` |
-| `purge` | `-j`, `--job` · `--force` · `--skip-validate-preflight` · `--force-triggers` |
-| `copy-only` | `-j`, `--job` · `--force` · `--skip-validate-preflight` |
+| `archive` | `-j`, `--job` · `--force` · `--skip-validate-preflight` · `--force-triggers` · `--progress[=<interval>]` |
+| `purge` | `-j`, `--job` · `--force` · `--skip-validate-preflight` · `--force-triggers` · `--progress[=<interval>]` |
+| `copy-only` | `-j`, `--job` · `--force` · `--skip-validate-preflight` · `--progress[=<interval>]` |
 | `validate` | `-j`, `--job` · `--force-triggers` |
 | `dry-run` | `-j`, `--job` |
 | `plan` | `-j`, `--job` |
@@ -75,6 +75,44 @@ per command.
 | `--force` | Best-effort heartbeat takeover when a prior run's heartbeat is stale. **Not** hard exclusion — see [Concurrency](#concurrency-and-locking). `copy-only` also uses it to confirm bypassing duplicate preflight. |
 | `--force-triggers` | Proceed despite source DELETE triggers. Triggers **will fire** during delete. Not offered by `copy-only`, which never deletes. |
 | `--skip-validate-preflight` | **DANGEROUS.** Skip all preflight checks. Prints a full-width warning banner. Not offered by `dry-run` or `validate`. |
+| `--progress[=<interval>]` | Print periodic progress to stdout for `archive`, `copy-only`, or `purge`. Bare `--progress` uses 30 seconds. |
+
+### Progress display
+
+`archive`, `copy-only`, and `purge` accept `--progress[=<interval>]`. A bare
+`--progress` reports every 30 seconds. An attached Go duration such as
+`--progress=10s` or `--progress=1m30s` changes the interval; a bare integer is
+seconds. The minimum is one second. Because the flag has an optional value,
+the value must use `=`: `--progress 10s` is rejected with a hint to use
+`--progress=10s`.
+
+Each report is one append-only stdout line:
+
+```text
+progress: roots 4000/~12000 (33.3%) remaining=8000 copied_rows=45210 deleted_rows=45210 elapsed=7m10s eta=14m20s
+```
+
+`roots`, percent, `remaining`, and ETA all use root rows, the unit advanced by
+the batch loop. `copied_rows` and `deleted_rows` are absolute row totals and
+include related child-table rows. `archive` prints both row counters;
+`copy-only` prints only `copied_rows`; `purge` prints only `deleted_rows`.
+
+The `~` marks the total as an initial estimate. Rows may enter or leave a
+time-relative job condition after the initial count, so percent is capped at
+100 and remaining is clamped at zero. A naturally completed run always ends
+with `remaining=0`, `100.0%`, and `eta=0s`; a graceful stop or fatal error
+retains the last completed-batch estimate. The final progress line is emitted
+exactly once on every exit after reporting has activated.
+
+On resume, recovery runs first and the estimate then counts from the fetcher's
+current checkpoint. Recovered copied/deleted rows seed the displayed row totals
+but are not added to the new main-loop root count. Startup, recovery, or count
+failures that happen before reporter activation produce no progress line.
+
+When the main-loop sentinel gate pauses a run, ticks show `eta=paused` and add
+`[PAUSED: sentinel file "…" present]`; normal ETA rendering resumes after the
+file is removed. Sentinel waits during crash recovery remain visible through
+the configured logger and are not annotated in the progress line.
 
 > **Processing settings have no CLI flags.** `batch_size`, `batch_delete_size`,
 > `sleep_seconds`, `delete_sleep_seconds`, and `sentinel_file` are config-file
