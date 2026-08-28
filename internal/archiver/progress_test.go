@@ -238,3 +238,17 @@ func TestStartProgress_CountFailureFailsTheRun(t *testing.T) {
 type writerFunc func(p []byte) (int, error)
 
 func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
+
+func TestOrchestrators_SetProgressInterval(t *testing.T) {
+	ao := &ArchiveOrchestrator{}
+	ao.SetProgressInterval(10 * time.Second)
+	assert.Equal(t, 10*time.Second, ao.progressInterval)
+
+	co := &CopyOnlyOrchestrator{}
+	co.SetProgressInterval(30 * time.Second)
+	assert.Equal(t, 30*time.Second, co.progressInterval)
+
+	po := &PurgeOrchestrator{}
+	po.SetProgressInterval(time.Second)
+	assert.Equal(t, time.Second, po.progressInterval)
+}

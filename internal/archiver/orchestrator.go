@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,21 +60,23 @@ type lagMonitorFactory func([]*sql.DB, config.ReplicationConfig, *logger.Logger)
 // ArchiveOrchestrator coordinates the archive operation using the dependency graph
 // to determine the correct order for copying and deleting records.
 type ArchiveOrchestrator struct {
-	config          *config.Config
-	jobConfig       *config.JobConfig
-	jobName         string
-	dbManager       *database.Manager
-	graph           *graph.Graph
-	logger          *logger.Logger
-	copyOrder       []string
-	deleteOrder     []string
-	initialized     bool
-	processingCfg   config.ProcessingConfig   // Effective processing config (job-specific or global)
-	verificationCfg config.VerificationConfig // Effective verification config (job-specific or global)
-	lagFactory      lagMonitorFactory
-	force           bool
-	staleAtStartup  bool
-	stopCh          <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	config           *config.Config
+	jobConfig        *config.JobConfig
+	jobName          string
+	dbManager        *database.Manager
+	graph            *graph.Graph
+	logger           *logger.Logger
+	copyOrder        []string
+	deleteOrder      []string
+	initialized      bool
+	processingCfg    config.ProcessingConfig   // Effective processing config (job-specific or global)
+	verificationCfg  config.VerificationConfig // Effective verification config (job-specific or global)
+	lagFactory       lagMonitorFactory
+	force            bool
+	staleAtStartup   bool
+	stopCh           <-chan struct{} // cooperative graceful-stop signal (nil = disabled)
+	progressInterval time.Duration
+	progressOut      io.Writer
 }
 
 // NewOrchestrator creates a new archive orchestrator with the given configuration
@@ -386,6 +390,17 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		}
 	}
 
+	progressOut := o.progressOut
+	if progressOut == nil {
+		progressOut = os.Stdout
+	}
+	tracker, stopProgress, err := startProgress(ctx, o.progressInterval, fetcher,
+		batchFull, result.RecordsCopied, result.RecordsDeleted, progressOut)
+	if err != nil {
+		return fail("%w", err)
+	}
+	defer stopProgress()
+
 	// Batch processing loop
 	batchNum := 0
 	totalProcessed := int64(0)
@@ -415,6 +430,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		// Empty batch = job complete
 		if len(rootIDs) == 0 {
 			o.logger.Info("No more root IDs to process - job complete")
+			tracker.MarkComplete()
 			break
 		}
 
@@ -423,7 +439,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		// we reach here the previous batch has fully completed (copy+verify+delete+
 		// CompleteBatch). A finished job exits via the empty-fetch check above
 		// rather than pausing forever.
-		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).wait(ctx, o.stopCh); err != nil {
+		if err := newSentinelGate(o.processingCfg.SentinelFile, o.logger).withNotifier(tracker).wait(ctx, o.stopCh); err != nil {
 			return fail("%w", err)
 		}
 		// A Ctrl-C during the sentinel pause ends the pause (wait returns nil);
@@ -459,6 +475,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		result.TablesVerified += batchStats.TablesVerified
 		result.RecordsVerified += batchStats.RecordsVerified
 		totalProcessed += int64(batchStats.RootsProcessed)
+		tracker.RecordBatch(*batchStats)
 
 		// Sleep between batches (skipped early on a cooperative stop; the loop-top
 		// stopRequested check then breaks).
@@ -520,6 +537,11 @@ func (o *ArchiveOrchestrator) SetForce(force bool) {
 // the next boundary. A nil channel disables cooperative stop.
 func (o *ArchiveOrchestrator) SetStopChannel(stop <-chan struct{}) {
 	o.stopCh = stop
+}
+
+// SetProgressInterval enables periodic --progress reporting. Zero disables it.
+func (o *ArchiveOrchestrator) SetProgressInterval(d time.Duration) {
+	o.progressInterval = d
 }
 
 // SetLogger sets a custom logger for the orchestrator. Call before
