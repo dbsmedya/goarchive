@@ -17,6 +17,7 @@ var (
 	archiveForce                 bool
 	archiveSkipValidatePreflight bool
 	archiveForceTriggers         bool
+	archiveProgress              string
 )
 
 var archiveCmd = &cobra.Command{
@@ -47,6 +48,7 @@ func init() {
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	archiveCmd.Flags().BoolVar(&archiveForceTriggers, "force-triggers", false,
 		"Proceed despite DELETE triggers detected by preflight")
+	registerProgressFlag(archiveCmd, &archiveProgress)
 
 	rootCmd.AddCommand(archiveCmd)
 }
@@ -65,6 +67,10 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	progressInterval, err := parseProgressInterval(cmd, archiveProgress)
+	if err != nil {
+		return err
 	}
 
 	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
@@ -137,6 +143,7 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	}
 	orch.SetForce(archiveForce)
 	orch.SetStopChannel(stopCh)
+	orch.SetProgressInterval(progressInterval)
 
 	// Execute archive operation
 	result, err := orch.Execute(ctx, nil)

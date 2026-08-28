@@ -17,6 +17,7 @@ var (
 	purgeForce                 bool
 	purgeSkipValidatePreflight bool
 	purgeForceTriggers         bool
+	purgeProgress              string
 )
 
 var purgeCmd = &cobra.Command{
@@ -47,6 +48,7 @@ func init() {
 		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	purgeCmd.Flags().BoolVar(&purgeForceTriggers, "force-triggers", false,
 		"Proceed despite DELETE triggers detected by preflight")
+	registerProgressFlag(purgeCmd, &purgeProgress)
 
 	rootCmd.AddCommand(purgeCmd)
 }
@@ -65,6 +67,10 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+	progressInterval, err := parseProgressInterval(cmd, purgeProgress)
+	if err != nil {
+		return err
 	}
 
 	// Get job config after applying overrides so CLI flags (e.g. --skip-verify) are visible.
@@ -132,6 +138,7 @@ func runPurge(cmd *cobra.Command, args []string) error {
 	}
 	orch.SetForce(purgeForce)
 	orch.SetStopChannel(stopCh)
+	orch.SetProgressInterval(progressInterval)
 	result, err := orch.Execute(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
