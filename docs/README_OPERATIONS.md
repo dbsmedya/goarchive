@@ -452,6 +452,10 @@ unlocked.
 `--force` proceeds past lock contention **only** when the prior holder's heartbeat
 is stale, then refreshes the heartbeat so later startups are blocked.
 
+Heartbeats are UTC wall-clock since 2.2, and a tracking schema written by an earlier
+release is refused at startup until upgraded — see
+[Job Tracking Schema](README_JOBS_SCHEMA.md#tracking-schema-version-marker).
+
 > A stale heartbeat does not prove the old process is dead. It may still hold
 > `GET_LOCK()` and still be deleting. **Verify the old process is actually dead
 > before forcing.**

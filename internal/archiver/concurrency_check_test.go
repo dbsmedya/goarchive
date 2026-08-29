@@ -12,7 +12,7 @@ func TestCheckSameRootConcurrency(t *testing.T) {
 	t.Run("fresh heartbeat blocks", func(t *testing.T) {
 		db, mock, _ := sqlmock.New()
 		defer func() { _ = db.Close() }()
-		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 			WithArgs("users", JobStatusRunning, "myjob").
 			WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}).AddRow("other_job", int64(5)))
 		err := CheckSameRootConcurrency(context.Background(), db, "testdb", "users", "myjob", "archive")
@@ -24,7 +24,7 @@ func TestCheckSameRootConcurrency(t *testing.T) {
 	t.Run("stale heartbeat blocks with stale message", func(t *testing.T) {
 		db, mock, _ := sqlmock.New()
 		defer func() { _ = db.Close() }()
-		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 			WithArgs("users", JobStatusRunning, "myjob").
 			WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}).AddRow("dead_job", int64(120)))
 		err := CheckSameRootConcurrency(context.Background(), db, "testdb", "users", "myjob", "archive")
@@ -36,7 +36,7 @@ func TestCheckSameRootConcurrency(t *testing.T) {
 	t.Run("no conflict passes", func(t *testing.T) {
 		db, mock, _ := sqlmock.New()
 		defer func() { _ = db.Close() }()
-		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+		mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 			WithArgs("users", JobStatusRunning, "myjob").
 			WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}))
 		if err := CheckSameRootConcurrency(context.Background(), db, "testdb", "users", "myjob", "archive"); err != nil {

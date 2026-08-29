@@ -3,6 +3,14 @@ local_infile              = ON
 server_id		    = 2
 report_host		    = db2.local
 
+# Issue #16: the destination deliberately runs in a NON-UTC zone so every
+# integration and E2E run crosses a time-zone boundary. GoArchive pins its own
+# sessions to '+00:00'; if that ever regresses, TIMESTAMP instants shift by 3 h
+# and internal/archiver/timezone_integration_test.go fails. Offset form on
+# purpose: it is valid at first boot, before the entrypoint loads the
+# named-zone tables that 'Europe/Berlin' would need.
+default-time-zone           = '+03:00'
+
 skip-name-resolve           = ON
 
 log-bin                     = db2_binlog

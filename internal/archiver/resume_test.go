@@ -96,7 +96,7 @@ func TestResumeManager_EnsureSchemaVersion_StampsFreshSchema(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
 		WithArgs(trackingSchemaVersion).
@@ -118,7 +118,7 @@ func TestResumeManager_EnsureSchemaVersion_ConcurrentUnrecognizedStampIsRefused(
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	// Another writer wins the id=1 race, so INSERT IGNORE changes no row.
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
@@ -192,6 +192,60 @@ func TestResumeManager_EnsureSchemaVersion_MalformedRevisionRefuses(t *testing.T
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestTrackingSchemaVersion_IsASingleLabel(t *testing.T) {
+	// The standard: one revision per binary, nothing else recognized.
+	assert.Equal(t, "2.2", trackingSchemaVersion)
+	assert.Len(t, recognizedTrackingSchemaVersions, 1)
+	_, ok := recognizedTrackingSchemaVersions[trackingSchemaVersion]
+	assert.True(t, ok)
+}
+
+func TestResumeManager_EnsureSchemaVersion_PopulatedPreMarkerSchemaRefuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
+	// A job row exists: these tables were written before the marker existed.
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
+	// No INSERT is expected: an attempt would surface as a different error.
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	for _, want := range []string{"no schema_version marker", trackingSchemaVersion, "does not recognize", "README_JOBS_SCHEMA"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestResumeManager_EnsureSchemaVersion_OlderRevisionRefuses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	rm, err := NewResumeManager(db, logger.NewDefault(), "testdb")
+	require.NoError(t, err)
+
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
+		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}).AddRow("2.0"))
+
+	err = rm.ensureSchemaVersion(context.Background())
+	require.Error(t, err)
+	for _, want := range []string{`"2.0"`, trackingSchemaVersion, "does not recognize", "README_JOBS_SCHEMA"} {
+		assert.Contains(t, err.Error(), want)
+	}
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestResumeManager_EnsureSchemaVersion_CreateFailureIsAttributed(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -243,7 +297,7 @@ func TestResumeManager_EnsureSchemaVersion_StampFailureIsAttributed(t *testing.T
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
 		WithArgs(trackingSchemaVersion).
@@ -268,7 +322,7 @@ func TestResumeManager_EnsureSchemaVersion_RefusesToStampAnUnexpectedShape(t *te
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnError(errors.New("unknown column 'id'"))
 
 	err = rm.ensureSchemaVersion(context.Background())
@@ -290,7 +344,7 @@ func TestResumeManager_InitializeTables_Success(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
 		WithArgs(trackingSchemaVersion).
@@ -308,14 +362,14 @@ func TestResumeManager_HeartbeatAndStaleness(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_heartbeat_at = NOW\\(\\) WHERE job_name = \\?").
+	mock.ExpectExec("UPDATE .*archiver_job` SET last_heartbeat_at = UTC_TIMESTAMP\\(\\) WHERE job_name = \\?").
 		WithArgs("job1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := rm.Heartbeat(context.Background(), "job1"); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
 
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(5)))
 	stale, age, err := rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)
@@ -326,7 +380,7 @@ func TestResumeManager_HeartbeatAndStaleness(t *testing.T) {
 		t.Fatalf("fresh heartbeat: stale=%v age=%v", stale, age)
 	}
 
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(120)))
 	stale, age, err = rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)

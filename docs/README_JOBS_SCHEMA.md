@@ -182,8 +182,9 @@ that invariant.
 ## Lifecycle
 
 1. **First run of any job in the schema** — `archiver_job` and `goarchive_meta` are
-   created if absent (`CREATE TABLE IF NOT EXISTS`). If no revision marker exists,
-   GoArchive verifies the compatible `archiver_job` shape and stamps revision `2.0`.
+   created if absent (`CREATE TABLE IF NOT EXISTS`). A fresh schema — no marker and no
+   rows in `archiver_job` — is stamped with the current revision (`2.2`); anything else
+   is refused, see [Tracking-schema version marker](#tracking-schema-version-marker).
 2. **First run of a specific job** — a row is inserted, `id` is assigned, and
    `archiver_job_log_<id>` is created.
 3. **During a run** — `job_status = 1`, heartbeat every 15s, log rows transition
@@ -216,13 +217,17 @@ indefinitely, see [Maintenance](#maintenance-what-is-safe-to-delete).
 
 ## Inspection cookbook
 
+> `last_heartbeat_at` is a UTC wall-clock since 2.2. Always measure its age with
+> `UTC_TIMESTAMP()`, never `NOW()` — `NOW()` follows *your* session's zone and misreports the
+> age by your UTC offset.
+
 **All jobs and their checkpoints**
 
 ```sql
 SELECT id, job_name, root_table, job_type, job_status,
        last_processed_root_pk_id AS checkpoint,
        last_heartbeat_at,
-       TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS heartbeat_age_sec
+       TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS heartbeat_age_sec
 FROM goarchive.archiver_job
 ORDER BY id;
 ```
@@ -231,9 +236,9 @@ ORDER BY id;
 
 ```sql
 SELECT job_name, root_table,
-       TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS heartbeat_age_sec,
+       TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS heartbeat_age_sec,
        CASE WHEN last_heartbeat_at IS NULL
-                 OR TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) > 60
+                 OR TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) > 60
             THEN 'STALE' ELSE 'live' END AS liveness
 FROM goarchive.archiver_job
 WHERE job_status = 1;
@@ -390,7 +395,7 @@ To remove a job and all its state — for example, a job name you no longer use:
 ```sql
 -- 1. Confirm it is not running.
 SELECT job_name, job_status,
-       TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) AS heartbeat_age_sec
+       TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS heartbeat_age_sec
 FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 
 -- 2. Drop its log table (substitute the id).
@@ -470,7 +475,7 @@ proof the old process is gone. See
 
 ## Tracking-schema version marker
 
-`goarchive_meta` declares which revision of the tracking-table layout a schema holds:
+`goarchive_meta` declares which revision of the tracking-table contract a schema holds:
 
 ```sql
 CREATE TABLE IF NOT EXISTS goarchive_meta (
@@ -481,29 +486,48 @@ CREATE TABLE IF NOT EXISTS goarchive_meta (
 ) ENGINE=InnoDB;
 ```
 
-It has one authoritative row, always `id = 1`. GoArchive 2.0 writes
-`schema_version = '2.0'`. This is the tracking-schema revision, not the binary
-version; a release that does not reshape tracking tables leaves it unchanged.
+It has one authoritative row, always `id = 1`. The value is the **tracking-schema revision**,
+not the binary version: a release bumps it when it changes the tables' layout **or the meaning
+of a column**, and leaves it alone otherwise. GoArchive 2.2 writes `schema_version = '2.2'`;
+2.0 and 2.1 wrote `'2.0'` (2.2 made `last_heartbeat_at` a UTC wall-clock).
 
-At startup, GoArchive stamps a compatible schema when the marker is absent and
-**refuses to run when it finds a revision it does not recognize**:
+**The rules are deliberately simple.** Each GoArchive binary recognises exactly one revision —
+its own. At startup it
+
+- **stamps** a fresh schema — no marker, and no rows in `archiver_job`;
+- **refuses** anything else: a different revision, or populated tracking tables with no marker
+  (written by a release older than 2.0).
+
+There is no inferred revision and no automatic migration. Every refusal is resolved by one of
+the manual procedures below. The refusal reads:
 
 ```
-tracking tables in schema "goarchive" report schema_version "2.1", which this
-GoArchive does not recognize (it understands "2.0").
-They were written by a newer release; upgrade the GoArchive binary to one that
-supports "2.1", or point job_schema at a different schema.
+tracking tables in schema "goarchive" report schema_version "2.0", which this
+GoArchive does not recognize (it requires schema_version "2.2").
+GoArchive never migrates or infers a tracking-schema revision. Stop every
+GoArchive process that uses this schema (any version), then follow the matching
+row of "Tracking-schema upgrade procedures" in docs/README_JOBS_SCHEMA.md
 ```
 
-There is no inferred version and no automatic migration. Leave the marker intact so
-future releases can provide an explicit migration path.
+### Tracking-schema upgrade procedures
 
-> **Upgrading from a release older than the integer `id` column:** 2.0 does not
-> support that upgrade directly. Upgrade to **1.8 first, then 2.0**. Alternatively,
-> drain every in-flight job and drop the old shared `archiver_job_log` and
-> `archiver_job` tables, accepting that every checkpoint is discarded. For
-> `copy-only`, review [Retiring a job](#maintenance-what-is-safe-to-delete) before
-> choosing the destructive path.
+Run the matching row **after stopping every GoArchive process that uses the schema, whatever
+its version** — a 2.1 job still running would keep writing local-time heartbeats.
+
+| Schema reports | Procedure |
+|---|---|
+| `schema_version = '2.0'` (written by 2.0 or 2.1) | `UPDATE goarchive.archiver_job SET last_heartbeat_at = NULL;`<br>`UPDATE goarchive.goarchive_meta SET schema_version = '2.2' WHERE id = 1;` |
+| no marker, populated tables with an integer `id` column (1.8) | Run the new binary once — it creates `goarchive_meta` and refuses — then:<br>`UPDATE goarchive.archiver_job SET last_heartbeat_at = NULL;`<br>`INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '2.2');` |
+| no marker, no integer `id` column (older than 1.8) | Unsupported directly. Upgrade to **1.8 first**, then follow the row above — or drain every in-flight job and drop the old `archiver_job_log` / `archiver_job` tables, discarding every checkpoint (see [Retiring a job](#maintenance-what-is-safe-to-delete)). |
+| a revision newer than the binary understands | Upgrade the GoArchive binary, or point `job_schema` at a different schema. |
+
+**Why heartbeats are voided rather than converted.** `last_heartbeat_at` is a `DATETIME` and
+carries no zone. Values written before 2.2 are in whatever zone the old session used; 2.2 cannot
+know it, and a wrong guess would make a dead job look live — or a live one dead — to `--force`
+and the same-root check. `NULL` is what both checks already treat as *stale*, so a voided
+heartbeat can never masquerade as live. Checkpoints, statuses and per-job log tables are
+untouched; resume behaves exactly as before. If you know the zone the old sessions used, you may
+`CONVERT_TZ(last_heartbeat_at, '<old zone>', '+00:00')` instead of voiding.
 
 ---
 

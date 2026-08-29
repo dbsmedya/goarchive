@@ -69,6 +69,14 @@ destination-only and ignored on `source`.
 | `max_connections` | Max open connections (must not be negative) | `10` |
 | `max_idle_connections` | Max idle connections (must not be negative) | `5` |
 
+**Every session runs in UTC.** GoArchive opens each connection — source, destination, every
+replication server — with `time_zone = '+00:00'`, and refuses to start if a server or proxy does
+not honour it. This is what keeps a `TIMESTAMP` value the same instant on both sides: MySQL
+converts `TIMESTAMP` through the *session* zone on every read and write, so two servers in
+different zones — or two `SYSTEM` zones that resolve differently — would otherwise shift every
+copied value by their offset while verification still matched. It is not configurable.
+`DATETIME`, `DATE` and `TIME` are stored as written and are unaffected.
+
 ### `job_schema` (destination only)
 
 | Option | Description | Default |
@@ -194,6 +202,13 @@ where: "1=1"
 `where` is a **raw SQL fragment** injected into selection queries. Configuration
 is treated as trusted operator input — see
 [Trust model](README_LIMITATIONS.md#trust-model).
+
+`where` is evaluated **in a UTC session** (see [`source:` / `destination:`](#source--destination)).
+A `TIMESTAMP` column compared with `NOW()` is unaffected — both follow the session — but a
+`DATETIME` column compared with `NOW()`, a `TIMESTAMP` column compared with a bare literal, and
+`CURDATE()` / `DATE()` day boundaries all sit at UTC rather than at your server's local zone.
+To pin a boundary to a local time, give the literal an offset —
+`created_at < '2025-01-01 00:00:00+03:00'` (MySQL 8.0.19+) — or use `CONVERT_TZ`.
 
 ### `primary_key` must match exactly
 

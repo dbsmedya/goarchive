@@ -122,6 +122,11 @@ SQL identifier quoting and validation now live in the **library**
 - **archiver_job_log_<id>**: per-job table (named by the job's `id`) holding per-root-PK status
   as TINYINT (0=pending/1=copied/2=completed/3=failed) for crash recovery. Replaces the former
   shared `archiver_job_log` table.
+- **goarchive_meta**: one-row tracking-schema marker. The binary recognises exactly one label
+  (`trackingSchemaVersion`, `internal/archiver/resume.go`) and refuses every other revision
+  and every populated marker-less schema — no inference, no migration. A release that changes
+  the tracking tables' layout **or a column's meaning** bumps the label and adds a procedure row
+  to `docs/README_JOBS_SCHEMA.md` → *Tracking-schema upgrade procedures*.
 
 ## Behavior — `docs/` owns it, this file does not
 
@@ -260,8 +265,8 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1095 FAIL=0 SKIP=2` (runner-measured
-2026-08-28; the earlier Phase-028 figure predated the v2.1.0 replication tests).
+The measured integration baseline is `PASS=1106 FAIL=0 SKIP=2` (runner-measured
+2026-08-29; #16 added the timezone and marker-remedy integration tests).
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

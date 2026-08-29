@@ -20,7 +20,7 @@ func CheckSameRootConcurrency(ctx context.Context, db *sql.DB, jobSchema, rootTa
 	}
 	jobTable := sqlutil.QuoteIdentifier(jobSchema) + "." + sqlutil.QuoteIdentifier("archiver_job")
 	query := fmt.Sprintf(`
-		SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW())
+		SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP())
 		FROM %s
 		WHERE root_table = ?
 		  AND job_status = ?

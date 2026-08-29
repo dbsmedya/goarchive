@@ -35,16 +35,17 @@ const (
 
 const (
 	defaultResumeChunkSize = 1000
-
-	// trackingSchemaVersion is the tracking-table layout revision, not the
-	// GoArchive binary version. Releases that do not reshape the tracking tables
-	// leave it unchanged.
-	trackingSchemaVersion = "2.0"
+	// trackingSchemaVersion is the tracking-table revision this binary
+	// requires: the layout AND the meaning of every column. A release that
+	// changes either bumps it and adds a row to "Tracking-schema upgrade
+	// procedures" in docs/README_JOBS_SCHEMA.md. Not the binary version.
+	// 2.2 made last_heartbeat_at a UTC wall-clock (issue #16).
+	trackingSchemaVersion = "2.2"
 )
 
-// recognizedTrackingSchemaVersions is the exact set of revisions this binary
-// can safely operate on. Unknown values fail closed; there is deliberately no
-// ordering comparison or semantic-version parsing.
+// recognizedTrackingSchemaVersions is exactly one label: this binary's own.
+// Anything else fails closed; there is no ordering, no parsing, no migration
+// and no inference — the operator follows a documented procedure instead.
 var recognizedTrackingSchemaVersions = map[string]struct{}{
 	trackingSchemaVersion: {},
 }
@@ -210,12 +211,21 @@ func (r *ResumeManager) readTrackingSchemaVersion(ctx context.Context) (string, 
 	return found, err
 }
 
+// trackingSchemaRefusal is the one refusal for every tracking-schema
+// mismatch; declared is what the schema says about itself. The code knows one
+// revision and nothing about any other: per-revision procedures live in
+// docs/README_JOBS_SCHEMA.md, never here.
+func (r *ResumeManager) trackingSchemaRefusal(declared string) error {
+	return fmt.Errorf(
+		"tracking tables in schema %q %s, which this GoArchive does not recognize (it requires schema_version %q).\n"+
+			"GoArchive never migrates or infers a tracking-schema revision. Stop every GoArchive process that uses this schema (any version), "+
+			"then follow the matching row of \"Tracking-schema upgrade procedures\" in docs/README_JOBS_SCHEMA.md",
+		r.jobSchema, declared, trackingSchemaVersion)
+}
+
 func (r *ResumeManager) validateTrackingSchemaVersion(found string) error {
 	if _, ok := recognizedTrackingSchemaVersions[found]; !ok {
-		return fmt.Errorf(
-			"tracking tables in schema %q report schema_version %q, which this GoArchive does not recognize (it understands %q).\n"+
-				"They were written by a newer release; upgrade the GoArchive binary to one that supports %q, or point job_schema at a different schema",
-			r.jobSchema, found, trackingSchemaVersion, found)
+		return r.trackingSchemaRefusal(fmt.Sprintf("report schema_version %q", found))
 	}
 	return nil
 }
@@ -231,14 +241,19 @@ func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
 
 	found, err := r.readTrackingSchemaVersion(ctx)
 	if err == sql.ErrNoRows {
-		// A later release will trust this declaration, so prove the current table
-		// has the id-bearing shape before stamping it. LIMIT 0 reads no data. Any
-		// failure is deliberately generic and fail-closed.
-		rows, probeErr := r.db.QueryContext(ctx, fmt.Sprintf("SELECT id FROM %s LIMIT 0", r.jobTable))
-		if probeErr == nil {
-			probeErr = rows.Close()
-		}
-		if probeErr != nil {
+		// No declaration. Only a FRESH schema is stamped — one whose
+		// archiver_job holds no rows. Populated tables without a marker were
+		// written before the marker existed (<= 1.8) and are refused like any
+		// other unrecognized revision. The same statement proves the
+		// integer-id shape: on an older table it errors.
+		var probeID int64
+		probeErr := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM %s LIMIT 1", r.jobTable)).Scan(&probeID)
+		switch probeErr {
+		case nil:
+			return r.trackingSchemaRefusal("have no schema_version marker but already hold job rows")
+		case sql.ErrNoRows:
+			// Fresh: stamp below.
+		default:
 			return fmt.Errorf(
 				"cannot confirm that %s in schema %q has the shape this release requires, so its schema_version was not stamped: %w.\n"+
 					"If these tracking tables predate the integer `id` column, upgrade to GoArchive 1.8 first — 1.2 to 2.0 is not a supported path.\n"+
@@ -383,9 +398,12 @@ func (r *ResumeManager) UpdateJobStatus(ctx context.Context, jobName string, sta
 	return nil
 }
 
-// Heartbeat updates the job heartbeat to the database server's current time.
+// Heartbeat stamps the job with the server's current UTC wall-clock.
+// last_heartbeat_at is a DATETIME — it carries no zone — so it is written and
+// read with UTC_TIMESTAMP(), never NOW: NOW follows the session zone and
+// would give the column a meaning that depends on who wrote it (issue #16).
 func (r *ResumeManager) Heartbeat(ctx context.Context, jobName string) error {
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET last_heartbeat_at = NOW() WHERE job_name = ?", r.jobTable), jobName)
+	_, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET last_heartbeat_at = UTC_TIMESTAMP() WHERE job_name = ?", r.jobTable), jobName)
 	if err != nil {
 		return fmt.Errorf("failed to update heartbeat for job %q: %w", jobName, err)
 	}
@@ -394,7 +412,7 @@ func (r *ResumeManager) Heartbeat(ctx context.Context, jobName string) error {
 
 // IsHeartbeatStale reports whether a job row is missing, has no heartbeat, or is older than threshold.
 func (r *ResumeManager) IsHeartbeatStale(ctx context.Context, jobName string, threshold time.Duration) (bool, time.Duration, error) {
-	query := fmt.Sprintf("SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) FROM %s WHERE job_name = ?", r.jobTable)
+	query := fmt.Sprintf("SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s WHERE job_name = ?", r.jobTable)
 	var ageSeconds sql.NullInt64
 	err := r.db.QueryRowContext(ctx, query, jobName).Scan(&ageSeconds)
 	if err == sql.ErrNoRows {
