@@ -218,10 +218,10 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
 	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
 		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(101)))
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}))
-	mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+	mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("users", JobStatusRunning, "test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}))
 
@@ -279,10 +279,10 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows([]string{"GET_LOCK"}).AddRow(int64(1)))
 	mock.ExpectQuery("SELECT CONNECTION_ID\\(\\)").
 		WillReturnRows(sqlmock.NewRows([]string{"CONNECTION_ID()"}).AddRow(int64(201)))
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}))
-	mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF").
+	mock.ExpectQuery("SELECT job_name, TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("users", JobStatusRunning, "test_job").
 		WillReturnRows(sqlmock.NewRows([]string{"job_name", "age_seconds"}))
 

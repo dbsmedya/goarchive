@@ -308,14 +308,14 @@ func TestResumeManager_HeartbeatAndStaleness(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	rm, _ := NewResumeManager(db, logger.NewDefault(), "testdb")
 
-	mock.ExpectExec("UPDATE .*archiver_job` SET last_heartbeat_at = NOW\\(\\) WHERE job_name = \\?").
+	mock.ExpectExec("UPDATE .*archiver_job` SET last_heartbeat_at = UTC_TIMESTAMP\\(\\) WHERE job_name = \\?").
 		WithArgs("job1").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := rm.Heartbeat(context.Background(), "job1"); err != nil {
 		t.Fatalf("Heartbeat: %v", err)
 	}
 
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(5)))
 	stale, age, err := rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)
@@ -326,7 +326,7 @@ func TestResumeManager_HeartbeatAndStaleness(t *testing.T) {
 		t.Fatalf("fresh heartbeat: stale=%v age=%v", stale, age)
 	}
 
-	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, NOW\\(\\)\\)").
+	mock.ExpectQuery("SELECT TIMESTAMPDIFF\\(SECOND, last_heartbeat_at, UTC_TIMESTAMP\\(\\)\\)").
 		WithArgs("job1").
 		WillReturnRows(sqlmock.NewRows([]string{"age_seconds"}).AddRow(int64(120)))
 	stale, age, err = rm.IsHeartbeatStale(context.Background(), "job1", time.Minute)

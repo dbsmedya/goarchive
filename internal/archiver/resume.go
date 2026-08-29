@@ -383,9 +383,12 @@ func (r *ResumeManager) UpdateJobStatus(ctx context.Context, jobName string, sta
 	return nil
 }
 
-// Heartbeat updates the job heartbeat to the database server's current time.
+// Heartbeat stamps the job with the server's current UTC wall-clock.
+// last_heartbeat_at is a DATETIME — it carries no zone — so it is written and
+// read with UTC_TIMESTAMP(), never NOW: NOW follows the session zone and
+// would give the column a meaning that depends on who wrote it (issue #16).
 func (r *ResumeManager) Heartbeat(ctx context.Context, jobName string) error {
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET last_heartbeat_at = NOW() WHERE job_name = ?", r.jobTable), jobName)
+	_, err := r.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET last_heartbeat_at = UTC_TIMESTAMP() WHERE job_name = ?", r.jobTable), jobName)
 	if err != nil {
 		return fmt.Errorf("failed to update heartbeat for job %q: %w", jobName, err)
 	}
@@ -394,7 +397,7 @@ func (r *ResumeManager) Heartbeat(ctx context.Context, jobName string) error {
 
 // IsHeartbeatStale reports whether a job row is missing, has no heartbeat, or is older than threshold.
 func (r *ResumeManager) IsHeartbeatStale(ctx context.Context, jobName string, threshold time.Duration) (bool, time.Duration, error) {
-	query := fmt.Sprintf("SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, NOW()) FROM %s WHERE job_name = ?", r.jobTable)
+	query := fmt.Sprintf("SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s WHERE job_name = ?", r.jobTable)
 	var ageSeconds sql.NullInt64
 	err := r.db.QueryRowContext(ctx, query, jobName).Scan(&ageSeconds)
 	if err == sql.ErrNoRows {
