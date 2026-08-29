@@ -40,7 +40,7 @@ func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {
 	clearArchiverStateNow(t, destDB)
 	if _, err := destDB.ExecContext(ctx, `
 		INSERT INTO archiver_job (job_name, root_table, job_type, job_status, last_heartbeat_at)
-		VALUES (?, 'customers', 'archive', ?, NOW())
+		VALUES (?, 'customers', 'archive', ?, UTC_TIMESTAMP())
 	`, jobName, JobStatusRunning); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestArchiveForceRefusedWhenLockHeldEvenIfStale(t *testing.T) {
 	clearArchiverStateNow(t, destDB)
 	if _, err := destDB.ExecContext(ctx, `
 		INSERT INTO archiver_job (job_name, root_table, job_type, job_status, last_heartbeat_at)
-		VALUES (?, 'customers', 'archive', ?, NOW() - INTERVAL 120 SECOND)
+		VALUES (?, 'customers', 'archive', ?, UTC_TIMESTAMP() - INTERVAL 120 SECOND)
 	`, jobName, JobStatusRunning); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestArchivePlainRunBlockedByLockHolder(t *testing.T) {
 	// Stale heartbeat — proves plain run rejects regardless of staleness.
 	if _, err := destDB.ExecContext(ctx, `
 		INSERT INTO archiver_job (job_name, root_table, job_type, job_status, last_heartbeat_at)
-		VALUES (?, 'customers', 'archive', ?, NOW() - INTERVAL 120 SECOND)
+		VALUES (?, 'customers', 'archive', ?, UTC_TIMESTAMP() - INTERVAL 120 SECOND)
 	`, jobName, JobStatusRunning); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestArchiveForceDoesNotBypassSameRoot(t *testing.T) {
 	// Incumbent: different job name, same root table, fresh heartbeat → live.
 	if _, err := destDB.ExecContext(ctx, `
 		INSERT INTO archiver_job (job_name, root_table, job_type, job_status, last_heartbeat_at)
-		VALUES (?, 'customers', 'archive', ?, NOW())
+		VALUES (?, 'customers', 'archive', ?, UTC_TIMESTAMP())
 	`, incumbentJob, JobStatusRunning); err != nil {
 		t.Fatal(err)
 	}
