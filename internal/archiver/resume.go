@@ -248,10 +248,10 @@ func (r *ResumeManager) ensureSchemaVersion(ctx context.Context) error {
 		// integer-id shape: on an older table it errors.
 		var probeID int64
 		probeErr := r.db.QueryRowContext(ctx, fmt.Sprintf("SELECT id FROM %s LIMIT 1", r.jobTable)).Scan(&probeID)
-		switch {
-		case probeErr == nil:
+		switch probeErr {
+		case nil:
 			return r.trackingSchemaRefusal("have no schema_version marker but already hold job rows")
-		case probeErr == sql.ErrNoRows:
+		case sql.ErrNoRows:
 			// Fresh: stamp below.
 		default:
 			return fmt.Errorf(
