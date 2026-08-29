@@ -182,8 +182,9 @@ that invariant.
 ## Lifecycle
 
 1. **First run of any job in the schema** — `archiver_job` and `goarchive_meta` are
-   created if absent (`CREATE TABLE IF NOT EXISTS`). If no revision marker exists,
-   GoArchive verifies the compatible `archiver_job` shape and stamps revision `2.0`.
+   created if absent (`CREATE TABLE IF NOT EXISTS`). A fresh schema — no marker and no
+   rows in `archiver_job` — is stamped with the current revision (`2.2`); anything else
+   is refused, see [Tracking-schema version marker](#tracking-schema-version-marker).
 2. **First run of a specific job** — a row is inserted, `id` is assigned, and
    `archiver_job_log_<id>` is created.
 3. **During a run** — `job_status = 1`, heartbeat every 15s, log rows transition
