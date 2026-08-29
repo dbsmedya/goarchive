@@ -105,7 +105,7 @@ make help
 
 By default, the binary is built to `bin/goarchive` with version information injected:
 
-- Version: From git tags or `2.1.0-community`
+- Version: From git tags or `2.2.0-community`
 - Commit: Short git commit hash
 - Build Time: UTC timestamp
 
