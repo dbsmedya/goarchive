@@ -122,6 +122,11 @@ SQL identifier quoting and validation now live in the **library**
 - **archiver_job_log_<id>**: per-job table (named by the job's `id`) holding per-root-PK status
   as TINYINT (0=pending/1=copied/2=completed/3=failed) for crash recovery. Replaces the former
   shared `archiver_job_log` table.
+- **goarchive_meta**: one-row tracking-schema marker. The binary recognises exactly one label
+  (`trackingSchemaVersion`, `internal/archiver/resume.go`) and refuses every other revision
+  and every populated marker-less schema — no inference, no migration. A release that changes
+  the tracking tables' layout **or a column's meaning** bumps the label and adds a procedure row
+  to `docs/README_JOBS_SCHEMA.md` → *Tracking-schema upgrade procedures*.
 
 ## Behavior — `docs/` owns it, this file does not
 

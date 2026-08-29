@@ -509,7 +509,7 @@ Not all findings are fatal.
 ## Error prefixes that are not checks
 
 These prefixes can appear in preflight output. **They are not additional named checks — the
-published count remains 20** — and they do not indicate a configuration problem.
+published count remains 19** — and they do not indicate a configuration problem.
 
 | Prefix | Meaning | What to do |
 |---|---|---|

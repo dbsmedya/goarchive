@@ -109,6 +109,7 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
 | [Job Tracking Schema](docs/README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, safe cleanup |
 | [Testing](docs/README_TESTING.md) | Test layers and how to run them |
+| [Upgrading to 2.2](docs/README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
 | [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
 | [INSTALL.md](INSTALL.md) | Installation and build reference |
 

@@ -90,6 +90,6 @@ releases track the library's stable line; the exact tag, as always, is the one i
 ## See also
 
 - [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
-- [Validation & Preflight](README_VALIDATION.md) — all 20 checks
+- [Validation & Preflight](README_VALIDATION.md) — all 19 checks
 - [Permissions](README_PERMISSIONS.md) — the grant recipe and the invariants preflight enforces
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)
