@@ -41,6 +41,26 @@ func replicaDatabaseConfig(s config.ReplicationServerConfig) *config.DatabaseCon
 		Password: s.Password, TLS: s.TLS}
 }
 
+// utcSessionProbe proves a session honours the time_zone the DSN pinned
+// (issue #16). It measures the EFFECTIVE offset instead of reading
+// @@session.time_zone: two servers can both say SYSTEM and mean different
+// zones. Under '+00:00' the answer is exactly one day of seconds. CAST keeps
+// the column an integer whatever the server's fractional-second defaults.
+const utcSessionProbe = "SELECT CAST(UNIX_TIMESTAMP('1970-01-02 00:00:00') AS SIGNED)"
+
+const utcSessionProbeWant int64 = 86400
+
+func assertUTCSession(ctx context.Context, db *sql.DB) error {
+	var got int64
+	if err := db.QueryRowContext(ctx, utcSessionProbe).Scan(&got); err != nil {
+		return fmt.Errorf("session time-zone check failed: %w", err)
+	}
+	if got != utcSessionProbeWant {
+		return fmt.Errorf("session time zone is not UTC: %s returned %d, expected %d. GoArchive pins every session to time_zone='+00:00' so TIMESTAMP values keep their instant across servers; a proxy or server setting is overriding it", utcSessionProbe, got, utcSessionProbeWant)
+	}
+	return nil
+}
+
 // NewManager creates a new database manager from configuration.
 func NewManager(cfg *config.Config) *Manager {
 	return &Manager{
@@ -118,6 +138,11 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 		if err == nil {
 			// Verify connection
 			if pingErr := db.PingContext(ctx); pingErr == nil {
+				// A property of the server or proxy, not a transient: no retry.
+				if tzErr := assertUTCSession(ctx, db); tzErr != nil {
+					_ = db.Close()
+					return nil, fmt.Errorf("%s: %w", name, tzErr)
+				}
 				return db, nil
 			} else {
 				_ = db.Close()
@@ -184,6 +209,13 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	dsnCfg.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	dsnCfg.DBName = cfg.Database
 	dsnCfg.ParseTime = true
+	// Issue #16: MySQL converts TIMESTAMP through the SESSION zone on every
+	// read and write, so a copied value is the same instant on both servers
+	// only if both sessions share one zone. Pin it. The driver sends this as
+	// "SET time_zone = '+00:00'" on every new connection — pooled and
+	// reconnected sessions included — and fails the connection if the server
+	// rejects it. Offset form: needs no time-zone tables.
+	dsnCfg.Params = map[string]string{"time_zone": "'+00:00'"}
 	dsnCfg.MultiStatements = true
 
 	switch cfg.TLS {

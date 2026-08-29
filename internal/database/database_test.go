@@ -3,8 +3,10 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/config"
 )
 
@@ -332,6 +334,9 @@ func TestBuildDSN_RequiredParams(t *testing.T) {
 	required := []string{
 		"parseTime=true",
 		"multiStatements=true",
+		// Issue #16: url.QueryEscape("'+00:00'"); the driver turns it into
+		// SET time_zone = '+00:00' on every new connection.
+		"time_zone=%27%2B00%3A00%27",
 	}
 
 	for _, param := range required {
@@ -339,6 +344,54 @@ func TestBuildDSN_RequiredParams(t *testing.T) {
 			t.Errorf("BuildDSN() should contain %q", param)
 		}
 	}
+}
+
+func TestAssertUTCSession(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds int64
+		wantErr string
+	}{
+		{name: "utc session passes", seconds: 86400},
+		{name: "+03:00 session refuses", seconds: 75600, wantErr: "session time zone is not UTC"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			mock.ExpectQuery("UNIX_TIMESTAMP").
+				WillReturnRows(sqlmock.NewRows([]string{"secs"}).AddRow(tc.seconds))
+
+			err = assertUTCSession(context.Background(), db)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected pass, got %v", err)
+				}
+			} else if err == nil || !contains(err.Error(), tc.wantErr) || !contains(err.Error(), "75600") {
+				t.Fatalf("expected refusal naming %q and the measured 75600, got %v", tc.wantErr, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	t.Run("query failure is attributed", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		mock.ExpectQuery("UNIX_TIMESTAMP").WillReturnError(errors.New("boom"))
+
+		err = assertUTCSession(context.Background(), db)
+		if err == nil || !contains(err.Error(), "session time-zone check failed") || !contains(err.Error(), "boom") {
+			t.Fatalf("expected an attributed failure, got %v", err)
+		}
+	})
 }
 
 func TestManager_FieldsInitialization(t *testing.T) {
