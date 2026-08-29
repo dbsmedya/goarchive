@@ -379,6 +379,22 @@ tests/scripts/setup-replication.sh          # re-attaches; safe to run twice
 
 That discards db3's replication config, not its data.
 
+### The destination runs in `+03:00` — on purpose
+
+`tests/docker_files/my.cnf.d/db2.cnf` sets `default-time-zone = '+03:00'` on the archive
+server (3307); the source (3305) and replica (3308) stay in UTC. This is a regression net for
+[#16](https://github.com/dbsmedya/goarchive/issues/16): GoArchive pins every session it opens to
+`time_zone='+00:00'`, and if that pin is ever lost, every `TIMESTAMP` copied by the suite lands
+three hours off while SHA256 verification still matches. Sakila carries 15 `TIMESTAMP` columns,
+so the whole E2E matrix crosses the boundary, and
+`internal/archiver/timezone_integration_test.go` asserts the stored instants directly with
+`UNIX_TIMESTAMP()` — and refuses to pass on a UTC destination.
+
+That test also flips the **source** (3305) to `Europe/Berlin` for one subtest — the DST
+fall-back hour renders two instants as the same wall-clock, which a zone-blind copy collapses
+into one — and restores the previous value in its cleanup. The named-zone tables are loaded on
+every container by the Percona entrypoint.
+
 ### 2. Build the binary
 
 ```bash
