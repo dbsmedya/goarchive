@@ -207,7 +207,7 @@ func TestCopyOnlyOrchestrator_Execute_ResetsStatusOnLockTimeout(t *testing.T) {
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
 		WithArgs(trackingSchemaVersion).
@@ -268,7 +268,7 @@ func TestCopyOnlyOrchestrator_Execute_PersistsFailedStatusOnError(t *testing.T) 
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS .*goarchive_meta`").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT schema_version FROM .*goarchive_meta` WHERE id = 1").
 		WillReturnRows(sqlmock.NewRows([]string{"schema_version"}))
-	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 0").
+	mock.ExpectQuery("SELECT id FROM .*archiver_job` LIMIT 1").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT IGNORE INTO .*goarchive_meta`").
 		WithArgs(trackingSchemaVersion).
