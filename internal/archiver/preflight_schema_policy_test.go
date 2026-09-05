@@ -907,6 +907,60 @@ func TestD3SignatureCannotBeForgedByAnIdentifier(t *testing.T) {
 	}
 }
 
+// TestD3ColumnNameCaseIsIgnored — MySQL resolves column names case-insensitively (error
+// 1060 forbids two columns differing only by case in one table; dbsgomysql COMPAT entry
+// 28), so UNIQUE(email) and UNIQUE(Email) enforce the same predicate. Before this fix the
+// signature identity was byte-exact and the destination false-failed as "stricter".
+func TestD3ColumnNameCaseIsIgnored(t *testing.T) {
+	src := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	dst := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "Email", "utf8mb4", "utf8mb4_bin")}
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	pair := pairWithIndexes(src, dst,
+		[]validations.IndexSpec{primary, uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{primary, uniqueIdx("uq_email", validations.IndexPart{Column: "Email"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("UNIQUE(email) and UNIQUE(Email) enforce the same predicate; got: %s", reason)
+	}
+}
+
+// TestD3NonASCIICaseIsNotFolded — the fold is ASCII-only, matching asciiFoldEqual and the
+// library's rule. A non-ASCII case pair is a difference GoArchive cannot classify, so it
+// stays a difference (fail safe): the destination UNIQUE has no equivalent and is fatal.
+// Its kill is replacing asciiLower with strings.ToLower.
+func TestD3NonASCIICaseIsNotFolded(t *testing.T) {
+	src := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "émail", "utf8mb4", "utf8mb4_bin")}
+	dst := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "ÉMAIL", "utf8mb4", "utf8mb4_bin")}
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	pair := pairWithIndexes(src, dst,
+		[]validations.IndexSpec{primary, uniqueIdx("uq", validations.IndexPart{Column: "émail"})},
+		[]validations.IndexSpec{primary, uniqueIdx("uq", validations.IndexPart{Column: "ÉMAIL"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("non-ASCII letters must compare exactly; ÉMAIL is not an ASCII fold of émail")
+	}
+}
+
+// TestD3ExpressionPartsAreNotFolded — GUARD, green before and after the fix. Its kill is
+// a fold that reaches expression parts: the server-rewritten expression text carries
+// string literals where case is meaning, so 'A' and 'a' are different predicates.
+// Prove the kill once: fold part.Expression in uniquenessSignature and watch this go red.
+func TestD3ExpressionPartsAreNotFolded(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Expression: "(`email` = _utf8mb4'A')"})},
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Expression: "(`email` = _utf8mb4'a')"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("expression text must compare byte-exact; 'A' and 'a' are different predicates")
+	}
+}
+
 // TestDisposeDiffClassifiesEveryPublishedKind proves goarchive has an explicit case for
 // every SpecDiffKind the pinned library publishes.
 //
