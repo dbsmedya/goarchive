@@ -97,6 +97,18 @@ func (m *Manager) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect to destination database: %w", err)
 	}
 
+	// Issue #13: source and destination must be different databases. The check
+	// lives here — after both pools are open, before any command reaches
+	// preflight or writes a tracking row — because no flag reaches Connect.
+	// See assertDistinctDatabases and docs/README_LIMITATIONS.md.
+	if err := assertDistinctDatabases(ctx, m.Source, m.Destination); err != nil {
+		_ = m.Destination.Close() // Ignore errors during cleanup of a refused connection set
+		_ = m.Source.Close()
+		m.Destination = nil
+		m.Source = nil
+		return err
+	}
+
 	// Connect to every monitored replica. Startup is fail-closed per server:
 	// one unreachable member aborts Connect and releases every handle already
 	// opened, including the healthy replicas ahead of it.
