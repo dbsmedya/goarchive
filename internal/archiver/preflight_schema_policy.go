@@ -153,6 +153,20 @@ func disposeDiff(
 		}
 		return nil, nil
 
+	// ---- advisory: the two catalogues disagree on spelling only -----------------
+	case validations.ColumnNameCaseMismatch:
+		// A and B are the two spellings (A source, B destination); Column is the
+		// source's. MySQL resolves column names case-insensitively (dbsgomysql COMPAT
+		// entry 28), the INSERT column list is built from the SOURCE only
+		// (sourceColumnLists), and the verifier hashes both sides with that same list —
+		// so the copy and the verification are unaffected. The operator still hears it:
+		// the archive is no longer a byte-faithful copy of the source's schema, and a
+		// case-sensitive consumer of the archive will notice. Deliberately NOT gated on
+		// warnedCharset — that map serves the charset → collation pair only.
+		return &diffDisposition{warning: fmt.Sprintf(
+			"column %s: name differs only in letter case (source=%s destination=%s); MySQL resolves column names case-insensitively, so the copy and verification are unaffected",
+			diff.Column, diff.A, diff.B)}, nil
+
 	// ---- verification-mode dependent ---------------------------------------------
 	case validations.ColumnCharsetMismatch:
 		if charsetStrict {
@@ -199,10 +213,11 @@ func disposeDiff(
 		validations.IndexPartsMismatch,
 		validations.IndexUniquenessMismatch,
 		validations.IndexTypeMismatch,
-		validations.IndexVisibilityMismatch:
+		validations.IndexVisibilityMismatch,
+		validations.IndexNameCaseMismatch:
 		// Index policy is computed from uniqueness signatures over the captured index
 		// sections (phases 029-030), never from name-keyed index diffs — so renaming an
-		// equivalent index cannot false-fail.
+		// equivalent index cannot false-fail, and neither can re-casing its name (#77).
 		return nil, nil
 
 	case validations.EngineMismatch, validations.CharsetMismatch, validations.CollationMismatch:
@@ -226,9 +241,13 @@ func disposeDiff(
 			diff.Side)
 
 	// ---- cannot appear: sections not captured -> fail closed if observed ----------
+	// ConstraintKindUnconfirmed (v1.2.0) is emitted only after BOTH sides captured the
+	// constraints section, which GoArchive never requests (preflight_facts.go, WithIndexes
+	// only). It carries the constraint name in SpecDiff.Index, rendered below.
 	case validations.CommentMismatch,
 		validations.CommentUnconfirmed,
 		validations.ConstraintUnconfirmed,
+		validations.ConstraintKindUnconfirmed,
 		validations.ConstraintAbsent,
 		validations.ConstraintKindMismatch,
 		validations.CheckClauseMismatch,
