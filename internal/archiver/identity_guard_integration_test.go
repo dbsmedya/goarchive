@@ -138,3 +138,164 @@ func TestArchiveAgainstItselfIsRefused_Integration(t *testing.T) {
 		t.Fatalf("%d tracking row(s) for %q were written into the source schema before the refusal", n, jobName)
 	}
 }
+
+// ordersRootJobConfig re-points a job at the `orders` table of the resume
+// scenario fixture. Orders ids are customer*100+n (101, 102, 201, …, 502).
+func ordersRootJobConfig() *config.JobConfig {
+	return &config.JobConfig{
+		RootTable:  "orders",
+		PrimaryKey: "id",
+		Where:      "id <= 502",
+		Relations: []config.Relation{
+			{Table: "order_items", PrimaryKey: "id", ForeignKey: "order_id", DependencyType: "1-N"},
+			{Table: "order_payments", PrimaryKey: "id", ForeignKey: "order_id", DependencyType: "1-N"},
+		},
+	}
+}
+
+// TestGetOrCreateJobRootTableIsSticky_Integration pins both directions of the
+// #14 rule at the job row: the unchanged root resumes the SAME job, a changed
+// root is refused with the documented text, and neither call moves anything.
+func TestGetOrCreateJobRootTableIsSticky_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	_, destDB := resumeScenarioDBs(t, setup)
+	destSchema := getDestSchema(setup)
+
+	const jobName = "identity_guard_root_sticky"
+	logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, "customers", JobTypeArchive)
+	seedLogStatus(t, destDB, logTable, LogStatusCompleted, "1")
+
+	// The ResumeManager reads the job row back (created_at → time.Time), which
+	// needs a parseTime=true pool: production pools come from database.BuildDSN
+	// and have it; the raw harness handles from setup.GetDB do not (they are
+	// fine for the counts below, which scan no time column). Use the pool shape
+	// production uses.
+	dbManager, _ := resumeScenarioDBManager(t, setup, "sha256", 2)
+	rm, err := NewResumeManager(dbManager.Destination, nil, destSchema)
+	if err != nil {
+		t.Fatalf("NewResumeManager: %v", err)
+	}
+
+	// Unchanged root: accepted, and it is the same job (same log table).
+	state, err := rm.GetOrCreateJobWithType(ctx, jobName, "customers", JobTypeArchive)
+	if err != nil {
+		t.Fatalf("unchanged root was refused: %v", err)
+	}
+	if state.RootTable != "customers" {
+		t.Fatalf("state.RootTable = %q, want customers", state.RootTable)
+	}
+	if got := rm.LogTableName(); got != logTable {
+		t.Fatalf("log table = %s, want %s (a new job was created instead of resuming the existing one)", got, logTable)
+	}
+
+	// Changed root: refused with the documented text; nothing changes.
+	_, err = rm.GetOrCreateJobWithType(ctx, jobName, "orders", JobTypeArchive)
+	const want = `job "identity_guard_root_sticky" exists for root table "customers", expected "orders"`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("GetOrCreateJobWithType(root=orders) = %v, want an error containing %q", err, want)
+	}
+	if n := countRows(t, destDB, "SELECT COUNT(*) FROM "+logTable); n != 1 {
+		t.Fatalf("log table has %d rows after the refusal, want the 1 seeded row", n)
+	}
+	if n := countRows(t, destDB, "SELECT COUNT(*) FROM archiver_job WHERE job_name = ?", jobName); n != 1 {
+		t.Fatalf("%d job rows for %q after the refusal, want 1", n, jobName)
+	}
+}
+
+// ordersScenarioCheckpoint sits at the last selected order id, so the forward
+// scan (`id > 502`) can reach nothing. On a guard-less binary the ONLY path
+// that can touch order 101 is the delete-only replay of the copied marker —
+// the #14 mechanism itself, not an ordinary copy-and-delete. (The customers
+// checkpoint "5" would be below every order id and let the forward scan
+// archive 101 normally, which proves nothing about marker replay.)
+const ordersScenarioCheckpoint = "502"
+
+// TestCopiedMarkerIsNotReplayedAgainstAnotherRoot_Integration is issue #14's
+// reproduction: a `copied` marker produced for root `customers` whose PK value
+// (101) is also a live `orders` id. Re-pointing the same job name at root
+// `orders` must be refused before recovery reads the marker.
+//
+// Post-state evidence is collected BEFORE any verdict, so a guard-less run
+// reports what it destroyed — order 101 gone from the source with no copy on
+// the destination, marker promoted — instead of stopping at the missing
+// refusal.
+func TestCopiedMarkerIsNotReplayedAgainstAnotherRoot_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	sourceDB, destDB := resumeScenarioDBs(t, setup)
+	destSchema := getDestSchema(setup)
+
+	const jobName = "identity_guard_marker_replay"
+	resetResumeScenarioData(t, sourceDB, destDB)
+	dropDestinationSecondaryUniqueIndexes(t, destDB, destSchema)
+	dbManager, cfg := resumeScenarioDBManager(t, setup, "sha256", 2)
+
+	logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, "customers", JobTypeArchive)
+	seedLogStatus(t, destDB, logTable, LogStatusCopied, "101")
+	setJobCheckpoint(t, destDB, jobName, ordersScenarioCheckpoint)
+
+	const (
+		orderQuery    = "SELECT COUNT(*) FROM orders WHERE id = 101"
+		itemsQuery    = "SELECT COUNT(*) FROM order_items WHERE order_id = 101"
+		paymentsQuery = "SELECT COUNT(*) FROM order_payments WHERE order_id = 101"
+	)
+	markersQuery := "SELECT COUNT(*) FROM " + logTable + " WHERE root_pk_id = '101' AND log_status = ?"
+
+	// Preconditions the evidence depends on, proven rather than assumed: the
+	// marker exists with status copied, order 101 and its two items and one
+	// payment are on the source, and nothing for 101 is on the destination.
+	if n := countRows(t, destDB, markersQuery, LogStatusCopied); n != 1 {
+		t.Fatalf("fixture: %d copied marker(s) for 101, want 1", n)
+	}
+	if o, i, p := countRows(t, sourceDB, orderQuery), countRows(t, sourceDB, itemsQuery), countRows(t, sourceDB, paymentsQuery); o != 1 || i != 2 || p != 1 {
+		t.Fatalf("fixture: order 101 subgraph on the source is orders=%d items=%d payments=%d, want 1/2/1", o, i, p)
+	}
+	if n := countRows(t, destDB, orderQuery); n != 0 {
+		t.Fatalf("fixture: order 101 is already on the destination (%d row)", n)
+	}
+	assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+
+	orch, err := NewOrchestrator(cfg, jobName, ordersRootJobConfig(), dbManager)
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, execErr := orch.Execute(ctx, nil)
+
+	// Evidence first, verdicts second.
+	gotOrder := countRows(t, sourceDB, orderQuery)
+	gotItems := countRows(t, sourceDB, itemsQuery)
+	gotPayments := countRows(t, sourceDB, paymentsQuery)
+	gotDestOrder := countRows(t, destDB, orderQuery)
+	gotMarkers := countRows(t, destDB, markersQuery, LogStatusCopied)
+
+	// The specific refusal, not just "some error", so an unrelated startup
+	// failure cannot satisfy this test.
+	const want = `exists for root table "customers", expected "orders"`
+	if execErr == nil || !strings.Contains(execErr.Error(), want) {
+		t.Errorf("Execute() = %v, want the root-table refusal containing %q", execErr, want)
+	}
+	if gotOrder != 1 || gotItems != 2 || gotPayments != 1 {
+		t.Errorf("order 101 lost from the source WITHOUT a destination copy: source orders=%d items=%d payments=%d, destination orders=%d — a copied marker from root customers was replayed delete-only against root orders (issue #14)",
+			gotOrder, gotItems, gotPayments, gotDestOrder)
+	}
+	if gotDestOrder != 0 {
+		t.Errorf("order 101 appeared on the destination (%d row): the run copied instead of refusing", gotDestOrder)
+	}
+	if gotMarkers != 1 {
+		t.Errorf("copied marker for 101 changed: %d row(s), want 1 (a replay would have promoted it)", gotMarkers)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	assertRootSet(t, sourceDB, "source (post-run)", resumeScenarioRoots...)
+}
