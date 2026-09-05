@@ -116,6 +116,25 @@ This is deliberate — the resume semantics differ per type. To repurpose a job
 name, delete its row and log table (see
 [Maintenance](#maintenance-what-is-safe-to-delete)), or just use a new name.
 
+### `root_table` is sticky
+
+A job name is also bound to the root table that created it. Running the same job
+name against a different `root_table` fails before any recovery marker is read:
+
+```
+job "archive_old_orders" exists for root table "orders", expected "invoices": a job name is bound to the root table that created it, and its recovery markers must never be replayed against another table. Retire the job (docs/README_JOBS_SCHEMA.md, "Retiring a job completely") or use a new job name
+```
+
+A `copied` marker written for one table could otherwise authorise a delete-only
+replay against another (issue #14). The comparison is exact, including letter
+case, like `PK_COLUMN_CASE_CHECK`. To repurpose a job name,
+[retire the job](#retiring-a-job-completely) or use a new name.
+
+What is **not** bound on this release line is the source itself: GoArchive does
+not yet persist the source server and schema in `archiver_job`, so the same job
+name pointed at a different source that has a table of the same name is not
+detected. Use a new job name whenever the source changes.
+
 ### Heartbeat timing
 
 | Constant | Value |

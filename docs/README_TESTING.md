@@ -98,12 +98,17 @@ the guard's failure message names the pattern to copy.
 
 ### Retained application-owned MySQL probes
 
-The boundary is ownership, not whether a statement happens to inspect MySQL. One focused
-exception remains GoArchive SQL and therefore keeps exact `sqlmock` coverage:
+The boundary is ownership, not whether a statement happens to inspect MySQL. Two focused
+exceptions remain GoArchive SQL and therefore keep exact `sqlmock` coverage:
 
 - Dry-run reads `SHOW VARIABLES LIKE 'max_allowed_packet'` to decide whether the INSERT
   payload GoArchive itself constructs fits the destination. This application-specific
   safety check stays local; it does not justify a generic dbsgomysql server-variable API.
+- `database.Manager.Connect` reads `@@GLOBAL.server_uuid`, `DATABASE()`, `@@GLOBAL.hostname`
+  and `@@GLOBAL.port` from both pools to refuse a configuration whose source and
+  destination are one database (`SRC_DEST_IDENTITY_CHECK`, issue #13). It inspects what the
+  session reports about itself, not the metadata catalog, and sits beside the UTC-session
+  assertion in the same function. It does not justify a dbsgomysql server-identity fact.
 
 **Retired 2026-08-19 (2.1.0-community):** replication lag monitoring used to own
 `SHOW REPLICA STATUS`, its `SHOW SLAVE STATUS` fallback, and the optional `FOR CHANNEL`

@@ -80,6 +80,38 @@ GoArchive's correctness during a run rests on two operating contracts:
    row range are unsupported, including column additions and column-default
    changes taking effect mid-run.
 
+#### Source and destination must be different databases
+
+GoArchive identifies a server by the `server_uuid` its connection reports and a
+database by the schema the session selected. When source and destination report
+the same `server_uuid` **and** the same schema name, every command that opens both
+connections — `archive`, `purge`, `copy-only`, `dry-run`, `validate` — refuses to
+start with `SRC_DEST_IDENTITY_CHECK`, at connection time, before preflight and
+before anything is written. An archive into itself would verify the table against
+itself and then delete the only copy; no `--skip-*` flag reaches this check.
+
+Same server, different schema is a supported layout. Two conservative refusals
+are deliberate:
+
+- **Schema names are compared without regard to letter case.** MySQL looks
+  schema names up case-insensitively under `lower_case_table_names` 1 and 2
+  (its Windows and macOS defaults), where `App` and `app` are one schema.
+  GoArchive folds case on every server, so on a case-sensitive server (the Unix
+  default, `lower_case_table_names=0`) `App` and `app` are refused as one schema
+  even though MySQL keeps them apart. The message prints both spellings. Rename
+  one, or use a different destination.
+- **Two servers sharing a `server_uuid` are one server to GoArchive.** MySQL
+  reads the UUID from `auto.cnf` in the data directory and generates it only
+  when that file is absent, so an instance cloned from another's data directory
+  carries the same UUID. On the standalone archive server: stop mysqld, remove
+  `auto.cnf` from the data directory, start it again, and it writes a fresh
+  `server_uuid`. A server that takes part in replication follows MySQL's own
+  guidance for changing `server_uuid` instead.
+
+The check assumes each connection reaches one backend for the whole run — the
+same assumption verification and the advisory job lock already make. A proxy
+that routes one account's statements to different servers is outside it.
+
 #### InnoDB only
 
 Legacy engines such as MyISAM are strictly unsupported — they lack the

@@ -155,6 +155,8 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Per-diff-kind disposition, fail-closed `default` | same file → `disposeDiff` |
 | Resume checkpoint floor | `internal/archiver/batch_pipeline.go` → `checkpointFloor` (struct field, `:66`) |
 | PK column + case validation | `internal/archiver/preflight.go` → `ValidatePrimaryKeyColumns` |
+| Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
+| Sticky `root_table` on an existing job | `internal/archiver/resume.go` → `GetOrCreateJobWithType` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
