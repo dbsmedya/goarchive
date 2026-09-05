@@ -104,8 +104,9 @@ func TestSchemaCompatOrdinaryDisplayWidthEmitsNoDiff(t *testing.T) {
 	}
 }
 
-// TestSchemaCompatTinyint1IsAcceptedByPolicy is the ONE live case for
-// goarchiveTypesCompatible. The library deliberately preserves tinyint(1) (BOOLEAN is an
+// TestSchemaCompatTinyint1IsAcceptedByPolicy is the case goarchiveTypesCompatible exists for
+// (its full acceptance boundary is pinned in TestSchemaCompatTypesCompatibleAcceptanceBoundary).
+// The library deliberately preserves tinyint(1) (BOOLEAN is an
 // alias for it), so NormalizedType really does differ here and DiffSpecs really does emit
 // ColumnTypeMismatch — GoArchive's policy override is what accepts it, as spec §3.3
 // requires and as 1.8 behaved.

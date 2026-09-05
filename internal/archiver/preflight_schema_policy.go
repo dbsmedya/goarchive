@@ -26,12 +26,13 @@ var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|int
 // duplicate of the library's type normalization, and must not be "simplified away" by a
 // later reader who notices the overlap.
 //
-// The library already normalizes every integer display width before comparing
-// (ColumnSpec.NormalizedType; COMPAT.md entry 1), so for bigint(20) vs bigint, int(11) vs
-// int, and int(10) unsigned vs int unsigned it emits NO diff at all and this function is
-// never reached. The library deliberately PRESERVES tinyint(1): BOOLEAN is an alias for
-// TINYINT(1), and erasing the width would report a boolean and a plain TINYINT as
-// identical. That is the right call for a general schema-difference engine.
+// The library normalizes every ORDINARY integer display width before comparing
+// (ColumnSpec.NormalizedType; COMPAT.md entry 1) — bigint(20) vs bigint, int(11) vs int,
+// int(10) unsigned vs int unsigned emit NO diff and never reach this function — with two
+// deliberate exceptions it PRESERVES: tinyint(1), because BOOLEAN is an alias for
+// TINYINT(1) and erasing the width would report a boolean and a plain TINYINT as
+// identical; and any ZEROFILL column's width, because it changes the server's text
+// rendering. That is the right call for a general schema-difference engine.
 //
 // GoArchive is not a schema-difference engine — it decides whether rows can be COPIED.
 // MySQL does not enforce boolean values in a TINYINT(1), and the display width changes
@@ -41,8 +42,16 @@ var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|int
 // the raw values the diff carries". No ledger deviation — D1-D6 is closed, and this
 // preserves current acceptance rather than changing it.
 //
-// In practice this function therefore exists for exactly ONE live case: tinyint(1) vs
-// tinyint. Nothing else can reach it.
+// The rule is general: EVERY ColumnTypeMismatch arrives here (disposeDiff calls this for
+// the whole kind), a leading integer display width is stripped from both raw COLUMN_TYPE
+// strings, and the pair is accepted iff the remainders are byte-equal. Given the
+// library's normalisation, the acceptance this ADDS is exactly tinyint(1) vs tinyint and
+// a ZEROFILL column's width — both pinned in
+// TestSchemaCompatTypesCompatibleAcceptanceBoundary. Everything else that differs —
+// decimal(10,2) vs decimal(12,2), varchar vs int, a one-sided unsigned or zerofill —
+// stays fatal. History: on libraries before 1.1.3, year(4) vs year arrived here and was
+// rejected; since 1.1.3 the library normalises it upstream and it never arrives. This
+// regex deliberately does not claim year, so a library regression fails closed.
 func goarchiveTypesCompatible(a, b string) bool {
 	strip := func(t string) string {
 		return intDisplayWidthRe.ReplaceAllString(strings.TrimSpace(t), "$1")
