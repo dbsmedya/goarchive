@@ -152,6 +152,75 @@ func TestSchemaCompatUnsignedIsNotIgnored(t *testing.T) {
 	}
 }
 
+// TestSchemaCompatTypesCompatibleAcceptanceBoundary pins what goarchiveTypesCompatible
+// ACCEPTS beyond the library's own normalisation. Every ColumnTypeMismatch reaches the
+// function — disposeDiff calls it for the whole kind — and its rule is general: strip a
+// leading integer display width from both raw COLUMN_TYPE strings and accept iff the
+// remainders are byte-equal. Because the library already normalises ordinary integer
+// widths away (no diff is emitted for bigint(20) vs bigint), the acceptance this override
+// ADDS is exactly the two cosmetic shapes the library deliberately preserves:
+//
+//   - tinyint(1) vs tinyint — owned by TestSchemaCompatTinyint1IsAcceptedByPolicy.
+//   - a ZEROFILL column's display width (COMPAT entry 1 keeps it): int(5) unsigned zerofill
+//     vs int(10) unsigned zerofill is ACCEPTED. Measured on the estate 2026-09-04: both
+//     sides scan as int64 through database/sql, so the copy and the sha256 hash are
+//     unaffected; the width only pads the server's TEXT rendering. The zerofill ATTRIBUTE
+//     is not ignored: it survives the strip, so a one-sided zerofill stays fatal.
+//
+// year(4) vs year is HISTORY, pinned so the flip this bump causes is observed: before
+// dbsgomysql 1.1.3 (#75) the library preserved the legacy YEAR width, the pair reached
+// this function, and it was REJECTED — the regex does not claim year. Since 1.1.3 the
+// library normalises it and the pair never reaches the override. Both eras are pinned
+// with the NormalizedType each produced; the pre-1.1.3 row proves the override still does
+// not claim year, so a library regression fails closed, and a reader widening
+// intDisplayWidthRe to year must consciously break it. MySQL 8.4.10 drops YEAR(4) at
+// CREATE time (measured on 3305: SHOW CREATE TABLE renders `year`), so the shape lives
+// only in an in-place-upgraded data dictionary and no estate test can produce it.
+//
+// NormalizedType is hand-supplied here, so this pins GoArchive's policy for the facts each
+// library era hands it — NOT the library's normaliser, which the library's own tests own.
+func TestSchemaCompatTypesCompatibleAcceptanceBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, aType, bType, aNorm, bNorm string
+		libraryEmitsTypeDiff             bool // the library must emit ColumnTypeMismatch for this pair
+		wantFatal                        bool
+	}{
+		{"zerofill_width_is_accepted", "int(5) unsigned zerofill", "int(10) unsigned zerofill",
+			"int(5) unsigned zerofill", "int(10) unsigned zerofill", true, false},
+		{"zerofill_attribute_is_not_ignored", "int(10) unsigned zerofill", "int unsigned",
+			"int(10) unsigned zerofill", "int unsigned", true, true},
+		{"year_width_normalised_by_library_since_1_1_3", "year(4)", "year",
+			"year", "year", false, false},
+		{"year_width_as_a_pre_1_1_3_library_reported_it_is_fatal", "year(4)", "year",
+			"year(4)", "year", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ca, cb := specCol(2, "n", tc.aType), specCol(2, "n", tc.bType)
+			ca.NormalizedType, cb.NormalizedType = tc.aNorm, tc.bNorm // as the library produces
+			a := []validations.ColumnSpec{specCol(1, "id", "bigint"), ca}
+			b := []validations.ColumnSpec{specCol(1, "id", "bigint"), cb}
+
+			var sawType bool
+			for _, d := range validations.DiffSpecs(pairOf(a, b).A, pairOf(a, b).B) {
+				if d.Kind == validations.ColumnTypeMismatch {
+					sawType = true
+				}
+			}
+			if sawType != tc.libraryEmitsTypeDiff {
+				t.Fatalf("library emits ColumnTypeMismatch = %v, want %v", sawType, tc.libraryEmitsTypeDiff)
+			}
+
+			v, err := evaluateSchemaCompatibility(pairOf(a, b), true)
+			if err != nil {
+				t.Fatalf("evaluateSchemaCompatibility: %v", err)
+			}
+			if (v.Fatal != "") != tc.wantFatal {
+				t.Fatalf("wantFatal=%v, got fatal=%q", tc.wantFatal, v.Fatal)
+			}
+		})
+	}
+}
+
 // TestSchemaCompatColumnOrderMismatchIsFatal covers the ColumnOrderMismatch row. The copy
 // builds its INSERT column list from the source order, so a reordered destination would
 // write values into the wrong columns.
