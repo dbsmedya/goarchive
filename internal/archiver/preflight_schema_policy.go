@@ -411,6 +411,10 @@ func isFunctionalIndex(idx validations.IndexSpec) bool {
 
 // columnCollation returns the collation of the named column, or "" when the column is
 // not a string type or is not present.
+//
+// It looks a key part's column up in the SAME side's spec. part.Column and col.Name come
+// from one catalogue, so byte-exact is correct here; the cross-side fold lives in
+// uniquenessSignature, not in this lookup.
 func columnCollation(spec validations.TableSpec, column string) string {
 	for _, col := range spec.Columns {
 		if col.Name == column {
@@ -425,7 +429,12 @@ func columnCollation(spec validations.TableSpec, column string) string {
 //
 // A part signature is (kind, identity, prefix, collation):
 //
-//   - identity is the exact column name, or the server-rewritten expression text
+//   - identity is the column name folded to ASCII lower case — MySQL resolves column
+//     names case-insensitively (dbsgomysql COMPAT entry 28; error 1060 forbids two
+//     columns differing only by case in one table, so the fold is injective per table
+//     and cannot forge a collision the server does not already have) — or the exact
+//     server-rewritten expression text, which is NEVER folded: it carries string
+//     literals where case is meaning
 //   - prefix is IndexPart.SubPart; zero means the whole value, so UNIQUE(email(10)) and
 //     UNIQUE(email) are DIFFERENT signatures
 //   - collation is the indexed column's collation, empty for non-string columns and for
@@ -441,7 +450,7 @@ func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) 
 	for _, part := range idx.Parts {
 		if part.Column != "" {
 			parts = append(parts, uniquePart{
-				Identity:  part.Column,
+				Identity:  asciiLower(part.Column),
 				Prefix:    part.SubPart,
 				Collation: columnCollation(spec, part.Column),
 			})
@@ -513,7 +522,9 @@ func hasEquivalentSignature(sources [][]uniquePart, want []uniquePart) bool {
 }
 
 // formatSignature renders a signature for an operator message. It is DISPLAY ONLY — never
-// compare these strings; see uniquePart.
+// compare these strings; see uniquePart. Column identities render in ASCII lower case
+// because that is what the signature holds; the index NAME in the surrounding message
+// carries the operator's own spelling.
 func formatSignature(parts []uniquePart) string {
 	rendered := make([]string, 0, len(parts))
 	for _, part := range parts {
