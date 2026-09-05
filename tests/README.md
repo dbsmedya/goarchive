@@ -12,7 +12,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
-| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11) | `make e2e-examples` |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11, 12) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
@@ -287,6 +287,7 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 | **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the graph, but `film` is also referenced by out-of-graph `inventory`/`film_actor`/`film_category`; deleting archived films would violate those FKs, so every referencing table must be covered. |
 | **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy** (`internal/archiver/preflight.go`), and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
 | **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two in-graph parents, so one FK edge is always undeclared. |
+| **12** | `test12_same_database.yaml` | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are both `127.0.0.1:3305/sakila`. Every command that opens both connections refuses at connection time, before preflight and before any tracking row is written: an archive into itself would verify the table against itself and delete the only copy (issue #13). The demo runs `validate`; the integration layer proves the source is untouched and nothing is written. |
 
 > **The `customer → rental → payment` (GDPR) shape is unrepresentable, and test 11
 > is the gate for that.** `payment` references **both** `customer` and `rental`, and
@@ -730,7 +731,7 @@ The short version:
    than one table. **Those last four fail closed**: omit one and the test is
    refused rather than run.
 3. Add `NN` to the ordered dispatch list in `scripts/run-tests.sh` → `main`
-   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 10 11 NN" "validation demos"`).
+   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 10 11 12 NN" "validation demos"`).
 4. Update the catalogue in this file and the category's `README.md`.
 5. Verify: `./scripts/run-tests.sh --sakila -t NN`.
 

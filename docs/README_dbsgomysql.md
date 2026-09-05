@@ -54,6 +54,11 @@ The split is deliberate and it is the reason the integration is safe:
 - **GoArchive owns policy.** Whether a destination may be looser than its source, which
   primary-key types are acceptable for a root table, whether a difference blocks a copy —
   all of that stays here, in GoArchive, where the consequences are understood.
+- **GoArchive owns its own session.** Properties of the connection GoArchive itself
+  opened — the UTC session it pins, the server identity it refuses to archive into
+  itself — are read by GoArchive-owned probes, listed under *Retained
+  application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md). They
+  inspect what the session reports, not the metadata catalog the library owns.
 
 A concrete example: the library reports that a source column is `NULL`-able and the
 destination is `NOT NULL`. It does not rank that. GoArchive knows the copy inserts
@@ -90,6 +95,6 @@ releases track the library's stable line; the exact tag, as always, is the one i
 ## See also
 
 - [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
-- [Validation & Preflight](README_VALIDATION.md) — all 19 checks
+- [Validation & Preflight](README_VALIDATION.md) — all 20 named checks
 - [Permissions](README_PERMISSIONS.md) — the grant recipe and the invariants preflight enforces
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)

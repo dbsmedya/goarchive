@@ -9,8 +9,8 @@
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
 #   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06, 07, 08, 09)
-#   --sakila-examples   Run the validation-demo tests (01, 02, 10, 11)
-#   -t, --test NUM      Run only specific Sakila test (1-9, 10-11)
+#   --sakila-examples   Run the validation-demo tests (01, 02, 10, 11, 12)
+#   -t, --test NUM      Run only specific Sakila test (1-9, 10-12)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -109,7 +109,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
             echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay)"
-            echo "  --sakila-examples   Run the validation-demonstration tests (01, 02, 10, 11)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (01, 02, 10, 11, 12)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
             echo "  -t, --test NUM      Run only the specified test number (works with"
@@ -123,7 +123,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --setup                    # Full setup: docker + databases"
             echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
             echo "  $0 --sakila-examples -t 1     # Run only the composite-PK demo (test 01)"
-            echo "  $0 --sakila-examples          # Run validation demos (01, 02, 10, 11)"
+            echo "  $0 --sakila-examples          # Run validation demos (01, 02, 10, 11, 12)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -244,7 +244,7 @@ main() {
     # 10 and 11 are appended, not renumbered in: a number once given never moves,
     # because renumbering silently invalidates other phases' `Passed: N` counts.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_e2e_suite "1 2 10 11" "validation demos"
+        run_e2e_suite "1 2 10 11 12" "validation demos"
         exit 0
     fi
     

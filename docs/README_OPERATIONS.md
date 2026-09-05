@@ -367,6 +367,10 @@ and `purge` — all three share one batch pipeline.
 Current releases **never write `failed`**. An error aborts the run and leaves
 rows in a recoverable status.
 
+Before any marker is read, the job row itself is checked: a job name is bound to
+the `job_type` **and** the `root_table` that created it, and a mismatch refuses the
+run outright — see [`root_table` is sticky](README_JOBS_SCHEMA.md#root_table-is-sticky).
+
 ### Resume gates
 
 Before replaying anything, four gates run in order. Each refuses with concrete

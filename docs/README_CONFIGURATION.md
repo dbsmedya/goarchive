@@ -77,6 +77,12 @@ different zones — or two `SYSTEM` zones that resolve differently — would oth
 copied value by their offset while verification still matched. It is not configurable.
 `DATETIME`, `DATE` and `TIME` are stored as written and are unaffected.
 
+**Source and destination must be different databases.** GoArchive refuses to start when
+both report the same `server_uuid` and the same schema name (`SRC_DEST_IDENTITY_CHECK`).
+Same server, different schema is fine. The rule, its two deliberate refusals and the
+cloned-server remedy are in
+[Limitations](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
+
 ### `job_schema` (destination only)
 
 | Option | Description | Default |

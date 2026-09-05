@@ -59,10 +59,11 @@ GoArchive selects one of three profiles per command:
 
 ## Which checks run for which command
 
-19 named checks exist. ✅ = enforced, ❌ = not run.
+20 named checks exist. ✅ = enforced, ❌ = not run.
 
 | Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
 |-------|:---------:|:-------:|:-----------:|:---------:|:----------:|
+| `SRC_DEST_IDENTITY_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `PK_COLUMN_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `PK_COLUMN_CASE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -83,7 +84,7 @@ GoArchive selects one of three profiles per command:
 | `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
 
-Notes on the two asymmetries:
+Notes:
 
 - **`purge` skips destination checks** because it never copies anything. It still
   runs `JOB_SCHEMA_PERMISSION_CHECK`, because it writes tracking state.
@@ -91,9 +92,38 @@ Notes on the two asymmetries:
   deletes from source, so no external cascade can fire. It still runs
   `FK_COVERAGE_CHECK` — a `copy-only` run is still blocked by an uncovered
   cross-schema foreign key.
+- **`SRC_DEST_IDENTITY_CHECK` is not a preflight check.** It runs when the two
+  connections are opened — before preflight, in every command that opens both —
+  and `--skip-validate-preflight` does not reach it. It is listed here because it
+  refuses a run the way a check does.
 
 `DEST_*` checks additionally require a configured destination connection, which
 every command that runs preflight has when `destination.database` is set.
+
+---
+
+## Connection identity check
+
+### `SRC_DEST_IDENTITY_CHECK`
+
+Source and destination report the same `server_uuid` and the same schema name
+(compared without regard to letter case). GoArchive refuses at connection time,
+before preflight and before any tracking row is written: an archive into itself
+would copy nothing, verify the table against itself, and then delete the only
+copy.
+
+```
+failed to connect to databases: SRC_DEST_IDENTITY_CHECK: source and destination
+are the same database (server_uuid=…; source schema=app at db1:3306, destination
+schema=app at db1:3306). GoArchive refuses: it would verify the table against
+itself and delete the only copy. …
+```
+
+**Fix:** point `destination` at a different server or a different schema. If the
+two schema names differ only in letter case, GoArchive treats them as one schema
+on every server — rename one. If the two servers were cloned from one data
+directory they share `auto.cnf`; the remedy is in
+[Source and destination must be different databases](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
 
 ---
 

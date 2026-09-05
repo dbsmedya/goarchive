@@ -155,6 +155,8 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Per-diff-kind disposition, fail-closed `default` | same file → `disposeDiff` |
 | Resume checkpoint floor | `internal/archiver/batch_pipeline.go` → `checkpointFloor` (struct field, `:66`) |
 | PK column + case validation | `internal/archiver/preflight.go` → `ValidatePrimaryKeyColumns` |
+| Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
+| Sticky `root_table` on an existing job | `internal/archiver/resume.go` → `GetOrCreateJobWithType` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
@@ -265,8 +267,8 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1130 FAIL=0 SKIP=2` (runner-measured
-2026-09-05; #77 added the case-only column-name and primary-key integration tests).
+The measured integration baseline is `PASS=1152 FAIL=0 SKIP=2` (runner-measured
+2026-09-05; #13/#14 added the identity-guard and sticky-root integration tests).
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

@@ -15,6 +15,7 @@ touch data.
 | 02 | `FK_COVERAGE_CHECK` | archives `film` while `inventory`, `film_actor` and `film_category` still reference it, so the delete would violate their foreign keys |
 | 10 | `TABLE_EXISTENCE_CHECK` | `root_table` is the view `customer_list`; only base tables can be archived — the **non-base-table policy** |
 | 11 | `INTERNAL_FK_COVERAGE` | the `customer → rental → payment` GDPR diamond — `payment` has two in-graph parents, so one FK edge is always undeclared |
+| 12 | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are the same server and schema (`127.0.0.1:3305/sakila`); refused at connection time, before preflight — an archive into itself would delete the only copy (issue #13); the root `payment` carries an INSERT trigger, so a guard-less binary is refused by `DEST_INSERT_TRIGGER_CHECK` instead — the demo therefore also pins that the guard runs before preflight |
 
 `mode="example"` selects this arm of the engine. The only other variable that
 matters is `expected_error`, a **substring** of the failure output.
@@ -34,7 +35,7 @@ proves nothing about views.
 > So the older claim here — that matching on the category means "a config that fails
 > for a different reason still fails the test" — **is not true in general**, and this
 > paragraph replaces it. It holds only where the category maps to a single cause,
-> which is the case for 01, 02 and 11 and not for 10.
+> which is the case for 01, 02, 11 and 12 and not for 10.
 
 When a category can fire for more than one reason, extend the substring just far
 enough to separate them, and say in the test file why.

@@ -371,6 +371,15 @@ func (r *ResumeManager) GetOrCreateJobWithType(ctx context.Context, jobName, roo
 		return nil, fmt.Errorf("job %q exists with type %q, expected %q", jobName, state.JobType, jobType)
 	}
 
+	// Issue #14 (schema-free half): a job name is bound to the root table that
+	// created it. Its per-job log holds authorisations — `copied` markers — that
+	// must never be replayed against another table. Exact comparison, including
+	// letter case, like PK_COLUMN_CASE_CHECK. Nothing below this point runs on a
+	// mismatch: no setJobID, no log-table creation, no status write, no recovery.
+	if state.RootTable != rootTable {
+		return nil, fmt.Errorf("job %q exists for root table %q, expected %q: a job name is bound to the root table that created it, and its recovery markers must never be replayed against another table. Retire the job (docs/README_JOBS_SCHEMA.md, \"Retiring a job completely\") or use a new job name", jobName, state.RootTable, rootTable)
+	}
+
 	r.setJobID(id)
 	if _, cerr := r.db.ExecContext(ctx, r.createLogTableSQL()); cerr != nil {
 		return nil, fmt.Errorf("failed to ensure per-job log table: %w", cerr)
