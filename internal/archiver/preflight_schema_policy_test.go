@@ -477,6 +477,76 @@ func TestAbsoluteInvariantPrimaryKeyIgnoresDescending(t *testing.T) {
 	}
 }
 
+// TestAbsoluteInvariantPrimaryKeyIgnoresASCIICase — found in the operator's plan review
+// (R1, 2026-09-05): primaryPartSignature rendered the column spelling byte-exact, so
+// PRIMARY KEY (id) vs PRIMARY KEY (ID) was fatal BEFORE D3 and before any diff, and no
+// fold in uniquenessSignature could reach it (D3 skips PRIMARY). MySQL resolves column
+// names case-insensitively, and INSERT IGNORE idempotency depends on the KEY, not on its
+// spelling, so a case-only difference must be accepted. Everything the invariant already
+// rejects (TestAbsoluteInvariantPrimaryKeyMustMatch: different column, order, prefix,
+// missing) must stay rejected; the negative rows here pin the fold's boundaries — order
+// and prefix still matter after folding, and non-ASCII letters are not folded.
+func TestAbsoluteInvariantPrimaryKeyIgnoresASCIICase(t *testing.T) {
+	srcCols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "tenant_id", "int")}
+	dstCols := []validations.ColumnSpec{specCol(1, "ID", "bigint"), specCol(2, "Tenant_ID", "int")}
+
+	cases := []struct {
+		name    string
+		aIdx    []validations.IndexSpec
+		bIdx    []validations.IndexSpec
+		wantBad bool
+	}{
+		{
+			name:    "case_only_single_column",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ID"})},
+			wantBad: false,
+		},
+		{
+			name: "case_only_composite_same_order",
+			aIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "id"}, validations.IndexPart{Column: "tenant_id"})},
+			bIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "ID"}, validations.IndexPart{Column: "Tenant_ID"})},
+			wantBad: false,
+		},
+		{
+			name: "case_only_but_order_differs",
+			aIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "id"}, validations.IndexPart{Column: "tenant_id"})},
+			bIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "Tenant_ID"}, validations.IndexPart{Column: "ID"})},
+			wantBad: true,
+		},
+		{
+			name:    "case_only_but_prefix_differs",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ID", SubPart: 10})},
+			wantBad: true,
+		},
+		{
+			name:    "non_ascii_case_is_not_folded",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "édition"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ÉDITION"})},
+			wantBad: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, err := checkAbsoluteInvariants(pairWithIndexes(srcCols, dstCols, tc.aIdx, tc.bIdx))
+			if err != nil {
+				t.Fatalf("checkAbsoluteInvariants: %v", err)
+			}
+			if tc.wantBad && reason == "" {
+				t.Fatal("expected a fatal PRIMARY key mismatch")
+			}
+			if !tc.wantBad && reason != "" {
+				t.Fatalf("expected clean, got: %s", reason)
+			}
+		})
+	}
+}
+
 // TestAbsoluteInvariantUncapturedIndexesAborts covers the third rule: a spec that did not
 // capture its index section makes the whole evaluation untrustworthy, and that is an
 // engine error, not a schema verdict.
