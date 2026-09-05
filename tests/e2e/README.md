@@ -17,7 +17,7 @@ the file.
 ```
 tests/e2e/
 ├── lib/                    the harness: shared, written once
-├── validation/    01 02    configs that MUST fail preflight
+├── validation/    01 02 10 11 12  configs that MUST fail preflight
 ├── archive/       03 04 05 copy → verify → delete
 ├── purge/         06       delete without copying
 ├── copy-only/     07       copy without deleting
@@ -121,7 +121,7 @@ behind it as defence in depth.
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
    - working → `run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`
-   - demos → `run_e2e_suite "1 2 10 11 NN" "validation demos"`
+   - demos → `run_e2e_suite "1 2 10 11 12 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
 

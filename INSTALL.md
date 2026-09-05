@@ -152,20 +152,29 @@ Integration tests require MySQL databases. You can use Docker for local testing.
 #### Quick Start with Docker
 
 ```bash
-# 1. Start test databases
+# 1. Create the test credentials file (the runner creates it if absent)
+cp tests/dot.env tests/.env      # then edit MYSQL_ROOT_PASSWORD if you want your own
+
+# 2. Start test databases — docker compose reads tests/.env, so it must exist first
 make test-up
 
 # Wait a few seconds for databases to be ready...
 
-# 2. Configure test credentials
-export MYSQL_ROOT_PASSWORD=root  # Default password for test containers
+# 3. Load the same credentials into your shell
+set -a; source tests/.env; set +a
 
-# 3. Run integration tests
+# 4. Run integration tests
 make test-integration
 
-# 4. Stop test databases when done
+# 5. Stop test databases when done
 make test-down
 ```
+
+> There is no built-in default password. `tests/compose.yml` interpolates
+> `MYSQL_ROOT_PASSWORD` from `tests/.env` when the containers are **created**, so
+> exporting a different value afterwards does not change them — it only breaks the
+> connection. `tests/.env` is gitignored; the tracked template is `tests/dot.env`.
+> See [tests/README.md](tests/README.md) for the full matrix.
 
 #### Manual Test Database Setup
 
