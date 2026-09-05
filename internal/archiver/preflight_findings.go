@@ -256,6 +256,22 @@ func asciiFoldEqual(a, b string) bool {
 	return true
 }
 
+// asciiLower returns s with ASCII upper-case letters lower-cased and every other byte
+// untouched. It is the identifier fold asciiFoldEqual compares under, materialised so a
+// folded name can be STORED as a value — D3's uniqueness signature compares typed parts
+// with slices.Equal, so the fold has to happen at construction, not at comparison.
+// strings.ToLower is NOT a substitute: it folds non-ASCII letters that MySQL and the
+// library's DiffSpecs treat as distinct, which would fail open (TestD3NonASCIICaseIsNotFolded).
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
 // judgePrimaryKeyColumns applies goarchive's configured-primary_key identity policy.
 //
 // It answers three questions in the order ValidatePrimaryKeyColumns used in 1.8:

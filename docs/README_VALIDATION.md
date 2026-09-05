@@ -218,7 +218,8 @@ create a real table instead.
 
 ### `DEST_SCHEMA_COMPATIBILITY_CHECK`
 
-Compares source and destination column-by-column, in ordinal order. See
+Matches source and destination columns **by name** (ASCII letter case ignored, as MySQL
+does), then compares each matched pair's attributes and its ordinal position. See
 [Schema compatibility rules](#schema-compatibility-rules) for the full matrix.
 
 ### `DEST_INSERT_TRIGGER_CHECK`
@@ -501,6 +502,9 @@ Not all findings are fatal.
   destination collation can collide rows the source's index kept distinct.
 - **Charset mismatch under a running sha256 verification** — a warning rather
   than an error, because the hash comparison fails closed before any delete.
+- **Column name differing only in ASCII letter case** — a warning naming both spellings;
+  see [Schema compatibility rules](#schema-compatibility-rules). The copy and the
+  verification are unaffected.
 - **`disable_foreign_key_checks: true`** — a loud warning on every validate and
   every copy run.
 
@@ -549,18 +553,21 @@ constraints would reject or silently skip rows.
 | `NOT NULL` relaxed to nullable | Strictly more permissive |
 | Source column generated, destination plain | `SELECT` materialises the value; a plain column accepts it |
 | Column `INVISIBLE` on one side, visible on the other | Visibility never reaches the copy: every read and every `INSERT` names its columns explicitly rather than using `SELECT *`, so an `INVISIBLE` column is copied, verified, and hashed like any other. Dry-run payload sampling names them too. |
-| Integer display width differs (`bigint(20)` vs `bigint`) | Cosmetic. Normalised away — MySQL 8.0.17+ no longer reports it, so a schema dumped from an older server would otherwise false-fail. `unsigned`/`zerofill` **are** preserved: they change the value range. |
+| Integer display width differs (`bigint(20)` vs `bigint`) | Cosmetic. Normalised away — MySQL 8.0.17+ no longer reports it, so a schema dumped from an older server would otherwise false-fail. `unsigned` and the `zerofill` attribute **are** preserved — they change the value range and rendering — but a `zerofill` column's *display width* (`int(5) zerofill` vs `int(10) zerofill`) is accepted: it changes only how the server pads the value as text; the copy and the hash read the value, not the text. |
+| Column name differs only in ASCII letter case (`email` vs `Email`), including the primary-key column | **Advisory, not fatal.** MySQL resolves column names case-insensitively, the copy names *source* columns, and the verifier reads both sides with that same list — so rows copy and verify normally. The warning names both spellings; align them if the archive should be a byte-faithful copy of the source schema. Non-ASCII letters are compared exactly. |
+| `year(4)` vs `year` | Cosmetic; normalised away by the library (dbsgomysql 1.1.3+). MySQL 8.4 drops the width at `CREATE` time, so the shape survives only in an in-place-upgraded data dictionary. |
 
 ### Fatal — destination must not be stricter
 
 | Difference | Consequence |
 |------------|-------------|
-| Column name mismatch | Wrong column mapping |
+| Column name mismatch (beyond ASCII letter case) | Wrong column mapping |
 | Column type mismatch (after width normalisation) | Value corruption or insert failure |
 | Column **count** mismatch | Reported before per-column comparison |
-| Column **order** mismatch | Columns compare by ordinal position |
+| Column **order** mismatch | Policy: the destination must keep the source's column order. Columns are matched by name, so this is reported on its own rather than as a cascade of type mismatches. |
 | Destination `NOT NULL`, source nullable | NULL rows rejected mid-copy |
 | Primary key present on one side only | `INSERT IGNORE` crash-recovery idempotency depends on it |
+| Primary key column list differs (column, key order, or prefix length) | `INSERT IGNORE` crash-recovery idempotency depends on the destination rejecting a re-inserted row by the same key the source identified it with. ASCII letter case of the key columns is ignored; key direction (`DESC`) is ignored. |
 | Destination-only unique index | `INSERT IGNORE` would **silently skip rows** |
 | Destination column is generated | MySQL rejects explicit inserts with Error 3105, even under `INSERT IGNORE` |
 
@@ -574,6 +581,9 @@ of key parts, where a part is `(column or expression, prefix length, column coll
   case-insensitive destination collation collides rows that a binary source collation keeps
   distinct.
 - **The index name is ignored**, so renaming an equivalent index never fails.
+- **Column-name ASCII case is ignored**: MySQL resolves column names case-insensitively, so
+  `UNIQUE(email)` and `UNIQUE(Email)` enforce the same predicate. Non-ASCII letters are
+  compared exactly.
 - **Key order and `DESC` are ignored**: `UNIQUE(a,b)` and `UNIQUE(b,a)` enforce the same row
   uniqueness.
 - **Functional unique indexes** (`UNIQUE((lower(email)))`) are accepted only when the

@@ -26,12 +26,13 @@ var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|int
 // duplicate of the library's type normalization, and must not be "simplified away" by a
 // later reader who notices the overlap.
 //
-// The library already normalizes every integer display width before comparing
-// (ColumnSpec.NormalizedType; COMPAT.md entry 1), so for bigint(20) vs bigint, int(11) vs
-// int, and int(10) unsigned vs int unsigned it emits NO diff at all and this function is
-// never reached. The library deliberately PRESERVES tinyint(1): BOOLEAN is an alias for
-// TINYINT(1), and erasing the width would report a boolean and a plain TINYINT as
-// identical. That is the right call for a general schema-difference engine.
+// The library normalizes every ORDINARY integer display width before comparing
+// (ColumnSpec.NormalizedType; COMPAT.md entry 1) — bigint(20) vs bigint, int(11) vs int,
+// int(10) unsigned vs int unsigned emit NO diff and never reach this function — with two
+// deliberate exceptions it PRESERVES: tinyint(1), because BOOLEAN is an alias for
+// TINYINT(1) and erasing the width would report a boolean and a plain TINYINT as
+// identical; and any ZEROFILL column's width, because it changes the server's text
+// rendering. That is the right call for a general schema-difference engine.
 //
 // GoArchive is not a schema-difference engine — it decides whether rows can be COPIED.
 // MySQL does not enforce boolean values in a TINYINT(1), and the display width changes
@@ -41,8 +42,16 @@ var intDisplayWidthRe = regexp.MustCompile(`^(tinyint|smallint|mediumint|int|int
 // the raw values the diff carries". No ledger deviation — D1-D6 is closed, and this
 // preserves current acceptance rather than changing it.
 //
-// In practice this function therefore exists for exactly ONE live case: tinyint(1) vs
-// tinyint. Nothing else can reach it.
+// The rule is general: EVERY ColumnTypeMismatch arrives here (disposeDiff calls this for
+// the whole kind), a leading integer display width is stripped from both raw COLUMN_TYPE
+// strings, and the pair is accepted iff the remainders are byte-equal. Given the
+// library's normalisation, the acceptance this ADDS is exactly tinyint(1) vs tinyint and
+// a ZEROFILL column's width — both pinned in
+// TestSchemaCompatTypesCompatibleAcceptanceBoundary. Everything else that differs —
+// decimal(10,2) vs decimal(12,2), varchar vs int, a one-sided unsigned or zerofill —
+// stays fatal. History: on libraries before 1.1.3, year(4) vs year arrived here and was
+// rejected; since 1.1.3 the library normalises it upstream and it never arrives. This
+// regex deliberately does not claim year, so a library regression fails closed.
 func goarchiveTypesCompatible(a, b string) bool {
 	strip := func(t string) string {
 		return intDisplayWidthRe.ReplaceAllString(strings.TrimSpace(t), "$1")
@@ -153,6 +162,20 @@ func disposeDiff(
 		}
 		return nil, nil
 
+	// ---- advisory: the two catalogues disagree on spelling only -----------------
+	case validations.ColumnNameCaseMismatch:
+		// A and B are the two spellings (A source, B destination); Column is the
+		// source's. MySQL resolves column names case-insensitively (dbsgomysql COMPAT
+		// entry 28), the INSERT column list is built from the SOURCE only
+		// (sourceColumnLists), and the verifier hashes both sides with that same list —
+		// so the copy and the verification are unaffected. The operator still hears it:
+		// the archive is no longer a byte-faithful copy of the source's schema, and a
+		// case-sensitive consumer of the archive will notice. Deliberately NOT gated on
+		// warnedCharset — that map serves the charset → collation pair only.
+		return &diffDisposition{warning: fmt.Sprintf(
+			"column %s: name differs only in letter case (source=%s destination=%s); MySQL resolves column names case-insensitively, so the copy and verification are unaffected",
+			diff.Column, diff.A, diff.B)}, nil
+
 	// ---- verification-mode dependent ---------------------------------------------
 	case validations.ColumnCharsetMismatch:
 		if charsetStrict {
@@ -199,10 +222,11 @@ func disposeDiff(
 		validations.IndexPartsMismatch,
 		validations.IndexUniquenessMismatch,
 		validations.IndexTypeMismatch,
-		validations.IndexVisibilityMismatch:
+		validations.IndexVisibilityMismatch,
+		validations.IndexNameCaseMismatch:
 		// Index policy is computed from uniqueness signatures over the captured index
 		// sections (phases 029-030), never from name-keyed index diffs — so renaming an
-		// equivalent index cannot false-fail.
+		// equivalent index cannot false-fail, and neither can re-casing its name (#77).
 		return nil, nil
 
 	case validations.EngineMismatch, validations.CharsetMismatch, validations.CollationMismatch:
@@ -226,9 +250,13 @@ func disposeDiff(
 			diff.Side)
 
 	// ---- cannot appear: sections not captured -> fail closed if observed ----------
+	// ConstraintKindUnconfirmed (v1.2.0) is emitted only after BOTH sides captured the
+	// constraints section, which GoArchive never requests (preflight_facts.go, WithIndexes
+	// only). It carries the constraint name in SpecDiff.Index, rendered below.
 	case validations.CommentMismatch,
 		validations.CommentUnconfirmed,
 		validations.ConstraintUnconfirmed,
+		validations.ConstraintKindUnconfirmed,
 		validations.ConstraintAbsent,
 		validations.ConstraintKindMismatch,
 		validations.CheckClauseMismatch,
@@ -269,6 +297,14 @@ func primaryIndex(spec validations.TableSpec) (validations.IndexSpec, bool) {
 // policy never observed it, so comparing full IndexPart values would introduce an
 // unintended new failure (spec §3.3, fourth review precision 6).
 //
+// The column identity is folded to ASCII lower case (asciiLower): MySQL resolves column
+// names case-insensitively, and error 1060 forbids two columns differing only by case in
+// one table, so the fold is injective per table — the namespace tag below still separates
+// a column from an expression, and no collision the server does not already have can be
+// introduced (#77, operator review R1). Expression text is never folded. The operator
+// message therefore shows key columns in lower case; the surrounding preflight error
+// names the table, and the advisory from disposeDiff names both spellings.
+//
 // The expression branch is unreachable today — MySQL does not permit functional PRIMARY
 // key parts — and is kept for TOTALITY, not for reuse. Phase 030's uniquenessSignature is
 // a separate function with a different encoding. Collapsing expression parts onto the
@@ -281,7 +317,7 @@ func primaryIndex(spec validations.TableSpec) (validations.IndexSpec, bool) {
 // render "(expr:email,0)". MySQL permits `:` in a backtick-quoted identifier, so that
 // column name is legal. Tag every branch, or the tag buys nothing.
 func primaryPartSignature(part validations.IndexPart) string {
-	identity := "col:" + part.Column
+	identity := "col:" + asciiLower(part.Column)
 	if part.Column == "" {
 		identity = "expr:" + part.Expression
 	}
@@ -392,6 +428,10 @@ func isFunctionalIndex(idx validations.IndexSpec) bool {
 
 // columnCollation returns the collation of the named column, or "" when the column is
 // not a string type or is not present.
+//
+// It looks a key part's column up in the SAME side's spec. part.Column and col.Name come
+// from one catalogue, so byte-exact is correct here; the cross-side fold lives in
+// uniquenessSignature, not in this lookup.
 func columnCollation(spec validations.TableSpec, column string) string {
 	for _, col := range spec.Columns {
 		if col.Name == column {
@@ -406,7 +446,12 @@ func columnCollation(spec validations.TableSpec, column string) string {
 //
 // A part signature is (kind, identity, prefix, collation):
 //
-//   - identity is the exact column name, or the server-rewritten expression text
+//   - identity is the column name folded to ASCII lower case — MySQL resolves column
+//     names case-insensitively (dbsgomysql COMPAT entry 28; error 1060 forbids two
+//     columns differing only by case in one table, so the fold is injective per table
+//     and cannot forge a collision the server does not already have) — or the exact
+//     server-rewritten expression text, which is NEVER folded: it carries string
+//     literals where case is meaning
 //   - prefix is IndexPart.SubPart; zero means the whole value, so UNIQUE(email(10)) and
 //     UNIQUE(email) are DIFFERENT signatures
 //   - collation is the indexed column's collation, empty for non-string columns and for
@@ -422,7 +467,7 @@ func uniquenessSignature(idx validations.IndexSpec, spec validations.TableSpec) 
 	for _, part := range idx.Parts {
 		if part.Column != "" {
 			parts = append(parts, uniquePart{
-				Identity:  part.Column,
+				Identity:  asciiLower(part.Column),
 				Prefix:    part.SubPart,
 				Collation: columnCollation(spec, part.Column),
 			})
@@ -494,7 +539,9 @@ func hasEquivalentSignature(sources [][]uniquePart, want []uniquePart) bool {
 }
 
 // formatSignature renders a signature for an operator message. It is DISPLAY ONLY — never
-// compare these strings; see uniquePart.
+// compare these strings; see uniquePart. Column identities render in ASCII lower case
+// because that is what the signature holds; the index NAME in the surrounding message
+// carries the operator's own spelling.
 func formatSignature(parts []uniquePart) string {
 	rendered := make([]string, 0, len(parts))
 	for _, part := range parts {

@@ -265,8 +265,8 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1106 FAIL=0 SKIP=2` (runner-measured
-2026-08-29; #16 added the timezone and marker-remedy integration tests).
+The measured integration baseline is `PASS=1130 FAIL=0 SKIP=2` (runner-measured
+2026-09-05; #77 added the case-only column-name and primary-key integration tests).
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

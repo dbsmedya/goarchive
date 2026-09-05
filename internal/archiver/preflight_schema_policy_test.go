@@ -104,8 +104,9 @@ func TestSchemaCompatOrdinaryDisplayWidthEmitsNoDiff(t *testing.T) {
 	}
 }
 
-// TestSchemaCompatTinyint1IsAcceptedByPolicy is the ONE live case for
-// goarchiveTypesCompatible. The library deliberately preserves tinyint(1) (BOOLEAN is an
+// TestSchemaCompatTinyint1IsAcceptedByPolicy is the case goarchiveTypesCompatible exists for
+// (its full acceptance boundary is pinned in TestSchemaCompatTypesCompatibleAcceptanceBoundary).
+// The library deliberately preserves tinyint(1) (BOOLEAN is an
 // alias for it), so NormalizedType really does differ here and DiffSpecs really does emit
 // ColumnTypeMismatch — GoArchive's policy override is what accepts it, as spec §3.3
 // requires and as 1.8 behaved.
@@ -149,6 +150,75 @@ func TestSchemaCompatUnsignedIsNotIgnored(t *testing.T) {
 	v, _ := evaluateSchemaCompatibility(pairOf(a, b), true)
 	if v.Fatal == "" {
 		t.Fatal("int unsigned vs int must stay fatal — the value range differs")
+	}
+}
+
+// TestSchemaCompatTypesCompatibleAcceptanceBoundary pins what goarchiveTypesCompatible
+// ACCEPTS beyond the library's own normalisation. Every ColumnTypeMismatch reaches the
+// function — disposeDiff calls it for the whole kind — and its rule is general: strip a
+// leading integer display width from both raw COLUMN_TYPE strings and accept iff the
+// remainders are byte-equal. Because the library already normalises ordinary integer
+// widths away (no diff is emitted for bigint(20) vs bigint), the acceptance this override
+// ADDS is exactly the two cosmetic shapes the library deliberately preserves:
+//
+//   - tinyint(1) vs tinyint — owned by TestSchemaCompatTinyint1IsAcceptedByPolicy.
+//   - a ZEROFILL column's display width (COMPAT entry 1 keeps it): int(5) unsigned zerofill
+//     vs int(10) unsigned zerofill is ACCEPTED. Measured on the estate 2026-09-04: both
+//     sides scan as int64 through database/sql, so the copy and the sha256 hash are
+//     unaffected; the width only pads the server's TEXT rendering. The zerofill ATTRIBUTE
+//     is not ignored: it survives the strip, so a one-sided zerofill stays fatal.
+//
+// year(4) vs year is HISTORY, pinned so the flip this bump causes is observed: before
+// dbsgomysql 1.1.3 (#75) the library preserved the legacy YEAR width, the pair reached
+// this function, and it was REJECTED — the regex does not claim year. Since 1.1.3 the
+// library normalises it and the pair never reaches the override. Both eras are pinned
+// with the NormalizedType each produced; the pre-1.1.3 row proves the override still does
+// not claim year, so a library regression fails closed, and a reader widening
+// intDisplayWidthRe to year must consciously break it. MySQL 8.4.10 drops YEAR(4) at
+// CREATE time (measured on 3305: SHOW CREATE TABLE renders `year`), so the shape lives
+// only in an in-place-upgraded data dictionary and no estate test can produce it.
+//
+// NormalizedType is hand-supplied here, so this pins GoArchive's policy for the facts each
+// library era hands it — NOT the library's normaliser, which the library's own tests own.
+func TestSchemaCompatTypesCompatibleAcceptanceBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, aType, bType, aNorm, bNorm string
+		libraryEmitsTypeDiff             bool // the library must emit ColumnTypeMismatch for this pair
+		wantFatal                        bool
+	}{
+		{"zerofill_width_is_accepted", "int(5) unsigned zerofill", "int(10) unsigned zerofill",
+			"int(5) unsigned zerofill", "int(10) unsigned zerofill", true, false},
+		{"zerofill_attribute_is_not_ignored", "int(10) unsigned zerofill", "int unsigned",
+			"int(10) unsigned zerofill", "int unsigned", true, true},
+		{"year_width_normalised_by_library_since_1_1_3", "year(4)", "year",
+			"year", "year", false, false},
+		{"year_width_as_a_pre_1_1_3_library_reported_it_is_fatal", "year(4)", "year",
+			"year(4)", "year", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ca, cb := specCol(2, "n", tc.aType), specCol(2, "n", tc.bType)
+			ca.NormalizedType, cb.NormalizedType = tc.aNorm, tc.bNorm // as the library produces
+			a := []validations.ColumnSpec{specCol(1, "id", "bigint"), ca}
+			b := []validations.ColumnSpec{specCol(1, "id", "bigint"), cb}
+
+			var sawType bool
+			for _, d := range validations.DiffSpecs(pairOf(a, b).A, pairOf(a, b).B) {
+				if d.Kind == validations.ColumnTypeMismatch {
+					sawType = true
+				}
+			}
+			if sawType != tc.libraryEmitsTypeDiff {
+				t.Fatalf("library emits ColumnTypeMismatch = %v, want %v", sawType, tc.libraryEmitsTypeDiff)
+			}
+
+			v, err := evaluateSchemaCompatibility(pairOf(a, b), true)
+			if err != nil {
+				t.Fatalf("evaluateSchemaCompatibility: %v", err)
+			}
+			if (v.Fatal != "") != tc.wantFatal {
+				t.Fatalf("wantFatal=%v, got fatal=%q", tc.wantFatal, v.Fatal)
+			}
+		})
 	}
 }
 
@@ -474,6 +544,76 @@ func TestAbsoluteInvariantPrimaryKeyIgnoresDescending(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("PRIMARY key direction must be ignored, got: %s", reason)
+	}
+}
+
+// TestAbsoluteInvariantPrimaryKeyIgnoresASCIICase — found in the operator's plan review
+// (R1, 2026-09-05): primaryPartSignature rendered the column spelling byte-exact, so
+// PRIMARY KEY (id) vs PRIMARY KEY (ID) was fatal BEFORE D3 and before any diff, and no
+// fold in uniquenessSignature could reach it (D3 skips PRIMARY). MySQL resolves column
+// names case-insensitively, and INSERT IGNORE idempotency depends on the KEY, not on its
+// spelling, so a case-only difference must be accepted. Everything the invariant already
+// rejects (TestAbsoluteInvariantPrimaryKeyMustMatch: different column, order, prefix,
+// missing) must stay rejected; the negative rows here pin the fold's boundaries — order
+// and prefix still matter after folding, and non-ASCII letters are not folded.
+func TestAbsoluteInvariantPrimaryKeyIgnoresASCIICase(t *testing.T) {
+	srcCols := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "tenant_id", "int")}
+	dstCols := []validations.ColumnSpec{specCol(1, "ID", "bigint"), specCol(2, "Tenant_ID", "int")}
+
+	cases := []struct {
+		name    string
+		aIdx    []validations.IndexSpec
+		bIdx    []validations.IndexSpec
+		wantBad bool
+	}{
+		{
+			name:    "case_only_single_column",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ID"})},
+			wantBad: false,
+		},
+		{
+			name: "case_only_composite_same_order",
+			aIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "id"}, validations.IndexPart{Column: "tenant_id"})},
+			bIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "ID"}, validations.IndexPart{Column: "Tenant_ID"})},
+			wantBad: false,
+		},
+		{
+			name: "case_only_but_order_differs",
+			aIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "id"}, validations.IndexPart{Column: "tenant_id"})},
+			bIdx: []validations.IndexSpec{primaryOn(
+				validations.IndexPart{Column: "Tenant_ID"}, validations.IndexPart{Column: "ID"})},
+			wantBad: true,
+		},
+		{
+			name:    "case_only_but_prefix_differs",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "id"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ID", SubPart: 10})},
+			wantBad: true,
+		},
+		{
+			name:    "non_ascii_case_is_not_folded",
+			aIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "édition"})},
+			bIdx:    []validations.IndexSpec{primaryOn(validations.IndexPart{Column: "ÉDITION"})},
+			wantBad: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reason, err := checkAbsoluteInvariants(pairWithIndexes(srcCols, dstCols, tc.aIdx, tc.bIdx))
+			if err != nil {
+				t.Fatalf("checkAbsoluteInvariants: %v", err)
+			}
+			if tc.wantBad && reason == "" {
+				t.Fatal("expected a fatal PRIMARY key mismatch")
+			}
+			if !tc.wantBad && reason != "" {
+				t.Fatalf("expected clean, got: %s", reason)
+			}
+		})
 	}
 }
 
@@ -907,6 +1047,60 @@ func TestD3SignatureCannotBeForgedByAnIdentifier(t *testing.T) {
 	}
 }
 
+// TestD3ColumnNameCaseIsIgnored — MySQL resolves column names case-insensitively (error
+// 1060 forbids two columns differing only by case in one table; dbsgomysql COMPAT entry
+// 28), so UNIQUE(email) and UNIQUE(Email) enforce the same predicate. Before this fix the
+// signature identity was byte-exact and the destination false-failed as "stricter".
+func TestD3ColumnNameCaseIsIgnored(t *testing.T) {
+	src := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	dst := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "Email", "utf8mb4", "utf8mb4_bin")}
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	pair := pairWithIndexes(src, dst,
+		[]validations.IndexSpec{primary, uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{primary, uniqueIdx("uq_email", validations.IndexPart{Column: "Email"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason != "" {
+		t.Fatalf("UNIQUE(email) and UNIQUE(Email) enforce the same predicate; got: %s", reason)
+	}
+}
+
+// TestD3NonASCIICaseIsNotFolded — the fold is ASCII-only, matching asciiFoldEqual and the
+// library's rule. A non-ASCII case pair is a difference GoArchive cannot classify, so it
+// stays a difference (fail safe): the destination UNIQUE has no equivalent and is fatal.
+// Its kill is replacing asciiLower with strings.ToLower.
+func TestD3NonASCIICaseIsNotFolded(t *testing.T) {
+	src := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "émail", "utf8mb4", "utf8mb4_bin")}
+	dst := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "ÉMAIL", "utf8mb4", "utf8mb4_bin")}
+	primary := primaryOn(validations.IndexPart{Column: "id"})
+	pair := pairWithIndexes(src, dst,
+		[]validations.IndexSpec{primary, uniqueIdx("uq", validations.IndexPart{Column: "émail"})},
+		[]validations.IndexSpec{primary, uniqueIdx("uq", validations.IndexPart{Column: "ÉMAIL"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("non-ASCII letters must compare exactly; ÉMAIL is not an ASCII fold of émail")
+	}
+}
+
+// TestD3ExpressionPartsAreNotFolded — GUARD, green before and after the fix. Its kill is
+// a fold that reaches expression parts: the server-rewritten expression text carries
+// string literals where case is meaning, so 'A' and 'a' are different predicates.
+// Prove the kill once: fold part.Expression in uniquenessSignature and watch this go red.
+func TestD3ExpressionPartsAreNotFolded(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Expression: "(`email` = _utf8mb4'A')"})},
+		[]validations.IndexSpec{uniqueIdx("uq", validations.IndexPart{Expression: "(`email` = _utf8mb4'a')"})})
+
+	if reason := checkDestinationUniqueness(pair, nil); reason == "" {
+		t.Fatal("expression text must compare byte-exact; 'A' and 'a' are different predicates")
+	}
+}
+
 // TestDisposeDiffClassifiesEveryPublishedKind proves goarchive has an explicit case for
 // every SpecDiffKind the pinned library publishes.
 //
@@ -990,5 +1184,109 @@ func TestDisposeDiffFailsClosedOnUnclassifiedKinds(t *testing.T) {
 				t.Fatalf("expected the PREFLIGHT_UNKNOWN_DIFF error, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestSchemaCompatColumnNameCaseOnlyWarns — a column whose name differs only in ASCII
+// letter case is MATCHED by the library (v1.2.0, #77) and reported as
+// ColumnNameCaseMismatch with both spellings in A/B. GoArchive's disposition is WARNING:
+// the copy names SOURCE columns and MySQL resolves them case-insensitively, so nothing on
+// the data path changes — but the two catalogues disagree, and the operator should hear it.
+func TestSchemaCompatColumnNameCaseOnlyWarns(t *testing.T) {
+	a := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "CustomerID", "bigint")}
+	b := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "customerid", "bigint")}
+
+	var sawCase bool
+	for _, d := range validations.DiffSpecs(pairOf(a, b).A, pairOf(a, b).B) {
+		if d.Kind == validations.ColumnAbsent {
+			t.Fatalf("the library must MATCH a case-only name, not report it absent: %+v", d)
+		}
+		if d.Kind == validations.ColumnNameCaseMismatch {
+			sawCase = true
+		}
+	}
+	if !sawCase {
+		t.Fatal("the library must EMIT ColumnNameCaseMismatch for CustomerID vs customerid")
+	}
+
+	v, err := evaluateSchemaCompatibility(pairOf(a, b), true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal != "" {
+		t.Fatalf("a case-only column name must not be fatal, got: %s", v.Fatal)
+	}
+	if len(v.Warnings) != 1 {
+		t.Fatalf("want exactly one advisory, got %d: %v", len(v.Warnings), v.Warnings)
+	}
+	for _, want := range []string{"CustomerID", "customerid", "letter case"} {
+		if !strings.Contains(v.Warnings[0], want) {
+			t.Fatalf("advisory must carry both spellings and name the cause; missing %q in %q",
+				want, v.Warnings[0])
+		}
+	}
+
+	// The charset→collation suppression map must not swallow this advisory: it serves
+	// that pair only. A column that already warned on charset still warns on case.
+	got, err := disposeDiff(
+		validations.SpecDiff{Kind: validations.ColumnNameCaseMismatch, Side: validations.SideBoth,
+			Column: "CustomerID", A: "CustomerID", B: "customerid"},
+		true, map[string]bool{"CustomerID": true})
+	if err != nil || got == nil || got.warning == "" {
+		t.Fatalf("case advisory must survive a prior charset warning on the same column; got %+v, %v", got, err)
+	}
+}
+
+// TestSchemaCompatIndexNameCaseOnlyIsIgnored — index names never enter GoArchive's policy
+// (D3 compares uniqueness signatures; every name-keyed index diff is ignored), so a
+// case-only index-name difference is ignored exactly like any other index rename.
+func TestSchemaCompatIndexNameCaseOnlyIsIgnored(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{uniqueIdx("UQ_EMAIL", validations.IndexPart{Column: "email"})})
+
+	var sawCase bool
+	for _, d := range validations.DiffSpecs(pair.A, pair.B) {
+		if d.Kind == validations.IndexAbsent {
+			t.Fatalf("the library must MATCH a case-only index name, not report it absent: %+v", d)
+		}
+		if d.Kind == validations.IndexNameCaseMismatch {
+			sawCase = true
+		}
+	}
+	if !sawCase {
+		t.Fatal("the library must EMIT IndexNameCaseMismatch for uq_email vs UQ_EMAIL")
+	}
+
+	v, err := evaluateSchemaCompatibility(pair, true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal != "" || len(v.Warnings) != 0 {
+		t.Fatalf("a case-only index name must be ignored outright, got fatal=%q warnings=%v",
+			v.Fatal, v.Warnings)
+	}
+}
+
+// TestDisposeDiffConstraintKindUnconfirmedFailsClosed — v1.2.0's third kind. The library
+// emits it only from diffConstraintPair, which runs only when BOTH sides captured the
+// constraints section; GoArchive never requests WithConstraints() (preflight_facts.go),
+// so observing it means the inspection cannot be trusted. It joins the cannot-occur arm,
+// which already renders SpecDiff.Index — where this kind carries the constraint name.
+func TestDisposeDiffConstraintKindUnconfirmedFailsClosed(t *testing.T) {
+	_, err := disposeDiff(
+		validations.SpecDiff{Kind: validations.ConstraintKindUnconfirmed,
+			Side: validations.SideBoth, Index: "chk_total"},
+		true, nil)
+	if err == nil {
+		t.Fatal("ConstraintKindUnconfirmed must abort preflight")
+	}
+	if !strings.Contains(err.Error(), "PREFLIGHT_UNEXPECTED_DIFF") {
+		t.Fatalf("must fail through the cannot-occur arm, not the unknown-kind default: %v", err)
+	}
+	if !strings.Contains(err.Error(), "chk_total") {
+		t.Fatalf("the abort must name the constraint (carried in SpecDiff.Index): %v", err)
 	}
 }

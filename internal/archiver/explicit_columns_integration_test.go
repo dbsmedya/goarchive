@@ -350,3 +350,52 @@ func TestExplicitColumnsFullArchive(t *testing.T) {
 		t.Fatalf("source still holds %d rows after archive; want 0 (deletion did not run)", remaining)
 	}
 }
+
+// TestExplicitColumnsCaseOnlyDestinationCopiesAndVerifies is the PREMISE behind the
+// WARNING disposition for ColumnNameCaseMismatch (#77): the INSERT names SOURCE columns,
+// MySQL resolves them case-insensitively against the destination's spelling, and the
+// sha256 verifier reads both sides with the same source-derived list. It is green on the
+// code before #77 as well — it pins the premise, not the fix — and its kill is any future
+// Go-side column matching that becomes case-sensitive.
+func TestExplicitColumnsCaseOnlyDestinationCopiesAndVerifies(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	const table = "exp_case_only"
+	srcDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, email VARCHAR(64) NOT NULL, UNIQUE KEY uq_email (email)) ENGINE=InnoDB"
+	dstDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, Email VARCHAR(64) NOT NULL, UNIQUE KEY uq_email (Email)) ENGINE=InnoDB"
+	dstDB := explicitColsRoundTrip(t, ctx, setup, table, srcDDL, dstDDL,
+		"INSERT INTO "+table+" (id, email) VALUES (1, 'a@example.com'), (2, 'b@example.com')",
+		"id", []interface{}{int64(1), int64(2)})
+
+	var got string
+	if err := dstDB.QueryRowContext(ctx, "SELECT Email FROM "+table+" WHERE id = 2").Scan(&got); err != nil {
+		t.Fatalf("read dest Email: %v", err)
+	}
+	if got != "b@example.com" {
+		t.Fatalf("destination Email for id 2 = %q, want %q", got, "b@example.com")
+	}
+}
+
+// TestExplicitColumnsCaseOnlyPrimaryKeyCopiesAndVerifies — premise test for the
+// primary-key half of #77: the configured key name (`id`) is what every WHERE clause
+// names on BOTH servers, and MySQL resolves it against the destination's `ID`. Copy and
+// sha256 verification succeed with no code in this repository aware of the difference.
+// Green before and after the fix; its kill is any future Go-side key-name comparison.
+func TestExplicitColumnsCaseOnlyPrimaryKeyCopiesAndVerifies(t *testing.T) {
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	const table = "exp_case_only_pk"
+	srcDDL := "CREATE TABLE " + table + " (id BIGINT PRIMARY KEY, note VARCHAR(64) NOT NULL) ENGINE=InnoDB"
+	dstDDL := "CREATE TABLE " + table + " (ID BIGINT PRIMARY KEY, note VARCHAR(64) NOT NULL) ENGINE=InnoDB"
+	dstDB := explicitColsRoundTrip(t, ctx, setup, table, srcDDL, dstDDL,
+		"INSERT INTO "+table+" (id, note) VALUES (1, 'one'), (2, 'two')",
+		"id", []interface{}{int64(1), int64(2)})
+
+	var n int
+	if err := dstDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM "+table+" WHERE ID IN (1, 2)").Scan(&n); err != nil {
+		t.Fatalf("count dest rows: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("destination has %d of the 2 copied rows", n)
+	}
+}
