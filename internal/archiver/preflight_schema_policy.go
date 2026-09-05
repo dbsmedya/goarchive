@@ -288,6 +288,14 @@ func primaryIndex(spec validations.TableSpec) (validations.IndexSpec, bool) {
 // policy never observed it, so comparing full IndexPart values would introduce an
 // unintended new failure (spec §3.3, fourth review precision 6).
 //
+// The column identity is folded to ASCII lower case (asciiLower): MySQL resolves column
+// names case-insensitively, and error 1060 forbids two columns differing only by case in
+// one table, so the fold is injective per table — the namespace tag below still separates
+// a column from an expression, and no collision the server does not already have can be
+// introduced (#77, operator review R1). Expression text is never folded. The operator
+// message therefore shows key columns in lower case; the surrounding preflight error
+// names the table, and the advisory from disposeDiff names both spellings.
+//
 // The expression branch is unreachable today — MySQL does not permit functional PRIMARY
 // key parts — and is kept for TOTALITY, not for reuse. Phase 030's uniquenessSignature is
 // a separate function with a different encoding. Collapsing expression parts onto the
@@ -300,7 +308,7 @@ func primaryIndex(spec validations.TableSpec) (validations.IndexSpec, bool) {
 // render "(expr:email,0)". MySQL permits `:` in a backtick-quoted identifier, so that
 // column name is legal. Tag every branch, or the tag buys nothing.
 func primaryPartSignature(part validations.IndexPart) string {
-	identity := "col:" + part.Column
+	identity := "col:" + asciiLower(part.Column)
 	if part.Column == "" {
 		identity = "expr:" + part.Expression
 	}
