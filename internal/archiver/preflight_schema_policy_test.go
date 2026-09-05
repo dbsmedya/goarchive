@@ -992,3 +992,107 @@ func TestDisposeDiffFailsClosedOnUnclassifiedKinds(t *testing.T) {
 		})
 	}
 }
+
+// TestSchemaCompatColumnNameCaseOnlyWarns — a column whose name differs only in ASCII
+// letter case is MATCHED by the library (v1.2.0, #77) and reported as
+// ColumnNameCaseMismatch with both spellings in A/B. GoArchive's disposition is WARNING:
+// the copy names SOURCE columns and MySQL resolves them case-insensitively, so nothing on
+// the data path changes — but the two catalogues disagree, and the operator should hear it.
+func TestSchemaCompatColumnNameCaseOnlyWarns(t *testing.T) {
+	a := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "CustomerID", "bigint")}
+	b := []validations.ColumnSpec{specCol(1, "id", "bigint"), specCol(2, "customerid", "bigint")}
+
+	var sawCase bool
+	for _, d := range validations.DiffSpecs(pairOf(a, b).A, pairOf(a, b).B) {
+		if d.Kind == validations.ColumnAbsent {
+			t.Fatalf("the library must MATCH a case-only name, not report it absent: %+v", d)
+		}
+		if d.Kind == validations.ColumnNameCaseMismatch {
+			sawCase = true
+		}
+	}
+	if !sawCase {
+		t.Fatal("the library must EMIT ColumnNameCaseMismatch for CustomerID vs customerid")
+	}
+
+	v, err := evaluateSchemaCompatibility(pairOf(a, b), true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal != "" {
+		t.Fatalf("a case-only column name must not be fatal, got: %s", v.Fatal)
+	}
+	if len(v.Warnings) != 1 {
+		t.Fatalf("want exactly one advisory, got %d: %v", len(v.Warnings), v.Warnings)
+	}
+	for _, want := range []string{"CustomerID", "customerid", "letter case"} {
+		if !strings.Contains(v.Warnings[0], want) {
+			t.Fatalf("advisory must carry both spellings and name the cause; missing %q in %q",
+				want, v.Warnings[0])
+		}
+	}
+
+	// The charset→collation suppression map must not swallow this advisory: it serves
+	// that pair only. A column that already warned on charset still warns on case.
+	got, err := disposeDiff(
+		validations.SpecDiff{Kind: validations.ColumnNameCaseMismatch, Side: validations.SideBoth,
+			Column: "CustomerID", A: "CustomerID", B: "customerid"},
+		true, map[string]bool{"CustomerID": true})
+	if err != nil || got == nil || got.warning == "" {
+		t.Fatalf("case advisory must survive a prior charset warning on the same column; got %+v, %v", got, err)
+	}
+}
+
+// TestSchemaCompatIndexNameCaseOnlyIsIgnored — index names never enter GoArchive's policy
+// (D3 compares uniqueness signatures; every name-keyed index diff is ignored), so a
+// case-only index-name difference is ignored exactly like any other index rename.
+func TestSchemaCompatIndexNameCaseOnlyIsIgnored(t *testing.T) {
+	cols := []validations.ColumnSpec{
+		specCol(1, "id", "bigint"), strCol(2, "email", "utf8mb4", "utf8mb4_bin")}
+	pair := d3Pair(cols,
+		[]validations.IndexSpec{uniqueIdx("uq_email", validations.IndexPart{Column: "email"})},
+		[]validations.IndexSpec{uniqueIdx("UQ_EMAIL", validations.IndexPart{Column: "email"})})
+
+	var sawCase bool
+	for _, d := range validations.DiffSpecs(pair.A, pair.B) {
+		if d.Kind == validations.IndexAbsent {
+			t.Fatalf("the library must MATCH a case-only index name, not report it absent: %+v", d)
+		}
+		if d.Kind == validations.IndexNameCaseMismatch {
+			sawCase = true
+		}
+	}
+	if !sawCase {
+		t.Fatal("the library must EMIT IndexNameCaseMismatch for uq_email vs UQ_EMAIL")
+	}
+
+	v, err := evaluateSchemaCompatibility(pair, true)
+	if err != nil {
+		t.Fatalf("evaluateSchemaCompatibility: %v", err)
+	}
+	if v.Fatal != "" || len(v.Warnings) != 0 {
+		t.Fatalf("a case-only index name must be ignored outright, got fatal=%q warnings=%v",
+			v.Fatal, v.Warnings)
+	}
+}
+
+// TestDisposeDiffConstraintKindUnconfirmedFailsClosed — v1.2.0's third kind. The library
+// emits it only from diffConstraintPair, which runs only when BOTH sides captured the
+// constraints section; GoArchive never requests WithConstraints() (preflight_facts.go),
+// so observing it means the inspection cannot be trusted. It joins the cannot-occur arm,
+// which already renders SpecDiff.Index — where this kind carries the constraint name.
+func TestDisposeDiffConstraintKindUnconfirmedFailsClosed(t *testing.T) {
+	_, err := disposeDiff(
+		validations.SpecDiff{Kind: validations.ConstraintKindUnconfirmed,
+			Side: validations.SideBoth, Index: "chk_total"},
+		true, nil)
+	if err == nil {
+		t.Fatal("ConstraintKindUnconfirmed must abort preflight")
+	}
+	if !strings.Contains(err.Error(), "PREFLIGHT_UNEXPECTED_DIFF") {
+		t.Fatalf("must fail through the cannot-occur arm, not the unknown-kind default: %v", err)
+	}
+	if !strings.Contains(err.Error(), "chk_total") {
+		t.Fatalf("the abort must name the constraint (carried in SpecDiff.Index): %v", err)
+	}
+}
