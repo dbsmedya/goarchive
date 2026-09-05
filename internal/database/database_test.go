@@ -592,3 +592,192 @@ func containsSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// Source/destination identity (issue #13)
+// ---------------------------------------------------------------------------
+
+const (
+	identityTestUUIDA = "0b4a15c5-a8f2-11f1-b13a-7a3eaef47bfa"
+	identityTestUUIDB = "0b4cb2c2-a8f2-11f1-bac2-e677d186e916"
+)
+
+// identityProbeRows builds the one-row result serverIdentityProbe returns.
+// schema is interface{} so a test can hand in nil for SQL NULL.
+func identityProbeRows(uuid string, schema interface{}, host string, port int) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"@@GLOBAL.server_uuid", "DATABASE()", "@@GLOBAL.hostname", "@@GLOBAL.port"}).
+		AddRow(uuid, schema, host, port)
+}
+
+func TestReadServerIdentity(t *testing.T) {
+	t.Run("parses the probe row", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		mock.ExpectQuery("server_uuid").
+			WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
+
+		got, err := readServerIdentity(context.Background(), db)
+		if err != nil {
+			t.Fatalf("readServerIdentity: %v", err)
+		}
+		want := ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "app", Hostname: "db1.local", Port: 3306}
+		if got != want {
+			t.Fatalf("readServerIdentity = %+v, want %+v", got, want)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// The DSN always selects a schema, so a NULL or empty DATABASE() means a
+	// proxy or server rewrote the session. Comparing an empty schema would make
+	// two unrelated schemas look equal — refuse instead.
+	for _, tc := range []struct {
+		name   string
+		schema interface{}
+	}{
+		{name: "NULL schema fails closed", schema: nil},
+		{name: "empty schema fails closed", schema: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			mock.ExpectQuery("server_uuid").
+				WillReturnRows(identityProbeRows(identityTestUUIDA, tc.schema, "db1.local", 3306))
+
+			_, err = readServerIdentity(context.Background(), db)
+			if err == nil || !contains(err.Error(), "no selected schema") {
+				t.Fatalf("expected the no-selected-schema refusal, got %v", err)
+			}
+		})
+	}
+
+	t.Run("query failure is wrapped and attributed", func(t *testing.T) {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		sentinel := errors.New("boom")
+		mock.ExpectQuery("server_uuid").WillReturnError(sentinel)
+
+		_, err = readServerIdentity(context.Background(), db)
+		if !errors.Is(err, sentinel) || !contains(err.Error(), "identity probe failed") {
+			t.Fatalf("expected a wrapped, attributed probe failure, got %v", err)
+		}
+	})
+}
+
+// Each row is the witness for one mutation of the predicate (spec §5): the
+// fold, the uuid term, the schema term. A mutation that drops one term still
+// refuses identical endpoints, so only the acceptance rows can see it.
+func TestSameDatabase(t *testing.T) {
+	id := func(uuid, schema string) ServerIdentity { return ServerIdentity{ServerUUID: uuid, Schema: schema} }
+	cases := []struct {
+		name string
+		a, b ServerIdentity
+		want bool
+	}{
+		{name: "same server, same schema", a: id(identityTestUUIDA, "app"), b: id(identityTestUUIDA, "app"), want: true},
+		{name: "same server, schema differs only in letter case (fold)", a: id(identityTestUUIDA, "app"), b: id(identityTestUUIDA, "App"), want: true},
+		{name: "different servers, same schema name (uuid term)", a: id(identityTestUUIDA, "app"), b: id(identityTestUUIDB, "app"), want: false},
+		{name: "same server, different schema (schema term)", a: id(identityTestUUIDA, "app"), b: id(identityTestUUIDA, "app_archive"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameDatabase(tc.a, tc.b); got != tc.want {
+				t.Fatalf("sameDatabase(%+v, %+v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSameDatabaseErrorNamesBothSidesAndTheRemedies(t *testing.T) {
+	err := &SameDatabaseError{
+		Source:      ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "App", Hostname: "db1.local", Port: 3306},
+		Destination: ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "app", Hostname: "db1.local", Port: 3306},
+	}
+	for _, want := range []string{
+		"SRC_DEST_IDENTITY_CHECK",
+		identityTestUUIDA,
+		"source schema=App at db1.local:3306",
+		"destination schema=app at db1.local:3306",
+		"letter case",
+		"auto.cnf",
+		"README_LIMITATIONS.md",
+	} {
+		if !contains(err.Error(), want) {
+			t.Errorf("SameDatabaseError.Error() lacks %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+func TestAssertDistinctDatabases(t *testing.T) {
+	newPool := func(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+		t.Helper()
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		return db, mock
+	}
+
+	t.Run("refuses identical identities with the typed error", func(t *testing.T) {
+		src, srcMock := newPool(t)
+		dst, dstMock := newPool(t)
+		srcMock.ExpectQuery("server_uuid").WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
+		dstMock.ExpectQuery("server_uuid").WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
+
+		err := assertDistinctDatabases(context.Background(), src, dst)
+		var same *SameDatabaseError
+		if !errors.As(err, &same) {
+			t.Fatalf("expected *SameDatabaseError, got %v", err)
+		}
+		if same.Source.Schema != "app" || same.Destination.Schema != "app" {
+			t.Fatalf("error carries the wrong identities: %+v", same)
+		}
+	})
+
+	t.Run("accepts different servers", func(t *testing.T) {
+		src, srcMock := newPool(t)
+		dst, dstMock := newPool(t)
+		srcMock.ExpectQuery("server_uuid").WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
+		dstMock.ExpectQuery("server_uuid").WillReturnRows(identityProbeRows(identityTestUUIDB, "app", "db2.local", 3306))
+
+		if err := assertDistinctDatabases(context.Background(), src, dst); err != nil {
+			t.Fatalf("expected acceptance, got %v", err)
+		}
+	})
+
+	t.Run("source probe failure is attributed and inspectable", func(t *testing.T) {
+		src, srcMock := newPool(t)
+		dst, _ := newPool(t)
+		sentinel := errors.New("boom")
+		srcMock.ExpectQuery("server_uuid").WillReturnError(sentinel)
+
+		err := assertDistinctDatabases(context.Background(), src, dst)
+		if !errors.Is(err, sentinel) || !contains(err.Error(), "source identity check failed") {
+			t.Fatalf("expected a source-attributed wrapped failure, got %v", err)
+		}
+	})
+
+	t.Run("destination probe failure is attributed and inspectable", func(t *testing.T) {
+		src, srcMock := newPool(t)
+		dst, dstMock := newPool(t)
+		srcMock.ExpectQuery("server_uuid").WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
+		sentinel := errors.New("boom")
+		dstMock.ExpectQuery("server_uuid").WillReturnError(sentinel)
+
+		err := assertDistinctDatabases(context.Background(), src, dst)
+		if !errors.Is(err, sentinel) || !contains(err.Error(), "destination identity check failed") {
+			t.Fatalf("expected a destination-attributed wrapped failure, got %v", err)
+		}
+	})
+}
