@@ -212,6 +212,82 @@ func TestIntegrationSchemaCompatibility_CharsetMismatch(t *testing.T) {
 	}
 }
 
+// TestIntegrationSchemaCompatibility_ColumnNameCaseOnly — the destination spells a
+// column differently only in ASCII letter case, and that column carries a UNIQUE index
+// on both sides. Both #77 defects sit on this path: the pinned library used to report
+// the column absent (fixed by dbsgomysql v1.2.0), and D3 used to compare the signature
+// identity byte-exact (fixed in this repository). Preflight must pass and emit exactly
+// one advisory naming the table and both spellings.
+//
+// It borrows the characterization fixture for its throwaway schemas and captured
+// logger. The name deliberately does NOT start with TestCharacterization, so the counted
+// baseline in tests/characterization-baseline.txt is untouched.
+func TestIntegrationSchemaCompatibility_ColumnNameCaseOnly(t *testing.T) {
+	_, ctx := SetupIntegrationTest(t)
+	f := newChrFixture(t, ctx)
+
+	f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, email varchar(64) NOT NULL, PRIMARY KEY (id), UNIQUE KEY uq_email (email)) ENGINE=InnoDB")
+	f.ExecDest(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, Email varchar(64) NOT NULL, PRIMARY KEY (id), UNIQUE KEY uq_email (Email)) ENGINE=InnoDB")
+
+	checker := f.Checker(t, graph.NewGraph("orders", "id"))
+	checker.SetVerification(chrCountVerification())
+	if err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker)); err != nil {
+		t.Fatalf("a case-only column name must pass preflight, got: %v", err)
+	}
+
+	var advisories []string
+	for _, m := range f.WarnMessages() {
+		if strings.Contains(m, "letter case") {
+			advisories = append(advisories, m)
+		}
+	}
+	if len(advisories) != 1 {
+		t.Fatalf("want exactly one case advisory, got %d: %v (all warnings: %v)",
+			len(advisories), advisories, f.WarnMessages())
+	}
+	for _, want := range []string{"orders", "email", "Email"} {
+		if !strings.Contains(advisories[0], want) {
+			t.Fatalf("advisory must name the table and both spellings; missing %q in %q", want, advisories[0])
+		}
+	}
+}
+
+// TestIntegrationSchemaCompatibility_PrimaryKeyCaseOnly — the destination spells the
+// PRIMARY KEY column differently only in ASCII letter case. This path is neither the
+// library's (fixed by v1.2.0) nor D3's (which skips PRIMARY): checkAbsoluteInvariants
+// compared primary-key part signatures byte-exact and runs BEFORE both, so its fatal
+// masked every other outcome (operator plan review R1, 2026-09-05). Preflight must pass
+// and emit exactly one advisory naming both spellings of the key column.
+func TestIntegrationSchemaCompatibility_PrimaryKeyCaseOnly(t *testing.T) {
+	_, ctx := SetupIntegrationTest(t)
+	f := newChrFixture(t, ctx)
+
+	f.ExecSource(t, ctx, "CREATE TABLE orders (id bigint NOT NULL, note varchar(64) NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+	f.ExecDest(t, ctx, "CREATE TABLE orders (ID bigint NOT NULL, note varchar(64) NOT NULL, PRIMARY KEY (ID)) ENGINE=InnoDB")
+
+	checker := f.Checker(t, graph.NewGraph("orders", "id"))
+	checker.SetVerification(chrCountVerification())
+	if err := checker.ValidateDestinationSchemaCompatibility(ctx, newPreflightRun(checker)); err != nil {
+		t.Fatalf("a case-only primary-key column must pass preflight, got: %v", err)
+	}
+
+	var advisories []string
+	for _, m := range f.WarnMessages() {
+		if strings.Contains(m, "letter case") {
+			advisories = append(advisories, m)
+		}
+	}
+	if len(advisories) != 1 {
+		t.Fatalf("want exactly one case advisory, got %d: %v (all warnings: %v)",
+			len(advisories), advisories, f.WarnMessages())
+	}
+	for _, want := range []string{"orders", "source=id", "destination=ID"} {
+		if !strings.Contains(advisories[0], want) {
+			t.Fatalf("advisory must name the table and both spellings; missing %q in %q", want, advisories[0])
+		}
+	}
+}
+
 // TestIntegrationJobSchemaPermissions_MissingCreate verifies that
 // ValidateJobSchemaPermissions returns a *PreflightError with
 // Check == "JOB_SCHEMA_PERMISSION_CHECK" when the connected account lacks
