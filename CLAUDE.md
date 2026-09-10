@@ -284,8 +284,9 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1167 FAIL=0 SKIP=2` (runner-measured
-2026-09-10; #108 added zero-preservation regressions and connection-mode tests).
+The measured integration baseline is `PASS=1310 FAIL=0 SKIP=18` (runner-measured
+2026-09-10; #107 adds temporal identity and INSERT diagnostic witnesses. Sixteen
+skips require disposable matrix profiles; the two existing skips remain).
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

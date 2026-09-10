@@ -128,6 +128,21 @@ behind it as defence in depth.
 5. **Verify:** `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
    Both `-t 7` and `-t 07` work.
 
+## Focused value-preservation CLI witnesses
+
+`internal/archiver/value_preservation_cli_integration_test.go` runs the built CLI
+under the integration tag: its layer is E2E. Set `VP_CLI` to a freshly built
+absolute binary path and route `INTEGRATION_CONFIG` plus `TEST_*` to the disposable
+MySQL profile. Select it with `VP_MATRIX_PROFILE=default`, `empty`, or `raw` (choose
+one to match the server setup). Without a profile it deliberately skips on the
+estate; a selected cell cannot pass with a missing binary, absent test or SKIP.
+
+The test retains normal preflight for payload conversion and checks process exit,
+exact override notices, raw CAST values, both databases and copied/completed
+markers. Collision cases exercise archive/copy-only/purge under verification and
+preflight overrides; none may bypass temporal identity refusal. Dry-run always
+rolls back. The existing registered Sakila suite remains the full gate's E2E layer.
+
 ## Four invariants to know before editing `lib/`
 
 **Numbers are the identity; categories are only where files live.** `-t N`,

@@ -33,6 +33,7 @@ GoArchive exists for the case pt-archiver hands back to the operator: **archivin
 | Tables per run | one | one, or a root plus its full child subgraph |
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
+| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed v3.7.1 | Enabled by default; explicit --skip-verify override for recognized conversion warnings |
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
 | Composite / non-integer PKs | ✅ | ❌ |
@@ -43,6 +44,8 @@ GoArchive exists for the case pt-archiver hands back to the operator: **archivin
 | PXC flow control | ✅ | ❌ |
 | Extensibility | ✅ 9 plugin hooks | ❌ |
 | Maturity | ~19 years | ~6 months |
+
+This comparison covers the reviewed [pt-archiver v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver). GoArchive checks every successful application-data INSERT before copy commit. By default conversion/truncation warnings stop archival. With effective `skip_verification` enabled, recognized conversion warnings are reported and accepted without comparing copied values; originals may then be deleted. SQL errors, unknown or incomplete diagnostics and temporal identity failures still stop the run. Warning checks do not detect every possible value change.
 
 ## Is GoArchive right for your schema?
 
@@ -344,7 +347,7 @@ Delete Order:  shipment_items → shipments → order_items → order_payments �
 4. **Delete** - Removes data from source in reverse dependency order
 5. **Checkpoint** - Progress saved for crash recovery
 
-`batch_size` is the universal copy chunk unit — root and every child table fetch and insert `batch_size` rows at a time. See [Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput) for how to size it, and [Resume semantics](docs/README_OPERATIONS.md#resume-semantics) for what happens after an interruption.
+`batch_size` is the universal copy chunk unit — root and every child table fetch up to `batch_size` rows at a time; INSERTs can be subdivided to preserve complete diagnostics. See [Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput) for how to size it, and [Resume semantics](docs/README_OPERATIONS.md#resume-semantics) for what happens after an interruption.
 
 ## Requirements
 

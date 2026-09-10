@@ -15,6 +15,7 @@ import (
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/types"
 )
 
 // CopyStats contains statistics about the copy operation.
@@ -38,18 +39,22 @@ type CopyStats struct {
 // GA-P3-F3-T7: Rollback on error
 // GA-P3-F3-T8: Copy stats logging
 type CopyPhase struct {
-	sourceDB     *sql.DB
-	destDB       *sql.DB
-	graph        *graph.Graph
-	safetyCfg    config.SafetyConfig
-	logger       *logger.Logger
-	strictInsert bool
-	batchSize    int // fetch+insert chunk size; 0 => defaultCopyBatchSize
+	sourceDB             *sql.DB
+	destDB               *sql.DB
+	graph                *graph.Graph
+	safetyCfg            config.SafetyConfig
+	logger               *logger.Logger
+	strictInsert         bool
+	diagnosticPolicy     config.VerificationConfig
+	hasSecondaryUnique   bool
+	policyConfigured     bool
+	committedConversions map[string]map[uint16]uint64
+	batchSize            int // fetch+insert chunk size; 0 => defaultCopyBatchSize
 
 	// columnLists maps each graph table to its full source column list
 	// (ordinal order, invisible and generated columns included), fetched once
-	// per run via sourceColumnLists. copyChunk fails closed without it.
-	columnLists map[string][]string
+	// per run via sourceColumnMetadata. copyChunk fails closed without it.
+	columnMetadata map[string]types.ColumnMetadata
 }
 
 const defaultCopyBatchSize = 200
@@ -125,11 +130,21 @@ func (cp *CopyPhase) SetBatchSize(n int) {
 	}
 }
 
-// SetColumnLists installs the per-table explicit column lists used for the
+// SetColumnMetadata installs the per-table explicit column lists used for the
 // copy SELECT and INSERT. Rows are never fetched with SELECT *, which MySQL
 // omits INVISIBLE columns from (issue #23).
-func (cp *CopyPhase) SetColumnLists(lists map[string][]string) {
-	cp.columnLists = lists
+func (cp *CopyPhase) SetColumnMetadata(metadata map[string]types.ColumnMetadata) {
+	cp.columnMetadata = make(map[string]types.ColumnMetadata, len(metadata))
+	for table, m := range metadata {
+		n := types.ColumnMetadata{Names: append([]string(nil), m.Names...)}
+		if m.Temporal != nil {
+			n.Temporal = make(map[string]types.TemporalKind, len(m.Temporal))
+			for c, k := range m.Temporal {
+				n.Temporal[c] = k
+			}
+		}
+		cp.columnMetadata[table] = n
+	}
 }
 
 // effectiveBatchSize returns the configured chunk size or the default.
@@ -155,7 +170,19 @@ func (cp *CopyPhase) effectiveBatchSize() int {
 // GA-P3-F3-T8: Returns copy statistics
 func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats, error) {
 	startTime := time.Now()
-
+	if !cp.policyConfigured {
+		return nil, &insertDiagnosticError{Identifier: "INSERT_DIAGNOSTICS_UNPROVEN", Reason: "diagnostic policy not configured"}
+	}
+	if _, err := classifyInsertDiagnostics(insertDiagnosticContext{UsesIgnore: !cp.StrictInsert(), SkipVerification: cp.diagnosticPolicy.SkipVerification, VerificationMethod: cp.diagnosticPolicy.Method, HasSecondaryUnique: cp.hasSecondaryUnique}, insertDiagnostics{}); err != nil {
+		return nil, err
+	}
+	for table, keys := range recordSet.Records {
+		if len(keys) > 0 {
+			if _, err := cp.columnMetadata[table].ProjectColumn(cp.graph.GetPK(table)); err != nil {
+				return nil, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "metadata unavailable", Cause: err}
+			}
+		}
+	}
 	stats := &CopyStats{
 		RowsPerTable: make(map[string]int64),
 	}
@@ -175,6 +202,12 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 	if err != nil {
 		return nil, fmt.Errorf("failed to get destination connection: %w", err)
 	}
+	session, err := readDiagnosticSession(ctx, conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	op := &copyOperation{Session: session, Accepted: map[string]map[uint16]uint64{}}
 	fkReset := false
 	defer func() {
 		// Reset FK checks before returning the connection to the pool, even if
@@ -239,7 +272,7 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 		}
 
 		// GA-P3-F3-T3 and GA-P3-F3-T4: Copy table (root or child)
-		rowsCopied, err := cp.copyTable(ctx, tx, table, pks)
+		rowsCopied, err := cp.copyTable(ctx, tx, table, pks, op)
 		if err != nil {
 			return nil, fmt.Errorf("failed to copy table %s: %w", table, err)
 		}
@@ -267,6 +300,17 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 		return nil, fmt.Errorf("failed to commit destination transaction: %w", err)
 	}
 
+	if cp.committedConversions == nil {
+		cp.committedConversions = map[string]map[uint16]uint64{}
+	}
+	for table, counts := range op.Accepted {
+		if cp.committedConversions[table] == nil {
+			cp.committedConversions[table] = map[uint16]uint64{}
+		}
+		for code, count := range counts {
+			cp.committedConversions[table][code] += count
+		}
+	}
 	// Mark transaction as committed (prevent defer rollback)
 	tx = nil
 
@@ -287,7 +331,7 @@ func (cp *CopyPhase) Copy(ctx context.Context, recordSet *RecordSet) (*CopyStats
 // the caller's single destination transaction tx.
 //
 // GA-P3-F3-T5: Uses INSERT IGNORE for idempotent inserts (unless strictInsert)
-func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
+func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pks []interface{}, op *copyOperation) (int64, error) {
 	if len(pks) == 0 {
 		return 0, nil
 	}
@@ -303,7 +347,7 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 		if end > len(pks) {
 			end = len(pks)
 		}
-		copied, err := cp.copyChunk(ctx, tx, table, pks[start:end])
+		copied, err := cp.copyChunk(ctx, tx, table, pks[start:end], op)
 		if err != nil {
 			return rowsCopied, err
 		}
@@ -316,18 +360,33 @@ func (cp *CopyPhase) copyTable(ctx context.Context, tx *sql.Tx, table string, pk
 // within tx. Rows are inserted via one or more INSERTs — split into
 // sub-batches of at most maxRowsPerInsert(len(columns)) rows so no single
 // statement exceeds MySQL's 65,535-placeholder limit.
-func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pks []interface{}) (int64, error) {
+func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pks []interface{}, op *copyOperation) (int64, error) {
 	pkColumn := cp.graph.GetPK(table)
 
-	columns, ok := cp.columnLists[table]
-	if !ok || len(columns) == 0 {
-		return 0, fmt.Errorf("no column list for table %s: SetColumnLists was not called with this table", table)
+	meta := cp.columnMetadata[table]
+	columns := meta.Names
+	if _, err := meta.ProjectColumn(pkColumn); err != nil {
+		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "primary-key metadata unavailable", Cause: err}
 	}
-
-	selectQuery := buildSelectColumnsQuery(table, pkColumn, columns, len(pks))
+	selectQuery, err := buildSelectColumnsQuery(table, pkColumn, meta, len(pks))
+	if err != nil {
+		return 0, err
+	}
+	var identitySet *types.TemporalIdentitySet
+	if kind := meta.Kind(pkColumn); kind != types.TemporalNone {
+		identitySet, err = types.NewTemporalIdentitySet(kind, table, "copy", pks)
+		if err != nil {
+			return 0, err
+		}
+		pks = identitySet.Keys()
+		selectQuery, err = buildSelectColumnsQuery(table, pkColumn, meta, len(pks))
+		if err != nil {
+			return 0, err
+		}
+	}
 	rows, err := cp.sourceDB.QueryContext(ctx, selectQuery, pks...)
 	if err != nil {
-		return 0, fmt.Errorf("failed to fetch rows from source for %s: %w", table, err)
+		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "source query failed", Cause: err}
 	}
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
@@ -344,13 +403,32 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 			valuePtrs[i] = &values[i]
 		}
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return 0, fmt.Errorf("failed to scan row for %s: %w", table, err)
+			return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "row scan failed", Cause: err}
+		}
+		for i, column := range columns {
+			if meta.Kind(column) != types.TemporalNone && values[i] != nil {
+				text, err := types.TemporalText(values[i])
+				if err != nil {
+					return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "temporal payload representation unavailable", Cause: err}
+				}
+				values[i] = text
+			}
+			if identitySet != nil && strings.EqualFold(column, pkColumn) {
+				if err := identitySet.Observe(values[i]); err != nil {
+					return 0, err
+				}
+			}
 		}
 		batchValues = append(batchValues, values...)
 		rowsInBatch++
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("error iterating rows for %s: %w", table, err)
+		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "row iteration failed", Cause: err}
+	}
+	if identitySet != nil {
+		if err := identitySet.Finish(); err != nil {
+			return 0, err
+		}
 	}
 	if rowsInBatch == 0 {
 		return 0, nil
@@ -360,7 +438,7 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 	// A chunk whose columns*rowsInBatch would exceed that is split into
 	// multiple INSERTs, each within the clamp, so wide tables never abort a
 	// run that could otherwise succeed with smaller INSERTs.
-	maxRows := maxRowsPerInsert(len(columns))
+	maxRows := effectiveInsertRows(cp.effectiveBatchSize(), len(columns), op.Session.MaxErrorCount)
 	var rowsCopied int64
 	for off := 0; off < rowsInBatch; off += maxRows {
 		n := rowsInBatch - off
@@ -368,7 +446,7 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 			n = maxRows
 		}
 		vals := batchValues[off*len(columns) : (off+n)*len(columns)]
-		affected, err := cp.execInsertBatch(ctx, tx, table, columns, n, vals)
+		affected, err := cp.execInsertBatch(ctx, tx, table, columns, n, vals, op)
 		if err != nil {
 			return rowsCopied, err
 		}
@@ -395,25 +473,36 @@ func maxRowsPerInsert(columnCount int) int {
 // buildSelectColumnsQuery builds the explicit-column chunk fetch:
 // SELECT `c1`, `c2` FROM `t` WHERE `pk` IN (?, ?, ...). Explicit naming is
 // what carries INVISIBLE columns, which SELECT * silently omits.
-func buildSelectColumnsQuery(table, pkColumn string, columns []string, pkCount int) string {
+func buildSelectColumnsQuery(table, pkColumn string, meta types.ColumnMetadata, pkCount int) (string, error) {
+	projection, err := meta.Projection()
+	if err != nil {
+		return "", err
+	}
 	placeholders := make([]string, pkCount)
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
 	return fmt.Sprintf(
 		"SELECT %s FROM %s WHERE %s IN (%s)",
-		quotedColumnList(columns),
+		projection,
 		sqlutil.QuoteIdentifier(table),
 		sqlutil.QuoteIdentifier(pkColumn),
 		strings.Join(placeholders, ", "),
-	)
+	), nil
 }
 
 // execInsertBatch inserts rowCount rows (values already flattened in
 // row-major order, len == rowCount*len(columns)) into table within tx, using
 // INSERT IGNORE or strict INSERT per cp.strictInsert, and maps a strict-mode
 // duplicate to *ErrDestinationDuplicate. Returns RowsAffected.
-func (cp *CopyPhase) execInsertBatch(ctx context.Context, tx *sql.Tx, table string, columns []string, rowCount int, values []interface{}) (int64, error) {
+func (cp *CopyPhase) execInsertBatch(ctx context.Context, tx *sql.Tx, table string, columns []string, rowCount int, values []interface{}, op *copyOperation) (int64, error) {
+	if !cp.policyConfigured || op == nil || !op.Session.SQLNotes {
+		return 0, &insertDiagnosticError{Identifier: "INSERT_DIAGNOSTICS_UNPROVEN", Table: table, Reason: "diagnostic policy/session not configured"}
+	}
+	diagnosticContext := insertDiagnosticContext{Table: table, UsesIgnore: !cp.StrictInsert(), SkipVerification: cp.diagnosticPolicy.SkipVerification, VerificationMethod: cp.diagnosticPolicy.Method, HasSecondaryUnique: cp.hasSecondaryUnique}
+	if _, err := classifyInsertDiagnostics(diagnosticContext, insertDiagnostics{}); err != nil {
+		return 0, err
+	}
 	insertQuery := cp.buildInsertIgnoreBatchQuery(table, columns, rowCount)
 	if cp.strictInsert {
 		insertQuery = cp.buildInsertBatchQuery(table, columns, rowCount)
@@ -432,17 +521,36 @@ func (cp *CopyPhase) execInsertBatch(ctx context.Context, tx *sql.Tx, table stri
 		}
 		return 0, fmt.Errorf("failed to insert batch into %s: %w", table, err)
 	}
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("INSERT rows affected: %w", err)
+	}
+	diagnostics, err := collectInsertDiagnostics(ctx, tx, table)
+	if err != nil {
+		return 0, err
+	}
+	accepted, err := classifyInsertDiagnostics(diagnosticContext, diagnostics)
+	if err != nil {
+		return 0, err
+	}
+	if len(accepted) > 0 {
+		if op.Accepted == nil {
+			op.Accepted = map[string]map[uint16]uint64{}
+		}
+		if op.Accepted[table] == nil {
+			op.Accepted[table] = map[uint16]uint64{}
+		}
+		for code, count := range accepted {
+			op.Accepted[table][code] += count
+		}
+		cp.logger.Warnw("Observed accepted conversion warnings (uncommitted)", "table", table, "diagnostics", accepted, "scope", "uncommitted-copy")
+	}
 	return affected, nil
 }
 
 func (cp *CopyPhase) buildInsertIgnoreBatchQuery(table string, columns []string, rowCount int) string {
 	// Column list: (`col1`, `col2`, `col3`)
-	quotedColumns := make([]string, len(columns))
-	for i, col := range columns {
-		quotedColumns[i] = sqlutil.QuoteIdentifier(col)
-	}
-	columnList := strings.Join(quotedColumns, ", ")
+	columnList := quotedColumnList(columns)
 
 	// Placeholders: (?, ?, ?)
 	placeholders := make([]string, len(columns))
@@ -501,4 +609,26 @@ func (cp *CopyPhase) setForeignKeyChecks(ctx context.Context, tx *sql.Tx, disabl
 	}
 
 	return nil
+}
+
+type copyOperation struct {
+	Session  diagnosticSession
+	Accepted map[string]map[uint16]uint64
+}
+
+func (cp *CopyPhase) SetDiagnosticPolicy(v config.VerificationConfig, hasSecondaryUnique bool) {
+	v.Method = v.EffectiveMethod()
+	cp.diagnosticPolicy = v
+	cp.hasSecondaryUnique = hasSecondaryUnique
+	cp.policyConfigured = true
+}
+func (cp *CopyPhase) ConversionTotals() map[string]map[uint16]uint64 {
+	out := map[string]map[uint16]uint64{}
+	for table, counts := range cp.committedConversions {
+		out[table] = map[uint16]uint64{}
+		for code, n := range counts {
+			out[table][code] = n
+		}
+	}
+	return out
 }

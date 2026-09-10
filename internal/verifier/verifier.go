@@ -71,7 +71,7 @@ type Verifier struct {
 	// (ordinal order, invisible columns included). The SAME list is used for
 	// the source and destination hash reads, so both sides hash the same
 	// column set regardless of visibility (issue #23).
-	columnLists map[string][]string
+	columnMetadata map[string]types.ColumnMetadata
 }
 
 // NewVerifier creates a new verifier for data integrity checks.
@@ -208,11 +208,19 @@ func (v *Verifier) verifyByCount(ctx context.Context, table string, pks []interf
 	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs for all tables)
 	pkColumn := v.graph.GetPK(table)
 
-	sourceCount, err := v.countByPKChunks(ctx, v.source, table, pkColumn, pks)
+	meta := v.columnMetadata[table]
+	if _, err := meta.ProjectColumn(pkColumn); err != nil {
+		return nil, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "primary-key metadata unavailable", Cause: err}
+	}
+	count := v.countByPKChunks
+	if meta.Kind(pkColumn) != types.TemporalNone {
+		count = v.readTemporalPKs
+	}
+	sourceCount, err := count(ctx, v.source, table, pkColumn, pks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count source: %w", err)
 	}
-	destCount, err := v.countByPKChunks(ctx, v.destination, table, pkColumn, pks)
+	destCount, err := count(ctx, v.destination, table, pkColumn, pks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count destination: %w", err)
 	}
@@ -311,19 +319,19 @@ func (v *Verifier) verifyBySHA256(ctx context.Context, table string, pks []inter
 
 // buildHashQuery builds the explicit-column verification fetch, preserving the
 // historical query shape with * replaced by explicit names.
-func buildHashQuery(table, pkColumn string, columns []string, pkCount int) string {
-	quoted := make([]string, len(columns))
-	for i, col := range columns {
-		quoted[i] = sqlutil.QuoteIdentifier(col)
+func buildHashQuery(table, pkColumn string, meta types.ColumnMetadata, pkCount int) (string, error) {
+	projection, err := meta.Projection()
+	if err != nil {
+		return "", err
 	}
 	placeholders := make([]string, pkCount)
 	for i := range placeholders {
 		placeholders[i] = "?"
 	}
 	return fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s) ORDER BY %s",
-		strings.Join(quoted, ", "), sqlutil.QuoteIdentifier(table),
+		projection, sqlutil.QuoteIdentifier(table),
 		sqlutil.QuoteIdentifier(pkColumn), strings.Join(placeholders, ","),
-		sqlutil.QuoteIdentifier(pkColumn))
+		sqlutil.QuoteIdentifier(pkColumn)), nil
 }
 
 // computeTableHash computes a SHA256 hash of all rows in the specified table for the given PKs.
@@ -334,9 +342,17 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs for all tables)
 	pkColumn := v.graph.GetPK(table)
 
-	columns, ok := v.columnLists[table]
-	if !ok || len(columns) == 0 {
-		return "", 0, fmt.Errorf("no column list for table %s: SetColumnLists was not called with this table", table)
+	meta := v.columnMetadata[table]
+	columns := meta.Names
+	if _, err := meta.ProjectColumn(pkColumn); err != nil {
+		return "", 0, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "primary-key metadata unavailable", Cause: err}
+	}
+	if meta.Kind(pkColumn) != types.TemporalNone {
+		set, err := types.NewTemporalIdentitySet(meta.Kind(pkColumn), table, "verify", pks)
+		if err != nil {
+			return "", 0, err
+		}
+		pks = set.Keys()
 	}
 
 	// GA-P4-F1-T3: Process in chunks to avoid memory issues
@@ -361,7 +377,17 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 		chunk := pks[i:end]
 
 		// Fetch all rows ordered by PK for deterministic hashing
-		query := buildHashQuery(table, pkColumn, columns, len(chunk))
+		query, err := buildHashQuery(table, pkColumn, meta, len(chunk))
+		if err != nil {
+			return "", 0, err
+		}
+		var identitySet *types.TemporalIdentitySet
+		if meta.Kind(pkColumn) != types.TemporalNone {
+			identitySet, err = types.NewTemporalIdentitySet(meta.Kind(pkColumn), table, "verify", chunk)
+			if err != nil {
+				return "", 0, err
+			}
+		}
 
 		if err := func() error {
 			rows, err := db.QueryContext(ctx, query, chunk...)
@@ -385,6 +411,20 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 					return fmt.Errorf("failed to scan row: %w", err)
 				}
 
+				for j, column := range columns {
+					if meta.Kind(column) != types.TemporalNone && values[j] != nil {
+						raw, err := types.TemporalText(values[j])
+						if err != nil {
+							return err
+						}
+						values[j] = raw
+					}
+					if identitySet != nil && strings.EqualFold(column, pkColumn) {
+						if err := identitySet.Observe(values[j]); err != nil {
+							return err
+						}
+					}
+				}
 				// Hash row: col1=val1\x00col2=val2...\n (sorted by column name)
 				hasher.Write(serializer.appendRow(values))
 				totalRows++
@@ -393,9 +433,14 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 			if err := rows.Err(); err != nil {
 				return fmt.Errorf("error iterating rows: %w", err)
 			}
+			if identitySet != nil {
+				if err := identitySet.Finish(); err != nil {
+					return err
+				}
+			}
 			return nil
 		}(); err != nil {
-			return "", 0, err
+			return "", 0, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "hash read failed", Cause: err}
 		}
 	}
 
@@ -473,8 +518,69 @@ func (v *Verifier) SetChunkSize(size int) {
 	}
 }
 
-// SetColumnLists installs the per-table explicit column lists used for SHA256
+// SetColumnMetadata installs the per-table explicit column lists used for SHA256
 // verification reads on both source and destination.
-func (v *Verifier) SetColumnLists(lists map[string][]string) {
-	v.columnLists = lists
+func (v *Verifier) SetColumnMetadata(metadata map[string]types.ColumnMetadata) {
+	v.columnMetadata = make(map[string]types.ColumnMetadata, len(metadata))
+	for table, m := range metadata {
+		n := types.ColumnMetadata{Names: append([]string(nil), m.Names...)}
+		if m.Temporal != nil {
+			n.Temporal = make(map[string]types.TemporalKind, len(m.Temporal))
+			for c, k := range m.Temporal {
+				n.Temporal[c] = k
+			}
+		}
+		v.columnMetadata[table] = n
+	}
+}
+
+func (v *Verifier) readTemporalPKs(ctx context.Context, db *sql.DB, table, pk string, pks []interface{}) (int64, error) {
+	meta := v.columnMetadata[table]
+	all, err := types.NewTemporalIdentitySet(meta.Kind(pk), table, "verify-count", pks)
+	if err != nil {
+		return 0, err
+	}
+	pks = all.Keys()
+	var total int64
+	projection, err := meta.ProjectColumn(pk)
+	if err != nil {
+		return 0, err
+	}
+	for i := 0; i < len(pks); i += v.chunkSize {
+		end := i + v.chunkSize
+		if end > len(pks) {
+			end = len(pks)
+		}
+		chunk := pks[i:end]
+		identitySet, err := types.NewTemporalIdentitySet(meta.Kind(pk), table, "verify-count", chunk)
+		if err != nil {
+			return 0, err
+		}
+		query := fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)", projection, sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pk), strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ","))
+		err = func() error {
+			rows, err := db.QueryContext(ctx, query, chunk...)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var value interface{}
+				if err := rows.Scan(&value); err != nil {
+					return err
+				}
+				if err := identitySet.Observe(value); err != nil {
+					return err
+				}
+				total++
+			}
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return identitySet.Finish()
+		}()
+		if err != nil {
+			return 0, &types.TemporalReadContractError{Table: table, Operation: "verify-count", Detail: "identity read failed", Cause: err}
+		}
+	}
+	return total, nil
 }

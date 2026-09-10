@@ -83,6 +83,28 @@ Same server, different schema is fine. The rule, its two deliberate refusals and
 cloned-server remedy are in
 [Limitations](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
 
+### Temporal values and INSERT diagnostics
+
+Application DATE, DATETIME and TIMESTAMP columns are read as SQL text for copy,
+both SHA256 reads and dry-run samples. Legacy invalid or zero-component payloads
+can be copied when the destination accepts them without forbidden diagnostics.
+They are never normalized in Go. Invalid/zero temporal **keys** are refused in
+2.x; see [Limitations](README_LIMITATIONS.md#temporal-values-and-identities).
+
+Every physical connection initializes `sql_notes=1`. Each copy/sample operation
+reads `sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses
+unproved session facts. GoArchive never repairs these settings on pooled sessions,
+never raises `max_error_count`, and needs no new privilege or config field.
+
+Source/destination SQL modes need not match. To accept legacy payloads, a DBA can
+configure the destination's server-level `sql_mode` for new sessions, or an
+applicable `init_connect` policy, then reconnect/restart the job. These settings
+can affect other applications. `ALLOW_INVALID_DATES` alone does not defeat
+`NO_ZERO_IN_DATE` or `NO_ZERO_DATE`: the reviewed invalid/partial-zero fixtures are
+accepted under `STRICT_TRANS_TABLES,ALLOW_INVALID_DATES` without those zero-date
+restrictions. GoArchive has no per-session SQL-mode option in 2.x and makes no
+automatic global changes. Permissive settings do not enable invalid temporal keys.
+
 ### AUTO_INCREMENT zero preservation
 
 Every new GoArchive connection adds `NO_AUTO_VALUE_ON_ZERO` to its inherited session SQL
@@ -340,14 +362,21 @@ verified.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `method` | `count` or `sha256` | `count` |
-| `skip_verification` | Skip verification entirely | `false` |
+| `skip_verification` | Skip copied-data comparison and accept reported conversion/truncation warnings; SQL errors, unknown/incomplete diagnostics and temporal identity failures remain fatal. | `false` |
+
+Recognized conversion warnings are codes `1264`, `1265`, `1292`, and `1366`, at
+Warning or Note level, from a successful INSERT. All diagnostics must be readable
+and complete. Actual SQL errors remain fatal even with one of those codes.
+The existing precedence remains CLI > explicit job value > global value. Skipping
+comparison still forces plain INSERT, so duplicates remain fatal. Accepted
+conversion totals describe diagnostics in committed copies, not modified rows.
 
 The method is not just a strictness dial — it changes the INSERT strategy and how
 a dirty destination is handled:
 
 | | `count` | `sha256` |
 |---|---|---|
-| Insert statement | plain `INSERT` | `INSERT IGNORE` |
+| Insert statement | plain `INSERT` | `INSERT IGNORE` only when comparison is enabled and destination has no secondary unique index; otherwise plain `INSERT` |
 | Pre-existing destination row with the same key | **aborts** before deleting source | tolerated; content verified by hash |
 | Detects silent charset transliteration | no | yes |
 | Recommended for resuming an interrupted job | no | **yes** |

@@ -162,6 +162,12 @@ func (o *PurgeOrchestrator) Execute(ctx context.Context) (result *PurgeResult, e
 		return nil, fmt.Errorf("failed to create delete phase: %w", err)
 	}
 	// Throttle deletes (between batch_delete_size chunks) to limit binlog/replication lag.
+	metadata, err := sourceColumnMetadata(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
+	if err != nil {
+		return nil, err
+	}
+	discovery.SetColumnMetadata(metadata)
+	deletePhase.SetColumnMetadata(metadata)
 	deletePhase.SetSleepSeconds(o.processingCfg.DeleteSleepSeconds)
 
 	// Honor processing.batch_size for resume bookkeeping chunking (issue #8,

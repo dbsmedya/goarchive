@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/go-sql-driver/mysql"
 )
 
 func TestBuildDSN(t *testing.T) {
@@ -780,4 +781,14 @@ func TestAssertDistinctDatabases(t *testing.T) {
 			t.Fatalf("expected a destination-attributed wrapped failure, got %v", err)
 		}
 	})
+}
+
+func TestBuildDSNDiagnosticInitialization(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroModeExpression {
+		t.Fatalf("diagnostic DSN initialization missing or auto-zero expression changed: %#v", dsn.Params)
+	}
 }

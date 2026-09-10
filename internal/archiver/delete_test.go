@@ -172,6 +172,8 @@ func TestDelete_Success(t *testing.T) {
 		WithArgs(1, 2, 3).
 		WillReturnResult(sqlmock.NewResult(0, 3))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	stats, err := dp.Delete(ctx, recordSet)
 
 	if err != nil {
@@ -224,6 +226,8 @@ func TestDelete_EmptyRecordSet(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	stats, err := dp.Delete(ctx, emptyRecordSet)
 
 	if err != nil {
@@ -261,6 +265,8 @@ func TestDelete_SkipsEmptyTables(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `users` WHERE `id` IN").
 		WithArgs(1, 2).
 		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	stats, err := dp.Delete(ctx, partialRecordSet)
 
@@ -325,6 +331,8 @@ func TestDelete_BatchProcessing(t *testing.T) {
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	stats, err := dp.Delete(ctx, recordSet)
 
 	if err != nil {
@@ -351,6 +359,8 @@ func TestDelete_QueryError(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
 		WithArgs(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111).
 		WillReturnError(errors.New("delete failed"))
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	_, err := dp.Delete(ctx, recordSet)
 
@@ -379,6 +389,8 @@ func TestDelete_PartialDelete(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `users` WHERE `id` IN").
 		WithArgs(1, 2, 3).
 		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	stats, err := dp.Delete(ctx, recordSet)
 
@@ -412,6 +424,8 @@ func TestDelete_ZeroRowsDeleted(t *testing.T) {
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	stats, err := dp.Delete(ctx, recordSet)
 
 	if err != nil {
@@ -440,6 +454,8 @@ func TestDelete_ContextCancellation(t *testing.T) {
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	_, err := dp.Delete(ctx, recordSet)
 
@@ -474,6 +490,8 @@ func TestDelete_ContextTimeout(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `users` WHERE `id` IN").
 		WithArgs(1).
 		WillReturnError(context.DeadlineExceeded)
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	_, err := dp.Delete(ctx, recordSet)
 
@@ -525,6 +543,8 @@ func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `A` WHERE `id` IN").
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	stats, err := dp.Delete(ctx, recordSet)
 
@@ -581,6 +601,8 @@ func TestDelete_ThrottleSleepBetweenChunks(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
 		WithArgs(106).WillReturnResult(sqlmock.NewResult(0, 1))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	if _, err := dp.Delete(ctx, recordSet); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
@@ -622,6 +644,8 @@ func TestDelete_NoThrottleByDefault(t *testing.T) {
 	mock.ExpectExec("DELETE FROM `order_items` WHERE `id` IN").
 		WithArgs(103).WillReturnResult(sqlmock.NewResult(0, 1))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	if _, err := dp.Delete(context.Background(), recordSet); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
@@ -651,6 +675,8 @@ func TestDeleteStats_Populated(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 6))
 	mock.ExpectExec("DELETE FROM `users` WHERE `id` IN").
 		WillReturnResult(sqlmock.NewResult(0, 3))
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	stats, err := dp.Delete(ctx, recordSet)
 
@@ -692,6 +718,8 @@ func TestDelete_RowsAffectedError(t *testing.T) {
 		WithArgs(1).
 		WillReturnResult(sqlmock.NewErrorResult(errors.New("rows affected error")))
 
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+
 	_, err := dp.Delete(ctx, recordSet)
 
 	if err == nil {
@@ -722,6 +750,8 @@ func TestDelete_DeleteOrderError(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
+
+	dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
 
 	_, err := dp.Delete(ctx, recordSet)
 

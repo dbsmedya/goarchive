@@ -20,10 +20,11 @@ import (
 // GA-P3-F2-T1: BFS Traversal Structure
 // GA-P3-F2-T3: Multi-level discovery
 type RecordDiscovery struct {
-	graph     *graph.Graph
-	db        *sql.DB
-	batchSize int
-	logger    *logger.Logger
+	graph          *graph.Graph
+	db             *sql.DB
+	batchSize      int
+	logger         *logger.Logger
+	columnMetadata map[string]types.ColumnMetadata
 }
 
 // NewRecordDiscovery creates a new discovery service with the given dependency graph,
@@ -231,6 +232,23 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 
 	// GA-P3-F3-T9: Get PK column from graph (supports configurable PKs)
 	childPK := d.graph.GetPK(childTable)
+	meta := d.columnMetadata[childTable]
+	projection, err := meta.ProjectColumn(childPK)
+	if err != nil {
+		return nil, &types.TemporalReadContractError{Table: childTable, Operation: "discovery", Detail: "child metadata unavailable", Cause: err}
+	}
+	parentMeta := d.columnMetadata[parentTable]
+	parentPK := d.graph.GetPK(parentTable)
+	if _, err := parentMeta.ProjectColumn(parentPK); err != nil {
+		return nil, &types.TemporalReadContractError{Table: parentTable, Operation: "discovery", Detail: "parent metadata unavailable", Cause: err}
+	}
+	if kind := parentMeta.Kind(parentPK); kind != types.TemporalNone {
+		set, err := types.NewTemporalIdentitySet(kind, parentTable, "discovery", parentPKs)
+		if err != nil {
+			return nil, err
+		}
+		parentPKs = set.Keys()
+	}
 
 	// GA-P3-F2-T4: Fetch only PKs, not full rows (memory-efficient)
 	// child_pk is the table's PRIMARY KEY (preflight enforces a single-column PK),
@@ -257,7 +275,7 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 
 		query := fmt.Sprintf(
 			"SELECT %s FROM %s WHERE %s IN (%s)",
-			sqlutil.QuoteIdentifier(childPK),
+			projection,
 			sqlutil.QuoteIdentifier(childTable),
 			sqlutil.QuoteIdentifier(foreignKey),
 			strings.Join(placeholders, ", "),
@@ -282,6 +300,17 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 				pk = string(b)
 			}
 
+			if kind := meta.Kind(childPK); kind != types.TemporalNone {
+				raw, err := types.TemporalText(pk)
+				if err == nil {
+					err = types.ValidateTemporalKey(kind, raw)
+				}
+				if err != nil {
+					_ = rows.Close()
+					return nil, &types.TemporalReadContractError{Table: childTable, Operation: "discovery", Detail: "unsupported temporal key", Cause: err}
+				}
+				pk = raw
+			}
 			allChildPKs = append(allChildPKs, pk)
 		}
 
@@ -298,4 +327,18 @@ func (d *RecordDiscovery) fetchChildIDs(ctx context.Context, parentTable, childT
 // SetLogger sets a custom logger for the discovery service.
 func (d *RecordDiscovery) SetLogger(log *logger.Logger) {
 	d.logger = log
+}
+
+func (d *RecordDiscovery) SetColumnMetadata(metadata map[string]types.ColumnMetadata) {
+	d.columnMetadata = make(map[string]types.ColumnMetadata, len(metadata))
+	for table, m := range metadata {
+		n := types.ColumnMetadata{Names: append([]string(nil), m.Names...)}
+		if m.Temporal != nil {
+			n.Temporal = make(map[string]types.TemporalKind, len(m.Temporal))
+			for c, k := range m.Temporal {
+				n.Temporal[c] = k
+			}
+		}
+		d.columnMetadata[table] = n
+	}
 }

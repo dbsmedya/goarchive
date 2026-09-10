@@ -167,3 +167,11 @@ func TestRootCommandSubcommands(t *testing.T) {
 		assert.Contains(t, commandNames, expected, "Expected command %s not found", expected)
 	}
 }
+
+func TestRootCommandConversionHelp(t *testing.T) {
+	want := "Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)"
+	flag := rootCmd.PersistentFlags().Lookup("skip-verify")
+	if flag == nil || flag.Usage != want {
+		t.Fatalf("skip-verify help=%v want=%s", flag, want)
+	}
+}

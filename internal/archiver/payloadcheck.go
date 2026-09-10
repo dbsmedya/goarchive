@@ -11,6 +11,7 @@ import (
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/types"
 )
 
 // maxPreparedPlaceholders is the MySQL prepared-statement parameter ceiling.
@@ -39,11 +40,12 @@ type PayloadValidator struct {
 	jobCfg       *config.JobConfig
 	safetyCfg    config.SafetyConfig
 	batchSize    int
+	verification config.VerificationConfig
 	logger       *logger.Logger
 }
 
 // NewPayloadValidator creates a new PayloadValidator.
-func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, sourceSchema string, jobCfg *config.JobConfig, safetyCfg config.SafetyConfig, batchSize int, log *logger.Logger) *PayloadValidator {
+func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, sourceSchema string, jobCfg *config.JobConfig, safetyCfg config.SafetyConfig, batchSize int, verification config.VerificationConfig, log *logger.Logger) *PayloadValidator {
 	if log == nil {
 		log = logger.NewDefault()
 	}
@@ -55,6 +57,7 @@ func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, sourceSchema stri
 		jobCfg:       jobCfg,
 		safetyCfg:    safetyCfg,
 		batchSize:    batchSize,
+		verification: verification,
 		logger:       log,
 	}
 }
@@ -63,6 +66,9 @@ func NewPayloadValidator(source, dest *sql.DB, g *graph.Graph, sourceSchema stri
 // and a measured rolled-back INSERT against the destination (when rows exist).
 // It fails fast on the first table that exceeds a limit.
 func (p *PayloadValidator) Validate(ctx context.Context) error {
+	if p.verification.SkipVerification {
+		p.logger.Warn("NOTICE: skip_verification is enabled for dry-run; recognized conversion warnings are accepted in the rolled-back sample. This sample does not prove destination equality.")
+	}
 	copyOrder, err := p.graph.CopyOrder()
 	if err != nil {
 		return fmt.Errorf("failed to get copy order: %w", err)
@@ -74,19 +80,20 @@ func (p *PayloadValidator) Validate(ctx context.Context) error {
 	}
 	p.logger.Infof("Destination max_allowed_packet = %d bytes", maxPacket)
 
-	columnLists, err := sourceColumnLists(ctx, p.source, p.sourceSchema, copyOrder)
+	columnLists, err := sourceColumnMetadata(ctx, p.source, p.sourceSchema, copyOrder)
 	if err != nil {
 		return fmt.Errorf("failed to load source column lists: %w", err)
 	}
 
 	for _, table := range copyOrder {
-		columns := columnLists[table]
+		meta := columnLists[table]
+		columns := meta.Names
 		// Exact check (valid even for empty tables).
 		if err := checkPlaceholderLimit(table, len(columns), p.batchSize); err != nil {
 			return err
 		}
 
-		sampled, rowBytes, err := p.measureSample(ctx, table, columns)
+		sampled, rowBytes, err := p.measureSample(ctx, table, meta)
 		if err != nil {
 			return fmt.Errorf("table %q: %w", table, err)
 		}
@@ -133,20 +140,25 @@ func (p *PayloadValidator) maxAllowedPacket(ctx context.Context) (int64, error) 
 // column list the real copy uses. rootWhere is non-empty only for the job's
 // root table with a WHERE clause; that branch orders ASC to mirror the real
 // copy fetch (see the comment at the call site).
-func buildSampleQuery(table, pkColumn string, columns []string, rootWhere string, limit int) string {
+func buildSampleQuery(table, pkColumn string, meta types.ColumnMetadata, rootWhere string, limit int) (string, error) {
+	projection, err := meta.Projection()
+	if err != nil {
+		return "", err
+	}
 	if rootWhere != "" {
 		return fmt.Sprintf("SELECT %s FROM %s WHERE (%s) ORDER BY %s ASC LIMIT %d",
-			quotedColumnList(columns), sqlutil.QuoteIdentifier(table), rootWhere,
-			sqlutil.QuoteIdentifier(pkColumn), limit)
+			projection, sqlutil.QuoteIdentifier(table), rootWhere,
+			sqlutil.QuoteIdentifier(pkColumn), limit), nil
 	}
 	return fmt.Sprintf("SELECT %s FROM %s LIMIT %d",
-		quotedColumnList(columns), sqlutil.QuoteIdentifier(table), limit)
+		projection, sqlutil.QuoteIdentifier(table), limit), nil
 }
 
 // measureSample fetches up to batchSize rows, builds the real INSERT, executes
 // it inside a destination transaction, then rolls back. Returns (#rows sampled,
 // approximate INSERT byte size, error).
-func (p *PayloadValidator) measureSample(ctx context.Context, table string, columns []string) (int, int, error) {
+func (p *PayloadValidator) measureSample(ctx context.Context, table string, meta types.ColumnMetadata) (int, int, error) {
+	columns := meta.Names
 	pkColumn := p.graph.GetPK(table)
 	rootWhere := ""
 	if p.jobCfg.RootTable == table && strings.TrimSpace(p.jobCfg.Where) != "" {
@@ -159,7 +171,13 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 		// a large production table looks like an indefinite hang.
 		rootWhere = p.jobCfg.Where
 	}
-	query := buildSampleQuery(table, pkColumn, columns, rootWhere, p.batchSize)
+	query, err := buildSampleQuery(table, pkColumn, meta, rootWhere, p.batchSize)
+	if err != nil {
+		return 0, 0, err
+	}
+	if _, err := meta.ProjectColumn(pkColumn); err != nil {
+		return 0, 0, err
+	}
 
 	rows, err := p.source.QueryContext(ctx, query)
 	if err != nil {
@@ -177,6 +195,20 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			return 0, 0, err
+		}
+		for i, column := range columns {
+			if meta.Kind(column) != types.TemporalNone && rowVals[i] != nil {
+				raw, err := types.TemporalText(rowVals[i])
+				if err != nil {
+					return 0, 0, err
+				}
+				if strings.EqualFold(column, pkColumn) {
+					if err := types.ValidateTemporalKey(meta.Kind(column), raw); err != nil {
+						return 0, 0, err
+					}
+				}
+				rowVals[i] = raw
+			}
 		}
 		values = append(values, rowVals...)
 		count++
@@ -199,6 +231,11 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 	conn, err := p.dest.Conn(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get destination connection: %w", err)
+	}
+	session, err := readDiagnosticSession(ctx, conn)
+	if err != nil {
+		_ = conn.Close()
+		return 0, 0, err
 	}
 	fkReset := false
 	defer func() {
@@ -230,8 +267,30 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 	if _, err := tx.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 		return 0, 0, err
 	}
-	if _, err := tx.ExecContext(ctx, insert, values...); err != nil {
-		return 0, 0, fmt.Errorf("destination rejected sample INSERT (likely max_allowed_packet or a schema mismatch): %w", err)
+	accepted := map[uint16]uint64{}
+	duplicateCount := uint64(0)
+	chunk := effectiveInsertRows(p.batchSize, len(columns), session.MaxErrorCount)
+	for off := 0; off < count; off += chunk {
+		end := off + chunk
+		if end > count {
+			end = count
+		}
+		query := buildInsertIgnoreBatchQueryStandalone(table, columns, end-off)
+		if _, err := tx.ExecContext(ctx, query, values[off*len(columns):end*len(columns)]...); err != nil {
+			return 0, 0, fmt.Errorf("destination rejected sample INSERT (likely max_allowed_packet or a schema mismatch): %w", err)
+		}
+		d, err := collectInsertDiagnostics(ctx, tx, table)
+		if err != nil {
+			return 0, 0, err
+		}
+		totals, err := classifyInsertDiagnostics(insertDiagnosticContext{Table: table, Sample: true, UsesIgnore: true, SkipVerification: p.verification.SkipVerification}, d)
+		if err != nil {
+			return 0, 0, err
+		}
+		for code, n := range totals {
+			accepted[code] += n
+		}
+		duplicateCount += d.ByKind[diagnosticKey{"Warning", 1062}]
 	}
 
 	// Re-enable FK checks on this connection before it returns to the pool, inside
@@ -241,6 +300,15 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, colu
 		return 0, 0, fmt.Errorf("failed to reset FOREIGN_KEY_CHECKS: %w", err)
 	}
 	fkReset = true
+	if err := tx.Rollback(); err != nil {
+		return 0, 0, fmt.Errorf("sample rollback failed: %w", err)
+	}
+	if duplicateCount > 0 {
+		p.logger.Warnw("Sample duplicate rows skipped; rolled-back sample does not prove destination equality", "table", table, "diagnostics", duplicateCount)
+	}
+	if len(accepted) > 0 {
+		p.logger.Warnw("Sample rolled back with accepted conversion warnings", "table", table, "diagnostics", accepted, "scope", "rolled-back-sample")
+	}
 
 	// Approximate the byte size: query text + a coarse per-value estimate.
 	approx := len(insert)

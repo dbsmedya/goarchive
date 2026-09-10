@@ -167,7 +167,7 @@ func disposeDiff(
 		// A and B are the two spellings (A source, B destination); Column is the
 		// source's. MySQL resolves column names case-insensitively (dbsgomysql COMPAT
 		// entry 28), the INSERT column list is built from the SOURCE only
-		// (sourceColumnLists), and the verifier hashes both sides with that same list —
+		// (sourceColumnMetadata), and the verifier hashes both sides with that same list —
 		// so the copy and the verification are unaffected. The operator still hears it:
 		// the archive is no longer a byte-faithful copy of the source's schema, and a
 		// case-sensitive consumer of the archive will notice. Deliberately NOT gated on

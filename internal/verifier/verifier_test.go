@@ -186,6 +186,14 @@ func TestVerify_Count_Success(t *testing.T) {
 		WithArgs(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(12))
 
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
+
 	stats, err := v.Verify(ctx, recordSet)
 
 	if err != nil {
@@ -252,6 +260,14 @@ func TestVerify_Count_Mismatch(t *testing.T) {
 		WithArgs(100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(12))
 
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
+
 	stats, err := v.Verify(ctx, recordSet)
 
 	if err == nil {
@@ -282,6 +298,14 @@ func TestVerify_Count_EmptyRecordSet(t *testing.T) {
 	}
 	ctx := context.Background()
 
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
+
 	stats, err := v.Verify(ctx, emptyRecordSet)
 
 	if err != nil {
@@ -311,6 +335,14 @@ func TestVerify_Count_QueryError(t *testing.T) {
 		WithArgs(1, 2, 3).
 		WillReturnError(errors.New("query failed"))
 
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
+
 	_, err := v.Verify(ctx, recordSet)
 
 	if err == nil {
@@ -334,6 +366,14 @@ func TestVerify_Skip(t *testing.T) {
 
 	recordSet := createTestRecordSet()
 	ctx := context.Background()
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	stats, err := v.Verify(ctx, recordSet)
 
@@ -364,7 +404,7 @@ func TestVerify_SHA256_Success(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100) // Small chunk for testing
-	v.SetColumnLists(map[string][]string{"users": {"id", "name", "email"}})
+	v.SetColumnMetadata(map[string]types.ColumnMetadata{"users": {Names: []string{"id", "name", "email"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1},
@@ -387,6 +427,14 @@ func TestVerify_SHA256_Success(t *testing.T) {
 	destMock.ExpectQuery("SELECT `id`, `name`, `email` FROM `users`").
 		WithArgs(1).
 		WillReturnRows(destRows)
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	stats, err := v.Verify(ctx, recordSet)
 
@@ -413,7 +461,7 @@ func TestVerify_SHA256_Mismatch(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100)
-	v.SetColumnLists(map[string][]string{"users": {"id", "name", "email"}})
+	v.SetColumnMetadata(map[string]types.ColumnMetadata{"users": {Names: []string{"id", "name", "email"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1},
@@ -437,6 +485,14 @@ func TestVerify_SHA256_Mismatch(t *testing.T) {
 		WithArgs(1).
 		WillReturnRows(destRows)
 
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
+
 	stats, err := v.Verify(ctx, recordSet)
 
 	if err == nil {
@@ -458,7 +514,7 @@ func TestVerify_SHA256_CountMismatch(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodSHA256, log)
 	v.SetChunkSize(100)
-	v.SetColumnLists(map[string][]string{"users": {"id", "name"}})
+	v.SetColumnMetadata(map[string]types.ColumnMetadata{"users": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &types.RecordSet{
 		RootPKs: []interface{}{1, 2},
@@ -482,6 +538,14 @@ func TestVerify_SHA256_CountMismatch(t *testing.T) {
 	destMock.ExpectQuery("SELECT `id`, `name` FROM `users`").
 		WithArgs(1, 2).
 		WillReturnRows(destRows)
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	stats, err := v.Verify(ctx, recordSet)
 
@@ -508,6 +572,14 @@ func TestVerifyByCount_EmptyPKs(t *testing.T) {
 	log := logger.NewDefault()
 	v, _ := NewVerifier(sourceDB, destDB, g, MethodCount, log)
 	ctx := context.Background()
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	result, err := v.verifyByCount(ctx, "users", []interface{}{})
 
@@ -544,6 +616,14 @@ func TestVerifyByCount_ErrorMessage(t *testing.T) {
 	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
 		WithArgs(1, 2, 3).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(2))
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	result, err := v.verifyByCount(ctx, "users", []interface{}{1, 2, 3})
 
@@ -587,6 +667,14 @@ func TestVerifyByCount_UsesChunking(t *testing.T) {
 	destMock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `users`").
 		WithArgs(3).
 		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	result, err := v.verifyByCount(ctx, "users", []interface{}{1, 2, 3})
 	if err != nil {
@@ -642,6 +730,14 @@ func TestVerify_ContextCancellation(t *testing.T) {
 	// Create cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
+
+	if v.columnMetadata == nil {
+		metadata := map[string]types.ColumnMetadata{}
+		for _, table := range v.graph.AllNodes() {
+			metadata[table] = types.ColumnMetadata{Names: []string{v.graph.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+		}
+		v.SetColumnMetadata(metadata)
+	}
 
 	_, err := v.Verify(ctx, recordSet)
 

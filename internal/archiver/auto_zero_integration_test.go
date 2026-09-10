@@ -78,7 +78,7 @@ func TestPayloadAutoIncrementZero_Integration(t *testing.T) {
 	vpTable(t, mgr, table, "(id BIGINT PRIMARY KEY,seq BIGINT NOT NULL AUTO_INCREMENT,KEY(seq)) ENGINE=InnoDB")
 	vpSeed(t, cfg.Source, "NO_AUTO_VALUE_ON_ZERO", "INSERT INTO vp_auto_sample VALUES(1,0)")
 	job := &config.JobConfig{RootTable: table, PrimaryKey: "id", Where: "id=1"}
-	p := NewPayloadValidator(mgr.Source, mgr.Destination, graph.NewGraph(table, "id"), cfg.Source.Database, job, cfg.Safety, 100, logger.NewDefault())
+	p := NewPayloadValidator(mgr.Source, mgr.Destination, graph.NewGraph(table, "id"), cfg.Source.Database, job, cfg.Safety, 100, cfg.Verification, logger.NewDefault())
 	if err := p.Validate(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -230,6 +230,7 @@ func TestDiscover_EmptyRootPKs(t *testing.T) {
 	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, []interface{}{})
 
 	if err != nil {
@@ -259,6 +260,7 @@ func TestDiscover_SingleRootPK(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -290,6 +292,8 @@ func TestDiscover_NilDBErrorsForNonEmptyInput(t *testing.T) {
 		t.Fatalf("NewRecordDiscovery failed: %v", err)
 	}
 
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
+
 	_, err = discovery.Discover(context.Background(), []interface{}{"user1"})
 	if err == nil {
 		t.Fatal("expected nil DB discovery to fail")
@@ -302,6 +306,7 @@ func TestDiscover_MultipleRootPKs(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -324,6 +329,7 @@ func TestDiscover_BFSTraversalOrder(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -346,6 +352,7 @@ func TestDiscover_DeepGraph(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -372,6 +379,7 @@ func TestDiscover_DiamondDependencyAccumulatesAllPaths(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"a1", "a2"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
@@ -397,6 +405,7 @@ func TestDiscover_RecordsPopulated(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -434,6 +443,7 @@ func TestDiscover_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	_, err := discovery.Discover(ctx, rootPKs)
 
 	if err == nil {
@@ -457,6 +467,7 @@ func TestDiscover_ContextTimeout(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	rootPKs := []interface{}{"a1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	_, err := discovery.Discover(ctx, rootPKs)
 
 	// Should get timeout or cancellation error
@@ -476,6 +487,7 @@ func TestDiscoveryStats_Populated(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -509,6 +521,7 @@ func TestDiscoveryStats_MultipleRootPKs(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -533,6 +546,7 @@ func TestDiscoveryStats_EmptyDiscovery(t *testing.T) {
 	discovery := newSimulatedRecordDiscovery(t, g, 100)
 
 	ctx := context.Background()
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, []interface{}{})
 
 	if err != nil {
@@ -562,6 +576,7 @@ func TestRecordSet_ContainsAllTables(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -596,6 +611,7 @@ func TestRecordSet_RootPKsMatch(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {
@@ -642,6 +658,7 @@ func TestDiscovery_FullWorkflow(t *testing.T) {
 
 	ctx := context.Background()
 	rootPKs := []interface{}{"user1", "user2", "user3", "user4", "user5"}
+	discovery.SetColumnMetadata(testNonTemporalMetadata(discovery.graph))
 	result, err := discovery.Discover(ctx, rootPKs)
 
 	if err != nil {

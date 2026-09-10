@@ -11,6 +11,7 @@ import (
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/goarchive/internal/graph"
 	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/internal/types"
 )
 
 // DeleteStats contains statistics about the delete operation.
@@ -33,11 +34,12 @@ type DeleteStats struct {
 // GA-P4-F2-T5: Delete progress logging
 // GA-P4-F2-T6: Idempotent deletes (no error on re-delete)
 type DeletePhase struct {
-	db           *sql.DB
-	graph        *graph.Graph
-	batchSize    int     // GA-P4-F2-T2: Batch delete size
-	sleepSeconds float64 // Throttle: pause between delete chunks (0 = disabled)
-	logger       *logger.Logger
+	db             *sql.DB
+	graph          *graph.Graph
+	batchSize      int     // GA-P4-F2-T2: Batch delete size
+	sleepSeconds   float64 // Throttle: pause between delete chunks (0 = disabled)
+	logger         *logger.Logger
+	columnMetadata map[string]types.ColumnMetadata
 
 	// sleepFn is an injectable seam for the inter-chunk throttle sleep so unit
 	// tests can assert the throttle deterministically without waiting. When nil,
@@ -89,6 +91,18 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 		return nil, fmt.Errorf("failed to get delete order: %w", err)
 	}
 
+	conn, err := dp.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("source connection: %w", err)
+	}
+	defer func() {
+		if err := conn.Close(); err != nil {
+			dp.logger.Warnf("Failed to close source connection: %v", err)
+		}
+	}()
+	if err := dp.checkTemporalIdentities(ctx, conn, recordSet); err != nil {
+		return nil, err
+	}
 	dp.logger.Infof("Starting delete phase for %d tables in reverse dependency order", len(deleteOrder))
 
 	// GA-P4-F2-T1: Delete tables in reverse order (children → parents)
@@ -107,7 +121,7 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 		}
 
 		// GA-P4-F2-T3: Delete table using primary keys
-		rowsDeleted, err := dp.deleteTable(ctx, table, pks)
+		rowsDeleted, err := dp.deleteTable(ctx, conn, table, pks)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete from table %s: %w", table, err)
 		}
@@ -138,7 +152,7 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 // GA-P4-F2-T3: PK-based deletes
 // GA-P4-F2-T4: Delete without transaction (auto-commit for each batch)
 // GA-P4-F2-T6: Idempotent deletes (no error if already deleted)
-func (dp *DeletePhase) deleteTable(ctx context.Context, table string, pks []interface{}) (int64, error) {
+func (dp *DeletePhase) deleteTable(ctx context.Context, conn *sql.Conn, table string, pks []interface{}) (int64, error) {
 	if len(pks) == 0 {
 		return 0, nil
 	}
@@ -166,7 +180,7 @@ func (dp *DeletePhase) deleteTable(ctx context.Context, table string, pks []inte
 
 		// GA-P4-F2-T3: Execute PK-based delete
 		// GA-P4-F2-T4: No transaction - each DELETE is auto-committed
-		rowsDeleted, err := dp.executeDelete(ctx, table, pkColumn, batchPKs)
+		rowsDeleted, err := dp.executeDelete(ctx, conn, table, pkColumn, batchPKs)
 		if err != nil {
 			return totalDeleted, fmt.Errorf("batch %d/%d failed: %w", batchNum+1, totalBatches, err)
 		}
@@ -213,7 +227,7 @@ func (dp *DeletePhase) sleepBetweenChunks(ctx context.Context, d time.Duration) 
 // GA-P4-F2-T3: PK-based delete using IN clause
 // GA-P4-F2-T4: Auto-commit (no explicit transaction)
 // GA-P4-F2-T6: Idempotent (no error if 0 rows deleted)
-func (dp *DeletePhase) executeDelete(ctx context.Context, table, pkColumn string, pks []interface{}) (int64, error) {
+func (dp *DeletePhase) executeDelete(ctx context.Context, conn *sql.Conn, table, pkColumn string, pks []interface{}) (int64, error) {
 	if len(pks) == 0 {
 		return 0, nil
 	}
@@ -232,7 +246,7 @@ func (dp *DeletePhase) executeDelete(ctx context.Context, table, pkColumn string
 	)
 
 	// GA-P4-F2-T4: Execute without transaction (auto-commit)
-	result, err := dp.db.ExecContext(ctx, query, pks...)
+	result, err := conn.ExecContext(ctx, query, pks...)
 	if err != nil {
 		return 0, fmt.Errorf("delete failed: %w", err)
 	}
@@ -260,4 +274,64 @@ func (dp *DeletePhase) SetSleepSeconds(s float64) {
 	if s >= 0 {
 		dp.sleepSeconds = s
 	}
+}
+
+func (dp *DeletePhase) SetColumnMetadata(metadata map[string]types.ColumnMetadata) {
+	dp.columnMetadata = make(map[string]types.ColumnMetadata, len(metadata))
+	for table, m := range metadata {
+		n := types.ColumnMetadata{Names: append([]string(nil), m.Names...)}
+		if m.Temporal != nil {
+			n.Temporal = make(map[string]types.TemporalKind, len(m.Temporal))
+			for c, k := range m.Temporal {
+				n.Temporal[c] = k
+			}
+		}
+		dp.columnMetadata[table] = n
+	}
+}
+
+func (dp *DeletePhase) checkTemporalIdentities(ctx context.Context, conn *sql.Conn, rs *RecordSet) error {
+	order, err := dp.graph.DeleteOrder()
+	if err != nil {
+		return err
+	}
+	for _, table := range order {
+		pks := rs.Records[table]
+		if len(pks) == 0 {
+			continue
+		}
+		meta := dp.columnMetadata[table]
+		pk := dp.graph.GetPK(table)
+		fail := func(detail string, cause error) error {
+			return &types.TemporalReadContractError{Table: table, Operation: "pre-delete", Detail: detail, Cause: cause}
+		}
+		if _, err := meta.ProjectColumn(pk); err != nil {
+			return fail("primary-key metadata unavailable", err)
+		}
+		kind := meta.Kind(pk)
+		if kind == types.TemporalNone {
+			continue
+		}
+		set, err := types.NewTemporalIdentitySet(kind, table, "pre-delete", pks)
+		if err != nil {
+			return err
+		}
+		keys := set.Keys()
+		for i := 0; i < len(keys); i += dp.batchSize {
+			end := i + dp.batchSize
+			if end > len(keys) {
+				end = len(keys)
+			}
+			distinctKeys := keys[i:end]
+			query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s IN (%s)", sqlutil.QuoteIdentifier(table), sqlutil.QuoteIdentifier(pk), strings.TrimSuffix(strings.Repeat("?,", len(distinctKeys)), ","))
+			var count int64
+			if err := conn.QueryRowContext(ctx, query, distinctKeys...).Scan(&count); err != nil {
+				return fail("count probe failed", err)
+			}
+			if count != int64(len(distinctKeys)) {
+				return fail(fmt.Sprintf("requested=%d fetched=%d", len(distinctKeys), count), nil)
+			}
+		}
+	}
+	return nil
 }

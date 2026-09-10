@@ -129,7 +129,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 	jobProcessing := cfg.GetJobProcessing(dryrunJob)
 	validator := archiver.NewPayloadValidator(
 		dbManager.Source, dbManager.Destination, g, cfg.Source.Database, jobCfg,
-		cfg.Safety, jobProcessing.BatchSize, log,
+		cfg.Safety, jobProcessing.BatchSize, verification, log,
 	)
 	fmt.Println("\nValidating batch_size payload limits (no data is persisted)...")
 	if err := validator.Validate(ctx); err != nil {

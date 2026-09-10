@@ -301,6 +301,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	if err != nil {
 		return fail("failed to create copy phase: %w", err)
 	}
+	defer func() { reportConversionTotals(o.logger, "archive", result.Success, copyPhase.ConversionTotals()) }()
 	effectiveVerificationMethod := o.verificationCfg.EffectiveMethod()
 	// Decide whether INSERT IGNORE is safe. INSERT IGNORE silently skips a row
 	// whose key already exists on the destination; if that skip went undetected
@@ -323,6 +324,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 			"reason", reason)
 	}
 	copyPhase.SetStrictInsert(strictInsert)
+	copyPhase.SetDiagnosticPolicy(o.verificationCfg, len(destUniqueIdx) > 0)
 	copyPhase.SetBatchSize(o.processingCfg.BatchSize)
 
 	dataVerifier, err := verifier.NewVerifier(
@@ -340,12 +342,13 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 	// One explicit-column fetch per run: rows are never read with SELECT *,
 	// which MySQL omits INVISIBLE columns from (issue #23). Cached for the
 	// whole run — mid-run DDL is out of contract (see README_LIMITATIONS.md).
-	columnLists, err := sourceColumnLists(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
+	columnLists, err := sourceColumnMetadata(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
 	if err != nil {
 		return fail("failed to load source column lists: %w", err)
 	}
-	copyPhase.SetColumnLists(columnLists)
-	dataVerifier.SetColumnLists(columnLists)
+	copyPhase.SetColumnMetadata(columnLists)
+	dataVerifier.SetColumnMetadata(columnLists)
+	discovery.SetColumnMetadata(columnLists)
 
 	deletePhase, err := NewDeletePhase(
 		o.dbManager.Source,
@@ -357,6 +360,7 @@ func (o *ArchiveOrchestrator) Execute(ctx context.Context, checkpoint Checkpoint
 		return fail("failed to create delete phase: %w", err)
 	}
 	// Throttle deletes (between batch_delete_size chunks) to limit binlog/replication lag.
+	deletePhase.SetColumnMetadata(columnLists)
 	deletePhase.SetSleepSeconds(o.processingCfg.DeleteSleepSeconds)
 
 	resumeMgr.SetChunkSize(o.processingCfg.BatchSize)
