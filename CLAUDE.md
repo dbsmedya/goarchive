@@ -6,6 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `tests/README.md`. Anything duplicated here rots — record it in its owning file and point at
 it from here.
 
+## Primary development workflow
+
+**dev-contract** is the primary workflow for non-trivial development, including specs, plans,
+reviews, implementation dispatch, mutations, gates and PR preparation. Read the canonical
+skill at `~/.claude/skills/dev-contract/SKILL.md` and its relevant references. The local
+discovery link is `.agents/skills/dev-contract`; maintain the canonical skill rather than a
+second copy here.
+
+It takes precedence over the older development-workflow, software-architect and Superpowers
+workflow instructions. Other skills may support work within this contract. This file and
+`tests/README.md` continue to own repository-specific facts and test procedures.
+
+Read the operator's rulings and approved spec before the plan. Existing approved specs remain
+authoritative; converting a plan does not reopen its spec. Workflow adoption does not approve
+development of pending plans: each requires the contract's review and dispatch authorization.
+
 ## Project Overview
 
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It
@@ -182,13 +198,13 @@ start, **Basic Usage**, **Architecture**, and project status. Reference material
 
 ### RULE: internal development documentation goes under `.ayder/superpowers_<YYYYMMDD>/`
 
-Every Superpowers-style internal artifact — brainstormed designs, specs, implementation plans,
+Every dev-contract internal artifact — designs, specs, implementation plans,
 architectural decisions — **MUST** be written to:
 
 ```
 .ayder/superpowers_<YYYYMMDD>/
-├── plans/       # implementation plans (writing-plans / executing-plans output)
-├── specs/       # designs and specifications (brainstorming output)
+├── plans/       # dev-contract implementation plans, one per PR
+├── specs/       # designs and specifications
 ├── decisions/   # architectural decision records; why an approach was chosen/rejected
 └── pr/          # PR bodies and their gate evidence, one per PR of this effort
 ```
@@ -199,9 +215,10 @@ architectural decisions — **MUST** be written to:
   artifacts inside it. Do not append to a previous date's directory for new work — except
   where an existing effort's own INDEX governs the numbering (the `rc-phase-NNN` sequence
   lives in `superpowers_20260801/plans/`).
-- File naming: `YYYY-MM-DD-<topic>.md`, brainstorming designs suffixed `-design.md`.
-- This **overrides the Superpowers skills' default paths.** When a skill says to write to
-  `docs/superpowers/specs/...`, write it here instead. Never create `docs/superpowers/`.
+- File naming: `YYYY-MM-DD-<topic>.md`, designs suffixed `-design.md`.
+- Keep the existing `superpowers_<YYYYMMDD>` directory convention under dev-contract.
+  Reviews live under `.ayder/reviews/` as the contract specifies. Never create
+  `docs/superpowers/` for internal artifacts.
 - `docs/` is exclusively published user-facing documentation. Never place a plan, spec,
   decision record, review, or session note there.
 
@@ -267,8 +284,8 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1152 FAIL=0 SKIP=2` (runner-measured
-2026-09-05; #13/#14 added the identity-guard and sticky-root integration tests).
+The measured integration baseline is `PASS=1167 FAIL=0 SKIP=2` (runner-measured
+2026-09-10; #108 added zero-preservation regressions and connection-mode tests).
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

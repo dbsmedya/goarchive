@@ -562,6 +562,15 @@ inspection or database failure** — a lost connection, a permissions problem, a
 The wrapped cause is included in the message; diagnose that. They do not by themselves
 indicate a software defect.
 
+`AUTO_INCREMENT_ZERO_MODE_CHECK` is a **connection-startup failure**, before preflight:
+GoArchive could not prove that the session preserves explicit AUTO_INCREMENT zero values.
+The run stops before data processing. Check whether the server or proxy honors connection
+initialization, then restart; GoArchive does not repair pooled session settings at runtime.
+If the message includes an underlying query error, diagnose that cause. This is not an
+additional preflight check and `--skip-validate-preflight` does not disable it. The required
+session mode and its effect are described in
+[Configuration](README_CONFIGURATION.md#auto_increment-zero-preservation).
+
 ---
 
 ## Schema compatibility rules

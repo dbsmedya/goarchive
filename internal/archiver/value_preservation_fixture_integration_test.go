@@ -5,12 +5,13 @@ package archiver
 import (
 	"context"
 	"database/sql"
-	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
 	"os"
 	"strconv"
 	"testing"
+
+	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
+	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/internal/database"
 )
 
 func vpEnvDB(t testing.TB, prefix string) config.DatabaseConfig {

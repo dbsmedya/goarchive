@@ -83,6 +83,19 @@ Same server, different schema is fine. The rule, its two deliberate refusals and
 cloned-server remedy are in
 [Limitations](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
 
+### AUTO_INCREMENT zero preservation
+
+Every new GoArchive connection adds `NO_AUTO_VALUE_ON_ZERO` to its inherited session SQL
+modes. Explicit zero in an AUTO_INCREMENT column remains zero; omitted or NULL values still
+use normal allocation. Other modes remain intact. This applies to source, destination and
+replication-server connections, including replacement connections.
+
+Startup checks that the preserving mode is present. If that cannot be proved, the connection
+is refused before data processing. GoArchive has no per-session SQL-mode option in 2.x and
+does not change global server settings or repair pooled session settings at runtime. See
+[`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)
+for troubleshooting.
+
 ### `job_schema` (destination only)
 
 | Option | Description | Default |

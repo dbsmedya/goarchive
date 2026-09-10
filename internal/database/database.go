@@ -155,6 +155,10 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 					_ = db.Close()
 					return nil, fmt.Errorf("%s: %w", name, tzErr)
 				}
+				if modeErr := assertAutoIncrementZeroMode(ctx, db); modeErr != nil {
+					_ = db.Close()
+					return nil, fmt.Errorf("%s: %w", name, modeErr)
+				}
 				return db, nil
 			} else {
 				_ = db.Close()
@@ -227,7 +231,12 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// "SET time_zone = '+00:00'" on every new connection — pooled and
 	// reconnected sessions included — and fails the connection if the server
 	// rejects it. Offset form: needs no time-zone tables.
-	dsnCfg.Params = map[string]string{"time_zone": "'+00:00'"}
+	// Issue #108: preserve explicit AUTO_INCREMENT zero without replacing
+	// inherited strict/date modes. The driver initializes every new session.
+	dsnCfg.Params = map[string]string{
+		"time_zone": "'+00:00'",
+		"sql_mode":  autoZeroModeExpression,
+	}
 	dsnCfg.MultiStatements = true
 
 	switch cfg.TLS {
