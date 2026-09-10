@@ -164,7 +164,11 @@ type TemporalReadContractError struct {
 }
 
 func (e *TemporalReadContractError) Error() string {
-	return fmt.Sprintf("TEMPORAL_READ_CONTRACT: table=%s operation=%s: %s", e.Table, e.Operation, strings.NewReplacer("\n", " ", "\r", " ").Replace(e.Detail))
+	message := fmt.Sprintf("TEMPORAL_READ_CONTRACT: table=%s operation=%s: %s", e.Table, e.Operation, strings.NewReplacer("\n", " ", "\r", " ").Replace(e.Detail))
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
 }
 func (e *TemporalReadContractError) Unwrap() error { return e.Cause }
 

@@ -140,12 +140,6 @@ relation chain, not full-table counts — and validates `batch_size` against the
 destination's limits inside a rolled-back transaction. See
 [Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation).
 
-Connections preserve explicit AUTO_INCREMENT zero values automatically for archive,
-copy-only and dry-run samples. A startup `AUTO_INCREMENT_ZERO_MODE_CHECK` failure stops
-the run before data processing; check that the server or proxy honors connection
-initialization, then restart. See
-[connection settings](README_CONFIGURATION.md#auto_increment-zero-preservation).
-
 Use `goarchive plan -j <job>` at any point to see the relation tree, copy order,
 and delete order without touching either database.
 
@@ -190,13 +184,13 @@ retention through the DBA; GoArchive does not increase it or require an extra
 privilege. Network RTT and subdivision affect throughput; twice as many SQL
 statements does not imply twice the whole-job duration.
 
-`--skip-verify` accepts only the recognized conversion codes listed in
+`--skip-verify` follows the narrow conversion policy in
 [Configuration](README_CONFIGURATION.md#verification), with visible committed-copy
 totals. Counts are diagnostics, not numbers of changed rows. Source originals may
-be permanently deleted after accepted conversion. SQL errors, unknown/incomplete
-diagnostics and temporal identity failures still stop the run.
+be permanently deleted after accepted conversion.
 
-Temporal-key count verification reads and checks raw identities on both sides.
+For [eligible temporal keys](README_LIMITATIONS.md#temporal-values-and-identities),
+count verification reads and checks raw identities on both sides.
 Before any batch DELETE, every nonempty temporal-key table gets a native indexed
 COUNT probe on the dedicated source connection used for deletion. All probes
 must pass before any DELETE. Integer-only keys incur neither extra identity read.

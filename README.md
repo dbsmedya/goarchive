@@ -33,19 +33,23 @@ GoArchive exists for the case pt-archiver hands back to the operator: **archivin
 | Tables per run | one | one, or a root plus its full child subgraph |
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
-| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed v3.7.1 | Enabled by default; explicit --skip-verify override for recognized conversion warnings |
+| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
-| Composite / non-integer PKs | ✅ | ❌ |
+| Composite primary keys | ✅ | ❌ |
+| Non-integer primary keys | ✅ | Root: ❌; child: ✅ within [identity restrictions](docs/README_LIMITATIONS.md#temporal-values-and-identities) |
 | File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
 | MyISAM, MySQL 5.x | ✅ | ❌ |
-| Transaction sizing | ✅ `--txn-size`, down to one row | ❌ one transaction per copy phase |
-| Bulk insert / bulk delete | ✅ | ❌ |
+| Independent transaction-row limit | ✅ `--txn-size`, down to one row | ❌ one destination transaction per discovered root batch and subgraph |
+| Batched write mechanisms | `LOAD DATA LOCAL INFILE` / range DELETE | Parameterized multi-row INSERT / chunked `DELETE WHERE pk IN (...)` |
 | PXC flow control | ✅ | ❌ |
 | Extensibility | ✅ 9 plugin hooks | ❌ |
-| Maturity | ~19 years | ~6 months |
+| Maturity | Long-established | Newer; limited production use |
 
-This comparison covers the reviewed [pt-archiver v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver). GoArchive checks every successful application-data INSERT before copy commit. By default conversion/truncation warnings stop archival. With effective `skip_verification` enabled, recognized conversion warnings are reported and accepted without comparing copied values; originals may then be deleted. SQL errors, unknown or incomplete diagnostics and temporal identity failures still stop the run. Warning checks do not detect every possible value change.
+This comparison covers the reviewed pt-archiver v3.7.1 source linked above. GoArchive's
+[verification policy](docs/README_CONFIGURATION.md#verification) defines the narrow
+conversion-warning override; its [warning coverage limits](docs/README_LIMITATIONS.md#temporal-values-and-identities)
+remain part of the operating contract.
 
 ## Is GoArchive right for your schema?
 

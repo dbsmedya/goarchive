@@ -219,9 +219,8 @@ The **root** table's primary key must be an integer type: `TINYINT`, `SMALLINT`,
 advances a numeric high-water mark, which requires an ordered integer key.
 
 UUID, `VARCHAR`, `DECIMAL`, `FLOAT`, and datetime root primary keys are rejected.
-**Child tables may use single-column PK types, but invalid/zero DATE, DATETIME
-and TIMESTAMP identities are refused at runtime in 2.x**, including with overrides.
-See [Temporal values and identities](README_LIMITATIONS.md#temporal-values-and-identities).
+**Child tables may use single-column PK types**, subject to the
+[temporal identity rules](README_LIMITATIONS.md#temporal-values-and-identities).
 
 **Fix:** choose a different root table, or archive from a table with an integer
 PK. (A related `ROOT_PK_TYPE_LOOKUP` error means the column's type could not be
@@ -567,24 +566,24 @@ indicate a software defect.
 `AUTO_INCREMENT_ZERO_MODE_CHECK` is a **connection-startup failure**, before preflight:
 GoArchive could not prove that the session preserves explicit AUTO_INCREMENT zero values.
 The run stops before data processing. Check whether the server or proxy honors connection
-initialization, then restart; GoArchive does not repair pooled session settings at runtime.
-If the message includes an underlying query error, diagnose that cause. This is not an
-additional preflight check and `--skip-validate-preflight` does not disable it. The required
-session mode and its effect are described in
+initialization, then restart.
+If the driver's connection-initialization statement itself is rejected, its error can appear
+before this named assertion runs. Otherwise, diagnose any wrapped query cause in the named
+error. This is not an additional preflight check and `--skip-validate-preflight` does not
+disable it. The required session mode and its effect are described in
 [Configuration](README_CONFIGURATION.md#auto_increment-zero-preservation).
 
 Runtime value-preservation errors are also separate from the preflight check count:
 
 | Identifier | Producer and meaning | What to do |
 |---|---|---|
-| `TEMPORAL_READ_CONTRACT` | GoArchive's column metadata/raw-key consumers, copy/verifier identity sets, or pre-delete COUNT proof could not establish faithful temporal identities | Inspect raw keys and metadata; invalid/zero temporal identities are unsupported in 2.x, even with overrides |
+| `TEMPORAL_READ_CONTRACT` | A temporal representation, metadata fact, key identity set, or pre-delete proof could not be established | Diagnose the wrapped cause, then see the complete [temporal identity rules](README_LIMITATIONS.md#temporal-values-and-identities) |
 | `INSERT_DIAGNOSTIC_REJECTED` | The INSERT classifier read a forbidden condition; its message includes numeric code, level and a bounded preview | Inspect the diagnostic and destination settings; fix the data/settings or deliberately use the documented conversion-only `--skip-verify` contract |
 | `INSERT_DIAGNOSTICS_UNPROVEN` | Session facts, diagnostic I/O, completeness or execution context could not be proved | Diagnose the wrapped error or retained-message capacity; ensure notes are visible and restart the job after DBA configuration |
 
 These guards are application-owned and remain active with skipped preflight.
 `validate` is structural; it is not a scan or certification of every payload.
-`AUTO_INCREMENT_ZERO_MODE_CHECK` above is produced by connection mode initialization
-and its read-only assertion. None of these failures grants permission to delete.
+None of these failures grants permission to delete.
 
 ---
 
@@ -672,10 +671,11 @@ count verification cannot see it. SHA256 can, and fails before any delete.
 that only matter for a real copy. It prints the job's WHERE clause and estimates
 row counts **filtered through the actual relation chain**, not full-table counts.
 
-Samples use raw temporal projections and the same immediate count/detail diagnostic
-checks and capacity subdivision as runtime copies, inside one rollback-only InnoDB
-transaction. Complete duplicate-only diagnostics are accepted solely because the
-sample rolls back; the notice explicitly says destination equality was not proved.
+Samples use raw temporal projections and the runtime copy's
+[diagnostic collection and subdivision](README_OPERATIONS.md#insert-diagnostics-and-subdivision)
+inside one rollback-only InnoDB transaction. Complete duplicate-only diagnostics are
+accepted solely because the sample rolls back; the notice explicitly says destination
+equality was not proved.
 Recognized conversion warnings require effective `skip_verification`; unknown or
 incomplete diagnostics and SQL errors still fail. Even an accepted override always
 rolls back and reports sample observations separately from committed-copy totals.
