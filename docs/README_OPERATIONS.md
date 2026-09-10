@@ -140,6 +140,12 @@ relation chain, not full-table counts — and validates `batch_size` against the
 destination's limits inside a rolled-back transaction. See
 [Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation).
 
+Connections preserve explicit AUTO_INCREMENT zero values automatically for archive,
+copy-only and dry-run samples. A startup `AUTO_INCREMENT_ZERO_MODE_CHECK` failure stops
+the run before data processing; check that the server or proxy honors connection
+initialization, then restart. See
+[connection settings](README_CONFIGURATION.md#auto_increment-zero-preservation).
+
 Use `goarchive plan -j <job>` at any point to see the relation tree, copy order,
 and delete order without touching either database.
 

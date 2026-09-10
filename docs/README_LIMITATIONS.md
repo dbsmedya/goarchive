@@ -296,6 +296,17 @@ job you may need to resume — see
 and [Resume semantics](README_OPERATIONS.md#resume-semantics) for the replay
 rules.
 
+#### AUTO_INCREMENT zero values and dry-run allocation
+
+GoArchive preserves explicit zero in AUTO_INCREMENT columns by initializing every new
+connection with `NO_AUTO_VALUE_ON_ZERO`, while retaining the other SQL modes. This includes
+non-primary AUTO_INCREMENT columns, whose changed values count verification cannot detect.
+Startup refuses a connection that cannot prove the mode is present; see
+[Configuration](README_CONFIGURATION.md#auto_increment-zero-preservation).
+
+Omitted and NULL AUTO_INCREMENT values still allocate normally. Rolling back a dry-run
+sample does not promise to restore AUTO_INCREMENT counters or eliminate allocation gaps.
+
 #### Schema-stable assumption
 
 GoArchive assumes source and destination schemas do **not change during a batch
