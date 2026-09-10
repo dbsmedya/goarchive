@@ -60,7 +60,7 @@ primary-key column (`WHERE pk IN (...)`).
   Checkpointing advances a numeric high-water mark, which needs an ordered
   integer key. UUID, `VARCHAR`, `DECIMAL`, `FLOAT`, and datetime root keys are
   rejected.
-- **Child tables may use any single-column primary key type.**
+- **Child tables may use single-column primary keys, subject to the temporal identity restriction below.**
 
 If your schema uses composite keys on the tables you want to archive, Community
 edition cannot safely archive them.
@@ -371,3 +371,33 @@ first meets behaviour the library does not model, rather than being refused up f
 For the positive counterpart to this page — the complete list of what Community
 edition does provide, and what is deferred to Enterprise — see
 [Project Status in the README](../README.md#whats-included-in-community).
+
+### Temporal values and identities
+
+GoArchive 2.x refuses DATE, DATETIME and TIMESTAMP identities containing an invalid
+Gregorian date, zero year/month/day, invalid clock or unsupported text shape.
+DATE keys require `YYYY-MM-DD`, year 0001–9999 and a real calendar day. DATETIME and
+TIMESTAMP keys additionally require ` HH:MM:SS`, optionally 1–6 fractional digits;
+no timezone suffix, whitespace normalization or leap second is accepted. Valid
+keys retain their exact SQL spelling. Root keys remain integer-only.
+
+This restriction concerns identities, not ordinary payloads: legacy invalid and
+zero-component temporal payloads remain eligible for raw copy when MySQL accepts
+them and diagnostics/verification permit it. Both source and destination SHA256
+reads use raw temporal text. TIMESTAMP sessions remain UTC; TIME/YEAR handling is
+unchanged. Structural validation does not scan every stored value.
+
+Copy and enabled verification require each fetched temporal identity set to equal
+the distinct requested set, including empty-result failures. Purge and archive
+probe all temporal-key tables before the first batch DELETE using native indexed
+predicates. Missing metadata or unfaithful representations also fail with
+`TEMPORAL_READ_CONTRACT`. Neither verification nor preflight overrides bypass
+these guards, even with permissive server modes. There is no new locking or
+concurrent-write protection: the existing cold-data/no-DDL contract still applies.
+
+Every application-data INSERT, including non-temporal tables, is checked for
+complete diagnostics. A forbidden warning rolls back the affected InnoDB copy
+batch, not the whole job; deliberate nontransactional destinations retain their
+rollback limitation. Effective `skip_verification` accepts only listed conversion
+warnings with notices, while SQL errors and unknown/unproved diagnostics remain
+fatal. Warning checks cannot detect every possible value change.

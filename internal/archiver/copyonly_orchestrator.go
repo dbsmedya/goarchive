@@ -222,6 +222,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	// data that was never truly copied. Force strict INSERT (abort on duplicate)
 	// when the post-copy safety net is weak: count verification, verification
 	// skipped, or a destination secondary UNIQUE index.
+	defer func() { reportConversionTotals(o.logger, "copy-only", result.Success, copyPhase.ConversionTotals()) }()
 	effectiveMethod := o.verificationCfg.EffectiveMethod()
 	destUniqueIdx, err := destinationSecondaryUniqueIndexes(ctx, o.dbManager.Destination,
 		o.config.Destination.Database, o.graph.AllNodes())
@@ -237,6 +238,7 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 		o.logger.Warnw("Forcing strict INSERT (INSERT IGNORE disabled): a silently-skipped duplicate would leave an incomplete copy", "reason", reason)
 	}
 	copyPhase.SetStrictInsert(strictInsert)
+	copyPhase.SetDiagnosticPolicy(o.verificationCfg, len(destUniqueIdx) > 0)
 
 	dataVerifier, err := verifier.NewVerifier(
 		o.dbManager.Source,
@@ -256,12 +258,13 @@ func (o *CopyOnlyOrchestrator) Execute(ctx context.Context, force bool) (result 
 	// One explicit-column fetch per run: rows are never read with SELECT *,
 	// which MySQL omits INVISIBLE columns from (issue #23). Cached for the
 	// whole run — mid-run DDL is out of contract (see README_LIMITATIONS.md).
-	columnLists, err := sourceColumnLists(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
+	columnLists, err := sourceColumnMetadata(ctx, o.dbManager.Source, o.config.Source.Database, o.graph.AllNodes())
 	if err != nil {
 		return fail("failed to load source column lists: %w", err)
 	}
-	copyPhase.SetColumnLists(columnLists)
-	dataVerifier.SetColumnLists(columnLists)
+	copyPhase.SetColumnMetadata(columnLists)
+	dataVerifier.SetColumnMetadata(columnLists)
+	discovery.SetColumnMetadata(columnLists)
 
 	pipeline := &batchPipeline{
 		jobName:         o.jobName,

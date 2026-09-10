@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"github.com/dbsmedya/goarchive/internal/types"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -133,9 +134,11 @@ func TestCopyPhase_TransactionBeginError(t *testing.T) {
 	}
 
 	// Mock transaction begin failure
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin().WillReturnError(sql.ErrConnDone)
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -163,11 +166,13 @@ func TestCopyPhase_SetForeignKeyChecksError(t *testing.T) {
 	}
 
 	// Mock successful transaction begin but FK check disable failure
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnError(sql.ErrTxDone)
 	destMock.ExpectRollback()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -185,7 +190,7 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name", "email"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name", "email"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -195,6 +200,7 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 	}
 
 	// Mock destination transaction
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -208,12 +214,14 @@ func TestCopyPhase_CopySuccess_SingleTable(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCleanDiagnostics(destMock)
 
 	// FK checks are re-enabled before commit when DisableForeignKeyChecks=true
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	require.NoError(t, err)
@@ -235,9 +243,9 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 	g := createMultiLevelGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{
-		"customers": {"id", "name"},
-		"orders":    {"id", "customer_id", "total"},
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{
+		"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}},
+		"orders":    {Names: []string{"id", "customer_id", "total"}, Temporal: map[string]types.TemporalKind{}},
 	})
 
 	recordSet := &RecordSet{
@@ -249,6 +257,7 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 	}
 
 	// Mock destination transaction
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -261,6 +270,7 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCleanDiagnostics(destMock)
 
 	// Mock orders copy
 	sourceMock.ExpectQuery("SELECT `id`, `customer_id`, `total` FROM `orders` WHERE `id` IN \\(\\?\\)").
@@ -270,12 +280,14 @@ func TestCopyPhase_CopySuccess_MultipleTablesWithOrder(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `orders`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCleanDiagnostics(destMock)
 
 	// FK checks are re-enabled before commit when DisableForeignKeyChecks=true
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	require.NoError(t, err)
@@ -304,6 +316,7 @@ func TestCopyPhase_EmptyTable_Skipped(t *testing.T) {
 	}
 
 	// Mock destination transaction
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 	// No source query or insert expected for empty table
@@ -311,6 +324,7 @@ func TestCopyPhase_EmptyTable_Skipped(t *testing.T) {
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	require.NoError(t, err)
@@ -331,7 +345,7 @@ func TestCopyPhase_SourceQueryError_Rollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -341,6 +355,7 @@ func TestCopyPhase_SourceQueryError_Rollback(t *testing.T) {
 	}
 
 	// Mock destination transaction
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -351,6 +366,7 @@ func TestCopyPhase_SourceQueryError_Rollback(t *testing.T) {
 	destMock.ExpectRollback()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -369,7 +385,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -379,6 +395,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 	}
 
 	// Mock destination transaction
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -395,6 +412,7 @@ func TestCopyPhase_InsertError_Rollback(t *testing.T) {
 	destMock.ExpectRollback()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -425,7 +443,10 @@ func TestCopyPhase_ContextCancellation(t *testing.T) {
 	cancel()
 
 	// Mock transaction begin (may or may not happen depending on timing)
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin().WillReturnError(context.Canceled)
+
+	testCopyPolicy(cp)
 
 	stats, err := cp.Copy(ctx, recordSet)
 
@@ -442,7 +463,7 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -452,6 +473,7 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	}
 
 	// Mock successful copy but commit failure
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
@@ -461,12 +483,14 @@ func TestCopyPhase_CommitError(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectCommit().WillReturnError(sql.ErrTxDone)
 	// After failed commit, sqlmock tx is in done state.
 	// The defer will attempt Rollback() which returns ErrTxDone (logged and swallowed).
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -490,7 +514,7 @@ func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: true}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -498,6 +522,8 @@ func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
 			"customers": {int64(1)},
 		},
 	}
+
+	expectDiagnosticSession(destMock)
 
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 0").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -513,6 +539,7 @@ func TestCopyPhase_FKChecks_ResetAfterRollback(t *testing.T) {
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	assert.Error(t, err)
@@ -533,7 +560,7 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 	g := createSimpleGraph()
 	log := logger.NewDefault()
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{DisableForeignKeyChecks: false}, log)
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1)},
@@ -541,6 +568,8 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 			"customers": {int64(1)},
 		},
 	}
+
+	expectDiagnosticSession(destMock)
 
 	destMock.ExpectBegin()
 	// Implementation still issues SET FOREIGN_KEY_CHECKS = 1 (the safe default)
@@ -553,9 +582,11 @@ func TestCopyPhase_FKChecks_NoResetWhenNotDisabled(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 
 	ctx := context.Background()
+	testCopyPolicy(cp)
 	stats, err := cp.Copy(ctx, recordSet)
 
 	require.NoError(t, err)
@@ -575,7 +606,7 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 	// SafetyConfig{} => FK checks NOT disabled => Copy issues "SET FOREIGN_KEY_CHECKS = 1".
 	cp, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
 	cp.SetBatchSize(2) // force 2 PKs per chunk
-	cp.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
 
 	recordSet := &RecordSet{
 		RootPKs: []interface{}{int64(1), int64(2), int64(3)},
@@ -583,6 +614,8 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 			"customers": {int64(1), int64(2), int64(3)}, // 3 PKs => 2 chunks: [1,2],[3]
 		},
 	}
+
+	expectDiagnosticSession(destMock)
 
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -594,6 +627,7 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 			AddRow(1, "a").AddRow(2, "b"))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WillReturnResult(sqlmock.NewResult(0, 2))
+	expectCleanDiagnostics(destMock)
 
 	// Chunk 2: SELECT id (3) -> 1 row, then one INSERT.
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
@@ -602,8 +636,11 @@ func TestCopyTableChunksByBatchSize(t *testing.T) {
 			AddRow(3, "c"))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 
 	destMock.ExpectCommit()
+
+	testCopyPolicy(cp)
 
 	stats, err := cp.Copy(context.Background(), recordSet)
 	require.NoError(t, err)
@@ -646,12 +683,15 @@ func anyArgValues(n int) []driver.Value {
 }
 
 // wideColumnNames returns numCols synthetic column names ("col0".."colN-1"),
-// shared by wideRowsSource (mock row shape) and the tests' SetColumnLists
+// shared by wideRowsSource (mock row shape) and the tests' SetColumnMetadata
 // calls (explicit-column-list plumbing) so both agree on the same names.
 func wideColumnNames(numCols int) []string {
 	columns := make([]string, numCols)
 	for i := range columns {
 		columns[i] = fmt.Sprintf("col%d", i)
+	}
+	if len(columns) > 0 {
+		columns[0] = "id"
 	}
 	return columns
 }
@@ -689,7 +729,7 @@ func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
 	const numCols = 1000
 	const numRows = 66
 
-	cp.SetColumnLists(map[string][]string{"customers": wideColumnNames(numCols)})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: wideColumnNames(numCols), Temporal: map[string]types.TemporalKind{}}})
 
 	pks := make([]interface{}, numRows)
 	for i := range pks {
@@ -702,6 +742,8 @@ func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
 		},
 	}
 
+	expectDiagnosticSession(destMock)
+
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -712,13 +754,17 @@ func TestCopyChunk_SplitsOversizedBatchIntoSubInserts(t *testing.T) {
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(anyArgValues(65 * numCols)...).
 		WillReturnResult(sqlmock.NewResult(0, 65))
+	expectCleanDiagnostics(destMock)
 
 	// Second sub-batch: remaining 1 row x 1000 columns = 1000 args.
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").
 		WithArgs(anyArgValues(1 * numCols)...).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 
 	destMock.ExpectCommit()
+
+	testCopyPolicy(cp)
 
 	stats, err := cp.Copy(context.Background(), recordSet)
 
@@ -747,7 +793,7 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 	const numCols = 1000
 	const numRows = 66
 
-	cp.SetColumnLists(map[string][]string{"customers": wideColumnNames(numCols)})
+	cp.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: wideColumnNames(numCols), Temporal: map[string]types.TemporalKind{}}})
 
 	pks := make([]interface{}, numRows)
 	for i := range pks {
@@ -760,6 +806,8 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 		},
 	}
 
+	expectDiagnosticSession(destMock)
+
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -770,6 +818,7 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 	destMock.ExpectExec("INSERT INTO `customers`").
 		WithArgs(anyArgValues(65 * numCols)...).
 		WillReturnResult(sqlmock.NewResult(0, 65))
+	expectCleanDiagnostics(destMock)
 
 	// Second sub-batch hits a MySQL duplicate-key error.
 	destMock.ExpectExec("INSERT INTO `customers`").
@@ -777,6 +826,8 @@ func TestCopyChunk_StrictDuplicateOnLaterSubBatch(t *testing.T) {
 		WillReturnError(&mysql.MySQLError{Number: 1062, Message: "Duplicate entry '42' for key 'PRIMARY'"})
 
 	destMock.ExpectRollback()
+
+	testCopyPolicy(cp)
 
 	stats, err := cp.Copy(context.Background(), recordSet)
 
@@ -821,4 +872,25 @@ func createMultiLevelGraph() *graph.Graph {
 	builder := graph.NewBuilder(jobCfg)
 	g, _ := builder.Build()
 	return g
+}
+
+// These older orchestration fixtures declare only integer/string keys.
+func testNonTemporalMetadata(g *graph.Graph) map[string]types.ColumnMetadata {
+	m := map[string]types.ColumnMetadata{}
+	for _, table := range g.AllNodes() {
+		m[table] = types.ColumnMetadata{Names: []string{g.GetPK(table)}, Temporal: map[string]types.TemporalKind{}}
+	}
+	return m
+}
+func testCopyPolicy(cp *CopyPhase) {
+	cp.SetDiagnosticPolicy(config.VerificationConfig{Method: "sha256"}, false)
+	if cp.columnMetadata == nil {
+		cp.SetColumnMetadata(testNonTemporalMetadata(cp.graph))
+	}
+}
+func expectDiagnosticSession(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT @@SESSION.max_error_count, @@SESSION.sql_notes, @@SESSION.sql_mode").WillReturnRows(sqlmock.NewRows([]string{"capacity", "notes", "mode"}).AddRow(1024, true, "STRICT_TRANS_TABLES,NO_AUTO_VALUE_ON_ZERO"))
+}
+func expectCleanDiagnostics(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SHOW COUNT\\(\\*\\) WARNINGS").WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 }

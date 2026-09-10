@@ -3,6 +3,7 @@ package archiver
 import (
 	"context"
 	"errors"
+	"github.com/dbsmedya/goarchive/internal/types"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -33,9 +34,12 @@ func newTestPipeline(t *testing.T, mainMode batchMode) (*batchPipeline, sqlmock.
 	// Every test built on this fixture that reaches copyChunk mocks "customers"
 	// rows shaped {"id", "name"} — matching the explicit column list here keeps
 	// buildSelectColumnsQuery's output aligned with each ExpectQuery below.
-	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	copyPhase.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
+	testCopyPolicy(copyPhase)
+	discovery.SetColumnMetadata(testNonTemporalMetadata(g))
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
@@ -68,9 +72,11 @@ func TestProcessBatchCopyVerifySkipsDelete(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "a"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCopied, "1").
@@ -112,6 +118,8 @@ func TestProcessBatchCopyVerifySkipsDelete(t *testing.T) {
 // uses config.SafetyConfig{}.
 func TestProcessBatchErrorLeavesNoStatusWrites(t *testing.T) {
 	p, sourceMock, destMock, archMock := newTestPipeline(t, batchCopyVerify)
+
+	expectDiagnosticSession(destMock)
 
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -221,9 +229,11 @@ func TestRecoverCopyOnlyPendingAdvancesCheckpointPerChunk(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?, \\?\\)").
 		WithArgs(int64(1), int64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "a").AddRow(2, "b"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 2))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCopied, "1", "2").
@@ -241,9 +251,11 @@ func TestRecoverCopyOnlyPendingAdvancesCheckpointPerChunk(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(3, "c"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCopied, "3").
@@ -288,9 +300,11 @@ func TestRecoverCopyOnlyMixedStatusesAscendGlobally(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(9, "i"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCopied, "9").
@@ -373,9 +387,11 @@ func TestRecoverCopyOnlyRespectsCheckpointFloor(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(9, "i"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 	archMock.ExpectExec("UPDATE .*archiver_job_log_\\d+. SET log_status").
 		WithArgs(LogStatusCopied, "9").

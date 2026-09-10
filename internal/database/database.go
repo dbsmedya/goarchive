@@ -234,6 +234,7 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// Issue #108: preserve explicit AUTO_INCREMENT zero without replacing
 	// inherited strict/date modes. The driver initializes every new session.
 	dsnCfg.Params = map[string]string{
+		"sql_notes": "1",
 		"time_zone": "'+00:00'",
 		"sql_mode":  autoZeroModeExpression,
 	}

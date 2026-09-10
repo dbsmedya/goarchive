@@ -66,7 +66,7 @@ func init() {
 
 	// Safety overrides
 	rootCmd.PersistentFlags().BoolVar(&skipVerify, "skip-verify", false,
-		"Skip data verification after copy")
+		"Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)")
 }
 
 // effectiveJobLogging resolves the logging config for a job run with

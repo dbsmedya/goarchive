@@ -51,7 +51,7 @@ any tracking state is written.
 | `-c`, `--config <path>` | `archiver.yaml` | Path to the configuration file |
 | `--log-level <level>` | — | Override log level (`debug`, `info`, `warn`, `error`) |
 | `--log-format <format>` | — | Override log format (`json`, `text`) |
-| `--skip-verify` | `false` | Skip data verification after copy |
+| `--skip-verify` | `false` | Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion) |
 
 These four are the **only** global flags. Everything below is registered
 per command.
@@ -157,7 +157,8 @@ and delete order without touching either database.
 
 `batch_size` is not just the root fetch size. GoArchive fetches `batch_size` root
 primary keys per batch, discovers their full subgraph, and then copies **every**
-table — root and children alike — `batch_size` rows at a time.
+table — root and children alike — in chunks of up to `batch_size` rows.
+INSERT subdivision can make individual statements smaller.
 
 Two hard limits constrain it, both checked by `dry-run`:
 
@@ -169,6 +170,36 @@ It also drives memory — BFS discovery holds the batch's whole descendant set. 
 deep, high-fanout schemas start at `100` and scale up while watching memory; see
 [Deep or wide graphs can exhaust memory](README_LIMITATIONS.md#deep-or-wide-graphs-can-exhaust-memory)
 for why the accumulator is unbounded.
+
+### INSERT diagnostics and subdivision
+
+Every successful application-data INSERT is followed immediately by
+`SHOW COUNT(*) WARNINGS` on its transaction. Positive counts also require a
+complete `SHOW WARNINGS` list. Unknown, forbidden or unproved diagnostics abort
+that batch's copy transaction before its copied marker or source deletion.
+Earlier completed batches remain completed; a later hash mismatch can leave a
+committed destination copy while preserving its source rows.
+
+The normal `max_error_count=1024` retention capacity also caps each INSERT's row
+count. A 5000-row candidate INSERT with 13 columns becomes
+1024/1024/1024/1024/904 rows: five INSERT/count pairs in the same transaction.
+Configured fetch chunks and placeholder limits can make it smaller already.
+Session facts add one query per copy/sample operation. Capacity zero permits
+clean INSERTs, but positive diagnostic counts fail as uninspectable. Configure
+retention through the DBA; GoArchive does not increase it or require an extra
+privilege. Network RTT and subdivision affect throughput; twice as many SQL
+statements does not imply twice the whole-job duration.
+
+`--skip-verify` accepts only the recognized conversion codes listed in
+[Configuration](README_CONFIGURATION.md#verification), with visible committed-copy
+totals. Counts are diagnostics, not numbers of changed rows. Source originals may
+be permanently deleted after accepted conversion. SQL errors, unknown/incomplete
+diagnostics and temporal identity failures still stop the run.
+
+Temporal-key count verification reads and checks raw identities on both sides.
+Before any batch DELETE, every nonempty temporal-key table gets a native indexed
+COUNT probe on the dedicated source connection used for deletion. All probes
+must pass before any DELETE. Integer-only keys incur neither extra identity read.
 
 ### `batch_delete_size` — delete statement size
 
@@ -376,6 +407,15 @@ rows in a recoverable status.
 Before any marker is read, the job row itself is checked: a job name is bound to
 the `job_type` **and** the `root_table` that created it, and a mismatch refuses the
 run outright — see [`root_table` is sticky](README_JOBS_SCHEMA.md#root_table-is-sticky).
+
+Copied markers from older versions are not retroactively re-certified. Delete-only
+replay does no new destination copy/verification or INSERT diagnostic collection;
+freshly rediscovered temporal source identities still face key checks and the
+pre-delete probes. Pending replay that reaches copying receives the new checks.
+Copy-only promotion remains bookkeeping only. Before resuming a potentially
+affected old job, inspect remaining source/destination values with raw SQL and
+follow the recovery procedure; do not blindly reset or promote markers. These
+checks cannot repair values whose originals were already deleted.
 
 ### Resume gates
 

@@ -73,15 +73,16 @@ func explicitColsCopyVerify(t *testing.T, ctx context.Context, srcDB, dstDB *sql
 	srcSchema, table, pkColumn string, pks []interface{}) *sql.DB {
 	t.Helper()
 	g := graph.NewGraph(table, pkColumn)
-	lists, err := sourceColumnLists(ctx, srcDB, srcSchema, g.AllNodes())
+	lists, err := sourceColumnMetadata(ctx, srcDB, srcSchema, g.AllNodes())
 	if err != nil {
-		t.Fatalf("sourceColumnLists: %v", err)
+		t.Fatalf("sourceColumnMetadata: %v", err)
 	}
 	cp, err := NewCopyPhase(srcDB, dstDB, g, config.SafetyConfig{}, logger.NewDefault())
 	if err != nil {
 		t.Fatalf("new copy phase: %v", err)
 	}
-	cp.SetColumnLists(lists)
+	cp.SetColumnMetadata(lists)
+	cp.SetDiagnosticPolicy(config.VerificationConfig{Method: "sha256"}, false)
 	rs := &RecordSet{RootPKs: pks, Records: map[string][]interface{}{table: pks}}
 	if _, err := cp.Copy(ctx, rs); err != nil {
 		t.Fatalf("copy: %v", err)
@@ -90,7 +91,7 @@ func explicitColsCopyVerify(t *testing.T, ctx context.Context, srcDB, dstDB *sql
 	if err != nil {
 		t.Fatalf("new verifier: %v", err)
 	}
-	v.SetColumnLists(lists)
+	v.SetColumnMetadata(lists)
 	stats, err := v.Verify(ctx, rs)
 	if err != nil {
 		t.Fatalf("sha256 verification: %v", err)

@@ -20,7 +20,7 @@ func newPayloadValidator(t *testing.T, setup *IntegrationTestSetup, jobCfg *conf
 		t.Fatalf("graph build: %v", err)
 	}
 	return NewPayloadValidator(dbManager.Source, dbManager.Destination, g, cfg.Source.Database, jobCfg,
-		cfg.Safety, batchSize, logger.NewDefault())
+		cfg.Safety, batchSize, cfg.Verification, logger.NewDefault())
 }
 
 func TestPayloadValidate_PassAndRollback_Integration(t *testing.T) {
@@ -73,7 +73,7 @@ func TestPayloadValidate_RestoresFKChecksOnPool_Integration(t *testing.T) {
 		t.Fatalf("graph build: %v", err)
 	}
 	v := NewPayloadValidator(dbManager.Source, dbManager.Destination, g, cfg.Source.Database, jobCfg,
-		cfg.Safety, 1000, logger.NewDefault())
+		cfg.Safety, 1000, cfg.Verification, logger.NewDefault())
 
 	if err := v.Validate(ctx); err != nil {
 		t.Fatalf("Validate: %v", err)

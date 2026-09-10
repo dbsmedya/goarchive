@@ -425,3 +425,17 @@ replication:
 		})
 	}
 }
+
+func TestSkipVerificationConversionPrecedence(t *testing.T) {
+	off := false
+	cfg := DefaultConfig()
+	cfg.Verification.SkipVerification = true
+	cfg.Jobs = map[string]JobConfig{"j": {Verification: &VerificationOverrides{SkipVerification: &off}}}
+	if cfg.GetJobVerification("j").SkipVerification {
+		t.Fatal("job false must override global true")
+	}
+	cfg.ApplyOverrides("", "", true)
+	if !cfg.GetJobVerification("j").SkipVerification {
+		t.Fatal("CLI skip must override job false")
+	}
+}

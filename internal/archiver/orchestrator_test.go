@@ -3,6 +3,7 @@ package archiver
 import (
 	"context"
 	"errors"
+	"github.com/dbsmedya/goarchive/internal/types"
 	"os"
 	"strings"
 	"testing"
@@ -490,6 +491,7 @@ func TestProcessBatchDeleteOnlySkipsCopyVerify(t *testing.T) {
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
@@ -548,6 +550,7 @@ func TestProcessBatchDeleteOnlyLagErrorGatesDelete(t *testing.T) {
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
@@ -600,9 +603,11 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 
 	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
-	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	copyPhase.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
+	testCopyPolicy(copyPhase)
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
@@ -611,9 +616,11 @@ func TestProcessBatchFullLagErrorGatesDeleteAfterMarkCopied(t *testing.T) {
 	sourceMock.ExpectQuery("SELECT `id`, `name` FROM `customers` WHERE `id` IN \\(\\?\\)").
 		WithArgs(int64(20)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(20, "p"))
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 
 	// MarkBatchCopied: must fire (proves the re-check runs AFTER it).
@@ -664,9 +671,11 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 
 	discovery, _ := NewRecordDiscovery(g, sourceDB, 1000)
 	copyPhase, _ := NewCopyPhase(sourceDB, destDB, g, config.SafetyConfig{}, log)
-	copyPhase.SetColumnLists(map[string][]string{"customers": {"id", "name"}})
+	copyPhase.SetColumnMetadata(map[string]types.ColumnMetadata{"customers": {Names: []string{"id", "name"}, Temporal: map[string]types.TemporalKind{}}})
+	testCopyPolicy(copyPhase)
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)
@@ -724,9 +733,11 @@ func TestResumePendingRecoversCopiedBeforePending(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	// dest DB: only the pending copy writes
+	expectDiagnosticSession(destMock)
 	destMock.ExpectBegin()
 	destMock.ExpectExec("SET FOREIGN_KEY_CHECKS = 1").WillReturnResult(sqlmock.NewResult(0, 0))
 	destMock.ExpectExec("INSERT IGNORE INTO `customers`").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectCleanDiagnostics(destMock)
 	destMock.ExpectCommit()
 
 	_, err := p.recover(context.Background(), nil)
@@ -757,6 +768,7 @@ func TestResumePendingRefusesStrictInsertWithPending(t *testing.T) {
 	copyPhase.SetStrictInsert(true) // forced by --skip-verify or a dest unique index
 	dataVerifier, _ := verifier.NewVerifier(sourceDB, destDB, g, verifier.MethodSHA256, log)
 	deletePhase, _ := NewDeletePhase(sourceDB, g, 1000, log)
+	deletePhase.SetColumnMetadata(testNonTemporalMetadata(g))
 	fetcher := NewRootIDFetcher(sourceDB, "customers", "id", "", 1000, nil)
 	resumeMgr, _ := NewResumeManager(archDB, log, "testdb")
 	resumeMgr.setJobID(7)

@@ -152,7 +152,7 @@ func TestTemporalKeyCopyOnlyCollision_Integration(t *testing.T) {
 	vpAssertCollisionRetained(t, mgr, err)
 }
 func TestTemporalDiscoveryRawCollision_Integration(t *testing.T) {
-	_, mgr, job := vpCollision(t)
+	cfg, mgr, job := vpCollision(t)
 	g, err := graph.BuildFromJob(job)
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +161,11 @@ func TestTemporalDiscoveryRawCollision_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	metadata, err := sourceColumnMetadata(context.Background(), mgr.Source, cfg.Source.Database, g.AllNodes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.SetColumnMetadata(metadata)
 	rs, err := d.Discover(context.Background(), []interface{}{int64(1)})
 	if err == nil || !strings.Contains(err.Error(), "TEMPORAL_READ_CONTRACT") {
 		t.Fatalf("expected TEMPORAL_READ_CONTRACT, got normalized key: records=%#v error=%v", rs, err)
