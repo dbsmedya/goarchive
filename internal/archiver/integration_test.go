@@ -154,7 +154,9 @@ func NewIntegrationTestSetup(cfg *IntegrationConfig) *IntegrationTestSetup {
 func (its *IntegrationTestSetup) ValidateConnections(ctx context.Context) error {
 	for _, dbCfg := range its.Config.Databases {
 		dsn, err := integrationDSN(dbCfg, "", 5*time.Second)
-		if err != nil { return fmt.Errorf("build validation DSN for %s: %w", dbCfg.Name, err) }
+		if err != nil {
+			return fmt.Errorf("build validation DSN for %s: %w", dbCfg.Name, err)
+		}
 
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
@@ -185,7 +187,9 @@ func (its *IntegrationTestSetup) SetupDatabases(ctx context.Context) error {
 func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg DatabaseConfig) error {
 	// Connect without database
 	dsn, err := integrationDSN(dbCfg, "", 30*time.Second)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -208,7 +212,9 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 
 	// Reconnect with database
 	dsn, err = integrationDSN(dbCfg, dbCfg.Database, 30*time.Second)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	db2, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -229,7 +235,6 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 
 	return nil
 }
-
 
 func (its *IntegrationTestSetup) hasTables(ctx context.Context, db *sql.DB) bool {
 	var count int
