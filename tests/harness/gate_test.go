@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,8 @@ func gateFixture(t *testing.T, failingStage string, teeExit string) (string, []s
 	if err != nil { t.Fatal(err) }
 	if err := os.WriteFile(filepath.Join(root, "tests/scripts/run-gate.sh"), src, 0o755); err != nil { t.Fatal(err) }
 	stage := "#!/usr/bin/env bash\necho stage-$1\nif [[ \"$FIXTURE_BLOCK\" == 1 && \"$1\" == estate ]]; then sleep 20; fi\nif [[ \"$1\" == \"" + failingStage + "\" ]]; then exit 23; fi\nexit 0\n"
-	if err := os.WriteFile(filepath.Join(root, "tests/scripts/require-containers-up.sh"), []byte("#!/usr/bin/env bash\necho 'test estate reachable on fixture'\n"), 0o755); err != nil { t.Fatal(err) }
+	estate := "#!/usr/bin/env bash\nif [[ \"$FIXTURE_BLOCK\" == 1 ]]; then echo READY; sleep 20; fi\necho 'test estate reachable on fixture'\n"
+	if err := os.WriteFile(filepath.Join(root, "tests/scripts/require-containers-up.sh"), []byte(estate), 0o755); err != nil { t.Fatal(err) }
 	integration := "#!/usr/bin/env bash\necho 'PASS=1 FAIL=0 SKIP=0'\nif [[ \"$FIXTURE_FAIL\" == integration ]]; then exit 23; fi\n"
 	if err := os.WriteFile(filepath.Join(root, "tests/scripts/run-tests.sh"), []byte(integration), 0o755); err != nil { t.Fatal(err) }
 	if err := os.WriteFile(filepath.Join(root, "tests/scripts/check-characterization-baseline.sh"), []byte("#!/usr/bin/env bash\necho 'baseline: OK (fixture)'\n"), 0o755); err != nil { t.Fatal(err) }
@@ -72,13 +74,18 @@ func TestGateSignalEvidence(t *testing.T) {
 	env = append(env, "FIXTURE_BLOCK=1")
 	cmd := exec.Command("/bin/bash", "tests/scripts/run-gate.sh")
 	cmd.Dir, cmd.Env = root, append(os.Environ(), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe(); if err != nil { t.Fatal(err) }
 	if err := cmd.Start(); err != nil { t.Fatal(err) }
-	time.Sleep(100 * time.Millisecond)
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil { t.Fatal(err) }
-	_ = cmd.Wait()
+	ready := make(chan bool, 1)
+	go func() { scanner := bufio.NewScanner(stdout); for scanner.Scan() { if scanner.Text() == "READY" { ready <- true; return } }; ready <- false }()
+	select { case ok := <-ready: if !ok { t.Fatal("blocking stage never announced readiness") }; case <-time.After(2 * time.Second): t.Fatal("timed out awaiting blocking stage readiness") }
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil { t.Fatal(err) }
+	done := make(chan error, 1); go func() { done <- cmd.Wait() }()
+	select { case <-done: case <-time.After(2 * time.Second): _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); t.Fatal("gate process group did not reap after TERM") }
 	files, err := filepath.Glob(filepath.Join(root, "tests/results/gate/*/summary.tsv")); if err != nil || len(files) != 1 { t.Fatalf("signal summary = %v, %v", files, err) }
 	summary, err := os.ReadFile(files[0]); if err != nil { t.Fatal(err) }
-	if !strings.Contains(string(summary), "\tFAIL\t143\t") { t.Fatalf("signal was not persisted as stage failure: %s", summary) }
+	if !strings.Contains(string(summary), "estate\tFAIL\t143\t") && !strings.Contains(string(summary), "estate\tFAIL\t130\t") { t.Fatalf("signal was not persisted as stage failure: %s", summary) }
 	if complete, _ := filepath.Glob(filepath.Join(root, "tests/results/gate/*/complete")); len(complete) != 0 { t.Fatalf("signal run wrote completion: %v", complete) }
 }
 

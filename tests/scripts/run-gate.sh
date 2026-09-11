@@ -28,7 +28,17 @@ persist_summary || recording_failure; persist_run RUNNING - || recording_failure
 CURRENT_STAGE=-1
 on_signal() { if [[ "$CURRENT_STAGE" -ge 0 ]]; then STATUS[$CURRENT_STAGE]=FAIL; COMMAND_EXIT[$CURRENT_STAGE]=143; persist_summary || true; persist_run FAIL 143 || true; fi; exit 143; }
 trap on_signal INT TERM
-stage_headline() { :; }
+stage_headline() {
+    local name="$1" log="$2" p f
+    case "$name" in
+        estate) grep -m1 -oE 'test estate reachable on .*' "$log" ;;
+        lint) grep -m1 -oE '[0-9]+ issues' "$log" ;;
+        consumer-policy|deadcode) grep -m1 -oE "$name: .*" "$log" | sed "s/^$name: //" ;;
+        integration) grep -m1 -oE 'PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+' "$log" ;;
+        characterization) grep -m1 -oE 'baseline: OK \(.*\)' "$log" | sed 's/^baseline: //' ;;
+        e2e|e2e-examples) p=$(grep -oE 'Passed: [0-9]+' "$log" | tail -1); f=$(grep -oE 'Failed: [0-9]+' "$log" | tail -1); [[ -n "$p" || -n "$f" ]] && echo "$p  $f" ;;
+    esac
+}
 run_stage() {
     local name="$1" log rc cap j ps; shift
     for ((j=0; j<${#STAGES[@]}; j++)); do [[ "${STAGES[j]}" == "$name" ]] && break; done
