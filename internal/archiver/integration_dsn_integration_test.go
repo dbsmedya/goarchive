@@ -26,3 +26,14 @@ func TestIntegrationHarnessTemporalDecode_Integration(t *testing.T) {
 		if !value.Equal(want) { t.Fatalf("%s DATETIME = %s, want %s", name, value, want) }
 	}
 }
+
+func TestIntegrationHarnessEndpointControl_Integration(t *testing.T) {
+	setup, _ := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	for _, name := range []string{"source", "destination"} {
+		db, ok := setup.GetDB(name); if !ok { t.Fatalf("%s database missing", name) }
+		var databaseName string; var seven int
+		if err := db.QueryRow("SELECT DATABASE(), 7").Scan(&databaseName, &seven); err != nil { t.Fatalf("%s endpoint query: %v", name, err) }
+		if databaseName != "goarchive_test" || seven != 7 { t.Fatalf("%s endpoint = %q/%d, want goarchive_test/7", name, databaseName, seven) }
+	}
+}
