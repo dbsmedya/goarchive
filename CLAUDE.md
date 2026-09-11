@@ -9,10 +9,11 @@ it from here.
 ## Primary development workflow
 
 **dev-contract** is the primary workflow for non-trivial development, including specs, plans,
-reviews, implementation dispatch, mutations, gates and PR preparation. Read the canonical
-skill at `~/.claude/skills/dev-contract/SKILL.md` and its relevant references. The local
-discovery link is `.agents/skills/dev-contract`; maintain the canonical skill rather than a
-second copy here.
+reviews, implementation dispatch, mutations, gates and PR preparation. Read the globally
+installed skill through the agent's skill catalog; its filesystem location depends on the
+installation. A workstation may expose `.agents/skills/dev-contract` as an optional local
+discovery link, but that ignored link is not shipped with this repository. Do not assume it
+exists or maintain a second copy here.
 
 It takes precedence over the older development-workflow, software-architect and Superpowers
 workflow instructions. Other skills may support work within this contract. This file and
@@ -172,6 +173,9 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Resume checkpoint floor | `internal/archiver/batch_pipeline.go` → `checkpointFloor` (struct field, `:66`) |
 | PK column + case validation | `internal/archiver/preflight.go` → `ValidatePrimaryKeyColumns` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
+| AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
+| Temporal projection, representation and identity contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalIdentitySet`, `TemporalReadContractError` |
+| INSERT diagnostic session, collection and classification | `internal/archiver/insert_diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
 | Sticky `root_table` on an existing job | `internal/archiver/resume.go` → `GetOrCreateJobWithType` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
@@ -284,9 +288,9 @@ result.
 The runner reports `PASS=n FAIL=n SKIP=n` per layer and fails when nothing ran. Add `-v` to
 see the full log, `MIN_PASS=<n>` to require at least n passing tests (default 1).
 
-The measured integration baseline is `PASS=1310 FAIL=0 SKIP=18` (runner-measured
-2026-09-10; #107 adds temporal identity and INSERT diagnostic witnesses. Sixteen
-skips require disposable matrix profiles; the two existing skips remain).
+The measured integration baseline is `PASS=1326 FAIL=0 SKIP=18` (runner-measured
+2026-09-11 after the value-preservation error-reporting follow-up). Sixteen skips
+require disposable matrix profiles; the two existing skips remain.
 Re-measure it through the integration runner after adding or removing tagged tests; do
 not calculate it from the diff.
 

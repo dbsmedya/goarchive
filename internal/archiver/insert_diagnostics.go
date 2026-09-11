@@ -48,6 +48,9 @@ func (e *insertDiagnosticError) Error() string {
 	if e.Identifier == "INSERT_DIAGNOSTIC_REJECTED" {
 		message += fmt.Sprintf("; diagnostics=%v", e.Preview)
 	}
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
 	return message
 }
 func (e *insertDiagnosticError) Unwrap() error { return e.Cause }

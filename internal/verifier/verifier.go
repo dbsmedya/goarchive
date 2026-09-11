@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -344,6 +345,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 
 	meta := v.columnMetadata[table]
 	columns := meta.Names
+	temporalPK := meta.Kind(pkColumn) != types.TemporalNone
 	if _, err := meta.ProjectColumn(pkColumn); err != nil {
 		return "", 0, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "primary-key metadata unavailable", Cause: err}
 	}
@@ -415,7 +417,7 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 					if meta.Kind(column) != types.TemporalNone && values[j] != nil {
 						raw, err := types.TemporalText(values[j])
 						if err != nil {
-							return err
+							return &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "temporal payload representation unavailable", Cause: err}
 						}
 						values[j] = raw
 					}
@@ -440,7 +442,14 @@ func (v *Verifier) computeTableHash(ctx context.Context, db *sql.DB, table strin
 			}
 			return nil
 		}(); err != nil {
-			return "", 0, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "hash read failed", Cause: err}
+			var temporalErr *types.TemporalReadContractError
+			if errors.As(err, &temporalErr) {
+				return "", 0, err
+			}
+			if temporalPK {
+				return "", 0, &types.TemporalReadContractError{Table: table, Operation: "verify", Detail: "hash read failed", Cause: err}
+			}
+			return "", 0, fmt.Errorf("failed to hash table %s: %w", table, err)
 		}
 	}
 

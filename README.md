@@ -26,37 +26,31 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 [pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. The table below is the comparison — weigh it before choosing.
 
-GoArchive exists for the case pt-archiver hands back to the operator: **archiving a parent row together with its child subgraph**. A Perl plugin can walk the children — pt-archiver's own `before_delete` documentation suggests exactly that — but it cannot prove the walk is *complete*, because pt-archiver never reads foreign-key metadata at all. GoArchive derives the order from the declared graph and refuses to run when any foreign key points into the archive set from outside it.
-
 | | pt-archiver | GoArchive |
 |---|---|---|
-| Tables per run | one | one, or a root plus its full child subgraph |
+| Parent-child-aware multi-table archiving | Requires custom orchestration / plugins | ✅ Archives a root and its full child subgraph in dependency order |
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
-| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed v3.7.1 | Enabled by default; explicit --skip-verify override for recognized conversion warnings |
+| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
 | Crash recovery / resume | ❌ | ✅ per-row checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
-| Composite / non-integer PKs | ✅ | ❌ |
+| Composite primary keys | ✅ | ❌ |
+| Non-integer primary keys | ✅ | Root: ❌; child: ✅ subject to temporal-key restrictions |
 | File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
-| MyISAM, MySQL 5.x | ✅ | ❌ |
-| Transaction sizing | ✅ `--txn-size`, down to one row | ❌ one transaction per copy phase |
-| Bulk insert / bulk delete | ✅ | ❌ |
+| MyISAM sources / MySQL 5.x (EOL) | ✅ | Unsupported; no support planned |
+| Batched write mechanisms | `LOAD DATA LOCAL INFILE` / range DELETE | Parameterized multi-row INSERT / chunked `DELETE WHERE pk IN (...)` |
 | PXC flow control | ✅ | ❌ |
 | Extensibility | ✅ 9 plugin hooks | ❌ |
-| Maturity | ~19 years | ~6 months |
 
-This comparison covers the reviewed [pt-archiver v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver). GoArchive checks every successful application-data INSERT before copy commit. By default conversion/truncation warnings stop archival. With effective `skip_verification` enabled, recognized conversion warnings are reported and accepted without comparing copied values; originals may then be deleted. SQL errors, unknown or incomplete diagnostics and temporal identity failures still stop the run. Warning checks do not detect every possible value change.
+This comparison covers the reviewed pt-archiver v3.7.1 source linked above. GoArchive's
+[verification policy](docs/README_CONFIGURATION.md#verification) defines the narrow
+conversion-warning override.
 
 ## Is GoArchive right for your schema?
 
 GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
 where every participating table has a **single-column primary key**. Preflight rejects anything
 outside that envelope before any data moves.
-
-**[Limitations & Constraints](docs/README_LIMITATIONS.md)** carries the complete list — the
-hard constraints, what the dependency model cannot express, the operational cautions, and the
-supported versions. **[Validation & Preflight](docs/README_VALIDATION.md)** describes what each
-check does.
 
 ## The Philosophy
 
@@ -99,8 +93,6 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 - **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
 - **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
 
-**Read [Limitations & Constraints](docs/README_LIMITATIONS.md) before integrating the tool into your workflow.** GoArchive operates under deliberate constraints, several enforced by preflight, which will stop a run before it starts.
-
 ## Documentation
 
 | Document | Covers |
@@ -108,7 +100,7 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 | [Configuration](docs/README_CONFIGURATION.md) | Every config block, option, default, and precedence rule |
 | [Validation & Preflight](docs/README_VALIDATION.md) | All 20 named checks (19 preflight, plus the connection-time identity check), what fails and how to fix it |
 | [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, what preflight actually enforces |
-| [Limitations](docs/README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions |
+| [Limitations & Constraints](docs/README_LIMITATIONS.md) | Supported versions and environment, schema and temporal-key restrictions, warning coverage, operational cautions |
 | [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
 | [Job Tracking Schema](docs/README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, safe cleanup |
 | [Testing](docs/README_TESTING.md) | Test layers and how to run them |
@@ -351,9 +343,6 @@ Delete Order:  shipment_items → shipments → order_items → order_payments �
 
 ## Requirements
 
-Supported Go and MySQL versions, and the network access GoArchive needs, are listed under
-[Environment](docs/README_LIMITATIONS.md#environment).
-
 The source account needs `SELECT` and `DELETE`, the destination needs `SELECT` and `INSERT`,
 and the tracking schema needs `CREATE`/`SELECT`/`INSERT`/`UPDATE` — plus `PROCESS` on the
 source for cross-schema foreign key visibility. 📖 The full matrix, ready-to-paste grant
@@ -371,8 +360,6 @@ recipes for both `job_schema` layouts, and troubleshooting are in
 - **Stable release**: `2.2.1-community` — the current production line, built on the stable [dbsgomysql v1.2.0 integration](docs/README_dbsgomysql.md).
 - **Recommended for**: single-operator workstation archival of cold MySQL data
 - **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
-
-⚠️ **Review [Limitations & Constraints](docs/README_LIMITATIONS.md) before pointing GoArchive at real data.**
 
 Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
 and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are

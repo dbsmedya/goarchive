@@ -365,6 +365,13 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 
 	meta := cp.columnMetadata[table]
 	columns := meta.Names
+	temporalPK := meta.Kind(pkColumn) != types.TemporalNone
+	readFailure := func(detail string, cause error) error {
+		if temporalPK {
+			return &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: detail, Cause: cause}
+		}
+		return fmt.Errorf("table %s: %s: %w", table, detail, cause)
+	}
 	if _, err := meta.ProjectColumn(pkColumn); err != nil {
 		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "primary-key metadata unavailable", Cause: err}
 	}
@@ -386,7 +393,7 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 	}
 	rows, err := cp.sourceDB.QueryContext(ctx, selectQuery, pks...)
 	if err != nil {
-		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "source query failed", Cause: err}
+		return 0, readFailure("source query failed", err)
 	}
 	defer func() {
 		if cerr := rows.Close(); cerr != nil {
@@ -403,7 +410,7 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 			valuePtrs[i] = &values[i]
 		}
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "row scan failed", Cause: err}
+			return 0, readFailure("row scan failed", err)
 		}
 		for i, column := range columns {
 			if meta.Kind(column) != types.TemporalNone && values[i] != nil {
@@ -423,7 +430,7 @@ func (cp *CopyPhase) copyChunk(ctx context.Context, tx *sql.Tx, table string, pk
 		rowsInBatch++
 	}
 	if err := rows.Err(); err != nil {
-		return 0, &types.TemporalReadContractError{Table: table, Operation: "copy", Detail: "row iteration failed", Cause: err}
+		return 0, readFailure("row iteration failed", err)
 	}
 	if identitySet != nil {
 		if err := identitySet.Finish(); err != nil {

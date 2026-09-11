@@ -86,10 +86,11 @@ cloned-server remedy are in
 ### Temporal values and INSERT diagnostics
 
 Application DATE, DATETIME and TIMESTAMP columns are read as SQL text for copy,
-both SHA256 reads and dry-run samples. Legacy invalid or zero-component payloads
-can be copied when the destination accepts them without forbidden diagnostics.
-They are never normalized in Go. Invalid/zero temporal **keys** are refused in
-2.x; see [Limitations](README_LIMITATIONS.md#temporal-values-and-identities).
+both SHA256 reads and dry-run samples. GoArchive does not normalize these values.
+Legacy temporal payloads can be copied when the destination accepts them and the
+configured diagnostics and verification policy permits it. Temporal identity
+eligibility is defined in
+[Limitations](README_LIMITATIONS.md#temporal-values-and-identities).
 
 Every physical connection initializes `sql_notes=1`. Each copy/sample operation
 reads `sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses
@@ -99,11 +100,9 @@ never raises `max_error_count`, and needs no new privilege or config field.
 Source/destination SQL modes need not match. To accept legacy payloads, a DBA can
 configure the destination's server-level `sql_mode` for new sessions, or an
 applicable `init_connect` policy, then reconnect/restart the job. These settings
-can affect other applications. `ALLOW_INVALID_DATES` alone does not defeat
-`NO_ZERO_IN_DATE` or `NO_ZERO_DATE`: the reviewed invalid/partial-zero fixtures are
-accepted under `STRICT_TRANS_TABLES,ALLOW_INVALID_DATES` without those zero-date
-restrictions. GoArchive has no per-session SQL-mode option in 2.x and makes no
-automatic global changes. Permissive settings do not enable invalid temporal keys.
+can affect other applications, so assess the modes required by your data on the
+destination server. GoArchive has no per-session SQL-mode option in 2.x and makes
+no automatic global changes.
 
 ### AUTO_INCREMENT zero preservation
 
@@ -112,11 +111,8 @@ modes. Explicit zero in an AUTO_INCREMENT column remains zero; omitted or NULL v
 use normal allocation. Other modes remain intact. This applies to source, destination and
 replication-server connections, including replacement connections.
 
-Startup checks that the preserving mode is present. If that cannot be proved, the connection
-is refused before data processing. GoArchive has no per-session SQL-mode option in 2.x and
-does not change global server settings or repair pooled session settings at runtime. See
-[`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)
-for troubleshooting.
+See [`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)
+for connection-initialization troubleshooting.
 
 ### `job_schema` (destination only)
 
@@ -362,7 +358,7 @@ verified.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `method` | `count` or `sha256` | `count` |
-| `skip_verification` | Skip copied-data comparison and accept reported conversion/truncation warnings; SQL errors, unknown/incomplete diagnostics and temporal identity failures remain fatal. | `false` |
+| `skip_verification` | Skip copied-data comparison and accept reported conversion/truncation warnings; SQL errors, unknown/incomplete diagnostics and [temporal identity failures](README_LIMITATIONS.md#temporal-values-and-identities) remain fatal. | `false` |
 
 Recognized conversion warnings are codes `1264`, `1265`, `1292`, and `1366`, at
 Warning or Note level, from a successful INSERT. All diagnostics must be readable
