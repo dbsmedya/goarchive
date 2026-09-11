@@ -7,6 +7,7 @@ deleted.
 | Test | Shape | Why it is here |
 |---|---|---|
 | 06 | `payment`, exactly half | over-deletion is purge's unrecoverable failure, and the exact count is the only thing that catches it |
+| 13 | `payment`, live replica enabled | an observed replication hold preserves rows; the same process resumes and completes after the applier restarts |
 
 Two assertions carry this category, and both are about what must *not* happen:
 
@@ -26,5 +27,10 @@ correct run and a runaway one is unmistakable. Its boundary and expected count
 were queried against the fixture, not computed, because `payment_id` is not
 contiguous; both numbers and that reasoning live in `../../README.md`, and the
 test file states the count it asserts.
+
+Test13 adds a live hold/release witness to these exact outcome checks. Its helper
+restores the applier and confirms the replica is caught up even when a test fails.
+Test06 remains the ordinary purge control. The suite catalogue owns the selected
+counts; `../README.md` owns the declaration and cleanup mechanics.
 
 See `../README.md` for the file format.

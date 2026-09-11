@@ -11,7 +11,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
 | **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
-| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09 and 13) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11, 12) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
@@ -24,37 +24,31 @@ Unit-test ownership rules, typed-fake examples, and reproducible coverage comman
 [`docs/README_TESTING.md`](../docs/README_TESTING.md); coverage is measured from the current
 checkout rather than copied into a hand-maintained snapshot.
 
-```
-================================================
-  GATE SUMMARY
-================================================
-  estate             test estate reachable on 3305, 3307, 3308
-  fmt-check          ok
-  ...
-  integration        PASS=1077 FAIL=0 SKIP=1
-  characterization   OK (60 / 304 / 364 / 0 / 0)
-  e2e                Passed: 7  Failed: 0
-  e2e-examples       Passed: 4  Failed: 0
-================================================
-  GATE COMPLETE - every stage above exited 0
-```
+Each invocation prints its unique directory beneath `tests/results/gate/` before
+checking credentials. Earlier runs remain available and are never reused as current evidence.
+The integration stage retains verbose Go output so individual PASS, FAIL and SKIP
+results remain available beside the runner summary.
 
-**Read the summary, not the scrollback.** The run emits thousands of lines — `mysqlsh` progress
-spinners, per-test output, schema dumps — and the numbers that matter are scattered through it.
-An independent verifier once reported six stages out of eight in good faith, because the other
-two had scrolled past.
+| File in the run directory | What it records |
+|---|---|
+| `run.tsv` | Run ID, source revision, tracked-tree state, start/end and outcome/exit information |
+| `summary.tsv` | All eleven stages, their status, command/capture exits and current log paths |
+| `summary.txt` | The same stage verdicts in a readable form |
+| `<stage>.log` | Output from a stage that actually started in this invocation |
+| `complete` | Success marker with run ID, revision and `GATE COMPLETE - every stage above exited 0` |
 
-On failure it stops, prints the summary **so far** with the broken stage marked, names the
-per-stage log, and exits with **that stage's own exit code**. Per-stage logs land in
-`tests/results/gate/` (gitignored).
+A failed gate stops at the failing stage. Later stages are explicitly `NOT RUN`;
+they cannot inherit a previous run's PASS or log. A live stage is `RUNNING`; an
+interrupted run without a matching completion record is incomplete, never green.
 
-> **Why a script (`scripts/run-gate.sh`) rather than Makefile recipe lines.** Collecting each
-> stage's output in make would mean `cmd | tee`, and that returns **tee's** exit status — a
-> failing stage would exit 0 and the gate would report green on red. make's default shell has no
-> reliable `pipefail`. The script takes the status from `PIPESTATUS[0]`, the command's own, and
-> checks it explicitly per stage. Same pattern as
-> `e2e-tests-must-run-after-setup` → `require-e2e-seed.sh`: the Makefile names the target, a
-> script owns the logic.
+The runner checks both the command and log-capture exit statuses. A failed command
+keeps its own exit code; a failed capture or evidence publication also fails the
+gate. The `make` wrapper may translate that failure into its own nonzero exit.
+Evidence files are published atomically. If storage is unwritable, stderr and the
+nonzero process exit report the failure; no successful record is promised.
+
+Read the current run's summary and completion record together with its process
+exit. A console line or an older stage log alone does not certify the checkout.
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
 destroys the estate; run it before integration or characterization and those fail for reasons
@@ -117,10 +111,11 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 | **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); verification method inherited (`count`) |
 | **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
 | **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
-| **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | The suite's only **`purge`** — the only command that deletes without copying, and the only one with **no verify stage at all**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
+| **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | Exact-delete **`purge`** control: deletes without copying and has **no verify stage**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
 | **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | The suite's only **`copy-only`** — the only command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged**. Also the first E2E run of `copyonly_orchestrator.go`'s batch loop. |
 | **08** | `test08_payment_graceful_resume.yaml` | `payment`, same config as 05, run **twice** | **Graceful stop → checkpoint resume.** `SIGTERM` at a batch boundary; the batch completes, so **zero** non-terminal rows are left and resume comes from `last_processed_root_pk_id` alone. |
 | **09** | `test09_payment_crash_replay.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **twice** | **Crash → status-aware replay.** `SIGKILL` inside the delete phase leaves 100 rows at `copied` and the checkpoint `NULL`, so run 2 must find them via `recover()`. The only test that exercises the delete-only replay branch, and the only one that starts from a stale `job_status=1`. |
+| **13** | `test13_purge_replication.yaml` | `payment`, same selected slice as03 (1999 selected rows, reasserted before launch) | Stops the real replica applier, observes a purge hold with unchanged rows, restarts it and requires the same process to finish; exact deletes, no copy or verification. |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
@@ -142,8 +137,7 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 > there is no second batch. 07 sets `batch_size: 10` for 20 batches. If you make
 > them identical, say which one you meant to weaken.
 
-> **08 and 09 are the only tests that run the binary twice, and the only ones whose
-> subject is a *path* rather than an end state.** After a successful resume the
+> **08 and 09 run the binary twice and prove an interruption/recovery path.** After a successful resume the
 > database looks exactly like it does after an uninterrupted run, so the obvious
 > assertions cannot distinguish *"resumed correctly"* from *"never actually
 > interrupted"* — and both sides of that window pass. What holds them shut is an
@@ -427,10 +421,28 @@ destination starts empty (see the Overview note):
 ./scripts/run-tests.sh --setup --integration-only
 ```
 
+### Deterministic interrupted-state tests
+
+The archive and copy-only Go crash-recovery tests seed exact durable tracking
+states below an existing checkpoint, then assert recovery or the appropriate
+refusal through the real orchestrator. They use no timer to choose a crash point.
+They also verify cleanup between invocations. After integration setup, run:
+
+```bash
+set -a; source tests/.env; set +a
+go test -v -tags integration ./internal/archiver \
+  -run '^Test(CopyOnly_CrashRecovery|Orchestrator_CrashRecovery|RecoveryFixtureCleanup)_Integration$' \
+  -count=20
+```
+
+These test recovery from known states. Binary E2E08/09 exercise actual process
+signals; Test13 exercises a live replication hold and release on one invocation.
+Run them serially with other estate consumers.
+
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the tests (03–07)
+# The whole procedure — test-reset, then e2e-setup, then the working tests (03–09 and 13)
 make e2e
 
 # Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
@@ -670,7 +682,8 @@ catches a run that did nothing.
 | `GOARCHIVE_BIN` | `bin/goarchive` | Binary the Sakila E2E suite runs. Set it to test a **different build** — an older release, say — against the same suite. |
 
 **`GOARCHIVE_BIN` behaves differently depending on whether you set it.** Left unset, the
-runner builds `bin/goarchive` if it is missing, as before. Set explicitly, a missing binary
+runner rebuilds `bin/goarchive` once at the start of each invocation, even if the file
+already exists. Later calls in that invocation reuse the successful build. Set explicitly, a missing binary
 is an **error** naming the path — the runner will not build the current tree in its place,
 because that would silently test a build you did not ask for and pass. It is resolved once,
 up front, and the suite prints `Binary under test: <path>` before the first test.

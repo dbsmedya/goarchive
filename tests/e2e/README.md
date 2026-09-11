@@ -19,7 +19,7 @@ tests/e2e/
 ├── lib/                    the harness: shared, written once
 ├── validation/    01 02 10 11 12  configs that MUST fail preflight
 ├── archive/       03 04 05 copy → verify → delete
-├── purge/         06       delete without copying
+├── purge/         06 13    exact deletion and live replication hold
 ├── copy-only/     07       copy without deleting
 └── resume/        08 09    interrupt a live run, then finish it
 ```
@@ -66,6 +66,7 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `interrupt_after_batches` | *(resume only)* which batch to interrupt at |
 | `interrupt_expect_dest` | *(resume only)* destination rows required **exactly** at that point |
 | `root_pk` | *(resume only)* root table's PK column, for the checkpoint assertion |
+| `replication_hold` | `stopped-applier` for the working purge replication witness; cannot be combined with `interrupt` |
 
 Do **not** put `--force-triggers` anywhere. `run_archive_job` applies it per
 command, and `copy-only` does not accept the flag at all.
@@ -94,6 +95,21 @@ Note which check actually catches an omitted `expected_rows`: the engine compare
 the number of entries against `tables` up front and reports *"expected_rows has 0
 entr(ies) but tables has 2"*. `assert_postcondition`'s own empty-value guard sits
 behind it as defence in depth.
+
+### The replication hold declaration
+
+Test13 declares `replication_hold="stopped-applier"` with `mode="working"` and
+`command="purge"`. Unknown values, other modes/commands and combinations with
+`interrupt` are refused before fixture reset. The variable is local to each test
+and included in the suite's leakage check.
+
+`lib/replication.sh` owns this bounded payment fixture: it validates first,
+verifies the replica is healthy, stops its SQL applier, observes the binary's hold
+message and checks that source rows remain and the destination is empty. It then
+restarts the applier and waits for the same process. Its scoped cleanup terminates
+an unfinished child and restores replication on failure. A failed precondition,
+query, hold/release assertion or cleanup fails the test. All ordinary working-test
+postconditions still apply; `replication_hold` is not a separate mode.
 
 ## Adding a test
 

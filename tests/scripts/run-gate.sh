@@ -1,154 +1,233 @@
 #!/usr/bin/env bash
-#
-# THE FULL VERIFICATION GATE. `make gate` is a one-line wrapper around this.
-#
-# Two jobs: run every stage in the only correct order, and end with a summary a
-# human can actually read.
-#
-# WHY THE SUMMARY EXISTS
-#
-# The gate emits thousands of lines -- mysqlsh progress spinners, per-test
-# output, schema dumps. The verdict was reliable (make aborts on the first
-# failure) but the EVIDENCE was scattered across the whole run, so a reader had
-# to know which greps to write. An independent verifier reported six stages out
-# of eight in good faith, simply because the other two had scrolled past.
-#
-# WHY THIS IS A SCRIPT AND NOT MAKE RECIPE LINES
-#
-# The obvious way to collect headlines is to `tee` each stage inside the
-# Makefile and grep afterwards. That BREAKS FAILURE DETECTION: `cmd | tee`
-# returns tee's status, so a failing stage exits 0 and the gate reports green on
-# red. make's default shell gives no reliable `pipefail`. Here the shebang is
-# bash, so the exit code is taken from PIPESTATUS[0] -- the command's own status,
-# never tee's -- and that is checked explicitly for every stage.
-#
-# Follows the pattern already used by e2e-tests-must-run-after-setup ->
-# require-e2e-seed.sh: the Makefile names the target, a script owns the logic.
-#
-# Requires credentials:  set -a; source tests/.env; set +a
-
+# The full verification gate. Every invocation owns its evidence directory.
+# Keep this script compatible with the system Bash 3.2 on macOS.
 set -uo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LOG_DIR="$PROJECT_ROOT/tests/results/gate"
-
+GATE_ROOT="$PROJECT_ROOT/tests/results/gate"
+STAGES=(estate fmt-check vet lint consumer-policy deadcode unit integration characterization e2e e2e-examples)
+STATUS=() COMMAND_EXIT=() CAPTURE_EXIT=() LOG_PATH=() HEADLINE=()
 cd "$PROJECT_ROOT" || exit 1
-mkdir -p "$LOG_DIR"
+mkdir -p "$GATE_ROOT" || { echo "ERROR: gate recording failed: cannot create evidence root" >&2; exit 1; }
+RUN_BASE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_ID="$RUN_BASE"
+RUN_DIR="$GATE_ROOT/$RUN_ID"
+collision=0
+while ! mkdir "$RUN_DIR" 2>/dev/null; do
+    # Only an existing path can be a collision; storage errors cannot be
+    # repaired by trying an unlimited sequence of different names.
+    if [[ ! -e "$RUN_DIR" || "$collision" -ge 100 ]]; then
+        echo "ERROR: gate recording failed: cannot allocate $RUN_DIR" >&2
+        exit 1
+    fi
+    collision=$((collision + 1))
+    RUN_ID="$RUN_BASE-$collision"
+    RUN_DIR="$GATE_ROOT/$RUN_ID"
+done
+echo "Gate evidence directory: $RUN_DIR"
+for ((i=0; i<${#STAGES[@]}; i++)); do
+    STATUS[$i]="NOT RUN"
+    COMMAND_EXIT[$i]="-"
+    CAPTURE_EXIT[$i]="-"
+    LOG_PATH[$i]="-"
+    HEADLINE[$i]="-"
+done
+STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+ENDED="-"
+SOURCE_SHA=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+DIRTY=unknown
+if [[ "$SOURCE_SHA" != unknown ]]; then
+    if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null; then DIRTY=clean; else DIRTY=dirty; fi
+fi
+CURRENT_STAGE=-1
+RUN_COMMAND_EXIT="-"
+RUN_RECORDING_EXIT=0
+FINALIZED=false
 
-# name|status|headline, one per completed stage. A plain indexed array: macOS
-# ships bash 3.2, which has no `declare -A`.
-SUMMARY=()
+# A single publication boundary for every metadata, summary and completion
+# record. Never hide mv's failure; callers retain the exact recording status.
+publish_gate_file() { mv "$1" "$2"; }
 
-# ORDER IS LOAD-BEARING. Do not rearrange:
-#   - static and unit first: no database, and they fail in seconds.
-#   - integration BEFORE e2e, and with --setup (stale heartbeat state otherwise
-#     fabricates failures).
-#   - characterization before e2e too: it is behind the integration build tag
-#     and wants the estate integration just seeded.
-#   - e2e LAST, because it opens with test-reset and destroys the estate the two
-#     stages above depend on.
-
-# Pull the one line worth showing out of a stage's log. A stage with nothing
-# quotable reports "ok" -- the exit code already carried the verdict.
-stage_headline() {
-    local name="$1" log="$2" p f
-
-    case "$name" in
-        estate)
-            grep -m1 -oE 'test estate reachable on .*' "$log" ;;
-        lint)
-            grep -m1 -oE '[0-9]+ issues' "$log" ;;
-        consumer-policy|deadcode)
-            # Strip the tool's own "<name>: " prefix -- the column already says it.
-            grep -m1 -oE "$name: .*" "$log" | sed "s/^$name: //" ;;
-        integration)
-            grep -m1 -oE 'PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+' "$log" ;;
-        characterization)
-            grep -m1 -oE 'baseline: OK \(.*\)' "$log" | sed 's/^baseline: //' ;;
-        e2e|e2e-examples)
-            p=$(grep -oE 'Passed: [0-9]+' "$log" | tail -1)
-            f=$(grep -oE 'Failed: [0-9]+' "$log" | tail -1)
-            [[ -n "$p" || -n "$f" ]] && echo "$p  $f" ;;
-        *)
-            ;;
-    esac
+persist_summary() {
+    local tsv="$RUN_DIR/.summary.tsv.$$.$RANDOM" txt="$RUN_DIR/.summary.txt.$$.$RANDOM" j
+    {
+        printf 'stage\tstatus\tcommand_exit\tcapture_exit\tlog\theadline\n' || return $?
+        for ((j=0; j<${#STAGES[@]}; j++)); do
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${STAGES[j]}" "${STATUS[j]}" "${COMMAND_EXIT[j]}" "${CAPTURE_EXIT[j]}" "${LOG_PATH[j]}" "${HEADLINE[j]}" || return $?
+        done
+    } > "$tsv" || return $?
+    {
+        printf 'GATE SUMMARY (%s)\n' "$RUN_ID" || return $?
+        for ((j=0; j<${#STAGES[@]}; j++)); do
+            printf '  %-18s %-7s %s\n' "${STAGES[j]}" "${STATUS[j]}" "${HEADLINE[j]}" || return $?
+        done
+    } > "$txt" || return $?
+    publish_gate_file "$tsv" "$RUN_DIR/summary.tsv" || return $?
+    publish_gate_file "$txt" "$RUN_DIR/summary.txt"
 }
 
-run_stage() {
-    local name="$1"; shift
-    local log="$LOG_DIR/${name}.log"
-    local rc headline
+persist_run() {
+    local outcome="$1" tmp="$RUN_DIR/.run.tsv.$$.$RANDOM"
+    {
+        printf 'run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\n' || return $?
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RUN_ID" "$SOURCE_SHA" "$DIRTY" "$STARTED" "$ENDED" "$outcome" "$RUN_COMMAND_EXIT" "$RUN_RECORDING_EXIT" || return $?
+    } > "$tmp" || return $?
+    publish_gate_file "$tmp" "$RUN_DIR/run.tsv"
+}
 
-    printf '\n=== %s ===\n' "$name"
-
-    # Stream to the terminal AND capture, without the pipe hiding the result.
-    # PIPESTATUS[0] is the COMMAND's exit status; tee's is PIPESTATUS[1] and is
-    # deliberately ignored.
-    #
-    # Streams are merged here on purpose, and this is NOT the `2>&1` trap
-    # CLAUDE.md warns about. That rule is about deciding pass/fail by grepping
-    # merged output, where an error arriving on stderr makes a failure look like
-    # an empty result. Pass/fail here comes from the exit code, taken directly
-    # below. The log is only re-read afterwards to pull out a display headline,
-    # and a stage that fails never reaches that read.
-    "$@" 2>&1 | tee "$log"
-    rc=${PIPESTATUS[0]}
-
-    if [[ $rc -ne 0 ]]; then
-        SUMMARY+=("$name|FAILED|exit $rc — see $log")
-        print_summary
-        echo ""
-        echo "GATE FAILED at stage '$name' (exit $rc)."
-        echo "Stages after this one did NOT run."
-        echo "Full output: $log"
-        exit "$rc"
+failure_exit() {
+    if [[ "$RUN_COMMAND_EXIT" != - && "$RUN_COMMAND_EXIT" -ne 0 ]]; then
+        return "$RUN_COMMAND_EXIT"
+    elif [[ "$RUN_RECORDING_EXIT" -ne 0 ]]; then
+        return "$RUN_RECORDING_EXIT"
     fi
+    return 1
+}
 
-    headline=$(stage_headline "$name" "$log")
-    [[ -z "$headline" ]] && headline="ok"
-    SUMMARY+=("$name|ok|$headline")
-    return 0
+recording_failure() {
+    RUN_RECORDING_EXIT="$1"
+    ENDED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "ERROR: gate recording failed (exit $RUN_RECORDING_EXIT) in $RUN_DIR" >&2
+    rm -f "$RUN_DIR/complete" || echo "ERROR: gate recording failed: cannot remove incomplete certification" >&2
+    # A failed summary or completion publication can still leave a truthful
+    # run verdict. If storage itself is broken, diagnose without promising one.
+    persist_run FAIL || echo "ERROR: gate recording failed: cannot publish failure metadata" >&2
+    FINALIZED=true
+    failure_exit
+    exit $?
 }
 
 print_summary() {
-    local entry name status headline
-    echo ""
+    local j
+    echo
     echo "================================================"
     echo "  GATE SUMMARY"
     echo "================================================"
-    for entry in "${SUMMARY[@]}"; do
-        name="${entry%%|*}"
-        status="${entry#*|}"; status="${status%%|*}"
-        headline="${entry##*|}"
-        if [[ "$status" == "ok" ]]; then
-            printf '  %-18s %s\n' "$name" "$headline"
-        else
-            printf '  %-18s ** %s **\n' "$name" "$headline"
-        fi
+    for ((j=0; j<${#STAGES[@]}; j++)); do
+        printf '  %-18s %-7s %s\n' "${STAGES[j]}" "${STATUS[j]}" "${HEADLINE[j]}"
     done
     echo "================================================"
 }
 
+fail_gate() {
+    rm -f "$RUN_DIR/complete" || recording_failure $?
+    ENDED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    persist_run FAIL || recording_failure $?
+    print_summary
+    echo "GATE FAILED" >&2
+    FINALIZED=true
+    failure_exit
+    exit $?
+}
+
+on_signal() {
+    local rc="$1"
+    trap '' INT TERM
+    RUN_COMMAND_EXIT="$rc"
+    if [[ "$CURRENT_STAGE" -ge 0 ]]; then
+        STATUS[$CURRENT_STAGE]=FAIL
+        COMMAND_EXIT[$CURRENT_STAGE]="$rc"
+        HEADLINE[$CURRENT_STAGE]="interrupted (exit $rc)"
+    fi
+    persist_summary || recording_failure $?
+    fail_gate
+}
+
+on_exit() {
+    local rc="$1"
+    trap - EXIT
+    [[ "$FINALIZED" == true ]] && return
+    # Unexpected shell exits must not leave a successful run verdict. An
+    # untrappable kill can still leave RUNNING, which never certifies success.
+    [[ "$rc" -eq 0 ]] && rc=1
+    RUN_COMMAND_EXIT="$rc"
+    if [[ "$CURRENT_STAGE" -ge 0 && "${STATUS[CURRENT_STAGE]}" == RUNNING ]]; then
+        STATUS[$CURRENT_STAGE]=FAIL
+        COMMAND_EXIT[$CURRENT_STAGE]="$rc"
+        HEADLINE[$CURRENT_STAGE]="interrupted (exit $rc)"
+    fi
+    persist_summary || recording_failure $?
+    fail_gate
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_exit $?' EXIT
+
+stage_headline() {
+    local name="$1" log="$2" p f
+    case "$name" in
+        estate) grep -m1 -oE 'test estate reachable on .*' "$log" ;;
+        lint) grep -m1 -oE '[0-9]+ issues' "$log" ;;
+        consumer-policy|deadcode) grep -m1 -oE "$name: .*" "$log" | sed "s/^$name: //" ;;
+        integration) grep -m1 -oE 'PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+' "$log" ;;
+        characterization) grep -m1 -oE 'baseline: OK \(.*\)' "$log" | sed 's/^baseline: //' ;;
+        e2e|e2e-examples) p=$(grep -oE 'Passed: [0-9]+' "$log" | tail -1); f=$(grep -oE 'Failed: [0-9]+' "$log" | tail -1); [[ -n "$p" || -n "$f" ]] && echo "$p  $f" ;;
+    esac
+}
+
+run_stage() {
+    local name="$1" log rc cap j headline
+    local ps=()
+    shift
+    for ((j=0; j<${#STAGES[@]}; j++)); do [[ "${STAGES[j]}" == "$name" ]] && break; done
+    CURRENT_STAGE=$j
+    log="$RUN_DIR/$name.log"
+    STATUS[$j]=RUNNING
+    LOG_PATH[$j]="$log"
+    persist_summary || recording_failure $?
+    printf '\n=== %s ===\n' "$name"
+    "$@" 2>&1 | tee "$log"
+    ps=("${PIPESTATUS[@]}")
+    rc="${ps[0]}"
+    cap="${ps[1]}"
+    COMMAND_EXIT[$j]="$rc"
+    CAPTURE_EXIT[$j]="$cap"
+    RUN_COMMAND_EXIT="$rc"
+    RUN_RECORDING_EXIT="$cap"
+    headline=$(stage_headline "$name" "$log") || headline=""
+    # Keep a TSV field on one physical line even if a future stage changes its
+    # headline format. printf treats arbitrary log text as data, never escapes.
+    headline=${headline//$'\t'/ }
+    headline=${headline//$'\n'/ }
+    HEADLINE[$j]="${headline:--}"
+    if [[ "$rc" -ne 0 || "$cap" -ne 0 ]]; then
+        STATUS[$j]=FAIL
+        echo "ERROR: $name failed (command exit $rc, capture exit $cap)" >&2
+        persist_summary || recording_failure $?
+        if [[ "$rc" -ne 0 ]]; then return "$rc"; fi
+        return "$cap"
+    fi
+    STATUS[$j]=PASS
+    CURRENT_STAGE=-1
+    persist_summary || recording_failure $?
+}
+
+persist_summary || recording_failure $?
+persist_run RUNNING || recording_failure $?
 if [[ -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
     echo "ERROR: MYSQL_ROOT_PASSWORD is not set." >&2
-    echo "  Run: set -a; source tests/.env; set +a" >&2
-    exit 1
+    RUN_COMMAND_EXIT=1
+    fail_gate
 fi
+run_stage estate bash tests/scripts/require-containers-up.sh || fail_gate $?
+run_stage fmt-check make fmt-check || fail_gate $?
+run_stage vet make vet || fail_gate $?
+run_stage lint make lint || fail_gate $?
+run_stage consumer-policy make consumer-policy || fail_gate $?
+run_stage deadcode make deadcode || fail_gate $?
+run_stage unit make test-unit || fail_gate $?
+run_stage integration bash tests/scripts/run-tests.sh --setup --integration-only --verbose || fail_gate $?
+run_stage characterization bash tests/scripts/check-characterization-baseline.sh || fail_gate $?
+run_stage e2e make e2e || fail_gate $?
+run_stage e2e-examples make e2e-examples || fail_gate $?
 
-run_stage estate           bash tests/scripts/require-containers-up.sh
-run_stage fmt-check        make fmt-check
-run_stage vet              make vet
-run_stage lint             make lint
-run_stage consumer-policy  make consumer-policy
-run_stage deadcode         make deadcode
-run_stage unit             make test-unit
-run_stage integration      bash tests/scripts/run-tests.sh --setup --integration-only
-run_stage characterization bash tests/scripts/check-characterization-baseline.sh
-run_stage e2e              make e2e
-run_stage e2e-examples     make e2e-examples
-
+ENDED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+persist_run PASS || recording_failure $?
+completion_tmp="$RUN_DIR/.complete.$$.$RANDOM"
+printf 'GATE COMPLETE - every stage above exited 0\nrun_id=%s\nsha=%s\n' "$RUN_ID" "$SOURCE_SHA" > "$completion_tmp" || recording_failure $?
+publish_gate_file "$completion_tmp" "$RUN_DIR/complete" || recording_failure $?
+FINALIZED=true
 print_summary
 echo "  GATE COMPLETE - every stage above exited 0"
 echo "================================================"
-echo "  per-stage logs: $LOG_DIR"
+echo "  per-stage logs: $RUN_DIR"

@@ -5,20 +5,30 @@
 # Depends on the caller having defined: GOARCHIVE_BIN, GOARCHIVE_BIN_EXPLICIT,
 # PROJECT_ROOT, TESTS_DIR. Requires lib/log.sh.
 
-# Build the binary under test, but only when we own it.
+# A sourced harness begins unready. Do not trust readiness inherited from an
+# earlier shell: this invocation must establish provenance for its owned file.
+GOARCHIVE_BIN_READY=false
+
+# Build the binary under test once when we own it.
 ensure_goarchive_bin() {
-    if [[ -f "$GOARCHIVE_BIN" ]]; then
-        return 0
-    fi
     if [[ "$GOARCHIVE_BIN_EXPLICIT" == "true" ]]; then
+        if [[ -f "$GOARCHIVE_BIN" ]]; then
+            return 0
+        fi
         log_error "GOARCHIVE_BIN was set explicitly, but no binary exists at:"
         log_error "  $GOARCHIVE_BIN"
         log_error "Refusing to build the current tree in its place -- that would test a"
         log_error "different build than the one requested, and pass."
         return 1
     fi
+    if [[ "$GOARCHIVE_BIN_READY" == "true" ]]; then
+        return 0
+    fi
     log_info "Building goarchive binary at $GOARCHIVE_BIN..."
-    (cd "$PROJECT_ROOT" && go build -o "$GOARCHIVE_BIN" ./cmd/goarchive)
+    if ! (cd "$PROJECT_ROOT" && go build -o "$GOARCHIVE_BIN" ./cmd/goarchive); then
+        return 1
+    fi
+    GOARCHIVE_BIN_READY=true
 }
 
 # The job name a config declares, on stdout.

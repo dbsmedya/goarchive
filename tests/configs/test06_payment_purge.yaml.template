@@ -1,6 +1,6 @@
 # Test 06: purge -- delete from source WITHOUT copying anything
 #
-# The suite's only `purge` coverage. purge is the one destructive command that
+# The suite's ordinary `purge` control. purge is the one destructive command that
 # deletes without copying, so a mistake here is unrecoverable -- which is why
 # this test purges HALF the payment table rather than a token slice: the gap
 # between a correct run (8022 rows) and a runaway one (16044) is then large and

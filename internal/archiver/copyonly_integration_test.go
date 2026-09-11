@@ -344,75 +344,102 @@ func TestCopyOnly_ConcurrentJobBlocked_Integration(t *testing.T) {
 	}
 }
 
-// TestCopyOnly_CrashRecovery_Integration tests resume after interruption
+// TestCopyOnly_CrashRecovery_Integration proves exact durable-state recovery
+// paths. Actual process interruption remains covered by the E2E resume suite.
 func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	setup, _ := SetupIntegrationTest(t)
-	defer setup.Close()
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	sourceDB, destDB := resumeScenarioDBs(t, setup)
+	destSchema := getDestSchema(setup)
 
-	clearCopyOnlyDestination(t, setup)
-	sourceDB, _ := setup.GetDB("source")
-	seedCopyOnlyTestData(t, sourceDB)
+	t.Run("copied-promotion", func(t *testing.T) {
+		const jobName = "release_copyonly_copied_promotion"
+		resetReleaseRecoveryData(t, sourceDB, destDB)
 
-	jobCfg := createCustomerOrderJobConfig()
-	dbManager, cfg := setupCopyOnlyDBManager(t, setup)
+		// Manager close is registered before tracking cleanup so LIFO cleanup
+		// removes the job and log table through a still-live handle.
+		dbManager, cfg := resumeScenarioDBManager(t, setup, "count", 2)
+		seedResumeScenarioData(t, dbManager.Destination, 1, 2)
+		jobCfg := resumeScenarioJobConfig()
+		logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, jobCfg.RootTable, JobTypeCopyOnly)
+		seedLogStatus(t, destDB, logTable, LogStatusCopied, "1", "2")
+		seedLogStatus(t, destDB, logTable, LogStatusCompleted, "3", "4", "5")
+		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
 
-	// First run: process then cancel
-	ctx1, cancel1 := context.WithCancel(context.Background())
-	orch1, err := NewCopyOnlyOrchestrator(cfg, "test_copy_recovery", jobCfg, dbManager)
-	if err != nil {
-		t.Fatalf("NewCopyOnlyOrchestrator failed: %v", err)
-	}
-	if err := orch1.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
+		assertRecoveryLogState(t, destDB, logTable, map[string]LogStatus{
+			"1": LogStatusCopied, "2": LogStatusCopied,
+			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
+		})
+		assertCheckpointUnchanged(t, destDB, jobName)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
-	// Cancel after short time to simulate crash
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel1()
-	}()
+		orch, err := NewCopyOnlyOrchestrator(cfg, jobName, jobCfg, dbManager)
+		if err != nil {
+			t.Fatalf("NewCopyOnlyOrchestrator: %v", err)
+		}
+		if err := orch.Initialize(); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		orch.promptReader = bytes.NewReader([]byte("y\n"))
+		result, err := orch.Execute(ctx, true)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if result == nil || !result.Success {
+			t.Fatalf("result = %+v, want success", result)
+		}
+		if result.RecordsCopied != 0 || result.RecordsVerified != 0 {
+			t.Errorf("RecordsCopied/RecordsVerified = %d/%d, want 0/0", result.RecordsCopied, result.RecordsVerified)
+		}
+		assertReleaseGraph(t, sourceDB, "source (post-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (post-run)", 1, 2)
+		assertAllCompleted(t, destDB, logTable, "1", "2", "3", "4", "5")
+		assertCheckpointUnchanged(t, destDB, jobName)
+	})
 
-	_, _ = orch1.Execute(ctx1, false) // Expect cancellation error
+	t.Run("strict-pending-refused", func(t *testing.T) {
+		const jobName = "release_copyonly_strict_pending"
+		resetReleaseRecoveryData(t, sourceDB, destDB)
 
-	// Second run: resume from checkpoint (need fresh dbManager to avoid state issues)
-	ctx2 := context.Background()
-	dbManager2, cfg2 := setupCopyOnlyDBManager(t, setup)
-	orch2, err := NewCopyOnlyOrchestrator(cfg2, "test_copy_recovery", jobCfg, dbManager2)
-	if err != nil {
-		t.Fatalf("NewCopyOnlyOrchestrator (resume) failed: %v", err)
-	}
-	if err := orch2.Initialize(); err != nil {
-		t.Fatalf("Initialize (resume) failed: %v", err)
-	}
+		dbManager, cfg := resumeScenarioDBManager(t, setup, "sha256", 2)
+		seedResumeScenarioData(t, dbManager.Destination, 1, 2)
+		jobCfg := resumeScenarioJobConfig()
+		logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, jobCfg.RootTable, JobTypeCopyOnly)
+		wantState := map[string]LogStatus{
+			"1": LogStatusPending, "2": LogStatusPending,
+			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
+		}
+		seedLogStatus(t, destDB, logTable, LogStatusPending, "1", "2")
+		seedLogStatus(t, destDB, logTable, LogStatusCompleted, "3", "4", "5")
+		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
-	// Must use force=true on resume since destination may have partial data
-	// Set up auto-confirm for force mode
-	orch2.promptReader = bytes.NewReader([]byte("y\n"))
-	result, err := orch2.Execute(ctx2, true)
-	if err != nil {
-		t.Fatalf("Execute (resume) failed: %v", err)
-	}
-
-	if !result.Success {
-		t.Errorf("Expected successful resume, got errors: %v", result.Errors)
-	}
-
-	// Verify: destination should have all copied rows
-	destDB, _ := setup.GetDB("destination")
-	destCustomers := getTableRowCount(t, destDB, "customers")
-	if destCustomers != 2 {
-		t.Errorf("Destination should have 2 customers after resume, got %d", destCustomers)
-	}
-
-	// Verify: source still has all data
-	sourceCount := getTableRowCount(t, sourceDB, "customers")
-	if sourceCount != 3 {
-		t.Errorf("Source should still have 3 customers, got %d", sourceCount)
-	}
+		orch, err := NewCopyOnlyOrchestrator(cfg, jobName, jobCfg, dbManager)
+		if err != nil {
+			t.Fatalf("NewCopyOnlyOrchestrator: %v", err)
+		}
+		if err := orch.Initialize(); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		orch.promptReader = bytes.NewReader([]byte("y\n"))
+		_, err = orch.Execute(ctx, true)
+		if err == nil || !strings.Contains(err.Error(), "uses strict INSERT") ||
+			!strings.Contains(err.Error(), "so they cannot be safely re-copied") {
+			t.Fatalf("Execute error = %v, want strict INSERT pending refusal", err)
+		}
+		assertReleaseGraph(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (refused)", 1, 2)
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+	})
 }
 
 // TestCopyOnly_SkipVerification_Integration tests working with verification off
