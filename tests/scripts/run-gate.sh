@@ -22,7 +22,7 @@ persist_summary() {
     publish_gate_file "$txt" "$RUN_DIR/summary.txt"
 }
 STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-persist_run() { local outcome="$1" rc="$2" sha dirty tmp="$RUN_DIR/.run.tsv.$$.$RANDOM"; sha=$(git rev-parse HEAD 2>/dev/null || echo unknown); git diff --quiet 2>/dev/null && dirty=clean || dirty=dirty; { printf 'run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\n'; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' "$RUN_ID" "$sha" "$dirty" "$STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$outcome" "$rc"; } > "$tmp" || return 1; publish_gate_file "$tmp" "$RUN_DIR/run.tsv"; }
+persist_run() { local outcome="$1" rc="$2" sha dirty tmp="$RUN_DIR/.run.tsv.$$.$RANDOM"; sha=$(git rev-parse HEAD 2>/dev/null || echo unknown); if git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null; then dirty=clean; else dirty=dirty; fi; { printf 'run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\n'; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' "$RUN_ID" "$sha" "$dirty" "$STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$outcome" "$rc"; } > "$tmp" || return 1; publish_gate_file "$tmp" "$RUN_DIR/run.tsv"; }
 recording_failure() { echo "ERROR: failed to publish gate evidence in $RUN_DIR" >&2; exit 1; }
 persist_summary || recording_failure; persist_run RUNNING - || recording_failure
 CURRENT_STAGE=-1
@@ -52,5 +52,5 @@ run_stage characterization bash tests/scripts/check-characterization-baseline.sh
 run_stage e2e make e2e || fail_gate $?
 run_stage e2e-examples make e2e-examples || fail_gate $?
 persist_run PASS 0 || recording_failure
-write_atomic "$RUN_DIR/complete" $'GATE COMPLETE - every stage above exited 0\n'"run_id=$RUN_ID"$'\n' || recording_failure
+write_atomic "$RUN_DIR/complete" $'GATE COMPLETE - every stage above exited 0\n'"run_id=$RUN_ID"$'\n'"sha=$(git rev-parse HEAD 2>/dev/null || echo unknown)"$'\n' || recording_failure
 print_summary; echo "  GATE COMPLETE - every stage above exited 0"; echo "================================================"; echo "  per-stage logs: $RUN_DIR"

@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
-	archiveconfig "github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
+	_ "github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
@@ -232,19 +230,6 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 	return nil
 }
 
-// integrationDSN keeps test-estate sessions on the same driver contract as the
-// production manager while retaining the shorter harness timeouts.
-func integrationDSN(dbCfg DatabaseConfig, databaseName string, timeout time.Duration) (string, error) {
-	production := &archiveconfig.DatabaseConfig{
-		Host: dbCfg.Host, Port: dbCfg.Port, User: dbCfg.User, Password: dbCfg.Password,
-		Database: databaseName, TLS: "disable",
-	}
-	driverCfg, err := mysql.ParseDSN(database.BuildDSN(production))
-	if err != nil { return "", err }
-	driverCfg.DBName = databaseName
-	driverCfg.Timeout = timeout
-	return driverCfg.FormatDSN(), nil
-}
 
 func (its *IntegrationTestSetup) hasTables(ctx context.Context, db *sql.DB) bool {
 	var count int
