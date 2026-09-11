@@ -93,8 +93,8 @@ func TestPurgeReplicationCallSites_Integration(t *testing.T) {
 		if waiter.calls != 1 {
 			t.Errorf("waiter calls = %d, want 1", waiter.calls)
 		}
-		assertRootSet(t, sourceObserver, "source after pre-batch hold", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination after pre-batch hold")
+		assertReleaseGraph(t, sourceObserver, "source after pre-batch hold", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination after pre-batch hold")
 	})
 
 	t.Run("predelete-error", func(t *testing.T) {
@@ -113,8 +113,8 @@ func TestPurgeReplicationCallSites_Integration(t *testing.T) {
 		if waiter.calls != 2 {
 			t.Errorf("waiter calls = %d, want 2 (outer then pre-delete)", waiter.calls)
 		}
-		assertRootSet(t, sourceObserver, "source after pre-delete hold", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination after pre-delete hold")
+		assertReleaseGraph(t, sourceObserver, "source after pre-delete hold", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination after pre-delete hold")
 	})
 
 	t.Run("recovery-second-chunk", func(t *testing.T) {
@@ -136,8 +136,8 @@ func TestPurgeReplicationCallSites_Integration(t *testing.T) {
 		if waiter.calls != 3 {
 			t.Errorf("waiter calls = %d, want 3 (chunk1 outer/pre-delete, chunk2 outer)", waiter.calls)
 		}
-		assertRootSet(t, sourceObserver, "source after second recovery hold", 2, 3, 4, 5)
-		assertRootSet(t, destObserver, "destination after second recovery hold")
+		assertReleaseGraph(t, sourceObserver, "source after second recovery hold", 2, 3, 4, 5)
+		assertReleaseGraph(t, destObserver, "destination after second recovery hold")
 		assertRecoveryLogState(t, destObserver, logTable, map[string]LogStatus{
 			"1": LogStatusCompleted, "2": LogStatusPending,
 			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
@@ -165,8 +165,8 @@ func TestPurgeReplicationCallSites_Integration(t *testing.T) {
 		if waiter.calls != 4 {
 			t.Errorf("waiter calls = %d, want 4 (outer/pre-delete for two chunks)", waiter.calls)
 		}
-		assertRootSet(t, sourceObserver, "source after healthy recovery", 3, 4, 5)
-		assertRootSet(t, destObserver, "destination after healthy recovery")
+		assertReleaseGraph(t, sourceObserver, "source after healthy recovery", 3, 4, 5)
+		assertReleaseGraph(t, destObserver, "destination after healthy recovery")
 		assertAllCompleted(t, destObserver, logTable, "1", "2", "3", "4", "5")
 		assertCheckpointUnchanged(t, destObserver, jobName)
 	})
@@ -203,21 +203,78 @@ func (o *purgeLogObserver) contains(t *testing.T, needle string) bool {
 	return strings.Contains(string(b), needle)
 }
 
-func (o *purgeLogObserver) waitFor(t *testing.T, needle string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if o.contains(t, needle) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("did not observe %q within %s", needle, timeout)
-}
-
 type purgeExecuteOutcome struct {
 	result *PurgeResult
 	err    error
+}
+
+type purgeExecution struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	outcomeCh <-chan purgeExecuteOutcome
+	outcome   *purgeExecuteOutcome
+}
+
+func startPurgeExecution(ctx context.Context, cancel context.CancelFunc, orch *PurgeOrchestrator) *purgeExecution {
+	outcomeCh := make(chan purgeExecuteOutcome, 1)
+	go func() {
+		result, err := orch.Execute(ctx)
+		outcomeCh <- purgeExecuteOutcome{result: result, err: err}
+	}()
+	return &purgeExecution{ctx: ctx, cancel: cancel, outcomeCh: outcomeCh}
+}
+
+func (e *purgeExecution) waitForHold(t *testing.T, observer *purgeLogObserver, timeout time.Duration) {
+	t.Helper()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		if observer.contains(t, "replication hold:") {
+			return
+		}
+		select {
+		case out := <-e.outcomeCh:
+			e.outcome = &out
+			t.Fatalf("purge returned before replication hold (err=%v result=%+v)", out.err, out.result)
+		case <-e.ctx.Done():
+			t.Fatalf("purge context ended before replication hold: %v", e.ctx.Err())
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("purge neither emitted replication hold nor returned within %s", timeout)
+		}
+	}
+}
+
+func (e *purgeExecution) awaitOutcome(t *testing.T, timeout time.Duration) purgeExecuteOutcome {
+	t.Helper()
+	if e.outcome != nil {
+		return *e.outcome
+	}
+	select {
+	case out := <-e.outcomeCh:
+		e.outcome = &out
+		return out
+	case <-time.After(timeout):
+		t.Fatalf("purge Execute did not finish within %s", timeout)
+		return purgeExecuteOutcome{}
+	}
+}
+
+func (e *purgeExecution) cancelAndDrain(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	e.cancel()
+	if e.outcome != nil {
+		return
+	}
+	select {
+	case out := <-e.outcomeCh:
+		e.outcome = &out
+	case <-time.After(timeout):
+		t.Errorf("purge Execute did not drain within %s after cancellation", timeout)
+	}
 }
 
 func livePurgeReplicationConfig(t *testing.T, setup *IntegrationTestSetup, tolerance int) config.ReplicationConfig {
@@ -256,26 +313,6 @@ func newLivePurge(
 	return orch
 }
 
-func awaitPurgeOutcome(t *testing.T, ch <-chan purgeExecuteOutcome, timeout time.Duration) purgeExecuteOutcome {
-	t.Helper()
-	select {
-	case out := <-ch:
-		return out
-	case <-time.After(timeout):
-		t.Fatalf("purge Execute did not finish within %s", timeout)
-		return purgeExecuteOutcome{}
-	}
-}
-
-func assertPurgeStillRunning(t *testing.T, ch <-chan purgeExecuteOutcome) {
-	t.Helper()
-	select {
-	case out := <-ch:
-		t.Fatalf("purge returned while replication was held (err=%v result=%+v)", out.err, out.result)
-	default:
-	}
-}
-
 func TestPurgeReplicationLive_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -298,7 +335,9 @@ func TestPurgeReplicationLive_Integration(t *testing.T) {
 		observer := newPurgeLogObserver(t)
 		orch := newLivePurge(t, setup, jobName, 10, observer, destDB)
 
-		result, err := orch.Execute(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		t.Cleanup(cancel)
+		result, err := orch.Execute(ctx)
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -308,8 +347,8 @@ func TestPurgeReplicationLive_Integration(t *testing.T) {
 		if observer.contains(t, "replication hold:") {
 			t.Fatal("healthy replica unexpectedly emitted a hold")
 		}
-		assertRootSet(t, sourceObserver, "source after healthy live purge")
-		assertRootSet(t, destObserver, "destination after healthy live purge")
+		assertReleaseGraph(t, sourceObserver, "source after healthy live purge")
+		assertReleaseGraph(t, destObserver, "destination after healthy live purge")
 		waitForReplicaCaughtUp(t, replicaDB, 60*time.Second)
 		t.Log("restored state: IO=Yes SQL=Yes Seconds_Behind_Source=0")
 	})
@@ -335,26 +374,23 @@ func TestPurgeReplicationLive_Integration(t *testing.T) {
 		t.Log("precondition: Replica_IO_Running=Yes Replica_SQL_Running=No")
 
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		outcomeCh := make(chan purgeExecuteOutcome, 1)
-		go func() {
-			result, err := orch.Execute(ctx)
-			outcomeCh <- purgeExecuteOutcome{result: result, err: err}
-		}()
-		observer.waitFor(t, "replication hold:", 20*time.Second)
-		assertPurgeStillRunning(t, outcomeCh)
-		assertRootSet(t, sourceObserver, "source while SQL applier stopped", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination while SQL applier stopped")
+		execution := startPurgeExecution(ctx, cancel, orch)
+		// Registered after replica restoration so LIFO cleanup first cancels and
+		// drains Execute while the unhealthy state is still in place.
+		t.Cleanup(func() { execution.cancelAndDrain(t, 10*time.Second) })
+		execution.waitForHold(t, observer, 20*time.Second)
+		assertReleaseGraph(t, sourceObserver, "source while SQL applier stopped", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination while SQL applier stopped")
 
 		if _, err := replicaDB.Exec("START REPLICA SQL_THREAD"); err != nil {
 			t.Fatalf("START REPLICA SQL_THREAD: %v", err)
 		}
-		out := awaitPurgeOutcome(t, outcomeCh, 60*time.Second)
+		out := execution.awaitOutcome(t, 60*time.Second)
 		if out.err != nil || out.result == nil || !out.result.Success {
 			t.Fatalf("same Execute after recovery = result %+v err %v", out.result, out.err)
 		}
-		assertRootSet(t, sourceObserver, "source after stopped-applier recovery")
-		assertRootSet(t, destObserver, "destination after stopped-applier recovery")
+		assertReleaseGraph(t, sourceObserver, "source after stopped-applier recovery")
+		assertReleaseGraph(t, destObserver, "destination after stopped-applier recovery")
 		waitForReplicaCaughtUp(t, replicaDB, 60*time.Second)
 		t.Log("restored state: IO=Yes SQL=Yes Seconds_Behind_Source=0")
 	})
@@ -382,25 +418,22 @@ func TestPurgeReplicationLive_Integration(t *testing.T) {
 		t.Logf("precondition: Replica_IO_Running=Yes Replica_SQL_Running=Yes Seconds_Behind_Source=%d (>1)", observed)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		defer cancel()
-		outcomeCh := make(chan purgeExecuteOutcome, 1)
-		go func() {
-			result, err := orch.Execute(ctx)
-			outcomeCh <- purgeExecuteOutcome{result: result, err: err}
-		}()
-		observer.waitFor(t, "replication hold:", 20*time.Second)
-		assertPurgeStillRunning(t, outcomeCh)
-		assertRootSet(t, sourceObserver, "source while replica lagged", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination while replica lagged")
+		execution := startPurgeExecution(ctx, cancel, orch)
+		// Registered after delay restoration so Execute drains before cleanup
+		// changes the replica state it is observing.
+		t.Cleanup(func() { execution.cancelAndDrain(t, 10*time.Second) })
+		execution.waitForHold(t, observer, 20*time.Second)
+		assertReleaseGraph(t, sourceObserver, "source while replica lagged", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination while replica lagged")
 
 		setReplicaSourceDelay(t, replicaDB, 0)
 		waitForReplicaCaughtUp(t, replicaDB, 60*time.Second)
-		out := awaitPurgeOutcome(t, outcomeCh, 60*time.Second)
+		out := execution.awaitOutcome(t, 60*time.Second)
 		if out.err != nil || out.result == nil || !out.result.Success {
 			t.Fatalf("same Execute after lag recovery = result %+v err %v", out.result, out.err)
 		}
-		assertRootSet(t, sourceObserver, "source after lag recovery")
-		assertRootSet(t, destObserver, "destination after lag recovery")
+		assertReleaseGraph(t, sourceObserver, "source after lag recovery")
+		assertReleaseGraph(t, destObserver, "destination after lag recovery")
 		t.Log("restored state: SQL_Delay=0 IO=Yes SQL=Yes Seconds_Behind_Source=0")
 	})
 
@@ -424,22 +457,20 @@ func TestPurgeReplicationLive_Integration(t *testing.T) {
 		t.Log("precondition: Replica_IO_Running=Yes Replica_SQL_Running=No (cancel case)")
 
 		ctx, cancel := context.WithCancel(context.Background())
-		outcomeCh := make(chan purgeExecuteOutcome, 1)
-		go func() {
-			result, err := orch.Execute(ctx)
-			outcomeCh <- purgeExecuteOutcome{result: result, err: err}
-		}()
-		observer.waitFor(t, "replication hold:", 20*time.Second)
-		assertPurgeStillRunning(t, outcomeCh)
-		assertRootSet(t, sourceObserver, "source before held cancellation", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination before held cancellation")
-		cancel()
-		out := awaitPurgeOutcome(t, outcomeCh, 10*time.Second)
+		execution := startPurgeExecution(ctx, cancel, orch)
+		// Registered after replica restoration so a failed assertion cannot
+		// leave Execute running when restoration and handle cleanup begin.
+		t.Cleanup(func() { execution.cancelAndDrain(t, 10*time.Second) })
+		execution.waitForHold(t, observer, 20*time.Second)
+		assertReleaseGraph(t, sourceObserver, "source before held cancellation", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination before held cancellation")
+		execution.cancel()
+		out := execution.awaitOutcome(t, 10*time.Second)
 		if !errors.Is(out.err, context.Canceled) {
 			t.Fatalf("cancelled Execute error = %v, want context.Canceled", out.err)
 		}
-		assertRootSet(t, sourceObserver, "source after held cancellation", resumeScenarioRoots...)
-		assertRootSet(t, destObserver, "destination after held cancellation")
+		assertReleaseGraph(t, sourceObserver, "source after held cancellation", resumeScenarioRoots...)
+		assertReleaseGraph(t, destObserver, "destination after held cancellation")
 
 		if _, err := replicaDB.Exec("START REPLICA SQL_THREAD"); err != nil {
 			t.Fatalf("START REPLICA SQL_THREAD: %v", err)

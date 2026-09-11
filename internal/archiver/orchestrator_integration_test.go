@@ -655,8 +655,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
-		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
 		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
 		if err != nil {
@@ -673,8 +673,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 		if strings.Contains(err.Error(), "Resuming a count-mode job is unsafe") {
 			t.Fatalf("strict refusal was masked by count policy: %v", err)
 		}
-		assertRootSet(t, sourceDB, "source (refused)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (refused)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (refused)", 1, 2)
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
 	})
@@ -695,8 +695,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
-		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (pre-run)")
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)")
 
 		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
 		if err != nil {
@@ -713,8 +713,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 		if strings.Contains(err.Error(), "so they cannot be safely re-copied") {
 			t.Fatalf("count refusal was masked by strict INSERT policy: %v", err)
 		}
-		assertRootSet(t, sourceDB, "source (refused)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (refused)")
+		assertReleaseGraph(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (refused)")
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
 	})
@@ -736,8 +736,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
 		})
 		assertCheckpointUnchanged(t, destDB, jobName)
-		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
 		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
 		if err != nil {
@@ -756,8 +756,8 @@ func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
 		if result.RecordsVerified == 0 {
 			t.Fatal("RecordsVerified = 0, want nonzero SHA256 replay verification")
 		}
-		assertRootSet(t, sourceDB, "source (post-run)", 3, 4, 5)
-		assertRootSet(t, destDB, "destination (post-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (post-run)", 3, 4, 5)
+		assertReleaseGraph(t, destDB, "destination (post-run)", 1, 2)
 		assertAllCompleted(t, destDB, logTable, "1", "2", "3", "4", "5")
 		assertCheckpointUnchanged(t, destDB, jobName)
 	})

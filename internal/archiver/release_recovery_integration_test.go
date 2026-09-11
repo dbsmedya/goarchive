@@ -11,6 +11,88 @@ import (
 	"time"
 )
 
+type releaseGraphEdge struct {
+	id       int64
+	parentID int64
+}
+
+func readReleaseGraphIDs(t *testing.T, db *sql.DB, label, table string) []int64 {
+	t.Helper()
+	rows, err := db.Query("SELECT id FROM `" + table + "` ORDER BY id")
+	if err != nil {
+		t.Fatalf("%s: list %s IDs: %v", label, table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	got := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("%s: scan %s ID: %v", label, table, err)
+		}
+		got = append(got, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: iterate %s IDs: %v", label, table, err)
+	}
+	return got
+}
+
+func readReleaseGraphEdges(t *testing.T, db *sql.DB, label, table, parentColumn string) []releaseGraphEdge {
+	t.Helper()
+	rows, err := db.Query("SELECT id, `" + parentColumn + "` FROM `" + table + "` ORDER BY id")
+	if err != nil {
+		t.Fatalf("%s: list %s edges: %v", label, table, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	got := make([]releaseGraphEdge, 0)
+	for rows.Next() {
+		var edge releaseGraphEdge
+		if err := rows.Scan(&edge.id, &edge.parentID); err != nil {
+			t.Fatalf("%s: scan %s edge: %v", label, table, err)
+		}
+		got = append(got, edge)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: iterate %s edges: %v", label, table, err)
+	}
+	return got
+}
+
+// assertReleaseGraph checks the exact row identities and foreign-key links
+// produced by seedResumeScenarioData across the complete four-table graph.
+func assertReleaseGraph(t *testing.T, db *sql.DB, label string, wantRoots ...int64) {
+	t.Helper()
+	wantCustomers := append([]int64{}, wantRoots...)
+	wantOrders := make([]releaseGraphEdge, 0, len(wantRoots)*rowsPerRootOrders)
+	wantItems := make([]releaseGraphEdge, 0, len(wantRoots)*rowsPerRootItems)
+	wantPayments := make([]releaseGraphEdge, 0, len(wantRoots)*rowsPerRootPayments)
+	for _, cid := range wantRoots {
+		for orderOffset := int64(1); orderOffset <= rowsPerRootOrders; orderOffset++ {
+			oid := cid*100 + orderOffset
+			wantOrders = append(wantOrders, releaseGraphEdge{id: oid, parentID: cid})
+			for itemOffset := int64(1); itemOffset <= rowsPerRootItems/rowsPerRootOrders; itemOffset++ {
+				wantItems = append(wantItems, releaseGraphEdge{id: oid*10 + itemOffset, parentID: oid})
+			}
+			wantPayments = append(wantPayments, releaseGraphEdge{id: oid, parentID: oid})
+		}
+	}
+
+	if got := readReleaseGraphIDs(t, db, label, "customers"); !reflect.DeepEqual(got, wantCustomers) {
+		t.Errorf("%s: customer IDs = %v, want %v", label, got, wantCustomers)
+	}
+	if got := readReleaseGraphEdges(t, db, label, "orders", "customer_id"); !reflect.DeepEqual(got, wantOrders) {
+		t.Errorf("%s: order (id,customer_id) edges = %v, want %v", label, got, wantOrders)
+	}
+	if got := readReleaseGraphEdges(t, db, label, "order_items", "order_id"); !reflect.DeepEqual(got, wantItems) {
+		t.Errorf("%s: order_item (id,order_id) edges = %v, want %v", label, got, wantItems)
+	}
+	if got := readReleaseGraphEdges(t, db, label, "order_payments", "order_id"); !reflect.DeepEqual(got, wantPayments) {
+		t.Errorf("%s: order_payment (id,order_id) edges = %v, want %v", label, got, wantPayments)
+	}
+}
+
 // resetReleaseRecoveryData clears the deterministic graph child-first using
 // DELETE. It deliberately avoids pooled session SET statements: a SET on one
 // pooled connection does not govern DELETEs executed on another.

@@ -85,6 +85,13 @@ func TestPurgeRecoveryChunkGate(t *testing.T) {
 	sentinel := errors.New("outer recovery gate sentinel")
 	waiter := &scriptedLagWaiter{errors: []error{sentinel}}
 	pipeline, sourceMock, archMock := newPurgeRecoveryUnitPipeline(t, waiter)
+	// This deliberately optional alternate-path fixture keeps the M17 mutant
+	// valid: without the outer gate, discovery succeeds and the same sentinel
+	// is returned by the surviving pre-delete gate. On the healthy baseline the
+	// exact remaining expectation below proves discovery never started.
+	sourceMock.ExpectQuery("SELECT `id` FROM `orders` WHERE `customer_id` IN").
+		WithArgs(int64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(101)))
 
 	agg := &BatchStats{}
 	err := pipeline.recoverChunks(context.Background(), []string{"1", "2"}, batchDeleteOnly, false, nil, agg)
@@ -92,7 +99,9 @@ func TestPurgeRecoveryChunkGate(t *testing.T) {
 	require.EqualError(t, err, "lag monitor error: outer recovery gate sentinel")
 	require.Equal(t, 1, waiter.calls)
 	require.Zero(t, agg.RootsProcessed)
-	require.NoError(t, sourceMock.ExpectationsWereMet())
+	sourceErr := sourceMock.ExpectationsWereMet()
+	require.Error(t, sourceErr, "outer gate must leave the alternate discovery fixture unused")
+	require.Contains(t, sourceErr.Error(), "SELECT `id` FROM `orders` WHERE `customer_id` IN")
 	require.NoError(t, archMock.ExpectationsWereMet())
 }
 

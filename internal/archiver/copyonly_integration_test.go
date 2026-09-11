@@ -375,8 +375,8 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
 		})
 		assertCheckpointUnchanged(t, destDB, jobName)
-		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
 		orch, err := NewCopyOnlyOrchestrator(cfg, jobName, jobCfg, dbManager)
 		if err != nil {
@@ -396,8 +396,8 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 		if result.RecordsCopied != 0 || result.RecordsVerified != 0 {
 			t.Errorf("RecordsCopied/RecordsVerified = %d/%d, want 0/0", result.RecordsCopied, result.RecordsVerified)
 		}
-		assertRootSet(t, sourceDB, "source (post-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (post-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (post-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (post-run)", 1, 2)
 		assertAllCompleted(t, destDB, logTable, "1", "2", "3", "4", "5")
 		assertCheckpointUnchanged(t, destDB, jobName)
 	})
@@ -419,8 +419,8 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
-		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (pre-run)", 1, 2)
 
 		orch, err := NewCopyOnlyOrchestrator(cfg, jobName, jobCfg, dbManager)
 		if err != nil {
@@ -435,8 +435,8 @@ func TestCopyOnly_CrashRecovery_Integration(t *testing.T) {
 			!strings.Contains(err.Error(), "so they cannot be safely re-copied") {
 			t.Fatalf("Execute error = %v, want strict INSERT pending refusal", err)
 		}
-		assertRootSet(t, sourceDB, "source (refused)", resumeScenarioRoots...)
-		assertRootSet(t, destDB, "destination (refused)", 1, 2)
+		assertReleaseGraph(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertReleaseGraph(t, destDB, "destination (refused)", 1, 2)
 		assertRecoveryLogState(t, destDB, logTable, wantState)
 		assertCheckpointUnchanged(t, destDB, jobName)
 	})
