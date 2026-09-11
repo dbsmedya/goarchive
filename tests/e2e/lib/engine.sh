@@ -87,6 +87,7 @@ run_e2e_test() {
                                   # space-separated. REQUIRED for any test with
                                   # more than one table; see assert_no_orphans
                                   # for why exact counts do not cover this
+    local replication_hold=""     # New declaration interface; validation follows.
     local interrupt=""            # "" = single run | graceful | crash. Non-empty
                                   # selects the two-run resume arm; see lib/interrupt.sh
     local interrupt_after_batches=""  # which batch to interrupt at
