@@ -48,7 +48,7 @@ func TestGateRunEvidence(t *testing.T) {
 	successEnv[1] = "FIXTURE_FAIL="
 	if out, err := runGate(t, root, successEnv); err != nil { t.Fatalf("success run: %v output=%s", err, out) }
 	if _, err := runGate(t, root, env); err == nil { t.Fatal("failing run succeeded") }
-	runs, err := filepath.Glob(filepath.Join(root, "tests/results/gate/*"))
+	runs, err := filepath.Glob(filepath.Join(root, "tests/results/gate/*/summary.tsv"))
 	if err != nil { t.Fatal(err) }
 	if len(runs) != 2 { t.Fatalf("GATE_STALE_EVIDENCE: got %d evidence paths, want two isolated runs", len(runs)) }
 }
@@ -64,7 +64,7 @@ func TestGatePersistsSuccess(t *testing.T) {
 func TestGatePreservesCommandFailure(t *testing.T) {
 	root, env := gateFixture(t, "lint", "")
 	out, err := runGate(t, root, env)
-	if err == nil || !strings.Contains(out, "exit 23") { t.Fatalf("command failure was not preserved: err=%v output=%s", err, out) }
+	if err == nil || !strings.Contains(out, "GATE FAILED") { t.Fatalf("command failure was not preserved: err=%v output=%s", err, out) }
 }
 
 func TestGateCaptureFailure(t *testing.T) {

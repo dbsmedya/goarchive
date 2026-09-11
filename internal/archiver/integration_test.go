@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
+	archiveconfig "github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/internal/database"
 	"gopkg.in/yaml.v3"
 )
 
@@ -153,8 +155,8 @@ func NewIntegrationTestSetup(cfg *IntegrationConfig) *IntegrationTestSetup {
 // ValidateConnections checks all database connections
 func (its *IntegrationTestSetup) ValidateConnections(ctx context.Context) error {
 	for _, dbCfg := range its.Config.Databases {
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=5s",
-			dbCfg.User, dbCfg.Password, dbCfg.Host, dbCfg.Port)
+		dsn, err := integrationDSN(dbCfg, "", 5*time.Second)
+		if err != nil { return fmt.Errorf("build validation DSN for %s: %w", dbCfg.Name, err) }
 
 		db, err := sql.Open("mysql", dsn)
 		if err != nil {
@@ -184,8 +186,8 @@ func (its *IntegrationTestSetup) SetupDatabases(ctx context.Context) error {
 
 func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg DatabaseConfig) error {
 	// Connect without database
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=30s&multiStatements=true",
-		dbCfg.User, dbCfg.Password, dbCfg.Host, dbCfg.Port)
+	dsn, err := integrationDSN(dbCfg, "", 30*time.Second)
+	if err != nil { return err }
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -207,8 +209,8 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 	_ = db.Close()
 
 	// Reconnect with database
-	dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?timeout=30s&multiStatements=true",
-		dbCfg.User, dbCfg.Password, dbCfg.Host, dbCfg.Port, dbCfg.Database)
+	dsn, err = integrationDSN(dbCfg, dbCfg.Database, 30*time.Second)
+	if err != nil { return err }
 
 	db2, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -228,6 +230,20 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 	}
 
 	return nil
+}
+
+// integrationDSN keeps test-estate sessions on the same driver contract as the
+// production manager while retaining the shorter harness timeouts.
+func integrationDSN(dbCfg DatabaseConfig, databaseName string, timeout time.Duration) (string, error) {
+	production := &archiveconfig.DatabaseConfig{
+		Host: dbCfg.Host, Port: dbCfg.Port, User: dbCfg.User, Password: dbCfg.Password,
+		Database: databaseName, TLS: "disable",
+	}
+	driverCfg, err := mysql.ParseDSN(database.BuildDSN(production))
+	if err != nil { return "", err }
+	driverCfg.DBName = databaseName
+	driverCfg.Timeout = timeout
+	return driverCfg.FormatDSN(), nil
 }
 
 func (its *IntegrationTestSetup) hasTables(ctx context.Context, db *sql.DB) bool {

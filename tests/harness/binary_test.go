@@ -29,6 +29,14 @@ func runEnsure(t *testing.T, root string, env []string) error {
 	return err
 }
 
+func runEnsureTwice(t *testing.T, root string, env []string) error {
+	t.Helper()
+	cmd := exec.Command("/bin/bash", "-c", "log_info(){ :; }; log_error(){ :; }; source tests/e2e/lib/runner.sh; ensure_goarchive_bin; ensure_goarchive_bin")
+	cmd.Dir, cmd.Env = root, append(os.Environ(), env...)
+	_, err := cmd.CombinedOutput()
+	return err
+}
+
 func copyRunner(t *testing.T, root string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(root, "tests/e2e/lib"), 0o755); err != nil { t.Fatal(err) }
@@ -39,12 +47,12 @@ func copyRunner(t *testing.T, root string) {
 func TestHarnessOwnedBinaryFresh(t *testing.T) {
 	root, env, bin := runnerScript(t, "false", "0")
 	copyRunner(t, root)
-	if err := runEnsure(t, root, env); err != nil { t.Fatal(err) }
+	if err := runEnsureTwice(t, root, env); err != nil { t.Fatal(err) }
 	if err := runEnsure(t, root, env); err != nil { t.Fatal(err) }
 	data, err := os.ReadFile(bin); if err != nil { t.Fatal(err) }
 	if string(data) != "current" { t.Fatalf("HARNESS_STALE_BINARY: got %q", data) }
 	lines, _ := os.ReadFile(filepath.Join(root, "build.log"))
-	if got := strings.Count(string(lines), "build"); got != 1 { t.Fatalf("owned build count = %d, want 1", got) }
+	if got := strings.Count(string(lines), "build"); got != 2 { t.Fatalf("owned build count = %d, want 2 (one per shell)", got) }
 }
 
 func TestHarnessExplicitBinary(t *testing.T) {
