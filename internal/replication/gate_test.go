@@ -16,7 +16,7 @@ import (
 	"time"
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/internal/config"
 	"github.com/dbsmedya/goarchive/internal/logger"
@@ -788,5 +788,105 @@ func TestGateWaitNeverLogsErrorLevel(t *testing.T) {
 		if _, ok := m["stacktrace"]; ok {
 			t.Errorf("log line %v carries a stack trace, want none", m)
 		}
+	}
+}
+
+// TestGateInvalidStatusNeverPasses exercises the real WaitForLag loop for
+// every fail-closed status shape used by the purge replication witnesses. A
+// bad observation must consume a sleep/read cycle; only a later healthy
+// observation may release the same call.
+func TestGateInvalidStatusNeverPasses(t *testing.T) {
+	cases := []struct {
+		name string
+		bad  readerResult
+	}{
+		{name: "stopped", bad: okRes(stoppedSnapshot())},
+		{name: "null-lag", bad: okRes([]dbsrepl.ChannelStatus{ch("", "Yes", "Yes", 0, false)})},
+		{name: "query-error", bad: errRes(&mysql.MySQLError{Number: 1227, Message: "denied"})},
+		{name: "unreachable", bad: errRes(&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reader := &fakeReader{responses: []readerResult{tc.bad, okRes(healthySnapshot())}}
+			h := newGateHarness(t, 0, reader)
+
+			if err := h.gate.WaitForLag(context.Background()); err != nil {
+				t.Fatalf("WaitForLag = %v, want recovery on the same call", err)
+			}
+			if reader.calls != 2 {
+				t.Errorf("reader calls = %d, want 2 (bad observation then healthy)", reader.calls)
+			}
+			if h.sleepCalls != 1 {
+				t.Errorf("sleep calls = %d, want 1 (bad status must hold)", h.sleepCalls)
+			}
+			if got := countWith(msgsAt(h.lines(), "warn"), "replication hold:"); got != 1 {
+				t.Errorf("hold lines = %d, want 1", got)
+			}
+			if got := countWith(msgsAt(h.lines(), "info"), "replication gate passed:"); got != 1 {
+				t.Errorf("gate-passed lines = %d, want 1 after recovery", got)
+			}
+		})
+	}
+
+	t.Run("healthy", func(t *testing.T) {
+		reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
+		h := newGateHarness(t, 0, reader)
+
+		if err := h.gate.WaitForLag(context.Background()); err != nil {
+			t.Fatalf("WaitForLag = %v, want nil", err)
+		}
+		if reader.calls != 1 {
+			t.Errorf("reader calls = %d, want 1", reader.calls)
+		}
+		if h.sleepCalls != 0 {
+			t.Errorf("sleep calls = %d, want 0 for a healthy fleet", h.sleepCalls)
+		}
+		if got := countWith(msgsAt(h.lines(), "warn"), "replication hold:"); got != 0 {
+			t.Errorf("hold lines = %d, want 0", got)
+		}
+	})
+}
+
+// TestGateInvalidStatusCancellation proves an indefinitely unhealthy status
+// never becomes a cached pass: cancellation during the first retry sleep is
+// returned for every bad-state class.
+func TestGateInvalidStatusCancellation(t *testing.T) {
+	cases := []struct {
+		name string
+		bad  readerResult
+	}{
+		{name: "stopped", bad: okRes(stoppedSnapshot())},
+		{name: "null-lag", bad: okRes([]dbsrepl.ChannelStatus{ch("", "Yes", "Yes", 0, false)})},
+		{name: "query-error", bad: errRes(&mysql.MySQLError{Number: 1227, Message: "denied"})},
+		{name: "unreachable", bad: errRes(&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")})},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			reader := &fakeReader{responses: []readerResult{tc.bad}}
+			h := newGateHarness(t, 0, reader)
+			h.gate.sleep = func(context.Context, time.Duration) error {
+				h.sleepCalls++
+				cancel()
+				return context.Canceled
+			}
+
+			err := h.gate.WaitForLag(ctx)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("WaitForLag = %v, want context.Canceled", err)
+			}
+			if reader.calls != 1 || h.sleepCalls != 1 {
+				t.Errorf("reader/sleep calls = %d/%d, want 1/1", reader.calls, h.sleepCalls)
+			}
+			if !h.gate.lastPass.IsZero() {
+				t.Errorf("lastPass = %v, want zero after cancelled hold", h.gate.lastPass)
+			}
+			if got := countWith(msgsAt(h.lines(), "warn"), "replication hold:"); got != 1 {
+				t.Errorf("hold lines = %d, want 1", got)
+			}
+		})
 	}
 }

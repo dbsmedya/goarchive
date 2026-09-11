@@ -625,76 +625,142 @@ func TestOrchestrator_FullArchiveCycle_Integration(t *testing.T) {
 	verifyRowCount(t, verifyDest, "orders", 4)    // Orders 101-104
 }
 
-// TestOrchestrator_CrashRecovery_Integration tests resume after simulated crash.
-//
-// SKIPPED as flaky -- see https://github.com/dbsmedya/goarchive/issues/97. The crash
-// is simulated by cancelling after a hardcoded 100ms sleep, and nothing pins where
-// that cancellation lands, so the test exercises a different path on every run: it
-// either leaves non-terminal root PKs that the count-mode resume gate correctly
-// refuses, or completes the job outright and simulates no crash at all.
-//
-// Do NOT re-enable this by nudging the sleep or widening a tolerance. Both moves push
-// it toward the region where it never interrupts anything and passes unconditionally,
-// which is worse than no test -- it also removes the pressure to write a real one. The
-// fix is deterministic seeding, as in pipeline_resume_integration_test.go.
+// TestOrchestrator_CrashRecovery_Integration proves exact durable-state
+// recovery and refusal paths. Actual process interruption remains covered by
+// the E2E resume suite.
 func TestOrchestrator_CrashRecovery_Integration(t *testing.T) {
-	t.Skip("flaky: timing-dependent crash simulation -- see https://github.com/dbsmedya/goarchive/issues/97")
-
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	setup, _ := SetupIntegrationTest(t)
-	defer setup.Close()
+	setup, ctx := SetupIntegrationTest(t)
+	t.Cleanup(setup.Close)
+	sourceDB, destDB := resumeScenarioDBs(t, setup)
+	destSchema := getDestSchema(setup)
 
-	clearDestination(t, setup)
-	sourceDB, _ := setup.GetDB("source")
-	seedTestData(t, sourceDB)
+	t.Run("strict-pending-refused", func(t *testing.T) {
+		const jobName = "release_archive_strict_pending"
+		resetReleaseRecoveryData(t, sourceDB, destDB)
 
-	jobCfg := createCustomerOrderJobConfig()
-	dbManager, cfg := setupRealDBManager(t, setup)
+		dbManager, cfg := resumeScenarioDBManager(t, setup, "sha256", 2)
+		seedResumeScenarioData(t, dbManager.Destination, 1, 2)
+		jobCfg := resumeScenarioJobConfig()
+		logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, jobCfg.RootTable, JobTypeArchive)
+		wantState := map[string]LogStatus{
+			"1": LogStatusPending, "2": LogStatusPending,
+			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
+		}
+		seedLogStatus(t, destDB, logTable, LogStatusPending, "1", "2")
+		seedLogStatus(t, destDB, logTable, LogStatusCompleted, "3", "4", "5")
+		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
 
-	// First run: process then cancel
-	ctx1, cancel1 := context.WithCancel(context.Background())
-	orch1, err := NewOrchestrator(cfg, "test_crash_recovery", jobCfg, dbManager)
-	if err != nil {
-		t.Fatalf("NewOrchestrator failed: %v", err)
-	}
-	if err := orch1.Initialize(); err != nil {
-		t.Fatalf("Initialize failed: %v", err)
-	}
+		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
+		if err != nil {
+			t.Fatalf("NewOrchestrator: %v", err)
+		}
+		if err := orch.Initialize(); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		_, err = orch.Execute(ctx, nil)
+		if err == nil || !strings.Contains(err.Error(), "uses strict INSERT") ||
+			!strings.Contains(err.Error(), "so they cannot be safely re-copied") {
+			t.Fatalf("Execute error = %v, want strict INSERT pending refusal", err)
+		}
+		if strings.Contains(err.Error(), "Resuming a count-mode job is unsafe") {
+			t.Fatalf("strict refusal was masked by count policy: %v", err)
+		}
+		assertRootSet(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertRootSet(t, destDB, "destination (refused)", 1, 2)
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+	})
 
-	// Cancel after short time to simulate crash
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel1()
-	}()
+	t.Run("count-refused", func(t *testing.T) {
+		const jobName = "release_archive_count_refused"
+		resetReleaseRecoveryData(t, sourceDB, destDB)
 
-	_, _ = orch1.Execute(ctx1, nil) // Expect cancellation error
+		dbManager, cfg := resumeScenarioDBManager(t, setup, "count", 2)
+		jobCfg := resumeScenarioJobConfig()
+		logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, jobCfg.RootTable, JobTypeArchive)
+		wantState := map[string]LogStatus{
+			"1": LogStatusPending, "2": LogStatusPending,
+			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
+		}
+		seedLogStatus(t, destDB, logTable, LogStatusPending, "1", "2")
+		seedLogStatus(t, destDB, logTable, LogStatusCompleted, "3", "4", "5")
+		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertRootSet(t, destDB, "destination (pre-run)")
 
-	// Second run: resume from checkpoint
-	ctx2 := context.Background()
-	orch2, err := NewOrchestrator(cfg, "test_crash_recovery", jobCfg, dbManager)
-	if err != nil {
-		t.Fatalf("NewOrchestrator (resume) failed: %v", err)
-	}
-	if err := orch2.Initialize(); err != nil {
-		t.Fatalf("Initialize (resume) failed: %v", err)
-	}
+		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
+		if err != nil {
+			t.Fatalf("NewOrchestrator: %v", err)
+		}
+		if err := orch.Initialize(); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		_, err = orch.Execute(ctx, nil)
+		if err == nil || !strings.Contains(err.Error(), "has 2 non-terminal root PKs") ||
+			!strings.Contains(err.Error(), "Resuming a count-mode job is unsafe") {
+			t.Fatalf("Execute error = %v, want count-mode recovery refusal", err)
+		}
+		if strings.Contains(err.Error(), "so they cannot be safely re-copied") {
+			t.Fatalf("count refusal was masked by strict INSERT policy: %v", err)
+		}
+		assertRootSet(t, sourceDB, "source (refused)", resumeScenarioRoots...)
+		assertRootSet(t, destDB, "destination (refused)")
+		assertRecoveryLogState(t, destDB, logTable, wantState)
+		assertCheckpointUnchanged(t, destDB, jobName)
+	})
 
-	result, err := orch2.Execute(ctx2, nil)
-	if err != nil {
-		t.Fatalf("Execute (resume) failed: %v", err)
-	}
+	t.Run("sha256-pending-replay", func(t *testing.T) {
+		const jobName = "release_archive_sha256_replay"
+		resetReleaseRecoveryData(t, sourceDB, destDB)
 
-	if !result.Success {
-		t.Errorf("Expected successful resume, got errors: %v", result.Errors)
-	}
+		dbManager, cfg := resumeScenarioDBManager(t, setup, "sha256", 2)
+		dropReleaseRecoverySecondaryUniqueIndexes(t, destDB, destSchema)
+		seedResumeScenarioData(t, dbManager.Destination, 1, 2)
+		jobCfg := resumeScenarioJobConfig()
+		logTable := bootstrapJobTracking(t, destDB, destSchema, jobName, jobCfg.RootTable, JobTypeArchive)
+		seedLogStatus(t, destDB, logTable, LogStatusPending, "1", "2")
+		seedLogStatus(t, destDB, logTable, LogStatusCompleted, "3", "4", "5")
+		setJobCheckpoint(t, destDB, jobName, resumeScenarioCheckpoint)
+		assertRecoveryLogState(t, destDB, logTable, map[string]LogStatus{
+			"1": LogStatusPending, "2": LogStatusPending,
+			"3": LogStatusCompleted, "4": LogStatusCompleted, "5": LogStatusCompleted,
+		})
+		assertCheckpointUnchanged(t, destDB, jobName)
+		assertRootSet(t, sourceDB, "source (pre-run)", resumeScenarioRoots...)
+		assertRootSet(t, destDB, "destination (pre-run)", 1, 2)
 
-	// Verify: all rows should be processed
-	verifyDest := getVerificationDB(t, setup, "destination")
-	defer func() { _ = verifyDest.Close() }()
-	verifyRowCount(t, verifyDest, "customers", 2)
+		orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
+		if err != nil {
+			t.Fatalf("NewOrchestrator: %v", err)
+		}
+		if err := orch.Initialize(); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		result, err := orch.Execute(ctx, nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if result == nil || !result.Success {
+			t.Fatalf("result = %+v, want success", result)
+		}
+		if result.RecordsVerified == 0 {
+			t.Fatal("RecordsVerified = 0, want nonzero SHA256 replay verification")
+		}
+		assertRootSet(t, sourceDB, "source (post-run)", 3, 4, 5)
+		assertRootSet(t, destDB, "destination (post-run)", 1, 2)
+		assertAllCompleted(t, destDB, logTable, "1", "2", "3", "4", "5")
+		assertCheckpointUnchanged(t, destDB, jobName)
+	})
 }
 
 // executeOutcome carries both of Execute's return values off the goroutine that
