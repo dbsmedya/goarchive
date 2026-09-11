@@ -265,6 +265,9 @@ credentials before **any** integration, E2E, or `mysqlsh` command:
 set -a; source tests/.env; set +a
 ```
 
+The current gate run's evidence directory and completion rules are documented in
+`tests/README.md` → `make gate`; use that run's persisted verdict, not older logs.
+
 **`make gate` runs the whole verification sequence in the only correct order** — estate check,
 static, unit, integration, characterization, then E2E. Use it instead of assembling the steps
 by hand. The order is load-bearing and enforced there: integration and characterization must

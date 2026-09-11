@@ -1,7 +1,8 @@
 # resume — interrupt a live run, then finish it
 
-The only tests in the suite that run the binary **twice**, and the only ones whose
-subject is a **path** rather than an end state.
+These tests run the binary **twice** and prove the actual interruption and recovery
+path. The Go archive/copy-only crash-recovery tests instead seed exact durable
+states and check recovery or refusal; they do not deliver process signals.
 
 | Test | Interrupt | Leaves behind | Resume path |
 |---|---|---|---|

@@ -1,0 +1,41 @@
+# Test13: the same payment slice measured by Test03, now under a live
+# replication gate. The helper reasserts the selected count before it runs.
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+  tls: disable
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+  tls: disable
+
+replication:
+  enabled: true
+  seconds_behind_source_within: 10
+  check_interval: 1
+  cache_ttl: 0
+  servers:
+    - host: 127.0.0.1
+      port: 3308
+      user: root
+      password: ${MYSQL_ROOT_PASSWORD}
+      tls: disable
+      type: async
+
+jobs:
+  purge-replication-hold:
+    root_table: payment
+    primary_key: payment_id
+    where: "payment_id <= 2000"
+    processing:
+      batch_size: 100
+      batch_delete_size: 100
+      sleep_seconds: 0
+      delete_sleep_seconds: 0

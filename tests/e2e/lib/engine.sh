@@ -87,7 +87,7 @@ run_e2e_test() {
                                   # space-separated. REQUIRED for any test with
                                   # more than one table; see assert_no_orphans
                                   # for why exact counts do not cover this
-    local replication_hold=""     # New declaration interface; validation follows.
+    local replication_hold=""     # empty or stopped-applier; purge-only live hold witness
     local interrupt=""            # "" = single run | graceful | crash. Non-empty
                                   # selects the two-run resume arm; see lib/interrupt.sh
     local interrupt_after_batches=""  # which batch to interrupt at
@@ -133,6 +133,15 @@ run_e2e_test() {
         log_error "Test $test_num: $test_file set no test_name"
         log_error "  a test file must declare at least test_name, mode and config_file"
         return 1
+    fi
+
+    # A declared live hold must never degrade to an ordinary working test.
+    # Check it before any fixture reset, including on example declarations.
+    if [[ -n "$replication_hold" ]]; then
+        if [[ "$replication_hold" != "stopped-applier" || "$mode" != "working" || "$command" != "purge" || -n "$interrupt" ]]; then
+            log_error "Test $test_num: replication_hold requires stopped-applier, mode=working, command=purge and no interrupt"
+            return 1
+        fi
     fi
 
     # Split expected_rows into a parallel indexed array matching $tables by
@@ -316,7 +325,14 @@ run_e2e_test() {
         # run 1 and pass even if run 2 verified nothing at all.
         local assert_log="$log_file"
 
-        if [[ -z "$interrupt" ]]; then
+        if [[ -n "$replication_hold" ]]; then
+            log_info "[STEP 3b] Running purge with an observed replica hold..."
+            if ! run_replication_hold_job "$config_file" "$log_file"; then
+                log_error "purge replication hold/release witness failed"
+                echo "Result: FAIL (replication hold/release)" >> "$log_file"
+                return 1
+            fi
+        elif [[ -z "$interrupt" ]]; then
             log_info "[STEP 3b] Running $command job (expect success)..."
             if ! run_archive_job "$config_file" "$command" >> "$log_file" 2>&1; then
                 log_error "$command job failed"
@@ -738,12 +754,13 @@ run_e2e_suite() {
         # That breakage has no other symptom. Every test would inherit the
         # previous one's values, every fail-closed guard would stop firing, and
         # the suite would keep reporting a pass.
-        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${root_pk:-}" ]]; then
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${root_pk:-}${replication_hold:-}" ]]; then
             log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
             log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
             log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
             log_error "  interrupt='${interrupt:-}' interrupt_after_batches='${interrupt_after_batches:-}'"
             log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}' root_pk='${root_pk:-}'"
+            log_error "  replication_hold='${replication_hold:-}'"
             log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
             log_error "  the next test and every fail-closed guard in the engine stops firing."
             exit 1
