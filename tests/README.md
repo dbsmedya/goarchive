@@ -26,6 +26,8 @@ checkout rather than copied into a hand-maintained snapshot.
 
 Each invocation prints its unique directory beneath `tests/results/gate/` before
 checking credentials. Earlier runs remain available and are never reused as current evidence.
+The integration stage retains verbose Go output so individual PASS, FAIL and SKIP
+results remain available beside the runner summary.
 
 | File in the run directory | What it records |
 |---|---|
