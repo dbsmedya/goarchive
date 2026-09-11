@@ -216,7 +216,7 @@ run_stage lint make lint || fail_gate $?
 run_stage consumer-policy make consumer-policy || fail_gate $?
 run_stage deadcode make deadcode || fail_gate $?
 run_stage unit make test-unit || fail_gate $?
-run_stage integration bash tests/scripts/run-tests.sh --setup --integration-only || fail_gate $?
+run_stage integration bash tests/scripts/run-tests.sh --setup --integration-only --verbose || fail_gate $?
 run_stage characterization bash tests/scripts/check-characterization-baseline.sh || fail_gate $?
 run_stage e2e make e2e || fail_gate $?
 run_stage e2e-examples make e2e-examples || fail_gate $?
