@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
 )
 
 type releaseGraphEdge struct {
@@ -166,6 +168,33 @@ func TestRecoveryFixtureCleanup_Integration(t *testing.T) {
 	observer := getVerificationDB(t, setup, "destination")
 	t.Cleanup(func() { _ = observer.Close() })
 	const jobName = "release_recovery_cleanup"
+
+	// The cleanup witness must be self-contained in a fresh full-suite order:
+	// create only the shared base tracking schema, then clean this test's owned
+	// job once before the first observation. Nothing cleans between nested runs,
+	// so the first post-run observer still detects an omitted bootstrap cleanup.
+	resumeMgr, err := NewResumeManager(destDB, nil, destSchema)
+	if err != nil {
+		t.Fatalf("new cleanup resume manager: %v", err)
+	}
+	if err := resumeMgr.InitializeTables(context.Background()); err != nil {
+		t.Fatalf("initialize cleanup tracking base: %v", err)
+	}
+	var staleID int64
+	err = destDB.QueryRow("SELECT id FROM archiver_job WHERE job_name = ?", jobName).Scan(&staleID)
+	if err == nil {
+		if _, err := destDB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `archiver_job_log_%d`", staleID)); err != nil {
+			t.Fatalf("drop initial cleanup log table: %v", err)
+		}
+		if _, err := destDB.Exec("DELETE FROM archiver_job WHERE job_name = ?", jobName); err != nil {
+			t.Fatalf("delete initial cleanup job row: %v", err)
+		}
+	} else if err != sql.ErrNoRows {
+		t.Fatalf("resolve initial cleanup job: %v", err)
+	}
+	// This outer fallback runs only after the within-loop observations. It
+	// keeps a failed mutant run from contaminating the restored rerun.
+	testsupport.CleanupArchiverState(t, destDB, jobName)
 
 	for run := 1; run <= 2; run++ {
 		var logTableName string
