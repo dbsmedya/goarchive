@@ -146,8 +146,8 @@ func buildSampleQuery(table, pkColumn string, meta types.ColumnMetadata, rootWhe
 		return "", err
 	}
 	if rootWhere != "" {
-		return fmt.Sprintf("SELECT %s FROM %s WHERE (%s) ORDER BY %s ASC LIMIT %d",
-			projection, sqlutil.QuoteIdentifier(table), rootWhere,
+		return fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s ASC LIMIT %d",
+			projection, sqlutil.QuoteIdentifier(table), wherePredicate(rootWhere),
 			sqlutil.QuoteIdentifier(pkColumn), limit), nil
 	}
 	return fmt.Sprintf("SELECT %s FROM %s LIMIT %d",
