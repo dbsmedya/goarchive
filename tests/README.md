@@ -73,7 +73,7 @@ Credentials first, as always: `set -a; source tests/.env; set +a`.
 > change touching zero `.go` files. Run `make characterization` and read its verdict.
 
 Raising the baseline is a decision requiring prior authorization, not a side effect of adding
-tests. When authorized, update the file and CLAUDE.md's pointer together.
+tests. When authorized, update the file and the pointer in `tests/AGENTS.md` together.
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
 > false failures.** The real-DB tests archive Sakila into `sakila_archive` and
