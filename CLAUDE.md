@@ -124,10 +124,10 @@ specifying it.
 go build -o goarchive ./cmd/goarchive     # build
 go test ./... -count=1                    # unit tests (no DB)
 gofmt -w .                                # format
-make lint                                 # golangci-lint run ./...
+make lint                                 # golangci-lint v2.11.4, pinned in the Makefile
 make deadcode                             # unreachable-code guard (issue #9) — must stay clean
 make consumer-policy                      # fails if goarchive queries information_schema directly
-make check                                # fmt-check vet consumer-policy test-ci build
+make check                                # fmt-check vet lint consumer-policy deadcode test-unit build — what CI runs
 ```
 
 ## Architecture

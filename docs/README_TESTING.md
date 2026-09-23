@@ -375,8 +375,8 @@ preflight at startup.
 
 | Target | Purpose |
 |--------|---------|
-| `make test-unit` | Unit tests (`go test -v -short ./...`) |
-| `make test-ci` | Tests with race detection, matching CI |
+| `make test-unit` | Unit tests with race detection (`go test -v -short -race ./...`) |
+| `make check` | The gate's non-database stages (fmt-check, vet, lint, consumer-policy, deadcode, test-unit) plus build; this is what CI runs |
 | `make test-up` | Start test databases via Docker Compose |
 | `make test-status` | Show test database container status |
 | `make test-down` | Stop test databases |
