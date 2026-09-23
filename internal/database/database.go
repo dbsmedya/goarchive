@@ -238,7 +238,6 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 		"time_zone": "'+00:00'",
 		"sql_mode":  autoZeroModeExpression,
 	}
-	dsnCfg.MultiStatements = true
 
 	switch cfg.TLS {
 	case "disable":
