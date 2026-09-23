@@ -132,8 +132,9 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1368 FAIL=0 SKIP=17`, measured by the integration runner on
-  2026-09-23 (gate run `20260923T114630Z-35955`, #22's delete-throttle tests). Sixteen skips
+- **Integration inventory:** `PASS=1395 FAIL=0 SKIP=17`, measured by the integration runner on
+  2026-09-23 (gate run `20260923T160747Z-22642`, the one-statement-per-call, `where`-parity and
+  duplicate-cleanup tests). Sixteen skips
   need disposable matrix profiles; the existing `TestExecute_CheckpointCallbackError` skip
   remains. Re-measure after adding or removing tagged tests.
 - **Characterization expectation:** `58 / 287 / 345 / 0 / 0` (top-level / subtests / PASS /

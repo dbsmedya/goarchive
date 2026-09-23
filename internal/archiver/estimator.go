@@ -93,12 +93,8 @@ func (e *Estimator) Estimate(ctx context.Context) (*EstimateResult, error) {
 
 // estimateRootCount counts matching root records.
 func (e *Estimator) estimateRootCount(ctx context.Context) (int64, error) {
-	where := e.jobCfg.Where
-	if where == "" {
-		where = "1=1"
-	}
-
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s", sqlutil.QuoteIdentifier(e.jobCfg.RootTable), where)
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
+		sqlutil.QuoteIdentifier(e.jobCfg.RootTable), wherePredicate(e.jobCfg.Where))
 
 	var count int64
 	if err := e.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -129,13 +125,9 @@ func (e *Estimator) estimateChildCount(ctx context.Context, table string) (int64
 	}
 
 	// hops runs child→root; hops[len-1].parent is the root. Build inside-out.
-	where := e.jobCfg.Where
-	if where == "" {
-		where = "1=1"
-	}
-	sub := fmt.Sprintf("SELECT %s FROM %s WHERE (%s)",
+	sub := fmt.Sprintf("SELECT %s FROM %s WHERE %s",
 		sqlutil.QuoteIdentifier(hops[len(hops)-1].ref),
-		sqlutil.QuoteIdentifier(e.graph.Root), where)
+		sqlutil.QuoteIdentifier(e.graph.Root), wherePredicate(e.jobCfg.Where))
 	for i := len(hops) - 2; i >= 0; i-- {
 		sub = fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)",
 			sqlutil.QuoteIdentifier(hops[i].ref),

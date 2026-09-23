@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
@@ -228,7 +228,7 @@ func (its *IntegrationTestSetup) setupDatabase(ctx context.Context, dbCfg Databa
 
 	// Apply fixtures
 	if its.Config.Force || !its.hasTables(ctx, db2) {
-		if err := its.applyFixtures(ctx, db2); err != nil {
+		if err := its.applyFixtures(ctx, dbCfg); err != nil {
 			return fmt.Errorf("failed to apply fixtures: %w", err)
 		}
 	}
@@ -245,7 +245,11 @@ func (its *IntegrationTestSetup) hasTables(ctx context.Context, db *sql.DB) bool
 	return err == nil && count > 0
 }
 
-func (its *IntegrationTestSetup) applyFixtures(ctx context.Context, db *sql.DB) error {
+// applyFixtures loads the fixture file, which holds many statements, over a
+// short-lived connection of its own: only that connection enables
+// multi-statement execution. The pool in its.DBs keeps the production DSN, in
+// which every call carries exactly one statement.
+func (its *IntegrationTestSetup) applyFixtures(ctx context.Context, dbCfg DatabaseConfig) error {
 	// Determine fixture path
 	fixturePath := its.Config.FixturePath
 	if fixturePath == "" {
@@ -266,6 +270,21 @@ func (its *IntegrationTestSetup) applyFixtures(ctx context.Context, db *sql.DB) 
 	if err != nil {
 		return fmt.Errorf("failed to read fixture file %s: %w", fixturePath, err)
 	}
+
+	dsn, err := integrationDSN(dbCfg, dbCfg.Database, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	driverCfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return err
+	}
+	driverCfg.MultiStatements = true
+	db, err := sql.Open("mysql", driverCfg.FormatDSN())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
 
 	_, err = db.ExecContext(ctx, string(data))
 	if err != nil {

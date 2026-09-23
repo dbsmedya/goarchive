@@ -27,7 +27,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "tls=preferred"},
 		},
 		{
 			name: "DSN without database",
@@ -38,7 +38,7 @@ func TestBuildDSN(t *testing.T) {
 				Password: "secret",
 				TLS:      "preferred",
 			},
-			expectedContains: []string{"root:secret@tcp(localhost:3306)/?", "parseTime=true", "multiStatements=true", "tls=preferred"},
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/?", "parseTime=true", "tls=preferred"},
 		},
 		{
 			name: "DSN with TLS disabled",
@@ -50,7 +50,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "disable",
 			},
-			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=false"},
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "tls=false"},
 		},
 		{
 			name: "DSN with TLS required",
@@ -62,7 +62,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "testdb",
 				TLS:      "required",
 			},
-			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=true"},
+			expectedContains: []string{"root:secret@tcp(localhost:3306)/testdb?", "parseTime=true", "tls=true"},
 		},
 		{
 			name: "DSN with custom port",
@@ -74,7 +74,7 @@ func TestBuildDSN(t *testing.T) {
 				Database: "mydb",
 				TLS:      "preferred",
 			},
-			expectedContains: []string{"admin:p@ssw0rd!@tcp(remote-host:3307)/mydb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
+			expectedContains: []string{"admin:p@ssw0rd!@tcp(remote-host:3307)/mydb?", "parseTime=true", "tls=preferred"},
 		},
 	}
 
@@ -167,7 +167,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expectedContains: []string{"root@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
+			expectedContains: []string{"root@tcp(localhost:3306)/testdb?", "parseTime=true", "tls=preferred"},
 		},
 		{
 			name: "Special characters in password",
@@ -179,7 +179,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "disable",
 			},
-			expectedContains: []string{"root:p@ss!w0rd#123@tcp(localhost:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=false"},
+			expectedContains: []string{"root:p@ss!w0rd#123@tcp(localhost:3306)/testdb?", "parseTime=true", "tls=false"},
 		},
 		{
 			name: "IPv6 host",
@@ -191,7 +191,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "preferred",
 			},
-			expectedContains: []string{"root:secret@tcp([::1]:3306)/testdb?", "parseTime=true", "multiStatements=true", "tls=preferred"},
+			expectedContains: []string{"root:secret@tcp([::1]:3306)/testdb?", "parseTime=true", "tls=preferred"},
 		},
 		{
 			name: "Non-standard port",
@@ -203,7 +203,7 @@ func TestBuildDSN_EdgeCases(t *testing.T) {
 				Database: "testdb",
 				TLS:      "required",
 			},
-			expectedContains: []string{"admin:admin123@tcp(localhost:33060)/testdb?", "parseTime=true", "multiStatements=true", "tls=true"},
+			expectedContains: []string{"admin:admin123@tcp(localhost:33060)/testdb?", "parseTime=true", "tls=true"},
 		},
 	}
 
@@ -301,6 +301,32 @@ func TestBuildDSN_TLSVariants(t *testing.T) {
 	}
 }
 
+// TestBuildDSN_MultiStatementsOff pins that production connections never carry
+// the driver's multi-statement capability, whatever the TLS setting: every
+// database call is exactly one SQL statement, so text that appends a second
+// statement fails with a syntax error instead of running.
+func TestBuildDSN_MultiStatementsOff(t *testing.T) {
+	for _, tlsValue := range []string{"disable", "preferred", "skip-verify", "required"} {
+		t.Run(tlsValue, func(t *testing.T) {
+			cfg := &config.DatabaseConfig{
+				Host:     "localhost",
+				Port:     3306,
+				User:     "root",
+				Password: "secret",
+				Database: "testdb",
+				TLS:      tlsValue,
+			}
+			parsed, err := mysql.ParseDSN(BuildDSN(cfg))
+			if err != nil {
+				t.Fatalf("ParseDSN(BuildDSN(tls=%s)): %v", tlsValue, err)
+			}
+			if parsed.MultiStatements {
+				t.Errorf("BuildDSN(tls=%s): MultiStatements = true, want false", tlsValue)
+			}
+		})
+	}
+}
+
 // TestBuildDSN_AllowsNativePasswords guards against the struct-literal
 // regression that emitted allowNativePasswords=false, breaking servers whose
 // users authenticate via the mysql_native_password plugin (MySQL 8.4 / Cloud SQL).
@@ -334,7 +360,6 @@ func TestBuildDSN_RequiredParams(t *testing.T) {
 	// Verify required parameters are present
 	required := []string{
 		"parseTime=true",
-		"multiStatements=true",
 		// Issue #16: url.QueryEscape("'+00:00'"); the driver turns it into
 		// SET time_zone = '+00:00' on every new connection.
 		"time_zone=%27%2B00%3A00%27",

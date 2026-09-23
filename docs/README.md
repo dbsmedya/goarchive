@@ -11,6 +11,7 @@ Detailed specifications for GoArchive. Start at the
 | [Limitations](README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions, trust model |
 | [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning, pausing, crash recovery and resume semantics |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
+| [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
 | [Testing](README_TESTING.md) | Test layers and how to run them |
 | [Upgrading to 2.2](README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
 | [Upgrading to 2.1](README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
@@ -36,3 +37,4 @@ Detailed specifications for GoArchive. Start at the
 - **Upgrading to 2.2, and startup refuses your tracking tables** → [Upgrading to 2.2](README_UPGRADING_2_2.md)
 - **Upgrading, and validation now rejects a key that used to work** → [Upgrading to 2.1](README_UPGRADING_2_1.md)
 - **Maintaining the tracking tables, or clearing a crashed job** → [Job Tracking Schema](README_JOBS_SCHEMA.md)
+- **Removing duplicate rows** → [Duplicate cleanup](README_DUPLICATE_CLEANUP.md)

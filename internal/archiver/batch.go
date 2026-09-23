@@ -46,11 +46,7 @@ func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSiz
 // CountRemaining so the progress estimate cannot drift from what the fetch
 // will select. It reads the fetcher's current checkpoint.
 func (f *RootIDFetcher) predicate() (string, []interface{}) {
-	where := f.criteria
-	if where == "" {
-		where = "1=1"
-	}
-	clause := fmt.Sprintf("(%s)", where)
+	clause := wherePredicate(f.criteria)
 	var args []interface{}
 	if f.checkpoint != nil {
 		clause += fmt.Sprintf(" AND %s > ?", sqlutil.QuoteIdentifier(f.pkColumn))
