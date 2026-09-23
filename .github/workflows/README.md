@@ -7,7 +7,8 @@ This directory contains CI/CD workflows for the project.
 ### 1. CI (`ci.yml`)
 **Triggers:** Push to main/master, Pull requests
 
-Runs on every PR and push, as one **Check** job on Go 1.24:
+Runs on every PR and push, as one **Check** job on the Go release that `go.mod`'s `toolchain`
+line pins:
 - **`make check`:** format, vet, lint (golangci-lint pinned in the `Makefile`), consumer policy,
   dead code, unit tests with race detection, and build
 - **Test version output:** a separate step that builds the binary and checks its version output

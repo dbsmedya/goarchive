@@ -136,8 +136,8 @@ make check                                # fmt-check vet lint consumer-policy d
 CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data Layer
 ```
 
-**Stack:** Go 1.24+, Cobra (CLI), Viper (config), Zap (logging), MySQL 8.0.40+ InnoDB only,
-`dbsgomysql` for validation facts.
+**Stack:** Go 1.26+ (builds pinned to go1.26.8 by go.mod's toolchain line), Cobra (CLI), Viper
+(config), Zap (logging), MySQL 8.0.40+ InnoDB only, `dbsgomysql` for validation facts.
 
 ### Package Layout
 

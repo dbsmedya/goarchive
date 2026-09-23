@@ -27,6 +27,16 @@ LDFLAGS := -X '$(PACKAGE_PATH).Version=$(VERSION)' \
 # Go build flags
 GOFLAGS := -trimpath
 
+# Go release: exactly the one go.mod's toolchain line pins, for every recipe and every
+# script a recipe runs (the gate included). A GOTOOLCHAIN from the caller does not override it.
+GO_MOD := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))go.mod
+GO_TOOLCHAIN := $(shell sed -n 's/^toolchain //p' '$(GO_MOD)')
+ifeq ($(strip $(GO_TOOLCHAIN)),)
+$(error go.mod has no toolchain line; the Makefile builds only with the release it pins)
+endif
+override GOTOOLCHAIN := $(GO_TOOLCHAIN)
+export GOTOOLCHAIN
+
 # Default target
 .PHONY: all
 all: build
@@ -66,6 +76,7 @@ version:
 	@echo "Version: $(VERSION)"
 	@echo "Commit:  $(COMMIT)"
 	@echo "Package: $(PACKAGE_PATH)"
+	@echo "Go:      $$(go version)"
 
 # New Tagging target
 .PHONY: tag
