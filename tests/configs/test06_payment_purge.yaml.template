@@ -64,6 +64,6 @@ jobs:
       # 17 batches x 0.2s = 3.4s
       sleep_seconds: 0.2
       # 16 full batches x 4 chunk-gaps x 0.2s = 12.8s. The 22-row tail batch is
-      # a single chunk and contributes none -- a table's last chunk is never
-      # followed by a sleep.
+      # a single chunk and contributes none -- a batch's last delete chunk is
+      # never followed by a sleep.
       delete_sleep_seconds: 0.2

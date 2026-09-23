@@ -164,11 +164,11 @@ the test if the run came in under it.
 
 ```
 floor = ceil(rows ÷ batch_size) × sleep_seconds
-      + Σ over batches of (delete chunks per table − 1) × delete_sleep_seconds
+      + Σ over batches of max(0, delete chunks in the batch, across all tables − 1) × delete_sleep_seconds
 ```
 
 `sleep_seconds` fires after **every** batch including the last; `delete_sleep_seconds`
-**skips** each table's final chunk, so 5 chunks means 4 pauses.
+skips the first chunk of each batch's delete phase, so 5 chunks means 4 pauses.
 
 | Test | rows | `batch_size` | batches | batch sleep | delete sleep | **floor** |
 |---|---|---|---|---|---|---|
@@ -199,7 +199,7 @@ Test 04 declares no `processing:` block at all, so it inherits the global defaul
 
 Test 06's 17th batch is a 22-row tail. It contributes to the **batch** term but
 **not** the delete term — 22 rows is a single chunk at `batch_delete_size: 100`,
-and a table's final chunk is never followed by a sleep. Only the 16 full batches
+and a delete phase's final chunk is never followed by a sleep. Only the 16 full batches
 produce the 4 gaps each that make 64. Counting the tail as though it had gaps
 inflates the floor and produces a gate no correct run can pass.
 

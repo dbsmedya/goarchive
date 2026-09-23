@@ -105,14 +105,12 @@ with `Closes #N`; a bare `(#N)` leaves it open.
 
 ### Release lines: where work goes
 
-The roadmaps own placement: `.ayder/roadmaps/roadmap_v2.x-community.md` (the 2.x stability
-line) and `.ayder/roadmaps/roadmap_v3.md` (the 3.0 train). Place work on a line before
-specifying it.
+The roadmaps own placement and when `release/2.2` is cut:
+`.ayder/roadmaps/roadmap_v2.x-community.md` (the 2.x stability line) and
+`.ayder/roadmaps/roadmap_v3.md` (the 3.0 train). Place work on a line before specifying it.
 
 - **2.x is fixes only:** no features, refactors, tracking-schema changes or config breaks.
   Features go to 3.0.
-- **`main` is the 2.2.x tag source** until `release/2.2` is cut, which happens only when the
-  first 3.0-only change is ready to merge.
 - **Port the test, not the patch.** A fix lands as a `test` commit, then a `fix` commit, never
   squashed. Moving a fix between lines cherry-picks the test and re-implements the fix where
   the code differs. Never merge between lines.
