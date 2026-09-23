@@ -37,15 +37,69 @@ The schema, the replica topology and the `+03:00` destination are described in
 
 ## Running the gate
 
-1. Run `make gate` from the repository root, as `tests/README.md` → *`make gate` — use this
-   rather than assembling the steps* describes. Do not assemble the stages by hand, and do not
-   pipe the output through `2>&1`.
-2. Read this run's verdict from its evidence directory, as that same section describes. Never
-   use a log from an earlier run.
-3. Report the candidate SHA, the run's per-stage status, the `PASS=n FAIL=n SKIP=n` counts per
-   layer (`tests/README.md` → *Test result counts*), and `OVERALL: GREEN` only if the run
-   completed with every stage passing; otherwise `OVERALL: RED`.
-4. Change nothing: no fix, skip, relaxed test, re-run to get a pass, baseline edit or commit.
+You are given one SHA. Run these steps in order from the repository root. Where a step says
+stop, report `OVERALL: BLOCKED` with the reason and do nothing further.
+
+1. **Check the tree.** Run:
+
+   ```bash
+   git rev-parse HEAD
+   git diff --quiet && git diff --cached --quiet
+   ```
+
+   Stop if the first line is not the given SHA, or if the second command exits non-zero
+   (uncommitted changes to tracked files). Never check anything out; the tree is prepared for
+   you.
+
+2. **Check nothing else is testing.** Run:
+
+   ```bash
+   pgrep -fl '[r]un-gate\.sh|[r]un-tests\.sh|[c]heck-characterization-baseline\.sh'
+   ```
+
+   Stop if it prints anything, and name what is running. The estate is shared, and two test
+   runs on it fail each other.
+
+3. **Load the credentials and run the gate, in one command.** Give the command the Bash tool's
+   maximum timeout (600000 ms). Do not add `2>&1`, and run it only once:
+
+   ```bash
+   test -f tests/.env && { set -a; . tests/.env; set +a; make gate; }
+   ```
+
+   If `tests/.env` is missing, the command exits 1 with no output: stop. Create no file. What
+   `make gate` runs is described in `tests/README.md` → *`make gate` — use this rather than
+   assembling the steps*.
+
+4. **Find this run's evidence directory.** It is the path on the first output line,
+   `Gate evidence directory: <dir>`. Never use any other directory under
+   `tests/results/gate/`.
+
+5. **Read the verdict.** Run:
+
+   ```bash
+   cat <dir>/run.tsv <dir>/summary.txt
+   test -f <dir>/complete
+   ```
+
+   The verdict is `GREEN` only if all of these hold: the step 3 command exited 0; in
+   `run.tsv`, `outcome` is `PASS`, `recording_exit` is `0`, `source_sha` is the given SHA and
+   `dirty` is `clean`; and `test -f <dir>/complete` exits 0. Anything else is `RED`.
+
+6. **Report**, in this form:
+
+   ```text
+   SHA: <given SHA>
+   Run: <run_id from run.tsv>
+   <each stage line from summary.txt, as printed>
+   OVERALL: GREEN | RED | BLOCKED (<reason>)
+   ```
+
+   Each `summary.txt` line carries the stage's status and its counts, such as the integration
+   stage's `PASS=n FAIL=n SKIP=n` (`tests/README.md` → *Test result counts*).
+
+Change nothing: no fix, skip, relaxed test, re-run, baseline edit, file edit or commit. A red
+gate is the finding; report it.
 
 CI runs only the gate's non-database stages (static checks and unit tests). A green CI is not a
 green gate; only this run's `OVERALL: GREEN` is.
