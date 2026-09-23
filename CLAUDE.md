@@ -205,6 +205,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Commands/flags, tuning, pausing, crash recovery, resume gates | `docs/README_OPERATIONS.md` |
 | Hard constraints, model limits, operational cautions | `docs/README_LIMITATIONS.md` |
 | Tracking table DDL, DBA maintenance, safe-truncate rules | `docs/README_JOBS_SCHEMA.md` |
+| Removing duplicate rows with one job (keep the minimum primary key) | `docs/README_DUPLICATE_CLEANUP.md` |
 | What the dbsgomysql integration changed, and why | `docs/README_dbsgomysql.md` |
 | Operator migration notes for 2.0 | `docs/README_UPGRADING_2_0.md` |
 
