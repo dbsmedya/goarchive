@@ -17,7 +17,7 @@
 #
 # An increase is a DECISION and needs prior authorization — it is not a side
 # effect of adding tests. When it is authorized, update this file and the
-# pointer in CLAUDE.md together.
+# pointer in tests/AGENTS.md together.
 #
 # Counted from `go test -tags=integration -v -run TestCharacterization`:
 #   TOPLEVEL  `--- PASS` at 0-space indent
