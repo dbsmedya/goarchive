@@ -69,7 +69,7 @@ func TestEstimator_Estimate_Success(t *testing.T) {
 	estimator := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
 
 	// Mock root count query
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers` WHERE created_at").
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers` WHERE \\(created_at").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(25))
 
 	ctx := context.Background()
@@ -235,8 +235,8 @@ func TestEstimator_Estimate_EmptyWhere(t *testing.T) {
 	g := createSimpleGraph()
 	estimator := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
 
-	// Mock should query with "WHERE 1=1"
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers` WHERE 1=1").
+	// Mock should query with "WHERE (1=1)"
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers` WHERE \\(1=1\\)").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
 
 	ctx := context.Background()
