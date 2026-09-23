@@ -26,19 +26,14 @@ run_fmt_check() {
     fi
 }
 
-# Run golangci-lint checks
+# Run golangci-lint checks through make lint, so every lint uses the version the
+# Makefile pins (GOLANGCI_LINT_VERSION) and no installed golangci-lint is needed.
 run_lint_check() {
     log_step "Running golangci-lint..."
     
     cd "$PROJECT_ROOT"
     
-    if ! command -v golangci-lint &> /dev/null; then
-        log_warn "golangci-lint is not installed"
-        log_info "Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"
-        return 1
-    fi
-    
-    if golangci-lint run --timeout=5m ./...; then
+    if make lint; then
         log_info "golangci-lint passed"
         return 0
     else

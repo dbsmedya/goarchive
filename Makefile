@@ -49,14 +49,9 @@ install:
 test:
 	go test -v ./...
 
-# Run unit tests only (fast, excludes integration tests)
+# Run unit tests only (excludes integration tests), with race detection
 .PHONY: test-unit
 test-unit:
-	go test -v -short ./...
-
-# Run tests with race detection (matches CI)
-.PHONY: test-ci
-test-ci:
 	go test -v -short -race ./...
 
 # Clean build artifacts
@@ -128,19 +123,20 @@ vet:
 vet-all:
 	go vet -all ./...
 
-# Run linter (requires golangci-lint)
+# Run linter at a pinned version (no local install needed)
+GOLANGCI_LINT_VERSION := v2.11.4
 .PHONY: lint
 lint:
-	golangci-lint run ./...
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
-# Run all checks (CI-style)
+# Run the gate's non-database stages, in gate order, plus build. This is what CI runs.
 .PHONY: check
-check: fmt-check vet consumer-policy test-ci build
+check: fmt-check vet lint consumer-policy deadcode test-unit build
 	@echo "All checks passed!"
 
 # Full CI pipeline simulation
 .PHONY: github-release
-github-release: clean check lint
+github-release: clean check
 	@echo "Building release binaries..."
 	$(MAKE) release
 	@echo ""
@@ -324,14 +320,13 @@ help:
 	@echo "  make install            - Install to \$$GOPATH/bin"
 	@echo "  make dev                - Quick dev build (no version injection)"
 	@echo "  make test               - Run all tests"
-	@echo "  make test-unit          - Run unit tests only (fast)"
-	@echo "  make test-ci            - Run tests with race detection (CI style)"
+	@echo "  make test-unit          - Run unit tests only, with race detection"
 	@echo "  make test-integration   - Run integration tests (requires config + databases)"
-	@echo "  make check              - Run all CI checks (fmt-check, vet, test-ci, build)"
+	@echo "  make check              - Run what CI runs (fmt-check, vet, lint, consumer-policy, deadcode, test-unit, build)"
 	@echo "  make github-release     - Full CI pipeline + release build"
 	@echo "  make vet                - Run go vet (CI style)"
 	@echo "  make vet-all            - Run go vet with all checks (stricter)"
-	@echo "  make lint               - Run linter"
+	@echo "  make lint               - Run golangci-lint $(GOLANGCI_LINT_VERSION)"
 	@echo "  make fmt                - Format Go code"
 	@echo "  make fmt-check          - Check formatting (CI style)"
 	@echo "  make release            - Build binaries for all platforms"

@@ -24,7 +24,6 @@ This document provides detailed instructions for installing, building, and testi
 
 - **Docker & Docker Compose**: For running integration tests
 - **Make**: For using the provided Makefile targets
-- **golangci-lint**: For code linting
 - **govulncheck**: For vulnerability scanning
 
 ## Installation from Source
@@ -88,7 +87,7 @@ make clean
 # Format Go code
 make fmt
 
-# Run linter (requires golangci-lint)
+# Run golangci-lint (version pinned in the Makefile; no install needed)
 make lint
 
 # Check for vulnerabilities (requires govulncheck)

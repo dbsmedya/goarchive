@@ -7,11 +7,12 @@ This directory contains CI/CD workflows for the project.
 ### 1. CI (`ci.yml`)
 **Triggers:** Push to main/master, Pull requests
 
-Runs on every PR and push:
-- **Test Job:** Runs unit tests on Go 1.23 and 1.24
-- **Lint Job:** Runs golangci-lint
-- **Vet Job:** Runs `go vet` for static analysis
-- **Format Job:** Checks code formatting with `gofmt`
+Runs on every PR and push, as one **Check** job on Go 1.24:
+- **`make check`:** format, vet, lint (golangci-lint pinned in the `Makefile`), consumer policy,
+  dead code, unit tests with race detection, and build
+- **Test version output:** a separate step that builds the binary and checks its version output
+
+Database tests do not run in CI. The full gate is `make gate`, described in `tests/README.md`.
 
 ### 2. Release (`release.yml`)
 **Triggers:** Push of tags starting with `v` (e.g., `v1.0.0`)
