@@ -11,6 +11,9 @@ measured baselines below.
 
 ## Before any database command
 
+For single-layer work only. A gate run skips this section: the gate checks the estate in its
+own `estate` stage, and a down estate is a RED gate to report, not something to fix.
+
 1. Check the containers are up: `docker ps` shows ports 3305, 3307 and 3308. If not, run
    `make test-up`. If a connection still fails, stop and ask the operator.
 2. In the same shell, load the credentials:
@@ -40,6 +43,10 @@ The schema, the replica topology and the `+03:00` destination are described in
 You are given one SHA. Run these steps in order from the repository root. Where a step says
 stop, report `OVERALL: BLOCKED` with the reason and do nothing further.
 
+**Run `make gate` exactly once, and run no command other than the ones below.** Never run
+`make test-up`, `docker`, another `make` target or a second `make gate`, even when the gate
+fails because a server is down. A failed gate is the result: report it as `RED`.
+
 1. **Check the tree.** Run:
 
    ```bash
@@ -67,7 +74,8 @@ stop, report `OVERALL: BLOCKED` with the reason and do nothing further.
    test -f tests/.env && { set -a; . tests/.env; set +a; make gate; }
    ```
 
-   If `tests/.env` is missing, the command exits 1 with no output: stop. Create no file. What
+   If `tests/.env` is missing, the command exits 1 with no output: stop. Create no file.
+   Otherwise, whatever the gate prints and however it exits, go to step 4. What
    `make gate` runs is described in `tests/README.md` → *`make gate` — use this rather than
    assembling the steps*.
 
