@@ -368,7 +368,9 @@ trusted** input.
 
 - Job `where` values are **raw SQL fragments** injected into archive selection
   queries.
-- Connections use `multiStatements=true` for operational compatibility.
+- Each database call carries exactly one SQL statement: multi-statement execution
+  is not enabled. A `where` value is always part of a single statement, and text
+  that adds a second statement fails with a MySQL syntax error.
 - **Do not expose config editing to untrusted users or untrusted automation
   pipelines.**
 

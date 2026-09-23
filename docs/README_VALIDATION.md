@@ -670,6 +670,8 @@ count verification cannot see it. SHA256 can, and fails before any delete.
 `goarchive dry-run` runs the non-destructive preflight profile and adds checks
 that only matter for a real copy. It prints the job's WHERE clause and estimates
 row counts **filtered through the actual relation chain**, not full-table counts.
+`dry-run` embeds the `where` exactly as the run does, so a `where` the run would
+reject fails in `dry-run` first, with the same MySQL error.
 
 Samples use raw temporal projections and the runtime copy's
 [diagnostic collection and subdivision](README_OPERATIONS.md#insert-diagnostics-and-subdivision)
