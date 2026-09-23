@@ -132,10 +132,10 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1361 FAIL=0 SKIP=17`, measured by the integration runner on
-  2026-09-11 for the 2.2.2 release candidate. Sixteen skips need disposable matrix profiles;
-  the existing `TestExecute_CheckpointCallbackError` skip remains. Re-measure after adding or
-  removing tagged tests.
+- **Integration inventory:** `PASS=1368 FAIL=0 SKIP=17`, measured by the integration runner on
+  2026-09-23 (gate run `20260923T114630Z-35955`, #22's delete-throttle tests). Sixteen skips
+  need disposable matrix profiles; the existing `TestExecute_CheckpointCallbackError` skip
+  remains. Re-measure after adding or removing tagged tests.
 - **Characterization expectation:** `58 / 287 / 345 / 0 / 0` (top-level / subtests / PASS /
   FAIL / SKIP), held in `tests/characterization-baseline.txt` and checked by
   `make characterization`. It changes only with the operator's prior authorization; change the
