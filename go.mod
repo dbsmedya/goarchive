@@ -1,6 +1,8 @@
 module github.com/dbsmedya/goarchive
 
-go 1.24.0
+go 1.26.0
+
+toolchain go1.26.8
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
