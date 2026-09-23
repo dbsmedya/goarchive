@@ -569,8 +569,8 @@ func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 // ============================================================================
 
 // TestDelete_ThrottleSleepBetweenChunks verifies that delete_sleep_seconds pauses
-// between delete chunks (after each batch_delete_size delete, except the last in a
-// table) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
+// between delete chunks (before every batch_delete_size delete of the phase except
+// its first) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
 // so the assertion is deterministic and the test does not actually wait.
 func TestDelete_ThrottleSleepBetweenChunks(t *testing.T) {
 	db, mock, _ := sqlmock.New()

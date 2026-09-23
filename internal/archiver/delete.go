@@ -105,6 +105,10 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 	}
 	dp.logger.Infof("Starting delete phase for %d tables in reverse dependency order", len(deleteOrder))
 
+	// issued records whether this phase has sent a DELETE yet. It lives for one
+	// Delete call, so the throttle count restarts with every batch.
+	issued := false
+
 	// GA-P4-F2-T1: Delete tables in reverse order (children → parents)
 	for _, table := range deleteOrder {
 		// Check context cancellation
@@ -121,7 +125,7 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 		}
 
 		// GA-P4-F2-T3: Delete table using primary keys
-		rowsDeleted, err := dp.deleteTable(ctx, conn, table, pks)
+		rowsDeleted, err := dp.deleteTable(ctx, conn, table, pks, &issued)
 		if err != nil {
 			return nil, fmt.Errorf("failed to delete from table %s: %w", table, err)
 		}
@@ -152,7 +156,10 @@ func (dp *DeletePhase) Delete(ctx context.Context, recordSet *RecordSet) (*Delet
 // GA-P4-F2-T3: PK-based deletes
 // GA-P4-F2-T4: Delete without transaction (auto-commit for each batch)
 // GA-P4-F2-T6: Idempotent deletes (no error if already deleted)
-func (dp *DeletePhase) deleteTable(ctx context.Context, conn *sql.Conn, table string, pks []interface{}) (int64, error) {
+//
+// issued is the phase's record of whether a DELETE has been sent; deleteTable
+// sets it after each successful statement.
+func (dp *DeletePhase) deleteTable(ctx context.Context, conn *sql.Conn, table string, pks []interface{}, issued *bool) (int64, error) {
 	if len(pks) == 0 {
 		return 0, nil
 	}
@@ -178,6 +185,16 @@ func (dp *DeletePhase) deleteTable(ctx context.Context, conn *sql.Conn, table st
 		}
 		batchPKs := pks[start:end]
 
+		// Replication-lag throttle: pause before every DELETE of the phase except
+		// its first, across table boundaries, so a replica can drain the binlog the
+		// previous auto-committed DELETE generated before the next one is issued.
+		if dp.sleepSeconds > 0 && *issued {
+			d := time.Duration(dp.sleepSeconds * float64(time.Second))
+			if err := dp.sleepBetweenChunks(ctx, d); err != nil {
+				return totalDeleted, fmt.Errorf("delete interrupted during throttle sleep: %w", err)
+			}
+		}
+
 		// GA-P4-F2-T3: Execute PK-based delete
 		// GA-P4-F2-T4: No transaction - each DELETE is auto-committed
 		rowsDeleted, err := dp.executeDelete(ctx, conn, table, pkColumn, batchPKs)
@@ -185,22 +202,13 @@ func (dp *DeletePhase) deleteTable(ctx context.Context, conn *sql.Conn, table st
 			return totalDeleted, fmt.Errorf("batch %d/%d failed: %w", batchNum+1, totalBatches, err)
 		}
 
+		*issued = true
 		totalDeleted += rowsDeleted
 
 		// GA-P4-F2-T5: Log batch progress
 		if totalBatches > 1 {
 			dp.logger.Debugf("Deleted %d rows from %s (batch %d/%d)",
 				rowsDeleted, table, batchNum+1, totalBatches)
-		}
-
-		// Replication-lag throttle: pause between delete chunks (not after the
-		// last chunk of this table) so a replica can drain the binlog this
-		// auto-committed DELETE just generated before the next one is issued.
-		if dp.sleepSeconds > 0 && batchNum < totalBatches-1 {
-			d := time.Duration(dp.sleepSeconds * float64(time.Second))
-			if err := dp.sleepBetweenChunks(ctx, d); err != nil {
-				return totalDeleted, fmt.Errorf("delete interrupted during throttle sleep: %w", err)
-			}
 		}
 	}
 
