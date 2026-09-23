@@ -1,5 +1,5 @@
 # golangci-lint v2 configuration.
-# Pinned in CI via golangci-lint-action@v7 (version: v2.11.4).
+# Pinned in the Makefile (GOLANGCI_LINT_VERSION, v2.11.4); CI runs make check.
 #
 # Policy: keep the standard linter set at full strength on PRODUCTION code.
 # Two known-benign patterns are excluded ONLY in test files:
