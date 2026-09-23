@@ -209,12 +209,12 @@ fixing anything.
 | Knob | Pauses | Use when |
 |------|--------|----------|
 | `sleep_seconds` | **between batches** — after each `batch_size` batch | General load on source/archive servers is the concern |
-| `delete_sleep_seconds` | **between delete chunks** — after each `batch_delete_size` delete, except the last chunk of each table | Replication lag from binlog volume is the bottleneck |
+| `delete_sleep_seconds` | **between consecutive delete chunks of a batch, across tables** — every chunk except the batch's first | Replication lag from binlog volume is the bottleneck |
 
 `delete_sleep_seconds` defaults to `0`. Pair a small `batch_delete_size` with a
 non-zero `delete_sleep_seconds` when replication lag — not source load — is what
-limits you. The pause applies between chunks *within* a table, which is the
-high-frequency case.
+limits you. The pause also separates the last chunk of one table from the first
+chunk of the next, so a batch whose tables each fit in one chunk is paced too.
 
 Both accept fractional seconds. Per-job `processing:` blocks use pointer
 semantics: an explicitly set field wins **even when it is `0`**, so a job can

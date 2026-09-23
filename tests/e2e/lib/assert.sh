@@ -175,12 +175,12 @@ assert_postcondition() {
 # dependence on the machine:
 #
 #   floor = ceil(rows / batch_size) * sleep_seconds
-#         + SUM over batches of (delete chunks per table - 1) * delete_sleep_seconds
+#         + SUM over batches of max(0, delete chunks in the batch - 1) * delete_sleep_seconds
 #
 # sleep_seconds fires after EVERY batch including the last (orchestrator.go:457,
-# no guard). delete_sleep_seconds skips each table's final chunk
-# (delete.go:185, `batchNum < totalBatches-1`), so a batch of 100 rows at
-# batch_delete_size=20 sleeps 4 times, not 5.
+# no guard). delete_sleep_seconds pauses before every delete chunk of a batch
+# except the first, across all tables (delete.go, sleepBetweenChunks), so a
+# batch of 100 rows at batch_delete_size=20 sleeps 4 times, not 5.
 #
 # Why this is safe to assert, when timing assertions usually are not: it is a
 # ONE-SIDED bound. A slow container, a loaded host, a cold filesystem or a

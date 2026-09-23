@@ -20,8 +20,8 @@ verify_method="count"
 # 1999 rows / batch_size 100 = 20 batches.
 #   batch sleep:  20 x 0.2                        = 4.0s
 #   delete sleep: 20 batches x 4 chunk-gaps x 0.2 = 16.0s
-# (100 rows / batch_delete_size 20 = 5 chunks, and the last chunk of
-# each table is not followed by a sleep, so 4 gaps.)
+# (100 rows / batch_delete_size 20 = 5 chunks, and a batch's first
+# delete chunk is not preceded by a sleep, so 4 gaps.)
 min_duration="20.0"
 
 # payment_id <= 2000 selects 1999 rows, not 2000 -- payment_id is

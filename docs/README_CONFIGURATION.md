@@ -310,7 +310,7 @@ Batch sizing and pacing. Config-file only — no CLI overrides.
 | `batch_size` | Root PKs per batch, and the copy chunk size for **every** table. Must be positive. | `1000` |
 | `batch_delete_size` | Rows per `DELETE` statement. Must be positive. | `500` |
 | `sleep_seconds` | Pause between batches. Must not be negative. Accepts fractions. | `1` |
-| `delete_sleep_seconds` | Pause between delete chunks. Must not be negative. Accepts fractions. | `0` |
+| `delete_sleep_seconds` | Pause between delete chunks of a batch, including between tables. Must not be negative. Accepts fractions. | `0` |
 | `sentinel_file` | Operator pause switch — while this path exists, pause before each batch | _(empty)_ |
 
 `sleep_seconds` and `delete_sleep_seconds` throttle different pressures — general

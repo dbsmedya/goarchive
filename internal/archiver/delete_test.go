@@ -4,6 +4,9 @@ package archiver
 import (
 	"context"
 	"errors"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -566,8 +569,8 @@ func TestDelete_ReverseTopologicalOrder(t *testing.T) {
 // ============================================================================
 
 // TestDelete_ThrottleSleepBetweenChunks verifies that delete_sleep_seconds pauses
-// between delete chunks (after each batch_delete_size delete, except the last in a
-// table) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
+// between delete chunks (before every batch_delete_size delete of the phase except
+// its first) — the per-chunk replication-lag throttle. Uses an injected sleep recorder
 // so the assertion is deterministic and the test does not actually wait.
 func TestDelete_ThrottleSleepBetweenChunks(t *testing.T) {
 	db, mock, _ := sqlmock.New()
@@ -652,6 +655,198 @@ func TestDelete_NoThrottleByDefault(t *testing.T) {
 	if sleepCalls != 0 {
 		t.Fatalf("expected 0 throttle sleeps when delete_sleep_seconds=0, got %d", sleepCalls)
 	}
+}
+
+// throttleEventLog records, in order, the pauses taken through the sleepFn
+// seam and the DELETE statements sqlmock accepts, so a test can assert where
+// the throttle falls relative to the statements.
+type throttleEventLog struct {
+	events []string
+	pauses []time.Duration
+}
+
+var deleteTablePattern = regexp.MustCompile("^DELETE FROM `([^`]+)`")
+
+// matcher delegates to sqlmock's regexp matcher and logs each DELETE that
+// matches its expectation.
+func (l *throttleEventLog) matcher() sqlmock.QueryMatcher {
+	return sqlmock.QueryMatcherFunc(func(expectedSQL, actualSQL string) error {
+		if err := sqlmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL); err != nil {
+			return err
+		}
+		if m := deleteTablePattern.FindStringSubmatch(strings.TrimSpace(actualSQL)); m != nil {
+			l.events = append(l.events, "DELETE "+m[1])
+		}
+		return nil
+	})
+}
+
+// TestDelete_ThrottleIsPhaseScoped verifies that delete_sleep_seconds pauses
+// before every DELETE of one delete phase except the first, across table
+// boundaries: max(0, N-1) pauses for N statements, none for skipped tables,
+// counted afresh on every Delete call, and a cancelled pause stops the phase
+// before the next statement.
+func TestDelete_ThrottleIsPhaseScoped(t *testing.T) {
+	const orderItemsSQL = "DELETE FROM `order_items` WHERE `id` IN"
+	const ordersSQL = "DELETE FROM `orders` WHERE `id` IN"
+	const usersSQL = "DELETE FROM `users` WHERE `id` IN"
+
+	setup := func(t *testing.T, batchSize int, sleepErr error) (*DeletePhase, sqlmock.Sqlmock, *throttleEventLog) {
+		t.Helper()
+		log := &throttleEventLog{}
+		db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(log.matcher()))
+		if err != nil {
+			t.Fatalf("Failed to create mock: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		dp, err := NewDeletePhase(db, createDeleteTestGraph(), batchSize, logger.NewDefault())
+		if err != nil {
+			t.Fatalf("NewDeletePhase failed: %v", err)
+		}
+		dp.SetSleepSeconds(0.5)
+		dp.SetColumnMetadata(testNonTemporalMetadata(dp.graph))
+		dp.sleepFn = func(_ context.Context, d time.Duration) error {
+			log.events = append(log.events, "pause")
+			log.pauses = append(log.pauses, d)
+			return sleepErr
+		}
+		return dp, mock, log
+	}
+
+	assertEvents := func(t *testing.T, log *throttleEventLog, want []string) {
+		t.Helper()
+		if !slices.Equal(log.events, want) {
+			t.Errorf("pause/DELETE order = %v, want %v", log.events, want)
+		}
+		for i, d := range log.pauses {
+			if d != 500*time.Millisecond {
+				t.Errorf("pause %d = %v, want 500ms", i, d)
+			}
+		}
+	}
+
+	assertMet := func(t *testing.T, mock sqlmock.Sqlmock) {
+		t.Helper()
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("unfulfilled expectations: %v", err)
+		}
+	}
+
+	t.Run("single_chunk_tables", func(t *testing.T) {
+		dp, mock, log := setup(t, 500, nil)
+		mock.ExpectExec(orderItemsSQL).WithArgs(100).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(ordersSQL).WithArgs(10).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(usersSQL).WithArgs(1).WillReturnResult(sqlmock.NewResult(0, 1))
+
+		recordSet := &RecordSet{
+			RootPKs: []interface{}{1},
+			Records: map[string][]interface{}{
+				"users":       {1},
+				"orders":      {10},
+				"order_items": {100},
+			},
+		}
+		if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+		assertEvents(t, log, []string{"DELETE order_items", "pause", "DELETE orders", "pause", "DELETE users"})
+		assertMet(t, mock)
+	})
+
+	t.Run("mixed_chunks", func(t *testing.T) {
+		dp, mock, log := setup(t, 3, nil)
+		mock.ExpectExec(orderItemsSQL).WithArgs(100, 101, 102).WillReturnResult(sqlmock.NewResult(0, 3))
+		mock.ExpectExec(orderItemsSQL).WithArgs(103, 104, 105).WillReturnResult(sqlmock.NewResult(0, 3))
+		mock.ExpectExec(orderItemsSQL).WithArgs(106).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(ordersSQL).WithArgs(10, 11, 12).WillReturnResult(sqlmock.NewResult(0, 3))
+		mock.ExpectExec(ordersSQL).WithArgs(13).WillReturnResult(sqlmock.NewResult(0, 1))
+
+		recordSet := &RecordSet{
+			RootPKs: []interface{}{1},
+			Records: map[string][]interface{}{
+				"orders":      {10, 11, 12, 13},
+				"order_items": {100, 101, 102, 103, 104, 105, 106},
+			},
+		}
+		if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+		assertEvents(t, log, []string{
+			"DELETE order_items", "pause", "DELETE order_items", "pause", "DELETE order_items", "pause",
+			"DELETE orders", "pause", "DELETE orders",
+		})
+		assertMet(t, mock)
+	})
+
+	t.Run("empty_table_between", func(t *testing.T) {
+		dp, mock, log := setup(t, 500, nil)
+		mock.ExpectExec(orderItemsSQL).WithArgs(100).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(usersSQL).WithArgs(1).WillReturnResult(sqlmock.NewResult(0, 1))
+
+		recordSet := &RecordSet{
+			RootPKs: []interface{}{1},
+			Records: map[string][]interface{}{
+				"users":       {1},
+				"order_items": {100},
+			},
+		}
+		if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+		assertEvents(t, log, []string{"DELETE order_items", "pause", "DELETE users"})
+		assertMet(t, mock)
+	})
+
+	t.Run("empty_phase", func(t *testing.T) {
+		dp, mock, log := setup(t, 500, nil)
+
+		recordSet := &RecordSet{RootPKs: []interface{}{}, Records: map[string][]interface{}{}}
+		if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+			t.Fatalf("Delete failed: %v", err)
+		}
+		assertEvents(t, log, nil)
+		assertMet(t, mock)
+	})
+
+	t.Run("phases_reset", func(t *testing.T) {
+		dp, mock, log := setup(t, 500, nil)
+		mock.ExpectExec(orderItemsSQL).WithArgs(100).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectExec(orderItemsSQL).WithArgs(101).WillReturnResult(sqlmock.NewResult(0, 1))
+
+		for _, pk := range []interface{}{100, 101} {
+			recordSet := &RecordSet{
+				RootPKs: []interface{}{1},
+				Records: map[string][]interface{}{"order_items": {pk}},
+			}
+			if _, err := dp.Delete(context.Background(), recordSet); err != nil {
+				t.Fatalf("Delete failed: %v", err)
+			}
+		}
+		assertEvents(t, log, []string{"DELETE order_items", "DELETE order_items"})
+		assertMet(t, mock)
+	})
+
+	t.Run("cancel_at_table_boundary", func(t *testing.T) {
+		dp, mock, log := setup(t, 500, context.Canceled)
+		mock.ExpectExec(orderItemsSQL).WithArgs(100).WillReturnResult(sqlmock.NewResult(0, 1))
+
+		recordSet := &RecordSet{
+			RootPKs: []interface{}{1},
+			Records: map[string][]interface{}{
+				"orders":      {10},
+				"order_items": {100},
+			},
+		}
+		_, err := dp.Delete(context.Background(), recordSet)
+		if err == nil || !strings.Contains(err.Error(), "delete interrupted during throttle sleep") {
+			t.Fatalf("want error containing %q, got %v", "delete interrupted during throttle sleep", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("want errors.Is(err, context.Canceled), got %v", err)
+		}
+		assertEvents(t, log, []string{"DELETE order_items", "pause"})
+		assertMet(t, mock)
+	})
 }
 
 // ============================================================================
