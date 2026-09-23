@@ -385,8 +385,10 @@ This section is the single source of truth for supported versions. `README.md` a
 - **MySQL**: **8.0.40+** with the **InnoDB** storage engine. The floor is inherited from
   [dbsgomysql](README_dbsgomysql.md), which supplies every preflight fact and supports Oracle
   MySQL and Percona Server for MySQL only from that release onward
-- **Go**: 1.24 or later to build from source — `go.mod` sets `go 1.24.0`, and an older
-  toolchain refuses the module rather than producing a degraded build
+- **Go**: 1.26 or later to build from source — `go.mod` sets `go 1.26.0` and pins
+  `toolchain go1.26.8`, and the project's own builds (gate, CI, release binaries, Docker image)
+  all use go1.26.8. An older Go with the default `GOTOOLCHAIN=auto` downloads the pinned release
+  instead of building with itself
 - **Network**: access to the source and destination databases, and to every replica listed
   in `replication.servers` when the replication gate is enabled
 

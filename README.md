@@ -1,6 +1,6 @@
 # GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
 
-[![Go Version](https://img.shields.io/badge/Go-1.24+-blue)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](https://golang.org/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
