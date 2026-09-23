@@ -67,6 +67,9 @@ func checkToolchainDrift(goMod string, sites map[string]string) error {
 		}
 	}
 	if len(drifts) == 0 {
+		if pin == "" {
+			return errors.New("go.mod has no toolchain line")
+		}
 		return nil
 	}
 	sort.SliceStable(drifts, func(i, j int) bool {
