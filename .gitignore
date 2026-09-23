@@ -18,7 +18,8 @@ vendor/
 
 # agents
 .gemini
-.claude
+.claude/*
+!.claude/agents/
 .ayder
 .product
 .agents
