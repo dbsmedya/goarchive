@@ -304,6 +304,14 @@ jobs:
 			s["go.mod"] = replace(t, goMod, "toolchain go1.99.1\n", "")
 			return s
 		}, "go.mod", []string{"go.mod has no toolchain line"}},
+		// No site names a release of its own (no Dockerfile, which the collector allows), so
+		// the missing toolchain line is the only drift and must fail on its own.
+		{"no_toolchain_clean", func(t *testing.T) map[string]string {
+			s := aligned()
+			s["go.mod"] = replace(t, goMod, "toolchain go1.99.1\n", "")
+			delete(s, "Dockerfile")
+			return s
+		}, "go.mod", []string{"go.mod has no toolchain line"}},
 		{"yaml_discovered", func(t *testing.T) map[string]string {
 			root := t.TempDir()
 			files := aligned()
