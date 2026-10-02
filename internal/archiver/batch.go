@@ -28,7 +28,7 @@ type RootIDFetcher struct {
 //   - db: Source database connection
 //   - rootTable: Name of the root table to fetch IDs from
 //   - pkColumn: Name of the primary key column
-//   - criteria: WHERE clause criteria (can be empty for "all rows")
+//   - criteria: WHERE clause criteria; an empty one is refused (use "1=1" for all rows)
 //   - batchSize: Number of IDs to fetch per batch
 //   - checkpoint: Last processed PK value for resumption (nil to start from beginning)
 func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSize int, checkpoint interface{}) *RootIDFetcher {
@@ -45,14 +45,17 @@ func NewRootIDFetcher(db *sql.DB, rootTable, pkColumn, criteria string, batchSiz
 // predicate returns the WHERE body shared by FetchNextBatch and
 // CountRemaining so the progress estimate cannot drift from what the fetch
 // will select. It reads the fetcher's current checkpoint.
-func (f *RootIDFetcher) predicate() (string, []interface{}) {
-	clause := wherePredicate(f.criteria)
+func (f *RootIDFetcher) predicate() (string, []interface{}, error) {
+	clause, err := wherePredicate(f.criteria)
+	if err != nil {
+		return "", nil, err
+	}
 	var args []interface{}
 	if f.checkpoint != nil {
 		clause += fmt.Sprintf(" AND %s > ?", sqlutil.QuoteIdentifier(f.pkColumn))
 		args = append(args, f.checkpoint)
 	}
-	return clause, args
+	return clause, args, nil
 }
 
 // FetchNextBatch retrieves the next batch of root IDs matching the criteria.
@@ -67,7 +70,10 @@ func (f *RootIDFetcher) predicate() (string, []interface{}) {
 // GA-P3-F1-T1: Fetches root PKs with checkpoint support
 // GA-P3-F1-T2: Respects batch_size configuration
 func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, error) {
-	clause, args := f.predicate()
+	clause, args, err := f.predicate()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch root IDs from %s: %w", f.rootTable, err)
+	}
 	query := fmt.Sprintf(
 		"SELECT %s FROM %s WHERE %s ORDER BY %s ASC LIMIT ?",
 		sqlutil.QuoteIdentifier(f.pkColumn),
@@ -109,7 +115,10 @@ func (f *RootIDFetcher) FetchNextBatch(ctx context.Context) ([]interface{}, erro
 // CountRemaining counts the root rows the forward scan would currently
 // select. It is a point-in-time estimate used only for --progress display.
 func (f *RootIDFetcher) CountRemaining(ctx context.Context) (int64, error) {
-	clause, args := f.predicate()
+	clause, args, err := f.predicate()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count remaining root rows in %s: %w", f.rootTable, err)
+	}
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
 		sqlutil.QuoteIdentifier(f.rootTable), clause)
 	var n int64

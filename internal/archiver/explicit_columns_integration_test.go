@@ -315,7 +315,7 @@ func TestExplicitColumnsFullArchive(t *testing.T) {
 	const jobName = "exp_full_archive_job"
 	testsupport.CleanupArchiverState(t, dbManager.Destination, jobName)
 
-	jobCfg := &config.JobConfig{RootTable: table, PrimaryKey: "id"}
+	jobCfg := &config.JobConfig{RootTable: table, PrimaryKey: "id", Where: "1=1"}
 	orch, err := NewOrchestrator(cfg, jobName, jobCfg, dbManager)
 	if err != nil {
 		t.Fatalf("new orchestrator: %v", err)

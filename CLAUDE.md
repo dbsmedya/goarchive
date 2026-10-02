@@ -59,22 +59,26 @@ that moves goarchive's own operator-visible acceptance; that gets a goarchive te
 ### Versioning (read before bumping the version)
 
 The version string carries the `-community` edition suffix; release candidates keep it and
-add an `RC` marker before it. It is duplicated in several places, and a bump MUST update
-**all** of them — a missed one ships mislabeled binaries:
+add an `RC` marker before it. It is repeated at four sites, and a bump MUST update **all** of
+them — a missed one ships mislabeled binaries:
 
 | Location | What it controls |
 |----------|------------------|
 | `Makefile` → `RELEASE_VERSION` | Fallback version stamped into binaries when HEAD has no exact-match git tag. **The one most often missed.** |
 | `cmd/goarchive/cmd/root.go` → `Version` | Default `Version` constant (overridden by `-ldflags` at build time) |
 | `README.md` (the **Version** line) | User-facing docs |
-| `README.md` (the **Stable release** line) | User-facing docs. It also names the dbsgomysql version, so it changes when the `go.mod` pin changes, too |
-| `INSTALL.md` (the **Version** line) | User-facing docs |
+| `README.md` (the **Stable release** line) | User-facing docs. Must equal `RELEASE_VERSION` when that is a stable version; not compared during a `-RC`/`-alpha`/`-beta` prerelease series, when it keeps naming the previous stable release. It also names the dbsgomysql version, so it changes when the `go.mod` pin changes, too |
 
-Nothing in the repo parses the version — the workflows trigger on the `v*` glob and extract
-it with a prefix strip, and CI injects the literal `ci-test`. The only semver consumer is
-`docker/metadata-action` (`.github/workflows/docker.yml`); both forms are valid SemVer
-prereleases, which is also what makes `release.yml` mark the GitHub release a prerelease
-automatically (`prerelease: contains(VERSION, '-')`).
+`TestVersionSitesMatchReleaseVersion` (`tests/harness/version_drift_test.go`) is the guard: it
+fails `make check` when a site differs from `RELEASE_VERSION`, or when the release version
+appears in any other tracked file or on any other `README.md` line. Cite a release elsewhere by
+its bare number; an exception needs an allow-list entry in that test, approved by the operator.
+
+No workflow parses the version — the workflows trigger on the `v*` glob and extract it with a
+prefix strip, and CI injects the literal `ci-test`; the drift test is the one reader. The
+only semver consumer is `docker/metadata-action` (`.github/workflows/docker.yml`); both forms
+are valid SemVer prereleases, which is also what makes `release.yml` mark the GitHub release a
+prerelease automatically (`prerelease: contains(VERSION, '-')`).
 
 Do **not** change: `cmd/goarchive/cmd/version_test.go` (uses `1.2.3` as a test
 fixture, not the project version), or historical release notes under `.ayder/`.

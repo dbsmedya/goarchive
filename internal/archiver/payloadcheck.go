@@ -146,8 +146,12 @@ func buildSampleQuery(table, pkColumn string, meta types.ColumnMetadata, rootWhe
 		return "", err
 	}
 	if rootWhere != "" {
+		predicate, err := wherePredicate(rootWhere)
+		if err != nil {
+			return "", err
+		}
 		return fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s ASC LIMIT %d",
-			projection, sqlutil.QuoteIdentifier(table), wherePredicate(rootWhere),
+			projection, sqlutil.QuoteIdentifier(table), predicate,
 			sqlutil.QuoteIdentifier(pkColumn), limit), nil
 	}
 	return fmt.Sprintf("SELECT %s FROM %s LIMIT %d",
@@ -161,7 +165,13 @@ func (p *PayloadValidator) measureSample(ctx context.Context, table string, meta
 	columns := meta.Names
 	pkColumn := p.graph.GetPK(table)
 	rootWhere := ""
-	if p.jobCfg.RootTable == table && strings.TrimSpace(p.jobCfg.Where) != "" {
+	if p.jobCfg.RootTable == table {
+		// The root sample is the first batch the archive would fetch, so an
+		// empty where is refused here exactly as the fetch refuses it. Only a
+		// non-root table samples unfiltered.
+		if strings.TrimSpace(p.jobCfg.Where) == "" {
+			return 0, 0, errEmptyWhere
+		}
 		// Order ASC to mirror the real copy fetch (batch.go uses ORDER BY pk ASC):
 		// the sample becomes exactly the first batch the archive would process. ASC
 		// is also the only safe direction here — archive WHERE clauses select OLD

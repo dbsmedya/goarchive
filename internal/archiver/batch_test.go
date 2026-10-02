@@ -29,7 +29,7 @@ func TestRootIDFetcher_CountRemaining_WithCheckpoint(t *testing.T) {
 	assert.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	f := NewRootIDFetcher(db, "orders", "id", "", 100, int64(500))
+	f := NewRootIDFetcher(db, "orders", "id", "1=1", 100, int64(500))
 	f.UpdateCheckpoint(int64(900))
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM ` + "`orders`" + ` WHERE \(1=1\) AND ` + "`id`" + ` > \?`).
 		WithArgs(int64(900)).
@@ -46,13 +46,14 @@ func TestRootIDFetcher_CountRemaining_QueryError(t *testing.T) {
 	assert.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	f := NewRootIDFetcher(db, "orders", "id", "1=1", 100, nil)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM`).
 		WillReturnError(fmt.Errorf("table gone"))
 
 	_, err = f.CountRemaining(context.Background())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "orders")
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
@@ -77,7 +78,7 @@ func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 			name:       "Basic fetch with integer IDs",
 			rootTable:  "users",
 			pkColumn:   "user_id",
-			criteria:   "",
+			criteria:   "1=1",
 			batchSize:  3,
 			checkpoint: 0,
 			mockSetup: func() {
@@ -114,7 +115,7 @@ func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 			name:       "Empty result",
 			rootTable:  "users",
 			pkColumn:   "id",
-			criteria:   "",
+			criteria:   "1=1",
 			batchSize:  5,
 			checkpoint: 999,
 			mockSetup: func() {
@@ -130,7 +131,7 @@ func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 			name:       "Database error",
 			rootTable:  "users",
 			pkColumn:   "id",
-			criteria:   "",
+			criteria:   "1=1",
 			batchSize:  5,
 			checkpoint: 0,
 			mockSetup: func() {
@@ -144,7 +145,7 @@ func TestRootIDFetcher_FetchNextBatch(t *testing.T) {
 			name:       "Custom PK column",
 			rootTable:  "products",
 			pkColumn:   "sku",
-			criteria:   "",
+			criteria:   "1=1",
 			batchSize:  2,
 			checkpoint: "A-000",
 			mockSetup: func() {
@@ -197,7 +198,7 @@ func TestRootIDFetcher_NilCheckpointStartsUnbounded(t *testing.T) {
 		WithArgs(3).
 		WillReturnRows(rows)
 
-	fetcher := NewRootIDFetcher(db, "users", "id", "", 3, nil)
+	fetcher := NewRootIDFetcher(db, "users", "id", "1=1", 3, nil)
 	ids, err := fetcher.FetchNextBatch(context.Background())
 
 	assert.NoError(t, err)
@@ -215,7 +216,7 @@ func TestRootIDFetcher_EmptyStringCheckpointStartsUnbounded(t *testing.T) {
 		WithArgs(2).
 		WillReturnRows(rows)
 
-	fetcher := NewRootIDFetcher(db, "users", "id", "", 2, "")
+	fetcher := NewRootIDFetcher(db, "users", "id", "1=1", 2, "")
 	ids, err := fetcher.FetchNextBatch(context.Background())
 
 	assert.NoError(t, err)

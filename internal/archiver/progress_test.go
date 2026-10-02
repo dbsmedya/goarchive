@@ -194,7 +194,7 @@ func TestStartProgress_CountsSeedsAndStops(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	f := NewRootIDFetcher(db, "orders", "id", "1=1", 100, nil)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM ` + "`orders`").
 		WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(250))
 
@@ -225,7 +225,7 @@ func TestStartProgress_CountFailureFailsTheRun(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	assert.NoError(t, err)
 	defer func() { _ = db.Close() }()
-	f := NewRootIDFetcher(db, "orders", "id", "", 100, nil)
+	f := NewRootIDFetcher(db, "orders", "id", "1=1", 100, nil)
 	mock.ExpectQuery(`SELECT COUNT\(\*\)`).WillReturnError(fmt.Errorf("boom"))
 
 	tr, stopFn, err := startProgress(context.Background(), time.Second, f, batchFull, 0, 0, io.Discard)
@@ -233,6 +233,7 @@ func TestStartProgress_CountFailureFailsTheRun(t *testing.T) {
 	assert.Nil(t, tr)
 	assert.NotNil(t, stopFn)
 	stopFn()
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 type writerFunc func(p []byte) (int, error)

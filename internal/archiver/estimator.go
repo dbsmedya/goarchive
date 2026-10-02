@@ -93,8 +93,12 @@ func (e *Estimator) Estimate(ctx context.Context) (*EstimateResult, error) {
 
 // estimateRootCount counts matching root records.
 func (e *Estimator) estimateRootCount(ctx context.Context) (int64, error) {
+	predicate, err := wherePredicate(e.jobCfg.Where)
+	if err != nil {
+		return 0, err
+	}
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
-		sqlutil.QuoteIdentifier(e.jobCfg.RootTable), wherePredicate(e.jobCfg.Where))
+		sqlutil.QuoteIdentifier(e.jobCfg.RootTable), predicate)
 
 	var count int64
 	if err := e.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -109,6 +113,10 @@ func (e *Estimator) estimateRootCount(ctx context.Context) (int64, error) {
 // job's WHERE at the innermost level. FK_INDEX_CHECK guarantees the FK columns
 // are indexed, so these subqueries stay cheap.
 func (e *Estimator) estimateChildCount(ctx context.Context, table string) (int64, error) {
+	predicate, err := wherePredicate(e.jobCfg.Where)
+	if err != nil {
+		return 0, err
+	}
 	type hop struct{ parent, fk, ref string }
 	var hops []hop
 	for cur := table; cur != e.graph.Root; {
@@ -127,7 +135,7 @@ func (e *Estimator) estimateChildCount(ctx context.Context, table string) (int64
 	// hops runs child→root; hops[len-1].parent is the root. Build inside-out.
 	sub := fmt.Sprintf("SELECT %s FROM %s WHERE %s",
 		sqlutil.QuoteIdentifier(hops[len(hops)-1].ref),
-		sqlutil.QuoteIdentifier(e.graph.Root), wherePredicate(e.jobCfg.Where))
+		sqlutil.QuoteIdentifier(e.graph.Root), predicate)
 	for i := len(hops) - 2; i >= 0; i-- {
 		sub = fmt.Sprintf("SELECT %s FROM %s WHERE %s IN (%s)",
 			sqlutil.QuoteIdentifier(hops[i].ref),
