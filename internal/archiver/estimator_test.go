@@ -123,6 +123,7 @@ func TestEstimator_Estimate_WithChildTables(t *testing.T) {
 	jobCfg := &config.JobConfig{
 		RootTable:  "customers",
 		PrimaryKey: "id",
+		Where:      "1=1",
 		Relations: []config.Relation{
 			{
 				Table:          "orders",
@@ -165,6 +166,7 @@ func TestEstimator_Estimate_RootCountError(t *testing.T) {
 	jobCfg := &config.JobConfig{
 		RootTable:  "customers",
 		PrimaryKey: "id",
+		Where:      "1=1",
 	}
 	g := createSimpleGraph()
 	estimator := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
@@ -191,6 +193,7 @@ func TestEstimator_Estimate_ChildCountError(t *testing.T) {
 	jobCfg := &config.JobConfig{
 		RootTable:  "customers",
 		PrimaryKey: "id",
+		Where:      "1=1",
 		Relations: []config.Relation{
 			{
 				Table:          "orders",
@@ -230,20 +233,19 @@ func TestEstimator_Estimate_EmptyWhere(t *testing.T) {
 	jobCfg := &config.JobConfig{
 		RootTable:  "customers",
 		PrimaryKey: "id",
-		Where:      "", // Empty WHERE clause - should default to "1=1"
+		Where:      "", // Config validation refuses this; the engine must too
 	}
 	g := createSimpleGraph()
 	estimator := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
 
-	// Mock should query with "WHERE (1=1)"
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `customers` WHERE \\(1=1\\)").
-		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(100))
-
+	// No query is expected: an empty where is refused before any statement.
 	ctx := context.Background()
 	result, err := estimator.Estimate(ctx)
 
-	require.NoError(t, err)
-	assert.Equal(t, int64(100), result.RootCount)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to estimate root count")
+	assert.Contains(t, err.Error(), "where is empty")
+	assert.Nil(t, result)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -291,6 +293,7 @@ func TestEstimator_Estimate_BatchCalculation(t *testing.T) {
 			jobCfg := &config.JobConfig{
 				RootTable:  "customers",
 				PrimaryKey: "id",
+				Where:      "1=1",
 			}
 			g := createSimpleGraph()
 			estimator := NewEstimator(db, cfg, jobCfg, g, logger.NewDefault())
