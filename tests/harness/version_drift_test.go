@@ -193,50 +193,52 @@ func TestVersionSitesMatchReleaseVersion(t *testing.T) {
 	rejecting := []struct {
 		name  string
 		files func(t *testing.T) map[string]string
-		want  string // a substring the drift error must contain, specific enough that the
-		// pointer every message carries (CLAUDE.md → Versioning) cannot satisfy it
+		want  []string // substrings the drift error must contain, specific enough that the
+		// pointer every message carries (CLAUDE.md → Versioning) cannot satisfy them
 	}{
 		{"root_go_differs", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[rootGoPath] = replace(t, rootGo, "9.8.7-community", "9.8.6-community")
 			return f
-		}, rootGoPath},
+		}, []string{rootGoPath, `"9.8.6-community"`, `want RELEASE_VERSION "9.8.7-community"`}},
 		{"readme_version_differs", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[readmePath] = replace(t, readme, "`9.8.7-community` (**stable**)", "`9.8.6-community` (**stable**)")
 			return f
-		}, "README.md:1"},
+		}, []string{"README.md:1", `"9.8.6-community"`, `want RELEASE_VERSION "9.8.7-community"`}},
 		{"stable_line_differs_on_stable", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[readmePath] = replace(t, readme, "`9.8.7-community` — fixture", "`9.8.6-community` — fixture")
 			return f
-		}, "README.md:2"},
+		}, []string{"README.md:2", `"9.8.6-community"`, `want RELEASE_VERSION "9.8.7-community"`, "which is stable"}},
 		{"spread_other_file", func(t *testing.T) map[string]string {
 			f := aligned()
 			f["docs/x.md"] = "Retired since v9.8.7-community.\n"
 			return f
-		}, "docs/x.md:1"},
+		}, []string{"docs/x.md:1"}},
 		{"spread_third_readme_line", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[readmePath] = readme + "Built from 9.8.7-community.\n"
 			return f
-		}, "README.md:3"},
+		}, []string{"README.md:3"}},
 		{"anchor_missing", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[makefilePath] = "build:\n\tgo build ./...\n"
 			return f
-		}, "Makefile has no RELEASE_VERSION line"},
+		}, []string{"Makefile has no RELEASE_VERSION line"}},
 		{"site_missing", func(t *testing.T) map[string]string {
 			f := aligned()
 			f[rootGoPath] = "package cmd\n"
 			return f
-		}, rootGoPath + " has no Version"},
+		}, []string{rootGoPath + " has no Version"}},
 	}
 	for _, c := range rejecting {
 		t.Run(c.name, func(t *testing.T) {
 			err := checkVersionDrift(c.files(t))
-			if err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Fatalf("%s: checkVersionDrift = %v, want an error containing %q", c.name, err, c.want)
+			for _, w := range c.want {
+				if err == nil || !strings.Contains(err.Error(), w) {
+					t.Fatalf("%s: checkVersionDrift = %v, want an error containing %q", c.name, err, w)
+				}
 			}
 		})
 	}
