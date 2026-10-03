@@ -5,19 +5,15 @@ GoArchive's preflight validation is built on
 and comparing MySQL schema, privilege, and metadata facts.
 
 This page explains **why that dependency exists and what it provides**. It is background,
-not a task: if you are upgrading, read [Upgrading to 2.0](README_UPGRADING_2_0.md); if you
-want to know what each check does, read [Validation & Preflight](README_VALIDATION.md).
+not a task.
 
 ## The problem it solves
 
-Every one of GoArchive's 19 preflight checks answers a question about MySQL metadata —
-does this table exist, is it InnoDB, is this column the primary key, can this account
-prove it holds `DELETE` here, does a foreign key point into the archive graph from outside
-it. Through 1.8, GoArchive answered all of those itself, with hand-written
-`information_schema` queries scattered across the preflight code.
-
-That turned out to be the wrong place for the work. Reading MySQL metadata *correctly* is
-a specialist problem with sharp edges that have nothing to do with archiving:
+Every GoArchive preflight check answers a question about MySQL metadata — does this table
+exist, is it InnoDB, is this column the primary key, can this account prove it holds
+`DELETE` here, does a foreign key point into the archive graph from outside it. Reading
+MySQL metadata *correctly* is a specialist problem with sharp edges that have nothing to do
+with archiving:
 
 - `information_schema.TABLES.TABLE_NAME` collates case-**sensitively** while
   `COLUMNS.COLUMN_NAME` collates case-**insensitively** — two columns in the same database,
@@ -28,8 +24,9 @@ a specialist problem with sharp edges that have nothing to do with archiving:
 - InnoDB's own foreign-key registry is complete but requires `PROCESS`;
   `information_schema` is always readable but only shows constraints on tables the account
   is already privileged for — so a fallback silently answers a weaker question.
-- Integer display widths (`bigint(20)`) are cosmetic and no longer reported by MySQL
-  8.0.17+, except `tinyint(1)`, which aliases `BOOLEAN` and is not cosmetic at all.
+- Integer display widths (`bigint(20)`) are cosmetic and not reported by MySQL 8.0.17 and
+  later; `tinyint(1)` is the exception — the library reports it as a difference, and
+  GoArchive's policy accepts it.
 
 Each of these was a latent false-pass in a data-deleting tool. Extracting them into a
 library means one place owns MySQL correctness, and it is versioned, documented, and
@@ -40,10 +37,12 @@ tested against several MySQL releases instead of being rediscovered per check.
 | Package | GoArchive uses it for |
 |---|---|
 | `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
-| `pkg/sqlutil` | Identifier quoting and validation. This replaced GoArchive's own `internal/sqlutil`, which no longer exists. |
+| `pkg/sqlutil` | Identifier quoting and validation. |
+| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating). |
 
 The library also ships a registry of documented MySQL version quirks and records where
-behaviour diverges across releases, probed against **MySQL 8.0.46, 8.4.9, and 9.7.1**.
+behaviour diverges across the 8.0, 8.4 and 9.7 lines; supported versions are in
+[Environment](README_LIMITATIONS.md#environment).
 
 ## The division of labour
 
@@ -53,17 +52,13 @@ The split is deliberate and it is the reason the integration is safe:
   table, and it never decides that a schema difference is fatal.
 - **GoArchive owns policy.** Whether a destination may be looser than its source, which
   primary-key types are acceptable for a root table, whether a difference blocks a copy —
-  all of that stays here, in GoArchive, where the consequences are understood.
+  all of that stays here, in GoArchive, where the consequences are understood (the rules:
+  [Schema compatibility](README_VALIDATION.md#schema-compatibility-rules)).
 - **GoArchive owns its own session.** Properties of the connection GoArchive itself
   opened — the UTC session it pins, the server identity it refuses to archive into
   itself — are read by GoArchive-owned probes, listed under *Retained
   application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md). They
   inspect what the session reports, not the metadata catalog the library owns.
-
-A concrete example: the library reports that a source column is `NULL`-able and the
-destination is `NOT NULL`. It does not rank that. GoArchive knows the copy inserts
-explicit values, so a *looser* destination is safe and a *stricter* one is fatal — and
-that judgement lives in GoArchive.
 
 ## The consumer boundary
 
@@ -86,15 +81,9 @@ there:**
 grep dbsgomysql go.mod
 ```
 
-The 1.9.x release-candidate series validated this integration against successive
-**pre-1.0** library releases, and GoArchive `2.0.0-community` was the first stable
-release to pin the library's **v1.0.0** contract — the RC series exercised that contract
-against real archival workloads before its promotion to the production line. Later
-releases track the library's stable line; the exact tag, as always, is the one in `go.mod`.
-
 ## See also
 
 - [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
-- [Validation & Preflight](README_VALIDATION.md) — all 20 named checks
-- [Permissions](README_PERMISSIONS.md) — the grant recipe and the invariants preflight enforces
+- [Validation & Preflight](README_VALIDATION.md) — every check
+- [Permissions](README_PERMISSIONS.md) — the privilege matrix and grant recipes
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)

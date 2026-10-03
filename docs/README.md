@@ -5,14 +5,14 @@ Detailed specifications for GoArchive. Start at the
 
 | Document | Covers |
 |----------|--------|
-| [Configuration](README_CONFIGURATION.md) | Every config block, option, default, and precedence rule; identifier rules; tracking tables |
-| [Validation & Preflight](README_VALIDATION.md) | All 20 named checks (19 preflight, plus the connection-time identity check), the check-to-command matrix, schema compatibility rules, dry-run payload validation |
-| [Permissions](README_PERMISSIONS.md) | Privilege matrix, grant recipes, the invariants preflight enforces, troubleshooting |
-| [Limitations](README_LIMITATIONS.md) | Hard constraints, model limitations, operational cautions, trust model |
-| [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning, pausing, crash recovery and resume semantics |
+| [Configuration](README_CONFIGURATION.md) | Every config block, option, default, and precedence rule; the `where` rules; identifier rules |
+| [Validation & Preflight](README_VALIDATION.md) | Every preflight and connection-time check, the check-to-command matrix, schema compatibility rules, SHA256 verification, dry-run payload validation |
+| [Permissions](README_PERMISSIONS.md) | Grant recipes, the privilege matrix, the provable-grant rule, troubleshooting |
+| [Limitations](README_LIMITATIONS.md) | Hard constraints and the run contract, model limitations, operational cautions, trust model, supported versions |
+| [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning and memory, pausing, replication gating, crash recovery and resume, concurrency and locking |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
-| [Testing](README_TESTING.md) | Test layers and how to run them |
+| [Testing](README_TESTING.md) | What each test layer proves |
 | [Upgrading to 2.2](README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
 | [Upgrading to 2.1](README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
 | [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
@@ -23,8 +23,8 @@ Detailed specifications for GoArchive. Start at the
 | Location | Covers |
 |----------|--------|
 | [`../README.md`](../README.md) | Overview, philosophy, basic usage, architecture |
-| [`../INSTALL.md`](../INSTALL.md) | Installation and build reference |
-| [`../tests/README.md`](../tests/README.md) | **Source of truth** for the full integration and E2E test matrix |
+| [`../INSTALL.md`](../INSTALL.md) | Installing (release binary, published image, from source) and building |
+| [`../tests/README.md`](../tests/README.md) | **Source of truth** for running every test layer |
 | [`../configs/archiver.yaml.example`](../configs/archiver.yaml.example) | Annotated example configuration |
 
 ## Where to start
@@ -34,7 +34,5 @@ Detailed specifications for GoArchive. Start at the
 - **A preflight check is failing** → [Validation & Preflight](README_VALIDATION.md)
 - **Deciding whether GoArchive fits your schema** → [Limitations](README_LIMITATIONS.md)
 - **A run is too slow, or needs pausing or resuming** → [Operations](README_OPERATIONS.md)
-- **Upgrading to 2.2, and startup refuses your tracking tables** → [Upgrading to 2.2](README_UPGRADING_2_2.md)
-- **Upgrading, and validation now rejects a key that used to work** → [Upgrading to 2.1](README_UPGRADING_2_1.md)
 - **Maintaining the tracking tables, or clearing a crashed job** → [Job Tracking Schema](README_JOBS_SCHEMA.md)
-- **Removing duplicate rows** → [Duplicate cleanup](README_DUPLICATE_CLEANUP.md)
+- **Upgrading** → the upgrade note for your target release, in the table above

@@ -34,8 +34,8 @@ logging, and zero-lock batch processing.
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a
 separate product.
 
-The current version is in `INSTALL.md`; `README.md` also states which release is stable. The
-RC series validating the dbsgomysql integration ahead of 2.0 is described in
+The current version is the `Makefile`'s `RELEASE_VERSION` (see *Versioning* below); `README.md` also states which release is stable.
+The RC series validating the dbsgomysql integration ahead of 2.0 is described in
 `docs/README_dbsgomysql.md`.
 
 **Preflight validation comes from `github.com/dbsmedya/dbsgomysql`**, not from hand-rolled
@@ -67,7 +67,7 @@ them — a missed one ships mislabeled binaries:
 | `Makefile` → `RELEASE_VERSION` | Fallback version stamped into binaries when HEAD has no exact-match git tag. **The one most often missed.** |
 | `cmd/goarchive/cmd/root.go` → `Version` | Default `Version` constant (overridden by `-ldflags` at build time) |
 | `README.md` (the **Version** line) | User-facing docs |
-| `README.md` (the **Stable release** line) | User-facing docs. Must equal `RELEASE_VERSION` when that is a stable version; not compared during a `-RC`/`-alpha`/`-beta` prerelease series, when it keeps naming the previous stable release. It also names the dbsgomysql version, so it changes when the `go.mod` pin changes, too |
+| `README.md` (the **Stable release** line) | User-facing docs. Must equal `RELEASE_VERSION` when that is a stable version; not compared during a `-RC`/`-alpha`/`-beta` prerelease series, when it keeps naming the previous stable release. |
 
 `TestVersionSitesMatchReleaseVersion` (`tests/harness/version_drift_test.go`) is the guard: it
 fails `make check` when a site differs from `RELEASE_VERSION`, or when the release version
