@@ -95,12 +95,12 @@ Complete end-to-end archive, purge, and copy-only workflows in the Community edi
 - **Automatic foreign key dependency resolution** - Kahn's algorithm orders the related tables, so no operation ever orphans a row
 - **Referential integrity checks** - Detects foreign keys from outside the archive set pointing into it, including across schemas, and refuses to run rather than let an external `ON DELETE CASCADE` delete uncopied rows
 - **Preflight before any data moves** - DELETE triggers, destination INSERT triggers, incompatible destination schemas, composite primary keys and more, all [enumerated in Validation & Preflight](docs/README_VALIDATION.md)
-- **Verification before deletion** - Optional row count or SHA256 comparison between source and destination; a mismatch aborts before anything is deleted
+- **Verification before deletion** - Optional row count or SHA256 comparison between source and destination, per batch; a mismatch stops that batch before its delete, and batches already completed stay archived ([SHA256 verification](docs/README_VALIDATION.md#sha256-verification))
 - **Crash recovery and resume** - Per-root status and a batch checkpoint persisted in MySQL; an interrupted run resumes where it stopped instead of restarting
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table
-- **Dry-run mode** - Preview the execution plan and filtered row counts without making changes
+- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table — except that `copy-only --force` proceeds past a held lock whose heartbeat is stale ([`--force`](docs/README_OPERATIONS.md#--force-only-matters-for-copy-only))
+- **Dry-run mode** - Preview the execution plan and filtered row counts; never deletes from the source ([Dry-run payload validation](docs/README_VALIDATION.md#dry-run-payload-validation))
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
 
@@ -296,10 +296,10 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 
 ### Processing pipeline
 
-1. **Preflight** - [every check](docs/README_VALIDATION.md) runs before any state is written
+1. **Preflight** - the checks that apply to the command run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
 2. **Graph build** - Kahn's algorithm puts parents before children for the copy; the delete order is its exact reverse (`plan` prints both)
 3. **Batch loop** - fetch root IDs → BFS discovery of every child row → copy transaction → verify → delete → checkpoint. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
-4. **Safety** - one run per job name and per root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
+4. **Safety** - one run per job name and per root table, except `copy-only --force` past a stale held lock ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
 
 ### Key Components
 
