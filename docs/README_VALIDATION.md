@@ -267,11 +267,16 @@ flag for this one.
 
 **Declared foreign keys are a floor, not a ceiling.** A relation does not need a foreign key in
 the database: schemas whose relations live only in the application (ORM-managed) are archived
-the same way, and you declare each relation in the config. What the checks below guarantee
-together is this: every foreign key the database **does** declare into or within the graph is
-modelled by a relation that matches it, and GoArchive proved it saw all of them. A relation
-with no declared foreign key is checked by none of them, so its correctness and the index on
-its join column are yours; index the join column, or each delete scans the child table.
+the same way, and you declare each relation in the config. When the checks that apply to a
+command pass, they guarantee two things about the foreign keys the database **does** declare:
+no table outside the graph references a graph table (`FK_COVERAGE_CHECK`), and every foreign
+key between two different graph tables matches a relation (`INTERNAL_FK_COVERAGE`).
+`FK_COVERAGE_VISIBILITY_CHECK` proves GoArchive saw all of them; `copy-only` skips that proof.
+Self-referencing foreign keys are outside the guarantee
+([`INTERNAL_FK_COVERAGE`](#internal_fk_coverage)). A relation with no declared foreign key is
+checked by none of them, so its correctness and the index on its join column are yours: discovery
+selects child rows by the join column, so without an index each discovery query scans the child
+table.
 
 ### `FK_INDEX_CHECK`
 
@@ -633,8 +638,10 @@ reject fails in `dry-run` first, with the same MySQL error.
 
 Samples use raw temporal projections and go through the runtime copy's
 [diagnostic collection and subdivision](README_OPERATIONS.md#insert-diagnostics-and-subdivision)
-inside one rollback-only InnoDB transaction, and always roll back. Complete duplicate-only
-diagnostics are accepted solely because of that rollback, and the notice says so: the sample
+inside one transaction that always ends in `ROLLBACK`. The rollback undoes the sample only on
+a transactional (InnoDB) destination; MyISAM, MEMORY and ARCHIVE keep the rows
+([`STORAGE_ENGINE_CHECK`](#storage_engine_check)). Complete duplicate-only diagnostics are
+accepted solely because of that rollback, and the notice says so: the sample
 cannot prove destination equality or readiness for every job row. Sample observations are
 reported separately from committed-copy totals. Payload and placeholder estimates are based
 on the configured batch, not the smaller executed INSERTs.
@@ -649,7 +656,7 @@ This runs even for empty tables, so a wide table is caught before it holds data.
 ### `max_allowed_packet` check — measured
 
 The dry-run copies a `batch_size`-sized sample into a destination transaction and
-**immediately rolls it back**. Nothing is persisted. If a table's row width
+**immediately rolls it back**, which persists nothing on an InnoDB destination. If a table's row width
 exceeds the packet limit it fails fast and tells you to lower `batch_size`.
 
 > The packet check is **approximate for child tables**: child rows are sampled
