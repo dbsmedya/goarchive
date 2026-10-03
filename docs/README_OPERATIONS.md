@@ -253,7 +253,8 @@ Notes:
 - Honoured by `archive`, `purge`, and `copy-only`, at the start of every batch —
   **including recovery batches**, checked before each recovery chunk.
 - The wait is **interruptible**: a first `Ctrl-C` or `SIGTERM` ends the pause and stops the
-  run at that batch boundary, with nothing left pending; a second signal aborts immediately.
+  run before the next batch or recovery chunk starts; rows not yet processed keep their
+  recoverable status for the next run. A second signal aborts immediately.
 
 ---
 
@@ -327,10 +328,10 @@ goarchive archive -c archiver.yaml --job archive_old_orders
 
 ### Graceful shutdown
 
-The first `SIGTERM` or `SIGINT` requests a stop: normal processing stops after the batch in
-flight completes, and recovery stops after the recovery chunk in flight completes, leaving
-nothing non-terminal behind. A second signal aborts in-flight work, which the next run
-replays; a third terminates the process.
+The first `SIGTERM` or `SIGINT` requests a stop: the normal batch or recovery chunk in flight
+completes, and no new one starts. Recovery chunks not yet started keep their prior-run status
+(`pending` or `copied`) for the next run to replay. A second signal aborts in-flight work, which
+the next run replays; a third terminates the process.
 
 ### Checkpoint advancement
 

@@ -174,6 +174,13 @@ GoArchive supports **1:1** and **1:N** (one-to-many) relationships.
   a tree — pass preflight, because no check rejects them, but the model cannot archive the
   hierarchy.
 
+#### Relations must describe ownership
+
+Archive and purge delete the child primary keys discovered for the current root batch; they do
+not check whether another root still needs them. If one child is reachable from several roots
+through its one configured relation, deduplication within a batch does not postpone its
+deletion.
+
 #### A job name is not bound to its source
 
 A job name is bound to its command and root table
@@ -228,8 +235,10 @@ concurrently.
 #### Sequential by design
 
 One batch at a time within a run; **there is no parallelism in Community edition.** A second
-run of the same job name, or of any job on the same root table, is refused; jobs with
-different names and root tables can run at the same time
+run of the same job name, or of any job on the same root table, is refused — except that
+`copy-only --force` proceeds past a held lock whose heartbeat is stale
+([`--force`](README_OPERATIONS.md#--force-only-matters-for-copy-only)). Jobs with different names
+and root tables can run at the same time
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
 
 #### No built-in metrics or telemetry
