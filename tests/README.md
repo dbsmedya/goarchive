@@ -20,9 +20,9 @@ It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `dea
 integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`, and ends with a
 summary:
 
-Unit-test ownership rules, typed-fake examples, and reproducible coverage commands live in
-[`docs/README_TESTING.md`](../docs/README_TESTING.md); coverage is measured from the current
-checkout rather than copied into a hand-maintained snapshot.
+Unit-test ownership rules and typed-fake examples live in
+[`docs/README_TESTING.md`](../docs/README_TESTING.md); coverage is measured on demand
+([Coverage on demand](#coverage-on-demand)).
 
 Each invocation prints its unique directory beneath `tests/results/gate/` before
 checking credentials. Earlier runs remain available and are never reused as current evidence.
@@ -329,6 +329,11 @@ instructions if it is missing.
 set -a; source tests/.env; set +a
 ```
 
+There is no built-in default password. `tests/compose.yml` interpolates `MYSQL_ROOT_PASSWORD`
+from `tests/.env` when the containers are **created**, so exporting a different value afterwards
+does not change them — it only breaks the connection. To change the password, edit `tests/.env`
+and recreate the containers.
+
 Forgetting is safe in the sense that it cannot pass silently: the integration suites
 **fail** with a message naming the fix. They do not skip. A skipped suite prints `ok`
 and exits 0, which is indistinguishable from a green run unless you pass `-v` and read
@@ -412,6 +417,25 @@ go build -o bin/goarchive ./cmd/goarchive
 ./scripts/run-tests.sh --unit-only          # or: go test ./... -count=1
 ```
 
+`make test` and `make test-unit` (which adds `-race`) are unit only as well: neither passes the
+`integration` tag.
+
+### Coverage on demand
+
+Coverage is generated from the current checkout instead of maintained as a percentage
+snapshot. From the repository root:
+
+```bash
+go test -short ./... -count=1 -coverprofile=/tmp/goarchive-short.cover
+go tool cover -func=/tmp/goarchive-short.cover
+go tool cover -html=/tmp/goarchive-short.cover -o /tmp/goarchive-short.html
+```
+
+For focused archiver work, replace `./...` with `./internal/archiver`. Keep generated
+profiles and HTML outside the repository. A review may record the measured command and
+result, but documentation must not present a percentage as current unless that same change
+generated it.
+
 ### Integration tests
 
 Real-DB tests behind the `integration` build tag. `--setup` reseeds first so the
@@ -420,6 +444,44 @@ destination starts empty (see the Overview note):
 ```bash
 ./scripts/run-tests.sh --setup --integration-only
 ```
+
+A direct `go test` needs `-tags=integration`; without it the integration tests are not
+compiled, and `go test` prints `ok` with no test run.
+
+#### The integration config file
+
+The tests built on `SetupIntegrationTest` — among them the eight
+`TestOrchestrator_*_Integration` tests that `make test-integration` runs (what each covers:
+[Testing Reference](../docs/README_TESTING.md#orchestrator-integration-tests)) — read
+`internal/archiver/integration_test.yaml`. It is tracked, so a clone already has it:
+
+| Key | Template value |
+|---|---|
+| `databases[source]` | `127.0.0.1:3305`, user `root`, database `goarchive_test` (created if absent) |
+| `databases[destination]` | `127.0.0.1:3307`, user `root`, database `goarchive_test` (created if absent) |
+| `password` | `${MYSQL_ROOT_PASSWORD}`, expanded from the environment, so source `tests/.env` first |
+| `force` | `false`; `true`, or `INTEGRATION_FORCE=true`, drops and recreates both databases |
+| `fixture_path` | `testdata/customer_orders.sql`, relative to the file |
+
+To test against other servers, copy the file, edit the copy, and point `INTEGRATION_CONFIG` at
+it:
+
+```bash
+cp internal/archiver/integration_test.yaml /path/to/my-config.yaml   # edit hosts and credentials
+set -a; source tests/.env; set +a
+INTEGRATION_CONFIG=/path/to/my-config.yaml INTEGRATION_FORCE=true \
+  go test -v -count=1 -tags=integration -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+```
+
+#### Value-preservation profile tests
+
+Profile-only tests deliberately skip on the ordinary estate. Disposable MySQL 8.0/8.4/9.7
+profiles cover raw/empty SQL modes, capacities 0/1, limited users and notes initialized globally
+to zero before production connections. The notes test requires two held physical sessions and a
+replacement, all global0/session1; setting session notes on a reused production pool is not
+valid evidence. Every matrix cell routes both `INTEGRATION_CONFIG` and `TEST_*`, requires its
+named PASS lines and refuses SKIPs. The CLI witness among them is an E2E test:
+[e2e/README.md](e2e/README.md#focused-value-preservation-cli-witnesses).
 
 ### Deterministic interrupted-state tests
 
@@ -751,3 +813,15 @@ The short version:
 Measure every row count from a real run rather than computing it — Sakila's PK
 columns are not contiguous, which is why `payment_id <= 2000` yields 1999 and
 `payment_id <= 8024` yields 8022.
+
+### Integration tests that do not leak state
+
+New orchestrator integration tests should clean `archiver_job` and the per-job
+`archiver_job_log_<id>` table for their job names before and after execution, so
+heartbeat and lock state cannot leak between tests. Use
+`testsupport.CleanupArchiverState`, which resolves the job id and drops the
+per-job table.
+
+Destructive CLI tests that intentionally use broken-schema fixtures must pass
+`--skip-validate-preflight`, since `archive`, `purge`, and `copy-only` run
+preflight at startup.

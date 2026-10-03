@@ -1,10 +1,13 @@
 # Installation Guide
 
-This document provides detailed instructions for installing, building, and testing GoArchive.
+How to install GoArchive from a release binary, the published image, or source, and how to
+build it.
 
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
+- [Install a Release Binary](#install-a-release-binary)
+- [Run the Published Image](#run-the-published-image)
 - [Installation from Source](#installation-from-source)
 - [Building with Make](#building-with-make)
 - [Docker Build](#docker-build)
@@ -18,13 +21,48 @@ This document provides detailed instructions for installing, building, and testi
 
 - **Go** and **MySQL** — supported versions are listed under
   [Environment](docs/README_LIMITATIONS.md#environment), the single source of truth for both
-- **Git**: For cloning the repository
+- **Git**: For building from source
 
-### Optional (for development)
+### Optional
 
-- **Docker & Docker Compose**: For running integration tests
+- **Docker**: For the published image or a local image build
 - **Make**: For using the provided Makefile targets
 - **govulncheck**: For vulnerability scanning
+
+## Install a Release Binary
+
+Each release on the [Releases page](https://github.com/dbsmedya/goarchive/releases) publishes
+binaries named `goarchive-<version>-<os>-<arch>` (linux and darwin for amd64 and arm64, and
+windows-amd64 with an `.exe` suffix) and a `checksums.txt`. Its tag is `v<version>`. Replace
+`<version>` and the platform below with the release and platform you want:
+
+```bash
+# With the GitHub CLI
+gh release download v<version> -R dbsmedya/goarchive \
+  -p checksums.txt -p 'goarchive-<version>-linux-amd64'
+
+# Or with curl
+curl -fsSLO https://github.com/dbsmedya/goarchive/releases/download/v<version>/checksums.txt
+curl -fsSLO https://github.com/dbsmedya/goarchive/releases/download/v<version>/goarchive-<version>-linux-amd64
+
+# Verify, then run
+shasum -a 256 -c checksums.txt --ignore-missing
+chmod +x goarchive-<version>-linux-amd64
+./goarchive-<version>-linux-amd64 --version
+```
+
+## Run the Published Image
+
+Each release is also published as `ghcr.io/dbsmedya/goarchive:<version>`, tagged with the release
+version without the leading `v`. Use a version tag:
+
+```bash
+docker run --rm ghcr.io/dbsmedya/goarchive:<version> --version
+
+# With a config file mounted
+docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
+  ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml plan --job archive_old_orders
+```
 
 ## Installation from Source
 
@@ -45,17 +83,16 @@ go mod verify
 ### 3. Build the Binary
 
 ```bash
-# Simple build
 go build -o goarchive ./cmd/goarchive
 
-# Or move to your PATH (optional)
+# Optional: put it on your PATH (or move it to $HOME/.local/bin without sudo)
 sudo mv goarchive /usr/local/bin/
 ```
 
 ### 4. Verify Installation
 
 ```bash
-./goarchive version
+./goarchive --version
 ```
 
 ## Building with Make
@@ -74,7 +111,7 @@ make dev
 # Install to $GOPATH/bin
 make install
 
-# Build release binaries for all platforms
+# Build release binaries for linux and darwin (amd64, arm64)
 make release
 
 # Clean build artifacts
@@ -106,158 +143,21 @@ By default, the binary is built to `bin/goarchive` with version information inje
 
 - Version: From the git tag, or else the `Makefile`'s `RELEASE_VERSION`
 - Commit: Short git commit hash
-- Build Time: UTC timestamp
 
 ## Docker Build
 
-### Build Docker Image
+To build the image from a checkout instead of using the published one. Without
+`--build-arg VERSION`, the binary reports version `dev`:
 
 ```bash
-# Build with default version
-docker build -t goarchive:latest .
-
-# Build with specific version
-docker build --build-arg VERSION=1.0.0 --build-arg COMMIT=abc123 -t goarchive:1.0.0 .
-```
-
-### Run with Docker
-
-```bash
-# Show help
-docker run --rm goarchive:latest
-
-# Run with config file mounted
-docker run --rm -v $(pwd)/archiver.yaml:/root/archiver.yaml goarchive:latest -c /root/archiver.yaml plan --job archive_old_orders
+docker build --build-arg VERSION=<version> --build-arg COMMIT=$(git rev-parse --short HEAD) \
+  -t goarchive:<version> .
+docker run --rm goarchive:<version> --version
 ```
 
 ## Running Tests
 
-### Unit Tests
-
-Unit tests are fast and don't require a database.
-
-```bash
-# Run all unit tests
-go test -v -short ./...
-
-# Or using Make
-make test-unit
-```
-
-### Integration Tests
-
-Integration tests require MySQL databases. You can use Docker for local testing.
-
-#### Quick Start with Docker
-
-```bash
-# 1. Create the test credentials file (the runner creates it if absent)
-cp tests/dot.env tests/.env      # then edit MYSQL_ROOT_PASSWORD if you want your own
-
-# 2. Start test databases — docker compose reads tests/.env, so it must exist first
-make test-up
-
-# Wait a few seconds for databases to be ready...
-
-# 3. Load the same credentials into your shell
-set -a; source tests/.env; set +a
-
-# 4. Run integration tests
-make test-integration
-
-# 5. Stop test databases when done
-make test-down
-```
-
-> There is no built-in default password. `tests/compose.yml` interpolates
-> `MYSQL_ROOT_PASSWORD` from `tests/.env` when the containers are **created**, so
-> exporting a different value afterwards does not change them — it only breaks the
-> connection. `tests/.env` is gitignored; the tracked template is `tests/dot.env`.
-> See [tests/README.md](tests/README.md) for the full matrix.
-
-#### Manual Test Database Setup
-
-If you prefer to use your own MySQL instances:
-
-1. **Create the test databases** (source and destination on different ports or hosts)
-
-2. **Configure credentials** by creating `internal/archiver/integration_test.yaml`:
-
-```yaml
-databases:
-  - name: source
-    host: 127.0.0.1
-    port: 3306
-    user: root
-    password: your_password
-    database: goarchive_test
-
-  - name: destination
-    host: 127.0.0.1
-    port: 3307
-    user: root
-    password: your_password
-    database: goarchive_test
-
-force: false  # Set to true to drop/recreate databases
-fixture_path: testdata/customer_orders.sql
-```
-
-3. **Run integration tests**:
-
-```bash
-# Using Make
-export MYSQL_ROOT_PASSWORD=your_password
-make test-integration
-
-# Or run directly
-INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-```
-
-#### Available Integration Tests
-
-| Test | Description |
-|------|-------------|
-| `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
-| `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
-| `TestOrchestrator_ReplicationGate_Integration` | Replication gating: healthy pass, hold, and resume (needs a live replica) |
-| `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
-| `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown handling |
-| `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
-| `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
-
-#### Run Specific Integration Test
-
-```bash
-MYSQL_ROOT_PASSWORD=your_password go test -v \
-  -run TestOrchestrator_FullArchiveCycle_Integration \
-  ./internal/archiver/...
-```
-
-#### Force Database Recreation
-
-```bash
-INTEGRATION_FORCE=true MYSQL_ROOT_PASSWORD=your_password \
-  go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-```
-
-### All Tests
-
-```bash
-# Run all tests (unit + integration)
-make test
-```
-
-### End-to-End Tests with Sakila
-
-For comprehensive testing with the Sakila sample database:
-
-```bash
-cd tests
-./scripts/run-tests.sh --setup --sakila
-```
-
-See [tests/README.md](tests/README.md) for detailed testing documentation.
+See [tests/README.md](tests/README.md) for running every test layer.
 
 ## Configuration
 
@@ -271,7 +171,8 @@ cp configs/archiver.yaml.example archiver.yaml
 
 ### 2. Edit the Configuration
 
-Update the `archiver.yaml` file with your database credentials and archive jobs. See the [README.md](README.md#configuration) for detailed configuration options.
+Update the `archiver.yaml` file with your database credentials and archive jobs. Every option is
+described in [Configuration](docs/README_CONFIGURATION.md).
 
 ### 3. Validate Configuration
 
@@ -281,56 +182,14 @@ Update the `archiver.yaml` file with your database credentials and archive jobs.
 
 ## Troubleshooting
 
-### Common Issues
-
-#### "go: command not found"
+### "go: command not found"
 
 Install Go from https://golang.org/dl/ or use your package manager.
 
-#### "cannot find package" during build
+### "cannot find package" during build
 
-```bash
-# Ensure dependencies are downloaded
-go mod download
+Re-run step 2 of [Installation from Source](#2-install-dependencies), or `go mod tidy`.
 
-# Or tidy up modules
-go mod tidy
-```
+### Docker build fails
 
-#### Integration tests fail with connection refused
-
-```bash
-# Check if test databases are running
-make test-status
-
-# Restart test databases
-make test-down && make test-up
-
-# Wait 10-15 seconds for MySQL to fully start
-```
-
-#### Docker build fails
-
-```bash
-# Ensure Docker daemon is running
-docker info
-
-# Try building with no cache
-docker build --no-cache -t goarchive:latest .
-```
-
-#### Permission denied when moving binary
-
-```bash
-# Use sudo for system-wide installation
-sudo mv goarchive /usr/local/bin/
-
-# Or install to user directory
-mv goarchive $HOME/.local/bin/
-```
-
-### Getting Help
-
-- Check the [README.md](README.md) for usage instructions
-- Review [tests/README.md](tests/README.md) for testing documentation
-- Run `./goarchive --help` for command options
+Check that the Docker daemon is running (`docker info`), then retry the build with `--no-cache`.
