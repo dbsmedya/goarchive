@@ -461,10 +461,10 @@ The tests built on `SetupIntegrationTest` — among them the eight
 | `databases[destination]` | `127.0.0.1:3307`, user `root`, database `goarchive_test` (created if absent) |
 | `password` | `${MYSQL_ROOT_PASSWORD}`, expanded from the environment, so source `tests/.env` first |
 | `force` | `false`; `true`, or `INTEGRATION_FORCE=true`, drops and recreates both databases |
-| `fixture_path` | `testdata/customer_orders.sql`, relative to the file |
+| `fixture_path` | `testdata/customer_orders.sql`; a relative path resolves from the test process's working directory (`internal/archiver` under `go test`), not from the config file |
 
 To test against other servers, copy the file, edit the copy, and point `INTEGRATION_CONFIG` at
-it:
+it. For a copy kept outside `internal/archiver`, give `fixture_path` an absolute path:
 
 ```bash
 cp internal/archiver/integration_test.yaml /path/to/my-config.yaml   # edit hosts and credentials
