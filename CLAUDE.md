@@ -35,8 +35,6 @@ logging, and zero-lock batch processing.
 separate product.
 
 The current version is the `Makefile`'s `RELEASE_VERSION` (see *Versioning* below); `README.md` also states which release is stable.
-The RC series validating the dbsgomysql integration ahead of 2.0 is described in
-`docs/README_dbsgomysql.md`.
 
 **Preflight validation comes from `github.com/dbsmedya/dbsgomysql`**, not from hand-rolled
 probes. GoArchive **must not query `information_schema` directly** — `make consumer-policy`

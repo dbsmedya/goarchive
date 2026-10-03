@@ -1,12 +1,12 @@
-# GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
+# GoArchive — Archive MySQL Rows Across Single or Multiple Relational Tables, with Parent and Child Rows
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](https://golang.org/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](https://www.mysql.com/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](docs/README_LIMITATIONS.md#environment)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](docs/README_LIMITATIONS.md#environment)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
+**GoArchive respects foreign key constraints and ORM relations. Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
 
-GoArchive is a Go CLI tool for archiving MySQL relational data across servers. Unlike single-table archivers, it resolves foreign-key dependencies automatically using Kahn's topological sort, so deleting old `orders` never leaves orphaned `order_items` behind. Each batch is verified by row count or SHA256 **before** source rows are deleted, and an interrupted run resumes from a persistent checkpoint.
+GoArchive is a Go CLI for archiving related MySQL rows across servers. You declare the parent-child relations once in the job config. Foreign keys the schema already declares are checked against that declaration, and relations an ORM enforces only in application code are just as valid. Copy runs parent-first and delete runs child-first, so deleting old `orders` never leaves orphaned `order_items` behind. With verification on, each batch is checked by row count or SHA256 before its source rows are deleted, and an interrupted run resumes from its checkpoint.
 
 ## What problem does this solve?
 

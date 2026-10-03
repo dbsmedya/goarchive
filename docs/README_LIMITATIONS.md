@@ -305,8 +305,8 @@ configuration file is trusted input: whoever writes it already holds the credent
 
 ## Environment
 
-This section is the single source of truth for supported versions. `INSTALL.md` links here
-rather than restating it.
+This section is the single source of truth for supported versions. `README.md` and `INSTALL.md`
+link here rather than restating it.
 
 - **MySQL**: Oracle MySQL **8.0.40+** with the **InnoDB** storage engine, and Percona Server for
   MySQL as tested by [dbsgomysql](https://github.com/dbsmedya/dbsgomysql), which supplies every
