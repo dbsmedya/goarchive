@@ -27,16 +27,8 @@ contain, and when it is safe to clean them up.
 ## Where tracking state lives
 
 All tracking state lives on the **destination** server, in the schema named by
-`destination.job_schema`. When that is unset it defaults to
-`destination.database`.
-
-```yaml
-destination:
-  database: archive
-  job_schema: goarchive     # optional; omit to use `archive`
-```
-
-Three structures exist:
+[`destination.job_schema`](README_CONFIGURATION.md#job_schema-destination-only) (default: the
+destination database). Three structures exist:
 
 | Object | Cardinality | Holds |
 |--------|-------------|-------|
@@ -52,10 +44,8 @@ SELECT id, job_name, root_table, job_type FROM goarchive.archiver_job;
 -- job id 42  ->  goarchive.archiver_job_log_42
 ```
 
-> GoArchive never issues `CREATE DATABASE`. If `job_schema` names a schema that
-> does not exist, a DBA must create it. GoArchive **does** create its tracking tables,
-> which is why the account needs `CREATE` at runtime — see
-> [Permissions](README_PERMISSIONS.md).
+GoArchive creates the tracking tables itself but never the schema; the grants are in
+[Permissions](README_PERMISSIONS.md#grant-recipes).
 
 ---
 
@@ -89,19 +79,20 @@ CREATE TABLE IF NOT EXISTS archiver_job (
 | `last_processed_root_pk_id` | **The checkpoint.** Highest root PK fully completed. `NULL` = never run. Stored as a string; compared numerically. |
 | `job_status` | See below. |
 | `created_at` / `updated_at` | Maintained by MySQL. |
-| `last_heartbeat_at` | Liveness signal, refreshed every **15 seconds** while running. |
+| `last_heartbeat_at` | Liveness signal, a UTC wall-clock refreshed while running ([timing](README_OPERATIONS.md#heartbeat-and-keepalive-timing)). |
 
 ### `job_status` values
 
 | Value | Name | Meaning |
 |-------|------|---------|
-| `0` | Idle | Not running. Normal resting state. |
+| `0` | Idle | Not running: the last run completed cleanly, or stopped gracefully. |
 | `1` | Running | A process claims this job. |
 | `2` | Paused | Reserved; not written by current releases. |
-| `3` | Failed | Reserved; not written by current releases. |
+| `3` | Failed | The last run ended in an error after a successful job startup. Its log rows stay recoverable. |
 
-A job left at `1` with a stale heartbeat means a crashed run — see
-[Clearing a stale running job](#clearing-a-stale-running-job).
+A job left at `1` with a stale heartbeat means a run that was killed before its cleanup — see
+[Clearing a stale running job](#clearing-a-stale-running-job). An error before job startup
+writes no status.
 
 ### `job_type` is sticky
 
@@ -112,9 +103,7 @@ against the same job name fails:
 job "archive_old_orders" exists with type "archive", expected "copy-only"
 ```
 
-This is deliberate — the resume semantics differ per type. To repurpose a job
-name, delete its row and log table (see
-[Maintenance](#maintenance-what-is-safe-to-delete)), or just use a new name.
+This is deliberate — the resume semantics differ per type.
 
 ### `root_table` is sticky
 
@@ -127,31 +116,19 @@ job "archive_old_orders" exists for root table "orders", expected "invoices": a 
 
 A `copied` marker written for one table could otherwise authorise a delete-only
 replay against another (issue #14). The comparison is exact, including letter
-case, like `PK_COLUMN_CASE_CHECK`. To repurpose a job name,
-[retire the job](#retiring-a-job-completely) or use a new name.
+case, like `PK_COLUMN_CASE_CHECK`. To use a job name with another command or root table,
+[retire the job](#retiring-a-job-completely) or use a new name. The source server and schema
+are not bound ([Limitations](README_LIMITATIONS.md#a-job-name-is-not-bound-to-its-source)).
 
-What is **not** bound on this release line is the source itself: GoArchive does
-not yet persist the source server and schema in `archiver_job`, so the same job
-name pointed at a different source that has a table of the same name is not
-detected. Use a new job name whenever the source changes.
-
-### Heartbeat timing
-
-| Constant | Value |
-|----------|-------|
-| Heartbeat write interval | 15 seconds |
-| Staleness threshold | 60 seconds |
-| Consecutive heartbeat failures before abort | 3 |
-| Advisory lock keepalive interval | 30 seconds |
-
-A heartbeat older than 60 seconds is considered stale. **Stale does not mean
-dead** — the process may still hold `GET_LOCK()` and still be deleting.
+A heartbeat older than 60 seconds is considered stale; the queries below use that threshold.
+The other timing constants are in
+[Operations](README_OPERATIONS.md#heartbeat-and-keepalive-timing).
 
 ---
 
 ## `archiver_job_log_<id>`
 
-Created lazily, the first time a job runs, once its integer `id` is known.
+Created lazily, the first time a job runs.
 
 ```sql
 CREATE TABLE IF NOT EXISTS archiver_job_log_42 (
@@ -169,25 +146,26 @@ CREATE TABLE IF NOT EXISTS archiver_job_log_42 (
 | `id` | Surrogate key, no operational meaning. |
 | `root_pk_id` | One root table primary key. Unique — inserts use `INSERT IGNORE`, so replay is idempotent. |
 | `log_status` | Processing status. See below. |
-| `error_message` | **Vestigial.** Never written by current releases; only read when reporting legacy `log_status=3` rows. |
+| `error_message` | **Vestigial** — see `log_status` `3` below. |
 
 There is no `job_name` column and no timestamps — the table *is* the job scope.
 
 ### `log_status` values
 
-| Value | Name | Meaning | On resume |
-|-------|------|---------|-----------|
-| `0` | pending | Discovered, not yet copied | Full replay |
-| `1` | copied | Copied **and verified**; only delete remains | Delete-only (archive/purge) or promote to completed (copy-only) |
-| `2` | completed | Fully processed | Skipped |
-| `3` | failed | **Legacy only** — written by pre-1.8 releases | **Blocks resume** with recovery guidance |
+| Value | Name | Meaning |
+|-------|------|---------|
+| `0` | pending | Discovered, not yet copied |
+| `1` | copied | Copied **and verified**; only delete remains |
+| `2` | completed | Fully processed |
+| `3` | failed | **Legacy only** |
 
-> **Current releases never write `3`.** An error aborts the run and leaves rows in
-> a recoverable status (`0` or `1`). If you see `log_status=3`, those rows came
-> from a pre-1.8 release and will block resume until resolved.
+What each status does on the next run is in
+[Resume semantics](README_OPERATIONS.md#resume-semantics).
 
-Completed rows are **kept as evidence** and never removed automatically. This is
-the main reason these tables grow.
+> **Current releases never write `log_status=3`.** An error leaves rows in a recoverable
+> status (`0` or `1`). Rows at `3` were written by an old release, carry their reason in
+> `error_message`, and block resume until resolved
+> ([Gate 1](README_OPERATIONS.md#resume-gates)).
 
 ### The status transition is transactional
 
@@ -206,11 +184,13 @@ that invariant.
    is refused, see [Tracking-schema version marker](#tracking-schema-version-marker).
 2. **First run of a specific job** — a row is inserted, `id` is assigned, and
    `archiver_job_log_<id>` is created.
-3. **During a run** — `job_status = 1`, heartbeat every 15s, log rows transition
+3. **During a run** — `job_status = 1`, the heartbeat is refreshed, log rows transition
    `0 → 1 → 2` in batches.
-4. **Normal completion** — `job_status` returns to `0`; the checkpoint holds the
-   highest completed PK; completed log rows remain.
-5. **Crash** — `job_status` stays `1` with a stale heartbeat; non-terminal log
+4. **Normal completion or graceful stop** — `job_status` returns to `0`; the checkpoint holds
+   the highest completed PK; completed log rows remain.
+5. **Run error** — cleanup attempts to record `job_status = 3`; non-terminal log rows remain
+   for the next run to replay.
+6. **Crash or hard kill** — `job_status` stays `1` with a stale heartbeat; non-terminal log
    rows remain for the next run to replay.
 
 Nothing is ever cleaned up automatically. That is intentional — the log is the
@@ -236,7 +216,7 @@ indefinitely, see [Maintenance](#maintenance-what-is-safe-to-delete).
 
 ## Inspection cookbook
 
-> `last_heartbeat_at` is a UTC wall-clock since 2.2. Always measure its age with
+> `last_heartbeat_at` is a UTC wall-clock. Always measure its age with
 > `UTC_TIMESTAMP()`, never `NOW()` — `NOW()` follows *your* session's zone and misreports the
 > age by your UTC offset.
 
@@ -402,14 +382,15 @@ Removing `log_status IN (0, 1)` rows discards recovery information.
 - Rows **below** the checkpoint are never re-fetched by the forward scan, so
   their work is silently lost — for `archive`, that can mean source rows copied
   but never deleted, or discovered but never copied.
-- Rows **above** the checkpoint get re-processed from scratch, which for a
-  strict-INSERT job aborts on duplicate keys.
+- Rows **above** the checkpoint get re-processed from scratch (strict-INSERT jobs: see the
+  table under [Retiring a job completely](#retiring-a-job-completely)).
 
 Resolve non-terminal rows by **re-running the job**, not by deleting them.
 
 ### Retiring a job completely
 
-To remove a job and all its state — for example, a job name you no longer use:
+To remove a job and all its state — a job name you no longer use, or one you want to bind to
+another command or root table:
 
 ```sql
 -- 1. Confirm it is not running.
@@ -436,8 +417,7 @@ so the next run scans from the beginning of the job's `where` clause.
 
 Log tables are not dropped when a job row is deleted. Find them with the
 [orphan query](#inspection-cookbook), confirm the id is genuinely retired, then
-drop them. Do this **before** any operation that could reset the `AUTO_INCREMENT`
-counter.
+drop them before any `TRUNCATE archiver_job` (see the warning above).
 
 ### Quick reference
 
@@ -485,10 +465,8 @@ UPDATE goarchive.archiver_job SET job_status = 0 WHERE job_name = 'archive_old_o
 Then simply re-run the job — the non-terminal log rows drive recovery. Do not
 clear the log rows.
 
-`--force` automates the heartbeat side of this, but it **cannot** steal a held
-advisory lock for `archive` or `purge`, and it is a best-effort takeover, not
-proof the old process is gone. See
-[Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking).
+`--force` does not replace this check: it never takes a held lock for `archive` or `purge`
+([`--force`](README_OPERATIONS.md#--force-only-matters-for-copy-only)).
 
 ---
 
@@ -537,7 +515,7 @@ its version** — a 2.1 job still running would keep writing local-time heartbea
 |---|---|
 | `schema_version = '2.0'` (written by 2.0 or 2.1) | `UPDATE goarchive.archiver_job SET last_heartbeat_at = NULL;`<br>`UPDATE goarchive.goarchive_meta SET schema_version = '2.2' WHERE id = 1;` |
 | no marker, populated tables with an integer `id` column (1.8) | Run the new binary once — it creates `goarchive_meta` and refuses — then:<br>`UPDATE goarchive.archiver_job SET last_heartbeat_at = NULL;`<br>`INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '2.2');` |
-| no marker, no integer `id` column (older than 1.8) | Unsupported directly. Upgrade to **1.8 first**, then follow the row above — or drain every in-flight job and drop the old `archiver_job_log` / `archiver_job` tables, discarding every checkpoint (see [Retiring a job](#maintenance-what-is-safe-to-delete)). |
+| no marker, no integer `id` column (older than 1.8) | Unsupported directly. Upgrade to **1.8 first**, then follow the row above — or drain every in-flight job and drop the old `archiver_job_log` / `archiver_job` tables, discarding every checkpoint (see [Retiring a job](#retiring-a-job-completely)). |
 | a revision newer than the binary understands | Upgrade the GoArchive binary, or point `job_schema` at a different schema. |
 
 **Why heartbeats are voided rather than converted.** `last_heartbeat_at` is a `DATETIME` and
@@ -560,9 +538,8 @@ untouched; resume behaves exactly as before. If you know the zone the old sessio
   destination.
 - **Restoring destination data without its tracking tables** leaves jobs with no
   checkpoint — see the re-copy consequences above.
-- **Tracking writes are frequent but small**: one heartbeat `UPDATE` every 15
-  seconds, plus batched multi-row `INSERT IGNORE`/`UPDATE` statements sized by
-  `batch_size`. On a replicated destination this is negligible next to the
+- **Tracking writes are frequent but small**: a periodic heartbeat `UPDATE`, plus batched
+  multi-row `INSERT IGNORE`/`UPDATE` statements sized by `batch_size`. On a replicated destination this is negligible next to the
   archived row volume itself.
 - **Isolating `job_schema`** into its own schema makes tracking state easy to
   exclude from archive-data dumps, and easy to grant separately. See

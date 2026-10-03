@@ -22,7 +22,6 @@ Complete reference for every block, option, default, and precedence rule in
 - [`logging:`](#logging)
 - [Per-job overrides and precedence](#per-job-overrides-and-precedence)
 - [Identifier rules](#identifier-rules)
-- [Tracking tables](#tracking-tables)
 - [Complete example](#complete-example)
 
 ---
@@ -77,42 +76,12 @@ different zones — or two `SYSTEM` zones that resolve differently — would oth
 copied value by their offset while verification still matched. It is not configurable.
 `DATETIME`, `DATE` and `TIME` are stored as written and are unaffected.
 
-**Source and destination must be different databases.** GoArchive refuses to start when
-both report the same `server_uuid` and the same schema name (`SRC_DEST_IDENTITY_CHECK`).
-Same server, different schema is fine. The rule, its two deliberate refusals and the
-cloned-server remedy are in
-[Limitations](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
-
-### Temporal values and INSERT diagnostics
-
-Application DATE, DATETIME and TIMESTAMP columns are read as SQL text for copy,
-both SHA256 reads and dry-run samples. GoArchive does not normalize these values.
-Legacy temporal payloads can be copied when the destination accepts them and the
-configured diagnostics and verification policy permits it. Temporal identity
-eligibility is defined in
-[Limitations](README_LIMITATIONS.md#temporal-values-and-identities).
-
-Every physical connection initializes `sql_notes=1`. Each copy/sample operation
-reads `sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses
-unproved session facts. GoArchive never repairs these settings on pooled sessions,
-never raises `max_error_count`, and needs no new privilege or config field.
-
-Source/destination SQL modes need not match. To accept legacy payloads, a DBA can
-configure the destination's server-level `sql_mode` for new sessions, or an
-applicable `init_connect` policy, then reconnect/restart the job. These settings
-can affect other applications, so assess the modes required by your data on the
-destination server. GoArchive has no per-session SQL-mode option in 2.x and makes
-no automatic global changes.
-
-### AUTO_INCREMENT zero preservation
-
-Every new GoArchive connection adds `NO_AUTO_VALUE_ON_ZERO` to its inherited session SQL
-modes. Explicit zero in an AUTO_INCREMENT column remains zero; omitted or NULL values still
-use normal allocation. Other modes remain intact. This applies to source, destination and
-replication-server connections, including replacement connections.
-
-See [`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)
-for connection-initialization troubleshooting.
+Source and destination must be different databases
+([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#connection-identity-check)). Every connection
+also preserves explicit AUTO_INCREMENT zero values
+([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)),
+and session SQL modes and INSERT diagnostics are covered in
+[Operations](README_OPERATIONS.md#insert-diagnostics-and-subdivision).
 
 ### `job_schema` (destination only)
 
@@ -128,11 +97,10 @@ destination:
   job_schema: goarchive
 ```
 
-**A DBA must pre-create this schema.** GoArchive never issues `CREATE DATABASE`.
-It does create the per-job log tables at runtime, which is why `CREATE` is a
-required grant — see [Permissions](README_PERMISSIONS.md).
-
-`job_schema` must satisfy the [identifier rules](#identifier-rules).
+**A DBA must pre-create this schema.** GoArchive never issues `CREATE DATABASE`; it does
+create the tracking tables, so its account needs `CREATE` there
+([Permissions](README_PERMISSIONS.md#why-create-on-the-tracking-schema)). The tables
+themselves are described in [Job Tracking Schema](README_JOBS_SCHEMA.md).
 
 ---
 
@@ -146,9 +114,8 @@ configuration, replication monitoring is off.
 > even when this block is enabled — it never deletes from source. See
 > [Replication gating](README_OPERATIONS.md#replication-gating).
 
-> **Replaces the 2.0 `replica:` block** and `safety.lag_threshold` /
-> `safety.check_interval`. Those keys are now **rejected** — a config carrying
-> them fails validation with a migration message. See
+> A config carrying the old `replica:` block or `safety.lag_threshold` /
+> `safety.check_interval` fails validation with a migration message — see
 > [Upgrading to 2.1](README_UPGRADING_2_1.md).
 
 | Option | Description | Default |
@@ -168,25 +135,8 @@ configuration, replication monitoring is off.
 | `user` | Account used to read replication status | required |
 | `password` | Account password | — |
 | `tls` | `disable`, `preferred`, `skip-verify`, or `required` | `preferred` |
-| `type` | Only `async` is supported in 2.1; any other value is rejected | `async` |
+| `type` | Only `async` is accepted; any other value is rejected | `async` |
 | `channels` | Which replication channels to gate on. Omitted or `[]` gates on **every** channel the server reports. | _(all)_ |
-
-```yaml
-replication:
-  enabled: true
-  seconds_behind_source_within: 10
-  check_interval: 5
-  cache_ttl: 15
-  servers:
-    - host: replica1.internal
-      user: monitor
-      password: change_me
-    - host: replica2.internal
-      port: 3307
-      user: monitor
-      password: change_me
-      channels: ["", "billing"]
-```
 
 ### Channel selection
 
@@ -204,8 +154,8 @@ rather than being silently ignored. In logs the default channel renders as
 `<default>`.
 
 Two servers may not share a `host:port`, and one server may not list the same
-channel twice. Each monitored account needs `REPLICATION CLIENT` — see
-[Permissions](README_PERMISSIONS.md).
+channel twice. Each monitored account needs
+[`REPLICATION CLIENT`](README_PERMISSIONS.md#monitored-replicas-optional).
 
 Per-server settings are validated **whenever they are present**, even with
 `enabled: false`, so a disabled block cannot hide a typo that would only surface
@@ -238,7 +188,13 @@ where: "1=1"
 
 `where` is a **raw SQL fragment** injected into selection queries. Configuration
 is treated as trusted operator input — see
-[Trust model](README_LIMITATIONS.md#trust-model).
+[Trust model](README_LIMITATIONS.md#trust-model). Each database call carries exactly one SQL
+statement, so a `where` is always part of a single statement: text that adds a second one fails
+with a MySQL syntax error. The root table is queried without an alias, so a subquery in `where`
+refers to the row being tested by the table name (`orders.id`).
+
+A recurring job only archives rows that are cold when it first reaches them; see the
+[eligibility rule](README_LIMITATIONS.md#no-ddl-and-no-concurrent-writes-during-a-run-contract).
 
 `where` is evaluated **in a UTC session** (see [`source:` / `destination:`](#source--destination)).
 A `TIMESTAMP` column compared with `NOW()` is unaffected — both follow the session — but a
@@ -250,12 +206,9 @@ To pin a boundary to a local time, give the literal an offset —
 ### `primary_key` must match exactly
 
 `primary_key` has no default; it must be stated for the root table and every
-relation. It must also be the column's **exact name including letter case**, and
-must be the table's actual `PRIMARY KEY`. Preflight enforces all three — see
-`PK_COLUMN_CHECK`, `PK_COLUMN_CASE_CHECK`, and `PRIMARY_KEY_CHECK` in
-[Validation](README_VALIDATION.md).
-
-Root primary keys must additionally be an **integer type**.
+relation, as the column's exact name, and must be the table's actual `PRIMARY KEY`. Preflight
+enforces this, and an integer root key
+([Primary key checks](README_VALIDATION.md#primary-key-checks)).
 
 ### `relations:`
 
@@ -266,44 +219,25 @@ grandchildren.
 |--------|-------------|----------|
 | `table` | Child table name | yes |
 | `primary_key` | Child table's primary key column | yes |
-| `foreign_key` | Column on the child pointing at the parent's primary key | yes |
+| `foreign_key` | Column on the child that references the parent's primary key | yes |
 | `dependency_type` | `1-1` or `1-N`. Omitted is accepted. | no |
 | `relations` | Nested child relations | no |
 
-```yaml
-jobs:
-  archive_old_orders:
-    root_table: orders
-    primary_key: id
-    where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
-    relations:
-      - table: order_items
-        primary_key: id
-        foreign_key: order_id
-        dependency_type: "1-N"
-      - table: shipments
-        primary_key: id
-        foreign_key: order_id
-        dependency_type: "1-1"
-        relations:
-          - table: shipment_items
-            primary_key: id
-            foreign_key: shipment_id
-            dependency_type: "1-N"
-```
+A relation does not need a foreign key declared in the database: relations your application
+manages (ORM-style) are declared here like any other, and you index each `foreign_key` column
+yourself. Where the database does declare foreign keys, the relations must mirror them —
+nesting included; what preflight guarantees is in
+[Foreign key checks](README_VALIDATION.md#foreign-key-checks). The
+[complete example](#complete-example) shows nesting.
 
 **Nesting is capped at 10 levels.** Exceeding it fails validation with
 `relation nesting exceeds maximum nesting depth of 10`.
-
-Nesting must mirror the real foreign keys. Declaring a grandchild as a sibling
-passes YAML validation but fails preflight with `INTERNAL_FK_COVERAGE`, because
-the delete order would be wrong and MySQL would reject it with Error 1451.
 
 ---
 
 ## `processing:`
 
-Batch sizing and pacing. Config-file only — no CLI overrides.
+Batch sizing and pacing.
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -313,14 +247,9 @@ Batch sizing and pacing. Config-file only — no CLI overrides.
 | `delete_sleep_seconds` | Pause between delete chunks of a batch, including between tables. Must not be negative. Accepts fractions. | `0` |
 | `sentinel_file` | Operator pause switch — while this path exists, pause before each batch | _(empty)_ |
 
-`sleep_seconds` and `delete_sleep_seconds` throttle different pressures — general
-server load versus binlog/replication lag. See
-[Tuning throughput](README_OPERATIONS.md#tuning-throughput) for how to choose
-values, and [Pausing a run](README_OPERATIONS.md#pausing-a-run-sentinel_file)
-for `sentinel_file`.
-
-`batch_size` interacts with MySQL's 65,535-placeholder limit and
-`max_allowed_packet`. Validate it with `goarchive dry-run` before a real run.
+How to choose values: [Tuning throughput](README_OPERATIONS.md#tuning-throughput);
+`sentinel_file`: [Pausing a run](README_OPERATIONS.md#pausing-a-run-sentinel_file); the limits
+`batch_size` must respect: [Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation).
 
 ---
 
@@ -329,11 +258,6 @@ for `sentinel_file`.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `disable_foreign_key_checks` | Set `FOREIGN_KEY_CHECKS = 0` on the destination during copy | `false` |
-
-> `lag_threshold` and `check_interval` were **removed in 2.1** and now live in
-> [`replication:`](#replication) as `seconds_behind_source_within` and
-> `check_interval`. A config still carrying them fails validation. See
-> [Upgrading to 2.1](README_UPGRADING_2_1.md).
 
 ### `disable_foreign_key_checks`
 
@@ -377,10 +301,9 @@ a dirty destination is handled:
 | Detects silent charset transliteration | no | yes |
 | Recommended for resuming an interrupted job | no | **yes** |
 
-Because `count` cannot detect transcoded text, a source/destination **column
-charset mismatch is fatal** under `count` or when verification is skipped, and
-only a warning under a `sha256` verification that actually runs. See
-`DEST_SCHEMA_COMPATIBILITY_CHECK` in [Validation](README_VALIDATION.md).
+Because `count` cannot detect transcoded text, a column charset mismatch is treated
+differently by method ([Charset and collation](README_VALIDATION.md#charset-and-collation)).
+How `sha256` hashes rows: [SHA256 verification](README_VALIDATION.md#sha256-verification).
 
 Verification method also governs whether an interrupted job can auto-resume — see
 [Resume semantics](README_OPERATIONS.md#resume-semantics).
@@ -506,57 +429,7 @@ These values must match `[A-Za-z0-9_]+` — letters, digits, and underscores onl
 
 Names containing `$`, dots, spaces, or hyphens are rejected at config load. This
 also means a relation cannot name a table in another schema — `schema.table` is
-not expressible. Cross-schema children are therefore outside the graph model, and
-an incoming foreign key from one is fatal at preflight
-(`FK_COVERAGE_CHECK`).
-
----
-
-## Tracking tables
-
-GoArchive maintains two tracking structures in `job_schema` (the destination
-database unless overridden).
-
-### `archiver_job`
-
-One row per configured job. Holds checkpoint and heartbeat state.
-
-- `id` — integer `PRIMARY KEY`
-- `job_name` — `UNIQUE KEY`
-- `job_status`, `last_processed_root_pk_id` — checkpoint state
-
-### `archiver_job_log_<id>`
-
-One table per job, named by that job's integer `id` — not by job name. Tracks
-per-root-PK status as a `TINYINT`:
-
-| Value | Status | Meaning |
-|-------|--------|---------|
-| `0` | pending | discovered, not yet copied |
-| `1` | copied | copied and verified, not yet deleted |
-| `2` | completed | fully processed |
-| `3` | failed | **legacy only** |
-
-Completed rows are kept as evidence and are never deleted automatically.
-
-**Current releases never write `3`.** An error aborts the run and leaves that
-batch's rows in a recoverable status (`0` or `1`) for the next run to replay.
-The value survives only for rows written by a pre-1.8 release, which block resume
-until an operator resolves them.
-
-To find a job's log table:
-
-```sql
-SELECT id, job_name FROM <job_schema>.archiver_job;
--- per-job log table: archiver_job_log_<id>
-```
-
-A third table, `goarchive_meta`, records the tracking schema's own revision.
-GoArchive stamps it when absent and **refuses to run against a revision it does
-not recognize**. There is no auto-migration.
-
-📖 Full DDL, inspection queries, and what is safe to prune or truncate:
-[Job Tracking Schema — DBA Maintenance Guide](README_JOBS_SCHEMA.md).
+not expressible ([consequence](README_LIMITATIONS.md#uncovered-incoming-foreign-keys)).
 
 ---
 
