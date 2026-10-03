@@ -37,8 +37,8 @@ GoArchive day to day.
 | `list-jobs` | List all jobs defined in the configuration | no |
 | `version` | Show version information | no |
 
-`archive`, `purge`, and `copy-only` run preflight automatically at startup, before
-any tracking state is written.
+`archive`, `purge`, and `copy-only` run preflight automatically at startup
+([How preflight works](README_VALIDATION.md#how-preflight-works)).
 
 ---
 
@@ -54,7 +54,8 @@ any tracking state is written.
 | `--skip-verify` | `false` | Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion) |
 
 These four are the **only** global flags. Everything below is registered
-per command.
+per command. Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags; they
+are [config-file only](README_CONFIGURATION.md#how-configuration-is-loaded).
 
 ### Command-specific flags
 
@@ -72,10 +73,10 @@ per command.
 | Flag | Meaning |
 |------|---------|
 | `-j`, `--job <name>` | Select the job to operate on |
-| `--force` | Best-effort heartbeat takeover when a prior run's heartbeat is stale. **Not** hard exclusion — see [Concurrency](#concurrency-and-locking). `copy-only` also uses it to confirm bypassing duplicate preflight. |
-| `--force-triggers` | Proceed despite source DELETE triggers. Triggers **will fire** during delete. Not offered by `copy-only`, which never deletes. |
-| `--skip-validate-preflight` | **DANGEROUS.** Skip all preflight checks. Prints a full-width warning banner. Not offered by `dry-run` or `validate`. |
-| `--progress[=<interval>]` | Print periodic progress to stdout for `archive`, `copy-only`, or `purge`. Bare `--progress` uses 30 seconds. |
+| `--force` | Lets `copy-only` proceed past a held lock whose heartbeat is stale, and confirm bypassing its duplicate check; `archive` and `purge` still refuse a held lock — see [`--force`](#--force-only-matters-for-copy-only) |
+| `--force-triggers` | Proceed despite source DELETE triggers ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)). Triggers **will fire** during delete. |
+| `--skip-validate-preflight` | **DANGEROUS.** Skips the preflight checks; connection-time guards still run ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)). |
+| `--progress[=<interval>]` | Periodic progress to stdout — see [Progress display](#progress-display) |
 
 ### Progress display
 
@@ -114,11 +115,6 @@ When the main-loop sentinel gate pauses a run, ticks show `eta=paused` and add
 file is removed. Sentinel waits during crash recovery remain visible through
 the configured logger and are not annotated in the progress line.
 
-> **Processing settings have no CLI flags.** `batch_size`, `batch_delete_size`,
-> `sleep_seconds`, `delete_sleep_seconds`, and `sentinel_file` are config-file
-> only — one file holds many jobs, and a single CLI value cannot be correct for
-> all of them. Set them in the global `processing:` block or a per-job override.
-
 ---
 
 ## Recommended operator workflow
@@ -134,11 +130,9 @@ goarchive dry-run -c archiver.yaml -j archive_old_orders
 goarchive archive -c archiver.yaml -j archive_old_orders
 ```
 
-Step 2 matters more than it looks. It runs the non-destructive preflight profile,
-shows the row counts the run would actually touch — filtered through the real
-relation chain, not full-table counts — and validates `batch_size` against the
-destination's limits inside a rolled-back transaction. See
-[Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation).
+Step 2 matters more than it looks: it shows the row counts the run would actually touch,
+filtered through the real relation chain, and validates `batch_size` against the destination
+([Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation)).
 
 Use `goarchive plan -j <job>` at any point to see the relation tree, copy order,
 and delete order without touching either database.
@@ -154,16 +148,17 @@ primary keys per batch, discovers their full subgraph, and then copies **every**
 table — root and children alike — in chunks of up to `batch_size` rows.
 INSERT subdivision can make individual statements smaller.
 
-Two hard limits constrain it, both checked by `dry-run`:
+It is bounded by MySQL's placeholder limit and `max_allowed_packet`, both checked by
+[`dry-run`](README_VALIDATION.md#dry-run-payload-validation). It also drives memory — BFS
+discovery holds the batch's whole descendant set
+([why it is unbounded](README_LIMITATIONS.md#deep-or-wide-graphs-can-exhaust-memory)). On deep,
+high-fanout schemas start at `100` and scale up while watching memory.
 
-- **Placeholder limit:** `batch_size × column_count` must stay under **65,535**.
-- **`max_allowed_packet`:** a `batch_size`-sized chunk of the widest table must
-  fit in the destination's packet limit.
+### Memory
 
-It also drives memory — BFS discovery holds the batch's whole descendant set. On
-deep, high-fanout schemas start at `100` and scale up while watching memory; see
-[Deep or wide graphs can exhaust memory](README_LIMITATIONS.md#deep-or-wide-graphs-can-exhaust-memory)
-for why the accumulator is unbounded.
+Go sets no memory limit from cgroups. `GOMEMLIMIT` is a soft limit on the memory the Go
+runtime manages, not a hard RSS cap: when GoArchive runs under a container or systemd
+`MemoryMax`, set `GOMEMLIMIT` below that limit. CPU quotas are already honoured by default.
 
 ### INSERT diagnostics and subdivision
 
@@ -174,15 +169,27 @@ that batch's copy transaction before its copied marker or source deletion.
 Earlier completed batches remain completed; a later hash mismatch can leave a
 committed destination copy while preserving its source rows.
 
+Every physical connection initializes `sql_notes=1`, and each copy/sample operation reads
+`sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses unproved session
+facts. GoArchive never repairs these settings on pooled sessions and needs no extra privilege
+or config field. DATE, DATETIME and TIMESTAMP payloads are read and copied as SQL text, never
+normalized; legacy temporal payloads are copied when the destination accepts them and the
+diagnostics and verification policy permit it.
+
+Source and destination SQL modes need not match. To accept legacy payloads, a DBA can
+configure the destination's server-level `sql_mode` for new sessions, or an applicable
+`init_connect` policy, then reconnect or restart the job. These settings can affect other
+applications, so assess the modes your data needs on the destination server. GoArchive has no
+per-session SQL-mode option and makes no automatic global changes.
+
 The normal `max_error_count=1024` retention capacity also caps each INSERT's row
 count. A 5000-row candidate INSERT with 13 columns becomes
 1024/1024/1024/1024/904 rows: five INSERT/count pairs in the same transaction.
 Configured fetch chunks and placeholder limits can make it smaller already.
 Session facts add one query per copy/sample operation. Capacity zero permits
 clean INSERTs, but positive diagnostic counts fail as uninspectable. Configure
-retention through the DBA; GoArchive does not increase it or require an extra
-privilege. Network RTT and subdivision affect throughput; twice as many SQL
-statements does not imply twice the whole-job duration.
+retention through the DBA; GoArchive does not increase it. Network RTT and subdivision affect
+throughput; twice as many SQL statements does not imply twice the whole-job duration.
 
 `--skip-verify` follows the narrow conversion policy in
 [Configuration](README_CONFIGURATION.md#verification), with visible committed-copy
@@ -198,8 +205,8 @@ must pass before any DELETE. Integer-only keys incur neither extra identity read
 ### `batch_delete_size` — delete statement size
 
 An independent throttle controlling how many rows are removed per `DELETE`
-statement. Lower it to reduce replication lag on the destination replica. It does
-not affect the copy phase.
+statement. Deletes run on the source, so lower it to reduce binlog volume and replication lag
+on the source's replicas. It does not affect the copy phase.
 
 ### Two independent pacing knobs
 
@@ -209,23 +216,14 @@ fixing anything.
 | Knob | Pauses | Use when |
 |------|--------|----------|
 | `sleep_seconds` | **between batches** — after each `batch_size` batch | General load on source/archive servers is the concern |
-| `delete_sleep_seconds` | **between consecutive delete chunks of a batch, across tables** — every chunk except the batch's first | Replication lag from binlog volume is the bottleneck |
+| `delete_sleep_seconds` | **between consecutive delete chunks of a batch, across tables** — every chunk except the batch's first | Replication lag on the source's replicas, from delete binlog volume, is the bottleneck |
 
 `delete_sleep_seconds` defaults to `0`. Pair a small `batch_delete_size` with a
 non-zero `delete_sleep_seconds` when replication lag — not source load — is what
 limits you. The pause also separates the last chunk of one table from the first
 chunk of the next, so a batch whose tables each fit in one chunk is paced too.
-
-Both accept fractional seconds. Per-job `processing:` blocks use pointer
-semantics: an explicitly set field wins **even when it is `0`**, so a job can
-disable a global sleep with `sleep_seconds: 0`. See
-[Per-job overrides](README_CONFIGURATION.md#per-job-overrides-and-precedence).
-
-### If `batch_size` is too large
-
-The real run fails fast on the first copy chunk. Already-processed root PKs stay
-checkpointed; the interrupted batch's PKs are left in a resumable state and
-replay automatically on the next run after you lower `batch_size`.
+Both accept fractional seconds and can be overridden per job
+([per-job overrides](README_CONFIGURATION.md#per-job-overrides-and-precedence)).
 
 ---
 
@@ -254,52 +252,33 @@ Notes:
 
 - Honoured by `archive`, `purge`, and `copy-only`, at the start of every batch —
   **including recovery batches**, checked before each recovery chunk.
-- The wait is **interruptible**: `Ctrl-C` or shutdown aborts a paused run
-  immediately, leaving the current batch unprocessed and recoverable.
-- A very long pause leaves database connections idle. Keep MySQL `wait_timeout`
-  comfortably above the expected pause duration, so the advisory lock connection
-  and pooled connections are not dropped.
+- The wait is **interruptible**: a first `Ctrl-C` or `SIGTERM` ends the pause and stops the
+  run before the next batch or recovery chunk starts; rows not yet processed keep their
+  recoverable status for the next run. A second signal aborts immediately.
 
 ---
 
 ## Replication gating
 
-When `replication.enabled: true`, GoArchive checks every configured replica
-before each batch **and before each recovery chunk**, and **holds the job** while
-any of them is unhealthy. The same invocation resumes once the whole fleet is
-healthy again — a hold is a pause, not a failure.
+When `replication.enabled: true` ([options](README_CONFIGURATION.md#replication)), GoArchive
+checks every configured replica before each batch **and before each recovery chunk**, and
+**holds the job** while any of them is unhealthy. The same invocation resumes once the whole
+fleet is healthy again — a hold is a pause, not a failure.
 
 > **`archive` and `purge` gate; `copy-only` does not.** `copy-only` never deletes
 > from source, so it is not gated on replication. Throttle it with
-> `processing.sleep_seconds` and `delete_sleep_seconds`, or pause it with
+> `processing.sleep_seconds`, or pause it with
 > [`sentinel_file`](#pausing-a-run-sentinel_file).
->
-> `purge` gained replication gating in 2.1.0
-> ([#19](https://github.com/dbsmedya/goarchive/issues/19)). In every earlier
-> release it deleted without checking, even with monitoring configured and
-> enabled.
-
-```yaml
-replication:
-  enabled: true
-  seconds_behind_source_within: 10
-  check_interval: 5
-  cache_ttl: 15
-  servers:
-    - host: replica1.internal
-      user: monitor
-      password: change_me
-```
 
 A replica is unhealthy when it is unreachable, when replication is not configured
-or not running, or when it is further behind than
-`seconds_behind_source_within`. Each monitored account needs
-`REPLICATION CLIENT`.
+or not running, when it is further behind than `seconds_behind_source_within`, or when its
+status cannot be read — a privilege error included, so an account lacking
+[`REPLICATION CLIENT`](README_PERMISSIONS.md#monitored-replicas-optional) holds the job rather
+than being skipped.
 
 **Every channel counts.** By default the gate reads every replication channel a
-server reports and holds if *any* one of them is unhealthy. Narrow that with
-`channels` — see [Configuration](README_CONFIGURATION.md#replication). MySQL's
-default channel is named `""`, and renders as `<default>` in logs.
+server reports and holds if *any* one of them is unhealthy; `channels` narrows that
+([channel selection](README_CONFIGURATION.md#channel-selection)).
 
 ### What you see while it holds
 
@@ -332,7 +311,8 @@ per batch.
 ## Crash recovery
 
 GoArchive checkpoints progress so an interrupted run resumes rather than
-restarting.
+restarting. The checkpoint and per-root status live in the
+[tracking tables](README_JOBS_SCHEMA.md):
 
 ```sql
 -- Tracking tables live in job_schema (default = destination database)
@@ -346,21 +326,12 @@ Resume with the identical command — there is no separate resume subcommand:
 goarchive archive -c archiver.yaml --job archive_old_orders
 ```
 
-### Tracking tables
+### Graceful shutdown
 
-- **`archiver_job`** — one row per job. Integer `id` primary key, unique
-  `job_name`. Holds checkpoint and heartbeat state.
-- **`archiver_job_log_<id>`** — one table per job, named by that job's integer
-  `id`. Per-root-PK status as a `TINYINT`: `0` pending, `1` copied, `2`
-  completed, `3` failed (legacy only).
-
-```sql
-SELECT id, job_name FROM <job_schema>.archiver_job;
--- inspect: SELECT log_status, COUNT(*) FROM archiver_job_log_<id> GROUP BY log_status;
-```
-
-Full DDL, inspection queries, cleanup rules, and how to clear a crashed job:
-[Job Tracking Schema — DBA Maintenance Guide](README_JOBS_SCHEMA.md).
+The first `SIGTERM` or `SIGINT` requests a stop: the normal batch or recovery chunk in flight
+completes, and no new one starts. Recovery chunks not yet started keep their prior-run status
+(`pending` or `copied`) for the next run to replay. A second signal aborts in-flight work, which
+the next run replays; a third terminates the process.
 
 ### Checkpoint advancement
 
@@ -371,15 +342,11 @@ Recovery differs by command, because their source rows behave differently:
 
 - **archive / purge** — recovered source rows are deleted, so the forward scan
   cannot re-fetch them. Recovery does **not** advance the checkpoint per chunk.
-- **copy-only** — source rows persist, so the checkpoint must advance per
-  ascending chunk or the forward scan would re-fetch recovered roots. It advances
-  only for chunks whose maximum PK is **strictly above the job's startup
-  checkpoint floor**, so requeuing a legacy row below the floor cannot regress
-  the checkpoint.
-
-Graceful shutdown (`SIGTERM`/`SIGINT`) stops at a **chunk boundary**: each started
-chunk runs to completion, earlier chunks stay recovered, and the rest keep their
-prior status. Re-running resumes safely.
+- **copy-only** — source rows persist, so recovery replays `copied` and `pending` rows as one
+  merged, globally ascending schedule and advances the checkpoint per chunk, or the forward
+  scan would re-fetch recovered roots. It advances only for chunks whose maximum PK is
+  **strictly above the job's startup checkpoint floor**, so requeuing a legacy row below the
+  floor cannot regress the checkpoint.
 
 ---
 
@@ -394,9 +361,6 @@ and `purge` — all three share one batch pipeline.
 | `1` copied | **delete-only** replay (copy already verified) | promoted straight to completed (no re-copy) |
 | `2` completed | skipped | skipped |
 | `3` failed | **blocks resume** — legacy only | **blocks resume** — legacy only |
-
-Current releases **never write `failed`**. An error aborts the run and leaves
-rows in a recoverable status.
 
 Before any marker is read, the job row itself is checked: a job name is bound to
 the `job_type` **and** the `root_table` that created it, and a mismatch refuses the
@@ -429,14 +393,16 @@ clause and clearing the marker (`log_status=2`).
 **Gate 2 — count-mode archive.** `archive` with `verification.method: count`
 **refuses resume outright** on *any* `copied` or `pending` row: pre-existing
 destination rows cannot be proven equal to source by a count. Recover by
-switching that job to `verification.method: sha256` (recommended), or by manually
-inspecting and clearing the destination rows.
+switching that job to `verification.method: sha256` (recommended for anything you may need to
+resume; [comparison](README_CONFIGURATION.md#verification)), or by manually inspecting and
+clearing the destination rows.
 
 **Gate 3 — strict-INSERT pending rows** (`archive` and `copy-only`). When strict
 `INSERT` is forced — by `verification.method: count`, `--skip-verify`, or a
 destination secondary unique index — a `pending` row's destination copy may
 already be committed, so re-copying would abort on duplicate and the job would
-self-block on every resume. GoArchive therefore refuses.
+self-block on every resume. GoArchive therefore refuses. (`archive` under `count` never gets
+here: Gate 2 refuses first.)
 
 `copied` rows are unaffected: they need no re-copy, so they still resume as
 delete-only (archive) or promotion (copy-only).
@@ -447,31 +413,24 @@ mark them `log_status=1` so they resume as delete-only. For `copy-only`, droppin
 `--skip-verify` in favour of `verification.method: sha256` restores idempotent
 `INSERT IGNORE` replay.
 
-> Because Gate 2 fires first, `archive` under `verification.method: count` never
-> reaches Gate 3 — it refuses on any non-terminal row.
-
 **Gate 4 — replay.** `copy-only` replays `copied` and `pending` as one merged,
-globally ascending schedule, which keeps the per-chunk checkpoint monotonic.
-`archive` and `purge` replay `copied` first (delete-only), then `pending`.
-
-### Choosing a verification method for recoverability
-
-`verification.method: sha256` is the recommended mode for anything you may need
-to resume. The full comparison — INSERT strategy, dirty-destination behaviour,
-and charset detection — is in
-[`verification:`](README_CONFIGURATION.md#verification).
+ascending schedule ([above](#checkpoint-advancement)). `archive` and `purge` replay `copied`
+first (delete-only), then `pending`.
 
 ---
 
 ## Concurrency and locking
 
 GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design).
-Two independent mechanisms prevent overlap:
+Serialization is per job name and per root table, not per destination:
 
 1. **MySQL advisory lock** (`GET_LOCK()`) serializes execution by job name across
    `archive`, `purge`, and `copy-only`.
 2. **Heartbeat-aware same-root checks** in `archiver_job` prevent a different job
    name from operating on the same root table concurrently.
+
+Jobs with different names and different root tables can run at the same time against one
+destination.
 
 A third, transient lock serializes **startup itself**: each run briefly holds a
 root-table advisory lock (`goarchive:root:<table>`) on the destination while it
@@ -481,28 +440,40 @@ startup that cannot acquire it within 10 seconds aborts with
 — retry once the concurrent startup has finished initializing. The lock is
 released even when startup is cancelled or refused.
 
+### Heartbeat and keepalive timing
+
+| Constant | Value |
+|----------|-------|
+| Heartbeat write interval | 15 seconds |
+| Staleness threshold | 60 seconds |
+| Consecutive heartbeat failures before abort | 3 |
+| Advisory lock keepalive interval | 30 seconds |
+
+`last_heartbeat_at` is a UTC wall-clock; a tracking schema written with an older meaning is
+refused at startup until upgraded
+([Tracking-schema version marker](README_JOBS_SCHEMA.md#tracking-schema-version-marker)).
+
 ### The lock connection must stay alive
 
 The advisory lock is held on a **dedicated connection**. Keepalive verifies
-`IS_USED_LOCK()` against that connection id and **aborts the job if ownership is
-lost** — GoArchive will not continue deleting without its lock.
+`IS_USED_LOCK()` against that connection id every 30 seconds and **aborts the job if
+ownership is lost** — GoArchive will not continue deleting without its lock.
 
-Ensure MySQL `wait_timeout` exceeds the longest expected job duration. A low
-timeout or flaky network can correctly fail a job rather than let it run
-unlocked.
+Keep MySQL `wait_timeout` well above 5 minutes, the connection pool's idle limit. The lock
+connection is kept busy every 30 seconds on its own, so neither a long job nor a long pause
+changes this. GoArchive enforces no minimum: a very low timeout or a flaky network can correctly
+fail a job rather than let it run unlocked.
 
-### `--force` is best-effort
+### `--force` only matters for `copy-only`
 
-`--force` proceeds past lock contention **only** when the prior holder's heartbeat
-is stale, then refreshes the heartbeat so later startups are blocked.
-
-Heartbeats are UTC wall-clock since 2.2, and a tracking schema written by an earlier
-release is refused at startup until upgraded — see
-[Job Tracking Schema](README_JOBS_SCHEMA.md#tracking-schema-version-marker).
+`archive` and `purge` refuse a held advisory lock with or without `--force`, stale heartbeat
+or not: a held `GET_LOCK` cannot be safely taken over by a command that deletes. For
+`copy-only`, `--force` proceeds past a held lock whose holder's heartbeat is stale, with a
+warning banner.
 
 > A stale heartbeat does not prove the old process is dead. It may still hold
-> `GET_LOCK()` and still be deleting. **Verify the old process is actually dead
-> before forcing.**
+> `GET_LOCK()` and still be deleting. **Verify the old process and its MySQL session are gone
+> before retrying or forcing**; the lock releases when that session closes.
 
 `--force` cannot bypass a live heartbeating job, the same-root concurrency check,
 or preflight.

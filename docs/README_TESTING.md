@@ -1,12 +1,7 @@
 # Testing Reference
 
-The test layers, how to run each, and what they need.
-
-> 📖 **[`tests/README.md`](../tests/README.md) is the source of truth for
-> integration and E2E testing.** It owns the full command matrix, the Sakila E2E
-> suite and its expected error categories, single-test targeting, environment
-> variables, troubleshooting, and how to add a test. This page is the overview —
-> go there for detail rather than expecting it repeated here.
+What each test layer proves, for someone evaluating GoArchive. How to run each layer — commands,
+environment, the test estate and troubleshooting — is in [tests/README.md](../tests/README.md).
 
 **Related:** [Configuration](README_CONFIGURATION.md) ·
 [Validation & Preflight](README_VALIDATION.md) ·
@@ -19,33 +14,28 @@ The test layers, how to run each, and what they need.
 - [Test layers](#test-layers)
 - [Unit tests](#unit-tests)
 - [Consumer-policy enforcement](#consumer-policy-enforcement)
-- [Coverage on demand](#coverage-on-demand)
 - [Integration tests](#integration-tests)
 - [End-to-end (Sakila) tests](#end-to-end-sakila-tests)
-- [The reseed requirement](#the-reseed-requirement)
-- [Make targets](#make-targets)
 
 ---
 
 ## Test layers
 
-| Layer | Database required | Build tag | Command |
-|-------|:-----------------:|-----------|---------|
-| Unit | no | — | `go test -short ./...` |
-| Integration | real MySQL | `integration` | `make test-integration` |
-| End-to-end | real MySQL + Sakila | — | `make e2e` |
+| Layer | Database required | Build tag | What it proves |
+|-------|:-----------------:|-----------|----------------|
+| Unit | no | — | GoArchive's own logic and SQL, and each preflight stage's policy over the library's facts |
+| Integration | real MySQL | `integration` | Copy, verification, delete, recovery and replication gating against real source, destination and replica servers |
+| End-to-end | real MySQL + Sakila | — | The built CLI binary, end to end, on a realistic schema |
+
+The commands for each layer are in [tests/README.md → Overview](../tests/README.md#overview).
 
 ---
 
 ## Unit tests
 
-Fast, and no database.
-
-```bash
-go test -short ./...          # unit only
-go test ./... -count=1        # unit, no cache
-go test -v -run TestFunctionName ./internal/graph/
-```
+Fast, and no database (`go test -short ./...`). Coverage is measured on demand from the current
+checkout, never kept as a snapshot; see
+[tests/README.md → Coverage on demand](../tests/README.md#coverage-on-demand).
 
 **Two kinds of unit test, and the difference matters when adding one.**
 
@@ -92,9 +82,8 @@ mock.ExpectQuery(regexp.QuoteMeta(maxAllowedPacketQuery)).
 // Call the GoArchive method, assert its value/error, then ExpectationsWereMet.
 ```
 
-`internal/archiver/consumer_policy_test.go` holds the production-query, `sqlmock`-inventory,
-and unit wire-format guards. If you need a mock in a pinned file, preload the fact instead —
-the guard's failure message names the pattern to copy.
+If you need a mock in a file the [consumer-policy guards](#consumer-policy-enforcement) pin,
+preload the fact instead — the guard's failure message names the pattern to copy.
 
 ### Retained application-owned MySQL probes
 
@@ -103,88 +92,43 @@ The boundary is ownership, not whether a statement happens to inspect MySQL. The
 - Dry-run reads `SHOW VARIABLES LIKE 'max_allowed_packet'` to decide whether the INSERT
   payload GoArchive itself constructs fits the destination. This application-specific
   safety check stays local; it does not justify a generic dbsgomysql server-variable API.
+- `database.Manager.Connect` proves, on every pool, that the session honours the UTC
+  `time_zone` the DSN pins (by its effective offset) and that its `sql_mode` carries
+  `NO_AUTO_VALUE_ON_ZERO` (`AUTO_INCREMENT_ZERO_MODE_CHECK`).
 - `database.Manager.Connect` reads `@@GLOBAL.server_uuid`, `DATABASE()`, `@@GLOBAL.hostname`
   and `@@GLOBAL.port` from both pools to refuse a configuration whose source and
   destination are one database (`SRC_DEST_IDENTITY_CHECK`, issue #13). It inspects what the
-  session reports about itself, not the metadata catalog, and sits beside the UTC-session
-  assertion in the same function. It does not justify a dbsgomysql server-identity fact.
-
+  session reports about itself, not the metadata catalog, and does not justify a dbsgomysql
+  server-identity fact.
 - Copy and dry-run own `SHOW COUNT(*) WARNINGS`, `SHOW WARNINGS`, and the pre-operation
   `@@SESSION.max_error_count`, `@@SESSION.sql_notes`, `@@SESSION.sql_mode` read.
   These establish the diagnostics of GoArchive's own INSERT on its transaction.
   `TestReadDiagnosticSession` and `TestCollectInsertDiagnosticsFailures` cover I/O
   refusal; `TestInsertDiagnosticPolicy` covers numeric allowlists and completeness.
-  No catalog/replication consumer-policy exception was added.
-
-**Retired 2026-08-19 (2.1.0-community):** replication lag monitoring used to own
-`SHOW REPLICA STATUS`, its `SHOW SLAVE STATUS` fallback, and the optional `FOR CHANNEL`
-clause, on a post-2.2 horizon for reconsidering a dbsgomysql port. That port happened in 2.1:
-`dbsgomysql/pkg/replication` owns those reads and verifies their field layout against the
-supported MySQL versions, `internal/archiver/lagmonitor.go` was deleted, and
-`TestConsumerPolicyNoReplicationStatusSQL` now **fails the build** on either statement in a
-production string literal. Do not reintroduce them.
-
-These application probes do not permit unit tests to reproduce dbsgomysql metadata queries,
-aliases, result columns, or fallback choreography. Preflight metadata tests continue to
-inject the library's exported typed facts.
 
 ## Consumer-policy enforcement
 
-Run the repository boundary gate directly with:
+`make consumer-policy` runs every `TestConsumerPolicy*` guard in `internal/archiver`, and
+`make check`, which CI runs, includes it. The rule the guards enforce is described in
+[dbsgomysql integration](README_dbsgomysql.md); the guards prove that:
 
-```bash
-make consumer-policy
-```
-
-The target runs every `TestConsumerPolicy*` guard in `internal/archiver`:
-
-- production Go files may not query the metadata catalog owned by dbsgomysql;
-- production Go files may not name `SHOW REPLICA STATUS` or `SHOW SLAVE STATUS` in a string
-  literal — since 2.1 those reads belong to `dbsgomysql/pkg/replication`;
-- the remaining application-owned `sqlmock` budgets must match their reviewed inventory;
-- non-integration unit tests may not encode dbsgomysql query fragments, aliases, result
+- production Go files do not query the metadata catalog owned by dbsgomysql;
+- production Go files do not name `SHOW REPLICA STATUS` or `SHOW SLAVE STATUS` in a string
+  literal — those reads belong to `dbsgomysql/pkg/replication`;
+- the remaining application-owned `sqlmock` budgets match their reviewed inventory;
+- non-integration unit tests do not encode dbsgomysql query fragments, aliases, result
   column layouts, or fallback choreography.
 
-Integration-tagged files and `*_integration_test.go` files are explicitly classified as
-real-estate tests and are outside the unit wire-format invariant. The detector patterns are
-stored in `internal/archiver/testdata/consumer_policy/dbsgomysql_wire_rules.tsv`, keeping
-the guard's own Go source from exempting itself.
-
-Six legacy tracking-schema probe sites remain as exact temporary exemptions: two in
-`copyonly_orchestrator_test.go` and four in `resume_test.go`. Each exemption records its
-function, fingerprint count, rationale, and Phase 5 / PR-07 deletion owner. The gate fails
-if any site grows, moves, or disappears without the exemption inventory changing. Do not
-add another exemption; Phase 5 deletes the probe and all six existing sites.
-
-When changing the guard, prove both directions before review:
-
-1. Temporarily add a forbidden metadata literal to a non-integration unit test.
-2. Run `make consumer-policy` and record the non-zero result.
-3. Revert only the temporary mutation.
-4. Run `make consumer-policy` again and record the green result.
-
-## Coverage on demand
-
-Coverage is generated from the current checkout instead of maintained as a percentage
-snapshot. From the repository root:
-
-```bash
-go test -short ./... -count=1 -coverprofile=/tmp/goarchive-short.cover
-go tool cover -func=/tmp/goarchive-short.cover
-go tool cover -html=/tmp/goarchive-short.cover -o /tmp/goarchive-short.html
-```
-
-For focused archiver work, replace `./...` with `./internal/archiver`. Keep generated
-profiles and HTML outside the repository. A review may record the measured command and
-result, but documentation must not present a percentage as current unless that same change
-generated it.
+Test files carrying the `integration` build tag or an `_integration_test` name are classified
+as real-estate tests and are outside the unit wire-format invariant. The detector patterns are stored in
+`internal/archiver/testdata/consumer_policy/dbsgomysql_wire_rules.tsv`, so the guard's own
+source cannot exempt itself.
 
 ---
 
 ## Integration tests
 
-Integration tests run against real MySQL — a source and a destination server.
-Use Docker locally, or point them at existing instances.
+Integration tests run against real MySQL — a source, a destination and a live replica.
 
 Focused value-preservation tests use production `BuildDSN` with real sessions:
 `TestTemporalPayloadStrictIgnore_Integration`, the collision and valid-key archive/
@@ -193,104 +137,10 @@ ownership and late-table rollback. These are integration tests at package entry
 points. Conversion codes 1264/1265/1366 are reached at the Copy boundary;
 1292 is reached at the collector boundary with an explicit CAST expression, not
 SQL generated by GoArchive. Normal preflight is retained in orchestrator cases.
-
-Profile-only tests deliberately skip on the ordinary estate. Disposable MySQL
-8.0/8.4/9.7 profiles cover raw/empty SQL modes, capacities 0/1, limited users and
-notes initialized globally to zero before production connections. The notes test
-requires two held physical sessions and a replacement, all global0/session1;
-setting session notes on a reused production pool is not valid evidence.
-Every matrix cell routes both `INTEGRATION_CONFIG` and `TEST_*`, requires its named
-PASS lines and refuses SKIPs. `TestValuePreservationCLI_Integration` is **E2E**:
-it executes a fresh absolute `VP_CLI`, normal preflight, raw result/marker reads,
-and override variants. Its integration build tag is only a runner mechanism.
-See [the E2E guide](../tests/e2e/README.md).
-
-### Start the test databases
-
-```bash
-make test-up        # start source/archive/replica containers
-make test-status    # confirm they are running
-```
-
-Three servers are expected on ports **3305** (source), **3307** (archive), and
-**3308** (replica).
-
-### Provide credentials
-
-Credentials live in `tests/.env`. Source it before running anything:
-
-```bash
-set -a; source tests/.env; set +a
-```
-
-Three alternatives are supported:
-
-**A — environment variable**
-
-```bash
-export MYSQL_ROOT_PASSWORD=your_password
-INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-```
-
-**B — Makefile**
-
-```bash
-export MYSQL_ROOT_PASSWORD=your_password
-make test-integration
-```
-
-**C — custom config file**
-
-```bash
-cp internal/archiver/integration_test.yaml /path/to/my-config.yaml
-# edit credentials
-export INTEGRATION_CONFIG=/path/to/my-config.yaml
-INTEGRATION_FORCE=true go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-```
-
-### Config file format
-
-`internal/archiver/integration_test.yaml`:
-
-```yaml
-databases:
-  - name: source
-    host: 127.0.0.1
-    port: 3305
-    user: root
-    password: your_password_here   # required
-    database: goarchive_test
-
-  - name: destination
-    host: 127.0.0.1
-    port: 3307
-    user: root
-    password: your_password_here   # required
-    database: goarchive_test
-
-force: false                        # true = drop/recreate databases
-fixture_path: testdata/customer_orders.sql
-```
-
-### Running
-
-```bash
-make test-integration
-
-# a single test
-MYSQL_ROOT_PASSWORD=your_password go test -v \
-  -run TestOrchestrator_FullArchiveCycle_Integration \
-  ./internal/archiver/...
-
-# force database recreation (clean slate)
-INTEGRATION_FORCE=true MYSQL_ROOT_PASSWORD=your_password \
-  go test -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-
-# via the script, with setup
-bash tests/scripts/run-tests.sh --setup --integration-only
-
-make test-down    # stop containers
-```
+Profile-only value-preservation tests skip on the ordinary estate and run against disposable
+MySQL profiles ([tests/README.md](../tests/README.md#value-preservation-profile-tests));
+`TestValuePreservationCLI_Integration` is an E2E witness
+([the E2E guide](../tests/e2e/README.md#focused-value-preservation-cli-witnesses)).
 
 ### Orchestrator integration tests
 
@@ -303,6 +153,7 @@ make test-down    # stop containers
 | `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown |
 | `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
 | `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
+| `TestOrchestrator_BatchArchive_Integration` | Archive with per-job batch overrides: rows copied and deleted, no root left pending |
 
 ---
 
@@ -315,79 +166,6 @@ They come in two flavours:
 - **Validation demos** — configurations that **must fail preflight** with
   documented error categories. Success means the expected failure occurred.
 
-```bash
-make e2e            # the whole procedure — use this one
-make e2e-examples   # validation-failure demos (needs a seeded estate)
-```
-
-`make e2e` runs `test-reset`, then `e2e-setup`, then
-`e2e-tests-must-run-after-setup`. The individual steps exist for when you know
-why you want one, and step 3 refuses to run unless step 2 has: any integration
-run DELETEs from source Sakila, and archiving a drained database reports a
-meaningless pass.
-
-Sakila contains DELETE triggers (`del_film`), so Sakila `archive` and `purge`
-invocations need `--force-triggers`.
-
----
-
-## The reseed requirement
-
-> **Integration and E2E runs need a freshly reseeded destination. This is the #1
-> source of false failures.**
-
-The real-database tests archive Sakila into `sakila_archive`, and several rely on
-it **starting empty**. A prior run leaves rows behind, and the next run aborts
-with:
-
-```
-destination already contains a row … Duplicate entry
-```
-
-That is **leftover state, not a regression.**
-
-The real-DB tests also DELETE from source Sakila, so they are effectively
-run-once against a fresh setup.
-
-Reseed with the `--setup` flag:
-
-```bash
-make e2e-setup
-# or, explicitly
-bash tests/scripts/run-tests.sh --setup
-```
-
-### Writing tests that do not leak state
-
-New orchestrator integration tests should clean `archiver_job` and the per-job
-`archiver_job_log_<id>` table for their job names before and after execution, so
-heartbeat and lock state cannot leak between tests. Use
-`testsupport.CleanupArchiverState`, which resolves the job id and drops the
-per-job table — do not delete from a shared log table, which no longer exists.
-
-Destructive CLI tests that intentionally use broken-schema fixtures must pass
-`--skip-validate-preflight`, since `archive`, `purge`, and `copy-only` now run
-preflight at startup.
-
----
-
-## Make targets
-
-| Target | Purpose |
-|--------|---------|
-| `make test-unit` | Unit tests with race detection (`go test -v -short -race ./...`) |
-| `make check` | The gate's non-database stages (fmt-check, vet, lint, consumer-policy, deadcode, test-unit) plus build; this is what CI runs |
-| `make test-up` | Start test databases via Docker Compose |
-| `make test-status` | Show test database container status |
-| `make test-down` | Stop test databases |
-| `make integration-config` | Create the integration test config if absent |
-| `make test-integration` | Run integration tests |
-| `make e2e` | **The whole E2E procedure**: test-reset → e2e-setup → the tests |
-| `make e2e-setup` | Step 2 alone: bootstrap and seed the estate |
-| `make e2e-tests-must-run-after-setup` | Step 3 alone: the tests; refuses unless seeded |
-| `make e2e-examples` | Validation-failure demo suite; refuses unless seeded |
-| `make consumer-policy` | Production-query, sqlmock-budget, and unit wire-format guards |
-| `make deadcode` | Dead-code guard — must stay clean |
-| `make lint` / `make vet` / `make fmt-check` | Static analysis |
-
-Run `make help` for the complete list.
+The real-database tests delete from source Sakila and expect an empty destination, so every
+run starts from a freshly reseeded estate. How to run and reseed:
+[tests/README.md → Sakila E2E Test Suite](../tests/README.md#sakila-e2e-test-suite).

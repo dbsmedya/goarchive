@@ -1,12 +1,12 @@
-# GoArchive — Foreign-Key-Aware MySQL Archiver for Related Tables
+# GoArchive — Archive MySQL Rows Across Single or Multiple Relational Tables, with Parent and Child Rows
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](https://golang.org/)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](https://www.mysql.com/)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](docs/README_LIMITATIONS.md#environment)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](docs/README_LIMITATIONS.md#environment)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
+**GoArchive respects foreign key constraints and ORM relations. Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
 
-GoArchive is a Go CLI tool for archiving MySQL relational data across servers. Unlike single-table archivers, it resolves foreign-key dependencies automatically using Kahn's topological sort, so deleting old `orders` never leaves orphaned `order_items` behind. Each batch is verified by row count or SHA256 **before** source rows are deleted, and an interrupted run resumes from a persistent checkpoint.
+GoArchive is a Go CLI for archiving related MySQL rows across servers. You declare the parent-child relations once in the job config. Foreign keys the schema already declares are checked against that declaration, and relations an ORM enforces only in application code are just as valid. Copy runs parent-first and delete runs child-first, so deleting old `orders` never leaves orphaned `order_items` behind. With verification on, each batch is checked by row count or SHA256 before its source rows are deleted, and an interrupted run resumes from its checkpoint.
 
 ## What problem does this solve?
 
@@ -32,7 +32,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
 | Verify copy before delete | ❌ | ✅ count or SHA256 |
 | Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
-| Crash recovery / resume | ❌ | ✅ per-row checkpoint |
+| Crash recovery / resume | ❌ | ✅ per-root status and a batch checkpoint |
 | Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
 | Composite primary keys | ✅ | ❌ |
 | Non-integer primary keys | ✅ | Root: ❌; child: ✅ subject to temporal-key restrictions |
@@ -44,7 +44,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 This comparison covers the reviewed pt-archiver v3.7.1 source linked above. GoArchive's
 [verification policy](docs/README_CONFIGURATION.md#verification) defines the narrow
-conversion-warning override.
+conversion-warning override. pt-archiver starts each invocation from the beginning of its index, so a row that becomes eligible later is still found. GoArchive continues from its checkpoint instead, so its `where` must select cold rows ([the eligibility rule](docs/README_LIMITATIONS.md#no-ddl-and-no-concurrent-writes-during-a-run-contract)).
 
 ## Is GoArchive right for your schema?
 
@@ -71,53 +71,36 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
  > If you intend to archive "hot" data that is currently receiving heavy transactions, stop here. Grab a coffee, enjoy the sunshine, and reconsider your architecture. Live-data shifting is outside the scope of this tool.
 
 2. **Zero-Impact Production Archiving**
-  In high-traffic production environments, database locks are the enemy. GoArchive is built to be "invisible":
-
-  Replication Friendly: Integrated monitoring ensures the tool pauses automatically if replica lag exceeds your thresholds.
-
-  Intelligent Batching: We recognize that a single record in a master table (e.g., an Order) can represent millions of rows in child tables (e.g., Logs or Transitions).
-
-  Asymmetric Processing: By processing in configurable batches, GoArchive completes the move-and-purge cycle without ever holding a long-term lock on the master table.
-
-> [!NOTE]
-> For the Faint-of-heart: it has a feature to match and compare the row counts or even SHA256 checksum of the records between archive and source before deletion.
+  In high-traffic production environments, database locks are the enemy. A single record in a master table (e.g., an Order) can represent millions of rows in child tables, so GoArchive moves and purges them in configurable batches, without ever holding a long-term lock on the master table.
 
 ---
 
 ## ⚠️ Important Disclaimer
 
 > [!WARNING]
-> This tool performs data deletion on your source database (`archive`, `purge`). It is in use in limited production environments, but has not yet undergone exhaustive large-scale testing. **Rigorously test every archive job in a staging or test environment with representative data before running it against production.**
+> This tool performs data deletion on your source database (`archive`, `purge`). **Rigorously test every archive job in a staging or test environment with representative data before running it against production.**
 
-- **Testing**: Always test your archive jobs on a staging system with a representative data set first.
-- **Backups**: Ensure you have valid backups of your data before running archive or purge operations.
-- **Verification**: Use the `dry-run` and `validate` commands to preview and verify your configuration before execution.
+Testing, backups and the other cautions before production: [Limitations](docs/README_LIMITATIONS.md).
 
 ## Documentation
 
-| Document | Covers |
-|----------|--------|
-| [Configuration](docs/README_CONFIGURATION.md) | Every config block, option, default, and precedence rule |
-| [Validation & Preflight](docs/README_VALIDATION.md) | All 20 named checks (19 preflight, plus the connection-time identity check), what fails and how to fix it |
-| [Permissions](docs/README_PERMISSIONS.md) | Privilege matrix, grant recipes, what preflight actually enforces |
-| [Limitations & Constraints](docs/README_LIMITATIONS.md) | Supported versions and environment, schema and temporal-key restrictions, warning coverage, operational cautions |
-| [Operations](docs/README_OPERATIONS.md) | Commands and flags, tuning, pausing, crash recovery |
-| [Job Tracking Schema](docs/README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, safe cleanup |
-| [Testing](docs/README_TESTING.md) | Test layers and how to run them |
-| [Upgrading to 2.2](docs/README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
-| [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
-| [INSTALL.md](INSTALL.md) | Installation and build reference |
+📖 Every document, and where to start: [docs/README.md](docs/README.md).
+
+<a id="whats-included-in-community"></a>
 
 ## Features
 
-- **Automatic foreign key dependency resolution** - Kahn's algorithm topologically sorts related tables into a parent-first copy order and a child-first delete order, so no operation ever orphans a row
+Complete end-to-end archive, purge, and copy-only workflows in the Community edition:
+
+- **Automatic foreign key dependency resolution** - Kahn's algorithm orders the related tables, so no operation ever orphans a row
 - **Referential integrity checks** - Detects foreign keys from outside the archive set pointing into it, including across schemas, and refuses to run rather than let an external `ON DELETE CASCADE` delete uncopied rows
-- **Verification before deletion** - Optional row count or SHA256 comparison between source and destination; a mismatch aborts before anything is deleted
-- **Crash recovery and resume** - Per-row checkpoint state persisted in MySQL; an interrupted archive resumes where it stopped instead of restarting
-- **Zero-lock batch processing** - Configurable batch sizes and delays keep long-term locks off production tables
+- **Preflight before any data moves** - DELETE triggers, destination INSERT triggers, incompatible destination schemas, composite primary keys and more, all [enumerated in Validation & Preflight](docs/README_VALIDATION.md)
+- **Verification before deletion** - Optional row count or SHA256 comparison between source and destination, per batch; a mismatch stops that batch before its delete, and batches already completed stay archived ([SHA256 verification](docs/README_VALIDATION.md#sha256-verification))
+- **Crash recovery and resume** - Per-root status and a batch checkpoint persisted in MySQL; an interrupted run resumes where it stopped instead of restarting
+- **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **Trigger and schema safety** - Detects DELETE triggers, destination INSERT triggers, incompatible destination schemas, and composite primary keys before any data moves
-- **Dry-run mode** - Preview the execution plan and filtered row counts without making changes
+- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table — except that `copy-only --force` proceeds past a held lock whose heartbeat is stale ([`--force`](docs/README_OPERATIONS.md#--force-only-matters-for-copy-only))
+- **Dry-run mode** - Preview the execution plan and filtered row counts; never deletes from the source ([Dry-run payload validation](docs/README_VALIDATION.md#dry-run-payload-validation))
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
 
@@ -125,19 +108,13 @@ GoArchive is designed ONLY to move COLD data to an archive server—specifically
 
 ### Installation
 
+From a checkout:
+
 ```bash
-# Clone the repository
-git clone https://github.com/dbsmedya/goarchive.git
-cd goarchive
-
-# Build the binary
 go build -o goarchive ./cmd/goarchive
-
-# Move to your PATH (optional)
-sudo mv goarchive /usr/local/bin/
 ```
 
-See [INSTALL.md](INSTALL.md) for Make targets, release builds, and platform notes.
+Release binaries, the published image, Make targets and release builds: [INSTALL.md](INSTALL.md).
 
 ### Configuration
 
@@ -179,6 +156,16 @@ jobs:
         foreign_key: order_id
         dependency_type: "1-N"
 
+      - table: shipments
+        primary_key: id
+        foreign_key: order_id
+        dependency_type: "1-1"
+        relations:
+          - table: shipment_items
+            primary_key: id
+            foreign_key: shipment_id
+            dependency_type: "1-N"
+
 # Processing settings
 processing:
   batch_size: 1000
@@ -196,9 +183,7 @@ replication:
       password: change_me
 ```
 
-`where` is required on every job — use `where: "1=1"` to deliberately process a whole table. See [configs/archiver.yaml.example](configs/archiver.yaml.example) for a complete annotated example.
-
-📖 **Every block, option, default, and per-job override rule is documented in [Configuration](docs/README_CONFIGURATION.md).** Note that processing settings are config-file only — there are no `--batch-size` style CLI flags.
+`where` is required on every job — use `where: "1=1"` to deliberately process a whole table. A complete annotated example: [configs/archiver.yaml.example](configs/archiver.yaml.example). Every option: [Configuration](docs/README_CONFIGURATION.md).
 
 ### Basic Usage
 
@@ -237,6 +222,23 @@ goarchive plan -c archiver.yaml --job archive_old_orders
 │                │
 └────────────────┘
 
+# … followed by the execution plan; its copy and delete orders for this job:
+
+[Copy Order (parent tables first)]
+----------------------------------
+  [1] orders (root)
+  [2] order_items | FK: order_id -> id
+  [3] order_payments | FK: order_id -> id
+  [4] shipments | FK: order_id -> id
+  [5] shipment_items | FK: shipment_id -> id
+
+[Delete Order (child tables first)]
+-----------------------------------
+  [1] shipment_items | FK: shipment_id <- id
+  [2] shipments | FK: order_id <- id
+  [3] order_payments | FK: order_id <- id
+  [4] order_items | FK: order_id <- id
+  [5] orders (root)
 
 # Validate configuration and run preflight checks
 goarchive validate -c archiver.yaml
@@ -247,19 +249,17 @@ goarchive dry-run -c archiver.yaml --job archive_old_orders
 # Execute archive (runs preflight, copies to destination, verifies, then deletes)
 goarchive archive -c archiver.yaml --job archive_old_orders
 
-# Copy-only (runs non-destructive preflight, copies to destination, never deletes source)
+# Copy-only (copies to destination, never deletes source)
 goarchive copy-only -c archiver.yaml --job archive_old_orders
 
-# Copy-only force mode (shows confirmation prompt before bypassing duplicate preflight)
+# Copy-only with --force (see Operations for what it bypasses)
 goarchive copy-only -c archiver.yaml --job archive_old_orders --force
 
-# Purge only (runs source-side preflight, then deletes without copying - USE WITH CAUTION!)
+# Purge only (deletes without copying - USE WITH CAUTION!)
 goarchive purge -c archiver.yaml --job archive_old_orders
 ```
 
-**Recommended workflow:** `validate` → `dry-run` → `archive`. The dry-run step shows the WHERE clause, the row counts the run would actually touch, and validates `batch_size` against the destination's limits before you commit to a real run.
-
-📖 **[Operations](docs/README_OPERATIONS.md)** documents every command, the per-command flags, throughput tuning, the `sentinel_file` pause switch, and crash recovery. **[Validation & Preflight](docs/README_VALIDATION.md)** documents what `validate` actually checks and how to resolve each failure.
+**Recommended workflow:** `validate` → `dry-run` → `archive`. Every command and flag: [Operations](docs/README_OPERATIONS.md).
 
 ## Architecture
 
@@ -281,8 +281,8 @@ goarchive purge -c archiver.yaml --job archive_old_orders
                          ┌──────────┴──────────┐
                          ▼                     ▼
                 ┌─────────────────┐    ┌──────────────┐
-                │  Graph Builder  │    │  Lag Monitor │
-                │ (Kahn's Algo)   │    │              │
+                │  Graph Builder  │    │  Replication │
+                │ (Kahn's Algo)   │    │     Gate     │
                 └─────────────────┘    └──────────────┘
                          │
          ┌───────────────┼───────────────┐
@@ -294,12 +294,12 @@ goarchive purge -c archiver.yaml --job archive_old_orders
    └──────────┘   └──────────┘   └──────────┘
 ```
 
-### Processing Pipeline
+### Processing pipeline
 
-1. **Preflight Checks** - Validate configuration, check triggers, verify InnoDB
-2. **Graph Build** - Parse table relations → Kahn's algorithm → copy order (parent-first), delete order (child-first)
-3. **Batch Loop** - Fetch root IDs → BFS discovery → copy transaction → verify → delete
-4. **Safety** - Advisory locks + destination job-state checks prevent concurrent archive/purge/copy-only overlap on the same root table; the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
+1. **Preflight** - the checks that apply to the command run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
+2. **Graph build** - Kahn's algorithm puts parents before children for the copy; the delete order is its exact reverse (`plan` prints both)
+3. **Batch loop** - fetch root IDs → BFS discovery of every child row → copy transaction → verify → delete → checkpoint. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
+4. **Safety** - one run per job name and per root table, except `copy-only --force` past a stale held lock ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
 
 ### Key Components
 
@@ -311,70 +311,26 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 | `internal/graph/` | Dependency graph builder with Kahn's algorithm |
 | `internal/archiver/` | Core archive/purge/copy/delete logic |
 | `internal/verifier/` | Count and SHA256 verification |
+| `internal/replication/` | Replication gate on the library's replica status facts |
 | `internal/lock/` | MySQL advisory lock implementation |
 | `internal/logger/` | Structured logging with Zap |
-
-## How It Works
-
-### Dependency Resolution
-
-GoArchive automatically determines the correct order for copying and deleting related records:
-
-```
-orders (root)
-  ├── order_items (child)
-  ├── order_payments (child)
-  └── shipments (child)
-        └── shipment_items (grandchild)
-
-Copy Order:    orders → order_items → order_payments → shipments → shipment_items
-Delete Order:  shipment_items → shipments → order_items → order_payments → orders
-```
-
-### Batch Processing
-
-1. **Discovery** - BFS traversal finds all child records for a batch of root IDs
-2. **Copy** - Transactional insert to destination in dependency order
-3. **Verify** - Optional count/SHA256 verification ensures data integrity
-4. **Delete** - Removes data from source in reverse dependency order
-5. **Checkpoint** - Progress saved for crash recovery
-
-`batch_size` is the universal copy chunk unit — root and every child table fetch up to `batch_size` rows at a time; INSERTs can be subdivided to preserve complete diagnostics. See [Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput) for how to size it, and [Resume semantics](docs/README_OPERATIONS.md#resume-semantics) for what happens after an interruption.
+| `internal/types/` | Shared row and value types |
+| `internal/mermaidascii/` | ASCII diagram rendering for `plan` |
 
 ## Requirements
 
-The source account needs `SELECT` and `DELETE`, the destination needs `SELECT` and `INSERT`,
-and the tracking schema needs `CREATE`/`SELECT`/`INSERT`/`UPDATE` — plus `PROCESS` on the
-source for cross-schema foreign key visibility. 📖 The full matrix, ready-to-paste grant
-recipes for both `job_schema` layouts, and troubleshooting are in
-**[Permissions](docs/README_PERMISSIONS.md)**.
+Each command needs specific privileges on the source, the destination and the tracking schema: [Permissions](docs/README_PERMISSIONS.md).
 
 ## Testing
 
-📖 **[Testing](docs/README_TESTING.md)** covers the test layers; **[tests/README.md](tests/README.md)** is the source of truth for the full integration and E2E command matrix.
+How to run every test layer: [tests/README.md](tests/README.md).
 
 ## Project Status
 
 - **Edition**: Community
-- **Version**: `2.2.3-community` (**stable**)
-- **Stable release**: `2.2.3-community` — the current production line, built on the stable [dbsgomysql v1.2.0 integration](docs/README_dbsgomysql.md).
+- **Version**: `2.2.4-community` (**stable**)
+- **Stable release**: `2.2.4-community` — the current production line.
 - **Recommended for**: single-operator workstation archival of cold MySQL data
-- **Test coverage**: extensive unit tests (no DB — preflight stages consume injected library facts, `sqlmock` covers GoArchive's own SQL), real-MySQL integration tests (`-tags=integration`), and a focused Sakila E2E suite — see [tests/README.md](tests/README.md)
-
-Upgrading from 2.0? See [Upgrading to 2.1](docs/README_UPGRADING_2_1.md) — the `replica:` block
-and the `safety:` lag keys were replaced by `replication:`, and configs still carrying them are
-rejected. Upgrading from 1.8? See [Upgrading to 2.0](docs/README_UPGRADING_2_0.md) first.
-
-### What's Included in Community
-
-Complete end-to-end archive, purge, and copy-only workflows:
-- Dependency graph + topological copy / reverse-topological delete order
-- 19 preflight checks, plus a connection-time source/destination identity check — all enumerated in [Validation & Preflight](docs/README_VALIDATION.md)
-- Crash recovery via `archiver_job` + per-job `archiver_job_log_<id>` tables in `job_schema` (destination by default)
-- Advisory locks serialize job-name execution across all three commands
-- Replication gating across a fleet of replicas and all their channels
-- Verification by row count or SHA256
-- Dry-run mode with execution plan output
 
 ### Planned for Enterprise
 
