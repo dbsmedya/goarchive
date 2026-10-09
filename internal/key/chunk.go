@@ -35,7 +35,8 @@ func MaxTuples(keyColumns int, rangeOptimizerMaxMemSize uint64) int {
 	return limit
 }
 
-// Chunks splits keys into consecutive slices of at most n keys each.
+// Chunks splits keys into consecutive slices of at most n keys each. No chunk has spare
+// capacity, so appending to one never writes into the next chunk or into keys itself.
 func Chunks(keys []Key, n int) [][]Key {
 	if n < 1 {
 		n = 1
@@ -46,7 +47,7 @@ func Chunks(keys []Key, n int) [][]Key {
 		keys = keys[n:]
 	}
 	if len(keys) > 0 {
-		out = append(out, keys)
+		out = append(out, keys[:len(keys):len(keys)])
 	}
 	return out
 }
