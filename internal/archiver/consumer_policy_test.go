@@ -42,10 +42,7 @@ func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			// testdata is skipped because Go tooling ignores it and a fixture there may
-			// deliberately not parse; .git and vendor hold no first-party source.
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -170,10 +167,7 @@ func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			// testdata is skipped because Go tooling ignores it and a fixture there may
-			// deliberately not parse; .git and vendor hold no first-party source.
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -414,8 +408,7 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -707,6 +700,15 @@ func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	if isIntegrationTestFile("internal/archiver/unit_fixture_test.go", nonIntegrationFile) {
 		t.Fatal("negated integration build constraint was classified as integration")
 	}
+}
+
+// skipPolicyWalkDir reports whether a policy walk skips the directory named name. It
+// mirrors what `go build ./...` ignores: names beginning with "." or "_" (which covers .git
+// and internal directories such as .ayder), testdata, where a fixture may deliberately not
+// parse, and vendor, which holds no first-party source.
+func skipPolicyWalkDir(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+		name == "testdata" || name == "vendor"
 }
 
 // moduleRoot returns the directory holding go.mod, walking up from the package directory
