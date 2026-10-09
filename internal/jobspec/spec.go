@@ -64,15 +64,15 @@ func (c *Columns) UnmarshalYAML(n *yaml.Node) error {
 
 // Spec is one job (spec §5).
 type Spec struct {
-	Type         Type                          `yaml:"job_type"`
-	RootTable    string                        `yaml:"root_table"`
-	PrimaryKey   Columns                       `yaml:"primary_key"`
-	Where        string                        `yaml:"where"`
-	Resume       *bool                         `yaml:"resume"`
-	Relations    []Relation                    `yaml:"relations"`
-	Processing   *config.ProcessingOverrides   `yaml:"processing"`
-	Verification *config.VerificationOverrides `yaml:"verification"`
-	Logging      *config.LoggingConfig         `yaml:"logging"`
+	Type         Type                        `yaml:"job_type"`
+	RootTable    string                      `yaml:"root_table"`
+	PrimaryKey   Columns                     `yaml:"primary_key"`
+	Where        string                      `yaml:"where"`
+	Resume       *bool                       `yaml:"resume"`
+	Relations    []Relation                  `yaml:"relations"`
+	Processing   *config.ProcessingOverrides `yaml:"processing"`
+	Verification *Verification               `yaml:"verification"`
+	Logging      *config.LoggingConfig       `yaml:"logging"`
 }
 
 // Relation is one child table and the columns that tie it to its parent (spec §5, §7.3).
@@ -97,9 +97,12 @@ func (s *Spec) EffectiveProcessing(global config.ProcessingConfig) config.Proces
 	return (&config.JobConfig{Processing: s.Processing}).GetJobProcessing(global)
 }
 
-// EffectiveVerification merges the job's verification overrides over global.
-func (s *Spec) EffectiveVerification(global config.VerificationConfig) config.VerificationConfig {
-	return (&config.JobConfig{Verification: s.Verification}).GetJobVerification(global)
+// EffectiveVerification is the job's verification, or global when the job sets none.
+func (s *Spec) EffectiveVerification(global Verification) Verification {
+	if s.Verification != nil {
+		return *s.Verification
+	}
+	return global
 }
 
 // EffectiveLogging merges the job's logging overrides over global.
@@ -109,13 +112,15 @@ func (s *Spec) EffectiveLogging(global config.LoggingConfig) config.LoggingConfi
 
 // Document is a loaded, validated configuration file.
 type Document struct {
-	// Shared holds every block except jobs; Shared.Jobs is always empty. Never call its
-	// job-aware methods (GetJob, GetJobProcessing, GetJobVerification, GetJobLogging, or
-	// ApplyOverrides' per-job skip_verification handling): with no jobs they silently fall
-	// back to the global blocks. Use the Spec's Effective* methods; M6 reimplements
-	// --skip-verify against Spec.Verification.
+	// Shared holds every block except jobs and verification; Shared.Jobs is always empty
+	// and Shared.Verification is unused. Never call its job-aware methods (GetJob,
+	// GetJobProcessing, GetJobVerification, GetJobLogging, or ApplyOverrides): with no jobs
+	// they silently fall back to the global blocks. Use the Spec's Effective* methods; M6
+	// applies --verification over Spec.EffectiveVerification.
 	Shared *config.Config
-	Jobs   map[string]*Spec
+	// Verification is the file's global verification, sha256 unless set (R41, R42).
+	Verification Verification
+	Jobs         map[string]*Spec
 }
 
 // Job returns the named job. A non-empty cmd is the subcommand being run; a job whose

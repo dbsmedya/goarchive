@@ -112,7 +112,7 @@ jobs:
 	}
 	c := d.Shared
 	if c.Source.Port != 3306 || c.Source.TLS != "preferred" || c.Processing.BatchSize != 50 || c.Processing.BatchDeleteSize != 500 ||
-		c.Verification.Method != "count" || c.Logging.Format != "json" {
+		d.Verification != VerifySHA256 || c.Logging.Format != "json" {
 		t.Fatalf("defaults lost: %+v", c)
 	}
 	if len(c.Jobs) != 0 {

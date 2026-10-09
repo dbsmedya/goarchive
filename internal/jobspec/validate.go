@@ -52,8 +52,8 @@ func validateJob(shared *config.Config, name string, s *Spec) config.ValidationE
 	if s.Processing != nil {
 		errs = append(errs, config.ValidateProcessingConfig(p+".processing", s.EffectiveProcessing(shared.Processing))...)
 	}
-	if s.Verification != nil && s.Type != Purge {
-		errs = append(errs, config.ValidateVerificationConfig(p+".verification", s.EffectiveVerification(shared.Verification))...)
+	if s.Verification != nil && s.Type != Purge && !s.Verification.Valid() {
+		errs = append(errs, invalidVerification(p+".verification", *s.Verification))
 	}
 	if s.Logging != nil {
 		errs = append(errs, config.ValidateLoggingConfig(p+".logging", s.EffectiveLogging(shared.Logging))...)
@@ -194,4 +194,8 @@ func fillReferences(parentKey Columns, rels []Relation) {
 		}
 		fillReferences(r.PrimaryKey, r.Relations)
 	}
+}
+
+func invalidVerification(field string, v Verification) config.ValidationError {
+	return config.ValidationError{Field: field, Message: fmt.Sprintf("verification must be sha256, count or none, not %q", string(v))}
 }

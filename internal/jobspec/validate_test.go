@@ -187,13 +187,13 @@ func TestSettingsPerJobType(t *testing.T) {
 	refused := []struct {
 		name, typ, extra, field, msg string
 	}{
-		{"purge with verification", "purge", "    verification:\n      method: sha256\n", "verification", "nothing to verify"},
+		{"purge with verification", "purge", "    verification: sha256\n", "verification", "nothing to verify"},
 		{"copy-only with batch_delete_size", "copy-only", "    processing:\n      batch_delete_size: 10\n", "processing.batch_delete_size", "deletes nothing"},
 		{"copy-only with delete_sleep_seconds", "copy-only", "    processing:\n      delete_sleep_seconds: 1\n", "processing.delete_sleep_seconds", "deletes nothing"},
 		{"archive with resume", "archive", "    resume: true\n", "resume", "only to copy-only"},
 		{"purge with resume false", "purge", "    resume: false\n", "resume", "only to copy-only"},
 		{"bad merged processing", "archive", "    processing:\n      batch_size: 0\n", "processing.batch_size", "must be positive"},
-		{"bad merged verification", "archive", "    verification:\n      method: md5\n", "verification.method", "'count' or 'sha256'"},
+		{"bad verification", "archive", "    verification: md5\n", "verification", "must be sha256, count or none"},
 		{"bad merged logging", "copy-only", "    logging:\n      format: xml\n", "logging.format", "'json' or 'text'"},
 	}
 	for _, tc := range refused {
@@ -207,8 +207,8 @@ func TestSettingsPerJobType(t *testing.T) {
 	accepted := []struct {
 		name, typ, extra string
 	}{
-		{"copy-only with resume", "copy-only", "    resume: true\n    verification:\n      method: sha256\n    processing:\n      batch_size: 10\n"},
-		{"archive with every setting", "archive", "    processing:\n      batch_delete_size: 10\n      delete_sleep_seconds: 1\n    verification:\n      skip_verification: true\n"},
+		{"copy-only with resume", "copy-only", "    resume: true\n    verification: sha256\n    processing:\n      batch_size: 10\n"},
+		{"archive with every setting", "archive", "    processing:\n      batch_delete_size: 10\n      delete_sleep_seconds: 1\n    verification: none\n"},
 		{"purge with delete settings", "purge", "    processing:\n      batch_delete_size: 10\n"},
 	}
 	for _, tc := range accepted {
@@ -218,9 +218,9 @@ func TestSettingsPerJobType(t *testing.T) {
 			}
 		})
 	}
-	// A global verification block applies to the archive and copy-only jobs of the file;
-	// it does not make a purge job in the same file invalid.
-	d, err := parse(t, "\nverification:\n  method: sha256\n"+job("purge", ""))
+	// A global verification applies to the archive and copy-only jobs of the file; it does
+	// not make a purge job in the same file invalid.
+	d, err := parse(t, "\nverification: count\n"+job("purge", ""))
 	if err != nil {
 		t.Fatalf("a purge job beside a global verification block: %v", err)
 	}
