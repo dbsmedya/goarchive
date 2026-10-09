@@ -349,3 +349,36 @@ func TestMaxTuplesStaysUnderBudgetForWideKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestAfterUsesRangeAccessOnThreeColumnKey checks that the expanded disjunction stays a range
+// scan for a key wider than the two columns probe P1 measured. Near the end of a
+// 64,000-row table, a page of 100 must read about 100 index entries. The row-constructor
+// form (a,b,c) > (?,?,?) walks the index from its start and reads about 63,000.
+func TestAfterUsesRangeAccessOnThreeColumnKey(t *testing.T) {
+	c := sourceConn(t)
+	ctx := context.Background()
+	mustExec(t, c, "CREATE TEMPORARY TABLE ga3_three (a INT NOT NULL, b INT NOT NULL, c INT NOT NULL, pad INT, PRIMARY KEY (a, b, c))")
+	mustExec(t, c, `INSERT INTO ga3_three
+		WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 63999)
+		SELECT i DIV 1600, i DIV 40 % 40, i % 40, i FROM n`)
+	mustExec(t, c, "ANALYZE TABLE ga3_three")
+	d := Def{Table: "ga3_three", Columns: []Column{
+		{Name: "a", Family: FamilySigned}, {Name: "b", Family: FamilySigned}, {Name: "c", Family: FamilySigned}}}
+	last := Key{int64(39), int64(20), int64(5)}
+	q := "SELECT " + Projection(d) + " FROM ga3_three WHERE " + After(d) + " ORDER BY " + OrderBy(d) + " LIMIT 100"
+
+	mustExec(t, c, "FLUSH STATUS")
+	keys := readKeys(t, c, d, q, AfterArgs(last)...)
+	var name string
+	var reads int64
+	if err := c.QueryRowContext(ctx, "SHOW SESSION STATUS LIKE 'Handler_read_next'").Scan(&name, &reads); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(keys) != 100 || Encode(keys[0]) != Encode(Key{int64(39), int64(20), int64(6)}) {
+		t.Fatalf("page starts at %v with %d keys, want (39,20,6) and 100", keys[0], len(keys))
+	}
+	if reads > 1000 {
+		t.Fatalf("Handler_read_next = %d for a 100-row page: the continuation is not a range scan", reads)
+	}
+}
