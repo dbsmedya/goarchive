@@ -261,6 +261,43 @@ jobs:
 	}
 }
 
+// TestParseFollowsMergeKeysInTheJobsMap covers a merge key directly under jobs, whose
+// operand is a map of jobs, not one job. Its jobs are checked like jobs written out, at
+// their own path and line, whether the operand is a mapping, a list or an alias.
+func TestParseFollowsMergeKeysInTheJobsMap(t *testing.T) {
+	const job = `{job_type: copy-only, root_table: t, primary_key: id, where: "1=1", resume: true}`
+	const typo = `{job_type: copy-only, root_table: t, primary_key: id, where: "1=1", resuem: true}`
+	for _, tc := range []struct{ name, jobs string }{
+		{"a mapping", "jobs:\n  <<: {j: " + job + "}\n"},
+		{"a list", "jobs:\n  <<:\n    - j: " + job + "\n"},
+		{"an alias", "jobs:\n  <<: [&m {j: " + job + "}, *m]\n"},
+	} {
+		t.Run("valid behind "+tc.name, func(t *testing.T) {
+			d, err := parse(t, tc.jobs)
+			if err != nil {
+				t.Fatalf("Parse() = %v", err)
+			}
+			if s, ok := d.Jobs["j"]; !ok || !s.ResumeEnabled() {
+				t.Fatalf("jobs = %v, want j with resume", d.JobNames())
+			}
+		})
+	}
+	for _, tc := range []struct{ name, jobs string }{
+		{"a mapping", "jobs:\n  <<: {j: " + typo + "}\n"},
+		{"a list", "jobs:\n  <<:\n    - j: " + typo + "\n"},
+		{"an alias", "jobs:\n  <<: [&m {j: " + typo + "}, *m]\n"},
+	} {
+		t.Run("misspelt behind "+tc.name, func(t *testing.T) {
+			errs := mustFail(t, tc.jobs)
+			full := sharedYAML + tc.jobs
+			line := strings.Count(full[:strings.Index(full, "resuem")], "\n") + 1
+			if !hasError(errs, "jobs.j.resuem", fmt.Sprintf("unknown key (line %d)", line)) {
+				t.Errorf("want jobs.j.resuem: unknown key (line %d), got:\n%v", line, errs)
+			}
+		})
+	}
+}
+
 // TestColumnsScalarOrList covers the YAML forms of a column list.
 func TestColumnsScalarOrList(t *testing.T) {
 	job := func(pk string) string {
