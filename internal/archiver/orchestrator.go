@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/replication"
-	"github.com/dbsmedya/goarchive/internal/types"
-	"github.com/dbsmedya/goarchive/internal/verifier"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/replication"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/verifier"
 )
 
 // ArchiveResult contains statistics and status of archive operation.

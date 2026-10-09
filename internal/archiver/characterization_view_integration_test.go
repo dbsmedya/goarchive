@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // chrAssertRawTables asserts the UNDECORATED-stripping helper is not hiding the

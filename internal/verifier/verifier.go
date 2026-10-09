@@ -13,9 +13,9 @@ import (
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
 // VerificationMethod defines how to verify data integrity.

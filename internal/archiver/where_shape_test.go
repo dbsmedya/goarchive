@@ -8,9 +8,9 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
 // TestWhereSitesWrapPredicate pins that every site embedding the job's `where`

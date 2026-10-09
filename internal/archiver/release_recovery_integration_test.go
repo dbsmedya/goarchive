@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver/testsupport"
 )
 
 type releaseGraphEdge struct {

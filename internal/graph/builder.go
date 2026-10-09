@@ -3,7 +3,7 @@ package graph
 import (
 	"fmt"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 // Builder constructs a dependency graph from job configuration.

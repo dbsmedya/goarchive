@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 func tableColumns(table string, columns ...validations.ColumnInfo) []validations.TableColumns {

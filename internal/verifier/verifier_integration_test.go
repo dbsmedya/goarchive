@@ -6,14 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 	"os"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // Mirror the env-driven DSN construction used by the archiver package's

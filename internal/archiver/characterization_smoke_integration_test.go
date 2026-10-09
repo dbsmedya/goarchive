@@ -5,7 +5,7 @@ package archiver
 import (
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // TestCharacterizationHarness_CleanFixturePassesEveryCommand is the harness's own

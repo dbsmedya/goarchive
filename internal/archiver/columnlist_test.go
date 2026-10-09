@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
 // The projection must include every column — invisible and generated alike —

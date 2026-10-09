@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dbsmedya/goarchive/internal/archiver"
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/spf13/cobra"
 )
 

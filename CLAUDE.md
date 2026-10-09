@@ -118,6 +118,27 @@ The roadmaps own placement and when `release/2.2` is cut:
   the code differs. Never merge between lines.
 - Numbered design decisions live in `roadmap_v3.md` §2; cite them rather than restating them.
 
+### The 3.0 line (this checkout)
+
+This checkout is branch `v3`, the 3.0 innovation line; `../goarchive` is the 2.x line and is
+never modified from here. Until 3.0-alpha (rulings R33, R34 in
+`.ayder/superpowers_20261007/decisions/2026-10-07-3.0-core-brainstorm-rulings.md`):
+
+- Work happens on `v3-dev/<milestone>` branches merged locally into `v3`, after the operator's
+  confirmed verdict. Nothing is pushed and no GitHub PR is opened.
+- `make gate` is not required between merges, and `make deadcode` may be red while new packages
+  are not yet wired. Every merge keeps `go build ./...` and `go vet ./...` passing, and every
+  task runs its own tests.
+- The design is `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`, and the plans
+  are in `.ayder/superpowers_20261007/plans/`. The approved spec is authoritative.
+- The roadmaps named in *Release lines* above live in `../goarchive/.ayder/roadmaps/`. This
+  checkout has no copy.
+- The test containers (db1/db2/db3) belong to `../goarchive`'s compose project. Never run
+  `make test-up`, `test-down`, `test-reset` or `e2e` from here against them without the
+  operator's say.
+- The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
+  the full gate. From then on the rules above this section apply unchanged.
+
 ## Build & guards
 
 ```bash

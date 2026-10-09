@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
-	"github.com/dbsmedya/goarchive/internal/lock"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver/testsupport"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 )
 
 func TestArchiveForceBlockedByFreshHeartbeat(t *testing.T) {

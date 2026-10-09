@@ -12,10 +12,10 @@ import (
 	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
 // CopyStats contains statistics about the copy operation.

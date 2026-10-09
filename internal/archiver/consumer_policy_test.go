@@ -42,10 +42,7 @@ func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			// testdata is skipped because Go tooling ignores it and a fixture there may
-			// deliberately not parse; .git and vendor hold no first-party source.
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -170,10 +167,7 @@ func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			// testdata is skipped because Go tooling ignores it and a fixture there may
-			// deliberately not parse; .git and vendor hold no first-party source.
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -414,8 +408,7 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "vendor", "testdata":
+			if path != root && skipPolicyWalkDir(entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -709,6 +702,15 @@ func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	}
 }
 
+// skipPolicyWalkDir reports whether a policy walk skips the directory named name. It
+// mirrors what `go build ./...` ignores: names beginning with "." or "_" (which covers .git
+// and internal directories such as .ayder), testdata, where a fixture may deliberately not
+// parse, and vendor, which holds no first-party source.
+func skipPolicyWalkDir(name string) bool {
+	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
+		name == "testdata" || name == "vendor"
+}
+
 // moduleRoot returns the directory holding go.mod, walking up from the package directory
 // that `go test` sets as the working directory.
 func moduleRoot(t *testing.T) string {
@@ -727,5 +729,23 @@ func moduleRoot(t *testing.T) string {
 			t.Fatalf("go.mod not found at or above %s", dir)
 		}
 		dir = parent
+	}
+}
+
+// TestPolicyWalkSkipsWhatGoToolingIgnores pins the directory rule the policy walkers share.
+// `go build ./...` ignores directories whose names begin with "." or "_", plus testdata and
+// vendor, so none of them holds module source. Before 3.0 the walkers skipped only .git,
+// vendor and testdata, and a reference .go file kept under the ignored .ayder/ directory
+// failed the information_schema guard although no build ever compiles it.
+func TestPolicyWalkSkipsWhatGoToolingIgnores(t *testing.T) {
+	for _, name := range []string{".git", ".ayder", ".superpowers", "_scratch", "vendor", "testdata"} {
+		if !skipPolicyWalkDir(name) {
+			t.Errorf("skipPolicyWalkDir(%q) = false; Go tooling ignores this directory", name)
+		}
+	}
+	for _, name := range []string{"internal", "cmd", "archiver", "harness"} {
+		if skipPolicyWalkDir(name) {
+			t.Errorf("skipPolicyWalkDir(%q) = true; this directory holds module source", name)
+		}
 	}
 }

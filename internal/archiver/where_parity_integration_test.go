@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // TestDryRunAndRunAcceptSameWhere_Integration pins that dry-run and the run

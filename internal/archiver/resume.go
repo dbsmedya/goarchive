@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // JobStatus represents the state of an archive job.

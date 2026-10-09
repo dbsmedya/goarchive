@@ -7,7 +7,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 const srcSelectDDL = "CREATE TABLE orders (id bigint NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB"

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 type rootPKMetaLoader func(context.Context, *sql.DB, string, *graph.Graph) error

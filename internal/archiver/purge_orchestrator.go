@@ -8,11 +8,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/graph"
-	"github.com/dbsmedya/goarchive/internal/logger"
-	"github.com/dbsmedya/goarchive/internal/replication"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/replication"
 )
 
 // PurgeResult contains statistics and status of purge operation.

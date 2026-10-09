@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver/testsupport"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 // Issue #16. MySQL converts TIMESTAMP between UTC and the SESSION time zone on
