@@ -1,7 +1,6 @@
 package archiver
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -71,10 +70,6 @@ func TestApplyRootPKMetaMissingColumnIsPlainError(t *testing.T) {
 	))
 	if err == nil {
 		t.Fatal("expected missing-column error")
-	}
-	var pe *PreflightError
-	if errors.As(err, &pe) {
-		t.Fatalf("expected plain error, got *PreflightError: %v", pe)
 	}
 	if !strings.Contains(err.Error(), "orders") || !strings.Contains(err.Error(), "LOG_ID") {
 		t.Fatalf("error must name table and configured column: %v", err)

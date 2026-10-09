@@ -13,11 +13,9 @@ import (
 )
 
 var (
-	archiveJob                   string
-	archiveForce                 bool
-	archiveSkipValidatePreflight bool
-	archiveForceTriggers         bool
-	archiveProgress              string
+	archiveJob      string
+	archiveForce    bool
+	archiveProgress string
 )
 
 var archiveCmd = &cobra.Command{
@@ -44,10 +42,6 @@ func init() {
 
 	archiveCmd.Flags().BoolVar(&archiveForce, "force", false,
 		"Refresh a stale heartbeat takeover only. Because archive is destructive, --force CANNOT proceed while the advisory GET_LOCK is still held by another connection (a held lock cannot be safely stolen): verify the prior process is dead and its MySQL session has closed, then retry. Cannot bypass: a live heartbeating job, the same-root concurrency check, or preflight checks.")
-	archiveCmd.Flags().BoolVar(&archiveSkipValidatePreflight, "skip-validate-preflight", false,
-		"Skip preflight checks before this run (DANGEROUS - see docs)")
-	archiveCmd.Flags().BoolVar(&archiveForceTriggers, "force-triggers", false,
-		"Proceed despite DELETE triggers detected by preflight")
 	registerProgressFlag(archiveCmd, &archiveProgress)
 
 	rootCmd.AddCommand(archiveCmd)
@@ -124,10 +118,6 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	// Test connections
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
-	}
-	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "archive", jobCfg.GetJobVerification(cfg.Verification),
-		archiver.PreflightProfileFull, archiveForceTriggers, true, archiveSkipValidatePreflight); err != nil {
-		return err
 	}
 
 	// Create orchestrator

@@ -18,7 +18,7 @@ type rootPKMetaLoader func(context.Context, *sql.DB, string, *graph.Graph) error
 // This stays goarchive policy over a library fact rather than a library call:
 // validations.ColumnInfo carries DataType and Unsigned but no IsInteger, and the
 // library's own integer classifier is unexported. loadRootPKMeta is this helper's only
-// remaining consumer (phase 018), which is why it lives here rather than in preflight.go.
+// remaining consumer (phase 018), which is why it lives here.
 func isIntegerRootPKType(dataType string) bool {
 	switch strings.ToLower(dataType) {
 	case "tinyint", "smallint", "mediumint", "int", "integer", "bigint":
@@ -101,4 +101,25 @@ func loadRootPKMeta(ctx context.Context, sourceDB *sql.DB, sourceDBName string, 
 		return fmt.Errorf("loadRootPKMeta: %w", err)
 	}
 	return applyRootPKMeta(g, facts)
+}
+
+// asciiFoldEqual reports whether two identifiers differ only by ASCII letter case.
+// Non-ASCII bytes must match exactly, which fails safe.
+func asciiFoldEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }

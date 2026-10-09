@@ -136,6 +136,11 @@ never modified from here. Until 3.0-alpha (rulings R33, R34 in
 - The test containers (db1/db2/db3) belong to `../goarchive`'s compose project. Never run
   `make test-up`, `test-down`, `test-reset` or `e2e` from here against them without the
   operator's say.
+- **Between M3 and M6 the commands run with no preflight** (rulings R38–R40): `archive`, `purge`,
+  `copy-only`, `dry-run` and `validate` have neither the 2.x preflight nor `internal/preflight`, and
+  `--skip-validate-preflight` and `--force-triggers` are gone. Never run a v3 build against data
+  that matters. The E2E scripts still pass those flags and cannot run against a v3 binary until
+  M7 rewrites them.
 - The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
   the full gate. From then on the rules above this section apply unchanged.
 
@@ -165,13 +170,16 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 | Directory | Purpose |
 |-----------|---------|
 | `cmd/` | CLI command implementations (Cobra) |
-| `internal/archiver/` | Core archive/purge/copy orchestration, preflight policy, batch processing |
+| `internal/archiver/` | 2.x archive/purge/copy orchestration and batch processing, replaced by `internal/engine` in 3.0 M5 |
 | `internal/config/` | Configuration parsing with Viper, validation |
 | `internal/database/` | Database connection management, signal handling |
 | `internal/graph/` | Dependency graph, Kahn's algorithm, cycle detection |
+| `internal/jobspec/` | 3.0 job model: strict config loading, job rules, the table tree and the `references` projection |
+| `internal/key/` | 3.0 key model: key definitions from MySQL facts, typed keys, key SQL shapes, statement cap |
 | `internal/lock/` | MySQL advisory locking for job concurrency |
 | `internal/logger/` | Structured logging (Zap wrapper) |
 | `internal/mermaidascii/` | ASCII diagram rendering for plan command |
+| `internal/preflight/` | 3.0 preflight: checks by job type over dbsgomysql facts, key definitions, statement caps |
 | `internal/types/` | Shared types (RecordSet, type conversions) |
 | `internal/verifier/` | Count and SHA256 data verification |
 
@@ -238,12 +246,15 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 
 | Behavior | Symbol |
 |----------|--------|
-| Schema-compatibility policy | `internal/archiver/preflight_schema_policy.go` → `evaluateSchemaCompatibility` |
+| Schema-compatibility policy | `internal/preflight/destination.go` → `judgeSchema` |
 | Destination unique-index rule (deviation D3) | same file → `checkDestinationUniqueness` |
-| Per-diff-kind disposition, fail-closed `default`. It **parses** the library's `SpecDiff.A`/`.B` strings (types, `"true"`/`"false"`), so a change to their format in a dbsgomysql release changes goarchive policy | same file → `disposeDiff`, `goarchiveTypesCompatible` |
+| Per-diff-kind disposition, fail-closed `default`. It **parses** the library's `SpecDiff.A`/`.B` strings (types, `"true"`/`"false"`), so a change to their format in a dbsgomysql release changes goarchive policy | same file → `disposeDiff`, `typesCompatible` |
+| Destination key identity and the utf8mb3→utf8mb4 twin (R32) | same file → `checkDestinationKeys`, `twinCollation` |
 | Resume checkpoint floor | `internal/archiver/batch_pipeline.go` → `checkpointFloor` (struct field, `:66`) |
 | Checkpoint write — the only writer, inside the batch's completion transaction | `internal/archiver/resume.go` → `(*ResumeManager).CompleteBatch` |
-| PK column + case validation | `internal/archiver/preflight.go` → `ValidatePrimaryKeyColumns` |
+| Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
+| Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
+| Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
 | Temporal projection, representation and identity contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalIdentitySet`, `TemporalReadContractError` |
@@ -254,9 +265,9 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
 
 > **Do not rename the `## Known Limits & Caution` heading in
-> `docs/README_LIMITATIONS.md`.** Two preflight error messages point operators at it by name
-> (`internal/archiver/preflight.go`, `ROOT_PK_TYPE_UNSUPPORTED` and `COMPOSITE_PK_CHECK`).
-> Renaming the heading breaks that reference.
+> `docs/README_LIMITATIONS.md`.** An error message points operators at it by name
+> (`internal/database/identity.go`, `SRC_DEST_IDENTITY_CHECK`). Renaming the heading breaks
+> that reference.
 
 ## Documentation Layout (RULE)
 

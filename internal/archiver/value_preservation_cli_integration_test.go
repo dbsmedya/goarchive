@@ -116,53 +116,48 @@ func TestValuePreservationCLI_Integration(t *testing.T) {
 
 	for _, command := range []string{"archive", "copy-only", "purge"} {
 		for _, skip := range []bool{false, true} {
-			for _, skipPreflight := range []bool{false, true} {
-				t.Run(fmt.Sprintf("collision/%s/skip_%v/preflight_skip_%v", command, skip, skipPreflight), func(t *testing.T) {
-					cfg, mgr, job := vpCollision(t)
-					vpCLIAssertProfile(t, mgr.Destination, profile)
-					name := fmt.Sprintf("vp_cli_key_%s_%v_%v", strings.ReplaceAll(command, "-", "_"), skip, skipPreflight)
-					cfg.Jobs = map[string]config.JobConfig{name: *job}
-					cfg.Logging.Format = "text"
-					logTable := bootstrapJobTracking(t, mgr.Destination, cfg.Destination.Database, name, job.RootTable, command)
-					queries := []struct {
-						query string
-						want  []string
-					}{
-						{"SELECT CAST(id AS CHAR) FROM vp_roots ORDER BY id", []string{"1", "2"}},
-						{"SELECT CONCAT(CAST(d AS CHAR),'/',root_id,'/',x) FROM vp_keys ORDER BY d", []string{"2020-02-31/1/1", "2020-03-02/2/2"}},
-						{"SELECT CONCAT(id,'/',CAST(parent_d AS CHAR)) FROM vp_leaves ORDER BY id", []string{"11/2020-02-31", "22/2020-03-02"}},
+			t.Run(fmt.Sprintf("collision/%s/skip_%v", command, skip), func(t *testing.T) {
+				cfg, mgr, job := vpCollision(t)
+				vpCLIAssertProfile(t, mgr.Destination, profile)
+				name := fmt.Sprintf("vp_cli_key_%s_%v", strings.ReplaceAll(command, "-", "_"), skip)
+				cfg.Jobs = map[string]config.JobConfig{name: *job}
+				cfg.Logging.Format = "text"
+				logTable := bootstrapJobTracking(t, mgr.Destination, cfg.Destination.Database, name, job.RootTable, command)
+				queries := []struct {
+					query string
+					want  []string
+				}{
+					{"SELECT CAST(id AS CHAR) FROM vp_roots ORDER BY id", []string{"1", "2"}},
+					{"SELECT CONCAT(CAST(d AS CHAR),'/',root_id,'/',x) FROM vp_keys ORDER BY d", []string{"2020-02-31/1/1", "2020-03-02/2/2"}},
+					{"SELECT CONCAT(id,'/',CAST(parent_d AS CHAR)) FROM vp_leaves ORDER BY id", []string{"11/2020-02-31", "22/2020-03-02"}},
+				}
+				for _, q := range queries {
+					if got := vpCLIRows(t, mgr.Source, q.query); !reflect.DeepEqual(got, q.want) {
+						t.Fatalf("CLI fixture: collision source=%v, want %v", got, q.want)
 					}
-					for _, q := range queries {
-						if got := vpCLIRows(t, mgr.Source, q.query); !reflect.DeepEqual(got, q.want) {
-							t.Fatalf("CLI fixture: collision source=%v, want %v", got, q.want)
-						}
-						if got := vpCLIRows(t, mgr.Destination, q.query); len(got) != 0 {
-							t.Fatalf("CLI fixture: collision destination not empty: %v", got)
-						}
+					if got := vpCLIRows(t, mgr.Destination, q.query); len(got) != 0 {
+						t.Fatalf("CLI fixture: collision destination not empty: %v", got)
 					}
-					var flags []string
-					if skip {
-						flags = append(flags, "--skip-verify")
+				}
+				var flags []string
+				if skip {
+					flags = append(flags, "--skip-verify")
+				}
+				output, exit := vpCLIRun(t, binary, cfg, command, name, flags...)
+				if exit == 0 || !strings.Contains(output, "TEMPORAL_READ_CONTRACT") {
+					t.Errorf("CLI temporal identity guard bypassed by override: exit=%d; expected TEMPORAL_READ_CONTRACT", exit)
+				}
+				for _, q := range queries {
+					source, dest := vpCLIRows(t, mgr.Source, q.query), vpCLIRows(t, mgr.Destination, q.query)
+					t.Logf("collision raw source=%v destination=%v", source, dest)
+					if !reflect.DeepEqual(source, q.want) || len(dest) != 0 {
+						t.Error("CLI temporal identity guard bypassed by override: source graph changed or destination written")
 					}
-					if skipPreflight {
-						flags = append(flags, "--skip-validate-preflight")
-					}
-					output, exit := vpCLIRun(t, binary, cfg, command, name, flags...)
-					if exit == 0 || !strings.Contains(output, "TEMPORAL_READ_CONTRACT") {
-						t.Errorf("CLI temporal identity guard bypassed by override: exit=%d; expected TEMPORAL_READ_CONTRACT", exit)
-					}
-					for _, q := range queries {
-						source, dest := vpCLIRows(t, mgr.Source, q.query), vpCLIRows(t, mgr.Destination, q.query)
-						t.Logf("collision raw source=%v destination=%v", source, dest)
-						if !reflect.DeepEqual(source, q.want) || len(dest) != 0 {
-							t.Error("CLI temporal identity guard bypassed by override: source graph changed or destination written")
-						}
-					}
-					statuses := readLogStatuses(t, mgr.Destination, logTable)
-					t.Logf("collision markers=%v", statuses)
-					vpCLIAssertNoCopyMarker(t, statuses, "CLI temporal identity guard bypassed by override")
-				})
-			}
+				}
+				statuses := readLogStatuses(t, mgr.Destination, logTable)
+				t.Logf("collision markers=%v", statuses)
+				vpCLIAssertNoCopyMarker(t, statuses, "CLI temporal identity guard bypassed by override")
+			})
 		}
 	}
 }

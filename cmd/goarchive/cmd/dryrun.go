@@ -104,14 +104,7 @@ func runDryrun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("dependency cycle detected in graph")
 	}
 
-	// Dry-run is the operator's go/no-go step: run the non-destructive
-	// preflight profile so schema/charset/grants problems surface here,
-	// not at archive time. Workflow: validate -> dry-run -> archive.
 	verification := jobCfg.GetJobVerification(cfg.Verification)
-	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "dry-run",
-		verification, archiver.PreflightProfileNonDestructive, false, true, false); err != nil {
-		return err
-	}
 
 	// Create estimator
 	estimator := archiver.NewEstimator(dbManager.Source, cfg, jobCfg, g, log)

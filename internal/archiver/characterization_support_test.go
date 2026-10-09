@@ -5,56 +5,20 @@ package archiver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"testing"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
-	"github.com/dbsmedya/goarchive/v3/internal/graph"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	_ "github.com/go-sql-driver/mysql"
 )
 
-// ============================================================================
-// Characterization harness
-//
-// Pins the behaviour of the 1.8 preflight engine BEFORE any validator is
-// re-platformed onto dbsgomysql. Every assertion here is a stable property:
-// the check ID, the error type, and the sorted set of table names. Raw message
-// text is never asserted — ValidateForeignKeyCoverage builds its message by
-// ranging over a map (preflight.go:928-940), so the text is nondeterministic.
-// ============================================================================
-
-// chrCommand pins the exact (profile, enforceFKVisibility) tuple one CLI command
-// passes to RunWithProfile. The applicability matrix's unit is the COMMAND, not the
-// profile: dry-run and copy-only share PreflightProfileNonDestructive but differ on
-// FK visibility enforcement.
-//
-// Source of truth for each tuple:
-//
-//	archive   → cmd/goarchive/cmd/archive.go:123
-//	purge     → cmd/goarchive/cmd/purge.go:121
-//	copy-only → cmd/goarchive/cmd/copyonly.go:99
-//	dry-run   → cmd/goarchive/cmd/dryrun.go:112
-//	validate  → cmd/goarchive/cmd/validate.go:189 (RunAllChecks → Full, true)
-type chrCommand struct {
-	Name                string
-	Profile             PreflightProfile
-	EnforceFKVisibility bool
-}
-
-var chrCommands = []chrCommand{
-	{Name: "archive", Profile: PreflightProfileFull, EnforceFKVisibility: true},
-	{Name: "purge", Profile: PreflightProfileSourceOnly, EnforceFKVisibility: true},
-	{Name: "copy-only", Profile: PreflightProfileNonDestructive, EnforceFKVisibility: false},
-	{Name: "dry-run", Profile: PreflightProfileNonDestructive, EnforceFKVisibility: true},
-	{Name: "validate", Profile: PreflightProfileFull, EnforceFKVisibility: true},
-}
+// The schema fixture once shared by the 2.x preflight characterization suites, which
+// 3.0 M3 deleted with the 2.x preflight (rulings R38, R39). multistatements_integration_test.go
+// still uses it, until M5 replaces the 2.x estimator and progress count it tests.
 
 // chrFixture owns one throwaway source schema and one throwaway destination schema
 // so broken-schema fixtures never mutate Sakila. Both schemas are dropped by
@@ -241,20 +205,6 @@ func (f *chrFixture) exec(t *testing.T, ctx context.Context, db *sql.DB, schema,
 	}
 }
 
-// Checker builds a PreflightChecker bound to the fixture's two throwaway schemas,
-// with the tracking schema equal to the destination schema.
-func (f *chrFixture) Checker(t *testing.T, g *graph.Graph) *PreflightChecker {
-	t.Helper()
-	c, err := NewPreflightChecker(f.SourceDB, f.SourceSchema, g, f.log)
-	if err != nil {
-		t.Fatalf("NewPreflightChecker: %v", err)
-	}
-	if err := c.ConfigureDestination(f.DestDB, f.DestSchema, f.DestSchema); err != nil {
-		t.Fatalf("ConfigureDestination: %v", err)
-	}
-	return c
-}
-
 // WarnMessages returns every WARN-level message emitted so far, in order.
 func (f *chrFixture) WarnMessages() []string {
 	var out []string
@@ -262,108 +212,4 @@ func (f *chrFixture) WarnMessages() []string {
 		out = append(out, entry.Message)
 	}
 	return out
-}
-
-// chrAddChild registers a child table on g exactly the way graph.Builder does
-// (builder.go:78-99): a Node, an edge carrying the FK metadata, and the child's PK.
-//
-// Use this rather than calling AddEdgeWithMeta directly. AddEdgeWithMeta only
-// records the edge — it does NOT create the node — and a table absent from g.Nodes
-// is invisible to AllNodes(). Such a table reads as OUT-of-graph to
-// FK_COVERAGE_CHECK (so a correct config fails with an uncovered FK) and is
-// silently skipped by INTERNAL_FK_COVERAGE.
-func chrAddChild(g *graph.Graph, parent, parentPK, child, foreignKey, childPK string) {
-	g.AddNode(child, &graph.Node{
-		Name:           child,
-		ForeignKey:     foreignKey,
-		ReferenceKey:   parentPK,
-		DependencyType: "1-N",
-	})
-	g.AddEdgeWithMeta(parent, child, foreignKey, parentPK, "1-N")
-	g.SetPK(child, childPK)
-}
-
-// chrRun invokes RunWithProfile with the tuple the named command uses.
-func chrRun(t *testing.T, ctx context.Context, c *PreflightChecker, cmd chrCommand, forceTriggers bool) error {
-	t.Helper()
-	return c.RunWithProfile(ctx, cmd.Profile, forceTriggers, cmd.EnforceFKVisibility)
-}
-
-// chrTableNames extracts the bare table names from a *PreflightError's Tables slice.
-// Entries are decorated by the producing validator, e.g.
-//
-//	"orders(3-column PRIMARY KEY)"  → "orders"
-//	"orders.customer_id"            → "orders.customer_id"
-//	"orders(position 2: ...)"       → "orders"
-//
-// Only the decoration inside parentheses is stripped, so dotted table.column entries
-// survive intact. The result is sorted, because several validators build their list
-// from map iteration.
-func chrTableNames(err error) []string {
-	var pe *PreflightError
-	if !errors.As(err, &pe) {
-		return nil
-	}
-	out := make([]string, 0, len(pe.Tables))
-	for _, entry := range pe.Tables {
-		if idx := strings.Index(entry, "("); idx >= 0 {
-			entry = entry[:idx]
-		}
-		out = append(out, strings.TrimSpace(entry))
-	}
-	sort.Strings(out)
-	return out
-}
-
-// chrAssertCheck asserts the stable properties of a failing preflight run: the error
-// is a *PreflightError, its Check equals wantID, and its table-name set equals
-// wantTables. Pass a nil wantTables to skip the table assertion (used for checks whose
-// detail lives only in Message, e.g. FK_COVERAGE_CHECK and INTERNAL_FK_COVERAGE).
-func chrAssertCheck(t *testing.T, err error, wantID string, wantTables []string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected %s, got nil error", wantID)
-	}
-	var pe *PreflightError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected *PreflightError %s, got %T: %v", wantID, err, err)
-	}
-	if pe.Check != wantID {
-		t.Fatalf("expected check %s, got %s (message: %s)", wantID, pe.Check, pe.Message)
-	}
-	if wantTables == nil {
-		return
-	}
-	want := append([]string(nil), wantTables...)
-	sort.Strings(want)
-	got := chrTableNames(err)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("check %s tables = %v, want %v (raw: %v)", wantID, got, want, pe.Tables)
-	}
-}
-
-// chrAssertPasses asserts a preflight run returned no error.
-func chrAssertPasses(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatalf("expected preflight to pass, got: %v", err)
-	}
-}
-
-// chrAssertPlainErrorPrefix asserts the error is a PLAIN error (not a
-// *PreflightError) whose text starts with wantPrefix. ROOT_PK_TYPE_UNSUPPORTED and
-// ROOT_PK_TYPE_LOOKUP are string-prefixed errors today (preflight.go:267,270); that
-// shape is deliberately preserved by the re-platforming, so it is characterized here.
-func chrAssertPlainErrorPrefix(t *testing.T, err error, wantPrefix string) {
-	t.Helper()
-	if err == nil {
-		t.Fatalf("expected plain error %q, got nil", wantPrefix)
-	}
-	var pe *PreflightError
-	if errors.As(err, &pe) {
-		t.Fatalf("expected a PLAIN error %q, got *PreflightError %s", wantPrefix, pe.Check)
-	}
-	if !strings.HasPrefix(err.Error(), wantPrefix) {
-		t.Fatalf("error %q does not start with %q", err.Error(), wantPrefix)
-	}
 }

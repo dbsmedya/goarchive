@@ -13,10 +13,9 @@ import (
 )
 
 var (
-	copyOnlyJob                   string
-	copyOnlyForce                 bool
-	copyOnlySkipValidatePreflight bool
-	copyOnlyProgress              string
+	copyOnlyJob      string
+	copyOnlyForce    bool
+	copyOnlyProgress string
 )
 
 var copyOnlyCmd = &cobra.Command{
@@ -38,8 +37,6 @@ func init() {
 	_ = copyOnlyCmd.MarkFlagRequired("job")
 	copyOnlyCmd.Flags().BoolVar(&copyOnlyForce, "force", false,
 		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Also bypasses destination duplicate preflight checks after confirmation.")
-	copyOnlyCmd.Flags().BoolVar(&copyOnlySkipValidatePreflight, "skip-validate-preflight", false,
-		"Skip preflight checks before this run (DANGEROUS - see docs)")
 	registerProgressFlag(copyOnlyCmd, &copyOnlyProgress)
 	rootCmd.AddCommand(copyOnlyCmd)
 }
@@ -100,10 +97,6 @@ func runCopyOnly(cmd *cobra.Command, args []string) error {
 	}()
 	if err := dbManager.Ping(ctx); err != nil {
 		return fmt.Errorf("database connection failed: %w", err)
-	}
-	if err := runRuntimePreflight(ctx, cfg, jobCfg, dbManager, log, "copy-only", jobCfg.GetJobVerification(cfg.Verification),
-		archiver.PreflightProfileNonDestructive, false, false, copyOnlySkipValidatePreflight); err != nil {
-		return err
 	}
 
 	orch, err := archiver.NewCopyOnlyOrchestrator(cfg, copyOnlyJob, jobCfg, dbManager)
