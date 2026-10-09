@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -211,9 +212,14 @@ func sameSet(a, b []string) bool {
 // INTERNAL_FK_COVERAGE: the constraint must be a relation, child under parent, with the
 // same foreign_key columns, and must reference the parent's key. Otherwise the delete
 // fails with error 1451, or ON DELETE CASCADE removes child rows that were never copied. A
-// child that declares two foreign keys to the same parent cannot meet this, because a
-// table appears once in a job (R43). A constraint on a parent's unique key cannot either,
-// because references lists the parent's key (R11 defers that to 3.1).
+// child that declares a second foreign key over other columns to the same parent cannot
+// meet this, because a table appears once in a job (R43). A constraint on a parent's
+// unique key cannot either, because references lists the parent's key (R11 defers that to
+// 3.1).
+//
+// A constraint that repeats the relation's own edge, the same columns and pairing under
+// another name, reaches exactly the rows the relation discovers, so it passes (R43 as
+// amended 2026-10-10) with one advisory naming every constraint on the edge.
 //
 // FK_PAIRING_CHECK: when the constraint's child columns are the relation's foreign_key,
 // its pairing must equal the configured one, compared as a set of (child column, parent
@@ -228,6 +234,7 @@ func checkInternalForeignKeys(ctx context.Context, f *facts) error {
 		return inspectionError("internal_fk_coverage", err)
 	}
 	var coverage, pairing []string
+	matched := map[string][]validations.ForeignKey{} // the relation's edge, by child table
 	for _, fk := range within.Keys {
 		if fk.ChildTable == fk.ParentTable {
 			continue
@@ -248,6 +255,8 @@ func checkInternalForeignKeys(ctx context.Context, f *facts) error {
 				decl, columnList(fk.ParentColumns), fk.ParentTable, columnList(f.keys[fk.ParentTable].Names())))
 		case !samePairs(n.ForeignKey, n.References, fk.ChildColumns, fk.ParentColumns):
 			pairing = append(pairing, fmt.Sprintf("  - %s [configured: %s]", decl, pairs(n.ForeignKey, n.References)))
+		default:
+			matched[fk.ChildTable] = append(matched[fk.ChildTable], fk)
 		}
 	}
 	if len(coverage) > 0 {
@@ -263,7 +272,33 @@ func checkInternalForeignKeys(ctx context.Context, f *facts) error {
 			"A relation pairs foreign_key with references differently from its declared foreign key; "+
 				"list references in the order that pairs with foreign_key:\n%s", strings.Join(pairing, "\n"))}
 	}
+	warnDuplicateEdges(f, matched)
 	return nil
+}
+
+// warnDuplicateEdges logs one advisory per relation whose edge more than one constraint
+// declares. Every such constraint has the relation's columns and pairing.
+func warnDuplicateEdges(f *facts, matched map[string][]validations.ForeignKey) {
+	children := slices.Sorted(maps.Keys(matched))
+	for _, child := range children {
+		fks := matched[child]
+		if len(fks) < 2 {
+			continue
+		}
+		names := make([]string, len(fks))
+		for i, fk := range fks {
+			names[i] = fk.ConstraintName
+		}
+		slices.Sort(names)
+		times := "twice"
+		if len(fks) > 2 {
+			times = fmt.Sprintf("%d times", len(fks))
+		}
+		first := fks[0]
+		f.cfg.Logger.Warnf("%s%s -> %s%s is declared %s (%s); redundant, and harmless to this job",
+			first.ChildTable, columnList(first.ChildColumns), first.ParentTable, columnList(first.ParentColumns),
+			times, strings.Join(names, ", "))
+	}
 }
 
 // samePairs compares two pairings as sets of (child, parent) column pairs.

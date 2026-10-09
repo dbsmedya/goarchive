@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -128,12 +129,11 @@ func triggerOffenders(stage string, findings []validations.Finding) ([]string, e
 	return out, nil
 }
 
-// cascadeEdges formats each ON DELETE CASCADE constraint once. A constraint with both ends
-// in the job is in the incoming and the outgoing selection; the child-side triple
-// identifies it.
+// cascadeEdges formats each ON DELETE CASCADE edge once. A constraint with both ends in
+// the job is in the incoming and the outgoing selection, and two constraints may declare
+// the same edge (R43); the formatted edge identifies it.
 func cascadeEdges(stage string, findingSets ...[]validations.Finding) ([]string, error) {
-	type id struct{ schema, table, constraint string }
-	seen := map[id]bool{}
+	seen := map[string]bool{}
 	var out []string
 	for _, findings := range findingSets {
 		for _, f := range findings {
@@ -144,18 +144,27 @@ func cascadeEdges(stage string, findingSets ...[]validations.Finding) ([]string,
 			if !ok {
 				return nil, unexpectedFacts(stage, f, "validations.ForeignKey")
 			}
-			k := id{fk.ChildSchema, fk.ChildTable, fk.ConstraintName}
-			if seen[k] {
-				continue
+			if k := edgeKey(fk); !seen[k] {
+				seen[k] = true
+				out = append(out, fmt.Sprintf("%s.%s(%s)->%s.%s(%s)",
+					fk.ChildSchema, fk.ChildTable, strings.Join(fk.ChildColumns, ","),
+					fk.ParentSchema, fk.ParentTable, strings.Join(fk.ParentColumns, ",")))
 			}
-			seen[k] = true
-			out = append(out, fmt.Sprintf("%s.%s(%s)->%s.%s(%s)",
-				fk.ChildSchema, fk.ChildTable, strings.Join(fk.ChildColumns, ","),
-				fk.ParentSchema, fk.ParentTable, strings.Join(fk.ParentColumns, ",")))
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// edgeKey identifies a foreign key's edge: its two tables and its set of (child column,
+// parent column) pairs, independent of the constraint's name and column order.
+func edgeKey(fk validations.ForeignKey) string {
+	pairs := make([]string, len(fk.ChildColumns))
+	for i, c := range fk.ChildColumns {
+		pairs[i] = c + "=" + fk.ParentColumns[i]
+	}
+	slices.Sort(pairs)
+	return strings.Join([]string{fk.ChildSchema, fk.ChildTable, fk.ParentSchema, fk.ParentTable, strings.Join(pairs, ",")}, "\x00")
 }
 
 // asciiFoldEqual reports whether a and b differ only in ASCII letter case. Non-ASCII bytes
