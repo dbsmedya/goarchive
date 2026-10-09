@@ -294,3 +294,58 @@ func TestAfterWalksEmptyKeyComponents(t *testing.T) {
 		t.Fatalf("visited %d rows, want 5", seen.Len())
 	}
 }
+
+// TestMaxTuplesStaysUnderBudgetForWideKeys runs a membership statement of exactly MaxTuples
+// tuples, at the default 8 MiB budget, for keys whose parts are wide. The range optimizer's
+// memory grows with each part's byte width, not only with the number of parts: on 8.0.46,
+// 8.4.11 and 9.7.1 a utf8mb4 VARCHAR(255) key falls back to a full scan past about 6,400
+// tuples (decisions/2026-10-09-m1-width-aware-statement-cap.md).
+func TestMaxTuplesStaysUnderBudgetForWideKeys(t *testing.T) {
+	c := sourceConn(t)
+	ctx := context.Background()
+	const budget = 8 << 20
+	mustExec(t, c, "SET SESSION range_optimizer_max_mem_size = 8388608")
+	t.Cleanup(func() { _, _ = c.ExecContext(ctx, "SET SESSION range_optimizer_max_mem_size = DEFAULT") })
+	wide := Column{Name: "s", Family: FamilyString, Length: 255, Charset: "utf8mb4", Collation: "utf8mb4_0900_ai_ci"}
+	cases := []struct {
+		name string
+		ddl  string
+		cols []Column
+	}{
+		{"varchar255_utf8mb4", "s VARCHAR(255) CHARACTER SET utf8mb4 NOT NULL, PRIMARY KEY (s)", []Column{wide}},
+		{"int_varchar255_utf8mb4", "a INT NOT NULL, s VARCHAR(255) CHARACTER SET utf8mb4 NOT NULL, PRIMARY KEY (a, s)",
+			[]Column{{Name: "a", Family: FamilySigned}, wide}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			table := fmt.Sprintf("ga3_wide_%d", i)
+			mustExec(t, c, "CREATE TEMPORARY TABLE "+table+" ("+tc.ddl+")")
+			d := Def{Table: table, Columns: tc.cols}
+			n := MaxTuples(len(d.Columns), budget)
+			keys := make([]Key, n)
+			for j := range keys {
+				k := make(Key, len(d.Columns))
+				for p, col := range d.Columns {
+					if col.Family == FamilySigned {
+						k[p] = int64(j)
+					} else {
+						k[p] = []byte(fmt.Sprintf("k%07d", j))
+					}
+				}
+				keys[j] = k
+			}
+			rows, err := c.QueryContext(ctx, "SELECT 1 FROM "+table+" WHERE "+In(d.Names(), d.Columns, n), Args(keys)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := CheckRangeWarning(ctx, c); err != nil {
+				t.Fatalf("MaxTuples = %d tuples: %v", n, err)
+			}
+		})
+	}
+}
