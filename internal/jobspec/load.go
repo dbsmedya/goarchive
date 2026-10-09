@@ -225,7 +225,13 @@ func unknownKeys(n *yaml.Node, t reflect.Type, path string) config.ValidationErr
 			return nil
 		}
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			errs = append(errs, unknownKeys(n.Content[i+1], t.Elem(), joinPath(path, n.Content[i].Value))...)
+			k, v := n.Content[i], n.Content[i+1]
+			// A merge key's operand holds more entries of this map, not one entry.
+			if k.Tag == "!!merge" {
+				errs = append(errs, mergedKeys(v, t, path)...)
+				continue
+			}
+			errs = append(errs, unknownKeys(v, t.Elem(), joinPath(path, k.Value))...)
 		}
 	case reflect.Slice:
 		if n.Kind != yaml.SequenceNode {
@@ -238,7 +244,8 @@ func unknownKeys(n *yaml.Node, t reflect.Type, path string) config.ValidationErr
 	return errs
 }
 
-// mergedKeys checks the mapping (or list of mappings) a merge key pulls in.
+// mergedKeys checks the mapping (or list of mappings) a merge key pulls in, against t:
+// the struct or map that holds the merge key.
 func mergedKeys(v *yaml.Node, t reflect.Type, path string) config.ValidationErrors {
 	for v.Kind == yaml.AliasNode {
 		v = v.Alias
