@@ -157,6 +157,38 @@ func TestDestinationSchemaCompatibility(t *testing.T) {
 			setColumn(w.dst, "orders", col("code", "varchar(20)", "utf8mb4 utf8mb4_bin"))
 			setColumn(w.src, "orders", col("code", "varchar(20)", "utf8mb4 utf8mb4_0900_ai_ci"))
 		}, `orders(destination unique index "uk_code" has no equivalent`, ""},
+		// The looser destinations an archive commonly has. Each passes silently (final
+		// review Important 1): a regression that refuses one blocks a legitimate job.
+		{"destination default set", "", func(w *world) {
+			c, d := col("sku", "varchar(32)", "utf8mb4 utf8mb4_0900_ai_ci"), "none"
+			c.Default = &d
+			setColumn(w.dst, "order_lines", c)
+		}, "", ""},
+		{"destination drops AUTO_INCREMENT", "", func(w *world) {
+			c := col("note_id", "int", "")
+			c.AutoIncrement = true
+			setColumn(w.src, "line_notes", c)
+		}, "", ""},
+		{"destination drops ON UPDATE", "", func(w *world) {
+			c := col("sku", "varchar(32)", "utf8mb4 utf8mb4_0900_ai_ci")
+			c.OnUpdate = true
+			setColumn(w.src, "order_lines", c)
+		}, "", ""},
+		{"destination column invisible", "", func(w *world) {
+			c := col("sku", "varchar(32)", "utf8mb4 utf8mb4_0900_ai_ci")
+			c.Invisible = true
+			setColumn(w.dst, "order_lines", c)
+		}, "", ""},
+		{"source-only generated column", "", func(w *world) {
+			c := col("sku", "varchar(32)", "utf8mb4 utf8mb4_0900_ai_ci")
+			c.Generated, c.GenerationExpr = validations.GeneratedStored, "upper(`sku`)"
+			setColumn(w.src, "order_lines", c)
+		}, "", ""},
+		{"table-level engine, charset and collation", "", func(w *world) {
+			spec := w.dst.specs["order_lines"]
+			spec.Engine, spec.Charset, spec.Collation = "MyISAM", "latin1", "latin1_swedish_ci"
+			w.dst.specs["order_lines"] = spec
+		}, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := healthy(t, jobspec.Archive)
@@ -174,6 +206,88 @@ func TestDestinationSchemaCompatibility(t *testing.T) {
 				t.Errorf("no warning containing %q", tc.warns)
 			}
 		})
+	}
+}
+
+// TestDisposeDiffCoversEveryKind: every diff kind the library publishes has a disposition
+// here, and a kind this build does not know fails closed. A library release that adds a
+// kind fails this test, not an operator's run.
+func TestDisposeDiffCoversEveryKind(t *testing.T) {
+	const pass, warn, fatal = "pass", "warn", "fatal"
+	const integrity, unexpected = "PREFLIGHT_INSPECTION_INTEGRITY", "PREFLIGHT_UNEXPECTED_DIFF"
+	type want struct{ disposition, a, b string }
+	cases := map[validations.SpecDiffKind]want{
+		validations.ColumnAbsent:                 {fatal, "", ""},
+		validations.ColumnOrderMismatch:          {fatal, "", ""},
+		validations.ColumnTypeMismatch:           {fatal, "int", "varchar(3)"},
+		validations.ColumnNullabilityMismatch:    {fatal, "true", "false"},
+		validations.ColumnNameCaseMismatch:       {warn, "Sku", "sku"},
+		validations.ColumnCharsetMismatch:        {fatal, "utf8mb4", "latin1"},
+		validations.ColumnCollationMismatch:      {warn, "utf8mb4_0900_ai_ci", "utf8mb4_bin"},
+		validations.ColumnDefaultMismatch:        {pass, "", ""},
+		validations.ColumnAutoIncrementMismatch:  {pass, "true", "false"},
+		validations.ColumnOnUpdateMismatch:       {pass, "true", "false"},
+		validations.ColumnGeneratedMismatch:      {pass, "", ""},
+		validations.ColumnGenerationExprMismatch: {pass, "", ""},
+		validations.ColumnVisibilityMismatch:     {pass, "false", "true"},
+		validations.IndexAbsent:                  {pass, "", ""},
+		validations.IndexPartsMismatch:           {pass, "", ""},
+		validations.IndexUniquenessMismatch:      {pass, "", ""},
+		validations.IndexTypeMismatch:            {pass, "", ""},
+		validations.IndexVisibilityMismatch:      {pass, "", ""},
+		validations.IndexNameCaseMismatch:        {pass, "", ""},
+		validations.EngineMismatch:               {pass, "InnoDB", "MyISAM"},
+		validations.CharsetMismatch:              {pass, "utf8mb4", "latin1"},
+		validations.CollationMismatch:            {pass, "utf8mb4_0900_ai_ci", "latin1_swedish_ci"},
+		validations.IndexUnconfirmed:             {integrity, "", ""},
+		validations.CommentMismatch:              {unexpected, "", ""},
+		validations.CommentUnconfirmed:           {unexpected, "", ""},
+		validations.ConstraintUnconfirmed:        {unexpected, "", ""},
+		validations.ConstraintKindUnconfirmed:    {unexpected, "", ""},
+		validations.ConstraintAbsent:             {unexpected, "", ""},
+		validations.ConstraintKindMismatch:       {unexpected, "", ""},
+		validations.CheckClauseMismatch:          {unexpected, "", ""},
+		validations.CheckEnforcementMismatch:     {unexpected, "", ""},
+		validations.ForeignKeyColumnsMismatch:    {unexpected, "", ""},
+		validations.ForeignKeyReferenceMismatch:  {unexpected, "", ""},
+		validations.ForeignKeyRuleMismatch:       {unexpected, "", ""},
+	}
+	judge := func(diff validations.SpecDiff) string {
+		d, err := disposeDiff(diff, true, map[string]bool{})
+		switch {
+		case err != nil:
+			code, _, _ := strings.Cut(err.Error(), ":")
+			return code
+		case d.fatal != "":
+			return fatal
+		case d.warning != "":
+			return warn
+		}
+		return pass
+	}
+	published := validations.AllSpecDiffKinds()
+	for _, kind := range published {
+		w, ok := cases[kind]
+		if !ok {
+			t.Errorf("%v: the library publishes this kind and the test has no expected disposition; judge it in disposeDiff", kind)
+			continue
+		}
+		if got := judge(validations.SpecDiff{Kind: kind, Column: "sku", A: w.a, B: w.b}); got != w.disposition {
+			t.Errorf("%v: %s, want %s", kind, got, w.disposition)
+		}
+	}
+	if len(cases) != len(published) {
+		t.Errorf("%d expected dispositions for %d published kinds", len(cases), len(published))
+	}
+	// The variants of the two kinds that depend on their values.
+	if got := judge(validations.SpecDiff{Kind: validations.ColumnTypeMismatch, A: "int", B: "int(11)"}); got != pass {
+		t.Errorf("a display-width-only type difference: %s, want pass", got)
+	}
+	if got := judge(validations.SpecDiff{Kind: validations.ColumnNullabilityMismatch, A: "false", B: "true"}); got != pass {
+		t.Errorf("a destination that allows NULL: %s, want pass", got)
+	}
+	if got := judge(validations.SpecDiff{Kind: validations.SpecDiffKind(250)}); got != "PREFLIGHT_UNKNOWN_DIFF" {
+		t.Errorf("an unpublished kind: %s, want PREFLIGHT_UNKNOWN_DIFF", got)
 	}
 }
 
