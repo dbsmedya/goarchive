@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // TestGrantsReadAndReleaseUnderSingleConnection is the deadlock proof required by spec

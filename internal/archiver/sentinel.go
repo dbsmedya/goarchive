@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // sentinelPollInterval is how often the sentinel pause file is re-checked.

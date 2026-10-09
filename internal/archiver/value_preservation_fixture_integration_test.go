@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 )
 
 func vpEnvDB(t testing.TB, prefix string) config.DatabaseConfig {

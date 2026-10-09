@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 type recordingNotifier struct {

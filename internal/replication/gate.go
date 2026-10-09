@@ -10,8 +10,8 @@ import (
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // statusReader is the one library behavior the gate needs, named locally so

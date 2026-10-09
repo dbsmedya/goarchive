@@ -10,7 +10,7 @@ import (
 
 	"go.uber.org/zap/zapcore"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // ============================================================================

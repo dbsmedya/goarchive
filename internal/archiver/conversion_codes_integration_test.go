@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 	"strings"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver/testsupport"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/go-sql-driver/mysql"
 )
 

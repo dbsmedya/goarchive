@@ -25,8 +25,8 @@ ARG COMMIT=unknown
 
 # Build binary
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
-    -ldflags "-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=${VERSION}' \
-              -X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Commit=${COMMIT}' \
+    -ldflags "-X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Version=${VERSION}' \
+              -X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Commit=${COMMIT}' \
               -s -w" \
     -o goarchive ./cmd/goarchive
 

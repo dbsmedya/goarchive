@@ -8,7 +8,7 @@ import (
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
-	"github.com/dbsmedya/goarchive/internal/types"
+	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
 // columnMetadataFromFacts projects library column facts to per-table ordered name

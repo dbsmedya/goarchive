@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/lock"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 const heartbeatStaleThreshold = 60 * time.Second

@@ -18,7 +18,7 @@ BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 BINARY_NAME := goarchive
 
 # Package path for ldflags
-PACKAGE_PATH := github.com/dbsmedya/goarchive/cmd/goarchive/cmd
+PACKAGE_PATH := github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd
 
 # Linker flags for version injection
 LDFLAGS := -X '$(PACKAGE_PATH).Version=$(VERSION)' \

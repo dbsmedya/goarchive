@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dbsmedya/goarchive/internal/archiver/testsupport"
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/archiver/testsupport"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 )
 
 // realDBManager creates a database manager and connects to real databases.

@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // ============================================================================

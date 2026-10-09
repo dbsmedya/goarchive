@@ -1,7 +1,7 @@
 package archiver
 
 import (
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 	"strings"

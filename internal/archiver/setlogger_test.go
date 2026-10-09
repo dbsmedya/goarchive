@@ -3,8 +3,8 @@ package archiver
 import (
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/database"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 func TestOrchestratorsSetLogger(t *testing.T) {

@@ -5,7 +5,7 @@ package archiver
 import (
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // TestSchemaCompatEmitsAdvisoriesOnlyForNonFatalTables pins BOTH halves of spec §3.3's

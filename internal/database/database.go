@@ -12,7 +12,7 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 const (

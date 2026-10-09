@@ -6,7 +6,7 @@ import (
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
-	"github.com/dbsmedya/goarchive/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/graph"
 )
 
 // findingsToPreflightError converts the findings whose Check equals want into one
