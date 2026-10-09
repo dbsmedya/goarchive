@@ -76,7 +76,7 @@ func FromFacts(pk validations.PKInfo, spec validations.TableSpec) (Def, error) {
 			return Def{}, &UnsupportedError{Table: table, Column: part.Column, Type: spec.Type,
 				Reason: fmt.Sprintf("prefix key part (%d) does not identify the full value", part.SubPart)}
 		}
-		col, err := columnFromSpec(table, spec)
+		col, err := ColumnFromSpec(table, spec)
 		if err != nil {
 			return Def{}, err
 		}
