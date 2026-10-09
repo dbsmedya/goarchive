@@ -42,3 +42,19 @@ func TestChunks(t *testing.T) {
 		t.Fatal("chunks share capacity")
 	}
 }
+
+// TestChunksDoNotAliasTheSource covers the last chunk, which used to keep the input's spare
+// capacity: Set.Keys() returns the set's own slice, so appending to that chunk wrote into the
+// set's backing array, and the set's next Add overwrote the appended key in the chunk.
+func TestChunksDoNotAliasTheSource(t *testing.T) {
+	s := NewSet()
+	for i := 0; i < 5; i++ {
+		s.Add(Key{int64(i)})
+	}
+	chunks := Chunks(s.Keys(), 3)
+	last := append(chunks[len(chunks)-1], Key{int64(99)})
+	s.Add(Key{int64(5)})
+	if got := last[len(last)-1][0].(int64); got != 99 {
+		t.Fatalf("appended key became %d: the last chunk aliases the set", got)
+	}
+}
