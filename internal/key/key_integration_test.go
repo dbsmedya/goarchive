@@ -227,7 +227,7 @@ func TestCheckRangeWarningDetectsFullScanFallback(t *testing.T) {
 		}
 		return CheckRangeWarning(ctx, c)
 	}
-	if err := run(MaxTuples(2, 1048576)); err != nil {
+	if err := run(MaxTuples(d.Columns, 1048576)); err != nil {
 		t.Fatalf("a statement at the cap reported %v", err)
 	}
 	if err := run(5000); !errors.Is(err, ErrRangeScan) {
@@ -321,7 +321,7 @@ func TestMaxTuplesStaysUnderBudgetForWideKeys(t *testing.T) {
 			table := fmt.Sprintf("ga3_wide_%d", i)
 			mustExec(t, c, "CREATE TEMPORARY TABLE "+table+" ("+tc.ddl+")")
 			d := Def{Table: table, Columns: tc.cols}
-			n := MaxTuples(len(d.Columns), budget)
+			n := MaxTuples(d.Columns, budget)
 			keys := make([]Key, n)
 			for j := range keys {
 				k := make(Key, len(d.Columns))
