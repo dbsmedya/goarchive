@@ -32,29 +32,32 @@ func TestValidateSharedReportsEverySharedBlock(t *testing.T) {
 	c.Destination.Port = 0
 	c.Replication.Enabled = true // with no servers
 	c.Processing.BatchSize = 0
-	c.Verification.Method = "md5"
 	c.Logging.Level = "loud"
 	err := c.ValidateShared()
 	var ve ValidationErrors
 	if !errors.As(err, &ve) {
 		t.Fatalf("ValidateShared() = %v, want ValidationErrors", err)
 	}
-	for _, field := range []string{"source.host", "destination.port", "replication", "processing.batch_size", "verification.method", "logging.level"} {
+	for _, field := range []string{"source.host", "destination.port", "replication", "processing.batch_size", "logging.level"} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("ValidateShared() does not report %s:\n%v", field, err)
 		}
 	}
 }
 
+// TestValidateSharedLeavesVerificationToJobspec: 3.0's verification is one value that
+// jobspec owns (R42), so the 2.x verification block is not judged here.
+func TestValidateSharedLeavesVerificationToJobspec(t *testing.T) {
+	c := validShared()
+	c.Verification = VerificationConfig{}
+	if err := c.ValidateShared(); err != nil {
+		t.Errorf("ValidateShared() = %v, want no verification judgement", err)
+	}
+}
+
 func TestExportedOverrideValidators(t *testing.T) {
 	if errs := ValidateProcessingConfig("jobs.j.processing", ProcessingConfig{BatchSize: 0, BatchDeleteSize: 1}); len(errs) != 1 || errs[0].Field != "jobs.j.processing.batch_size" {
 		t.Errorf("ValidateProcessingConfig = %v", errs)
-	}
-	if errs := ValidateVerificationConfig("jobs.j.verification", VerificationConfig{}); len(errs) != 0 {
-		t.Errorf("an empty override method was refused: %v", errs)
-	}
-	if errs := ValidateVerificationConfig("jobs.j.verification", VerificationConfig{Method: "md5"}); len(errs) != 1 {
-		t.Errorf("ValidateVerificationConfig(md5) = %v", errs)
 	}
 	if errs := ValidateLoggingConfig("jobs.j.logging", LoggingConfig{Format: "xml"}); len(errs) != 1 || errs[0].Field != "jobs.j.logging.format" {
 		t.Errorf("ValidateLoggingConfig = %v", errs)

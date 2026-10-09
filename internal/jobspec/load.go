@@ -20,16 +20,17 @@ const UpgradeGuide = "docs/README_UPGRADING_3_0.md"
 
 // document is the file's shape. Every key the file may hold is a field here; unknownKeys
 // refuses the rest. The 2.0 replica block and safety's lag keys are absent on purpose:
-// 3.0 refuses them as unknown keys.
+// 3.0 refuses them as unknown keys. verification is 3.0's one value (R42), not the 2.x
+// block.
 type document struct {
-	Source       config.DatabaseConfig     `yaml:"source"`
-	Destination  config.DatabaseConfig     `yaml:"destination"`
-	Replication  config.ReplicationConfig  `yaml:"replication"`
-	Jobs         map[string]Spec           `yaml:"jobs"`
-	Processing   config.ProcessingConfig   `yaml:"processing"`
-	Safety       safetyBlock               `yaml:"safety"`
-	Verification config.VerificationConfig `yaml:"verification"`
-	Logging      config.LoggingConfig      `yaml:"logging"`
+	Source       config.DatabaseConfig    `yaml:"source"`
+	Destination  config.DatabaseConfig    `yaml:"destination"`
+	Replication  config.ReplicationConfig `yaml:"replication"`
+	Jobs         map[string]Spec          `yaml:"jobs"`
+	Processing   config.ProcessingConfig  `yaml:"processing"`
+	Safety       safetyBlock              `yaml:"safety"`
+	Verification Verification             `yaml:"verification"`
+	Logging      config.LoggingConfig     `yaml:"logging"`
 }
 
 type safetyBlock struct {
@@ -71,7 +72,7 @@ func Parse(data []byte) (*Document, error) {
 		Replication:  defaults.Replication,
 		Processing:   defaults.Processing,
 		Safety:       safetyBlock{DisableForeignKeyChecks: defaults.Safety.DisableForeignKeyChecks},
-		Verification: defaults.Verification,
+		Verification: VerifySHA256,
 		Logging:      defaults.Logging,
 	}
 	// Decode before walking for unknown keys: the decoder refuses excessive aliasing, which
@@ -82,13 +83,12 @@ func Parse(data []byte) (*Document, error) {
 	errs := unknownKeys(top, reflect.TypeFor[document](), "")
 
 	shared := &config.Config{
-		Source:       doc.Source,
-		Destination:  doc.Destination,
-		Replication:  doc.Replication,
-		Processing:   doc.Processing,
-		Safety:       config.SafetyConfig{DisableForeignKeyChecks: doc.Safety.DisableForeignKeyChecks},
-		Verification: doc.Verification,
-		Logging:      doc.Logging,
+		Source:      doc.Source,
+		Destination: doc.Destination,
+		Replication: doc.Replication,
+		Processing:  doc.Processing,
+		Safety:      config.SafetyConfig{DisableForeignKeyChecks: doc.Safety.DisableForeignKeyChecks},
+		Logging:     doc.Logging,
 	}
 	shared.Normalize()
 	if err := shared.ValidateShared(); err != nil {
@@ -99,7 +99,11 @@ func Parse(data []byte) (*Document, error) {
 		errs = append(errs, ve...)
 	}
 
-	d := &Document{Shared: shared, Jobs: make(map[string]*Spec, len(doc.Jobs))}
+	if !doc.Verification.Valid() {
+		errs = append(errs, invalidVerification("verification", doc.Verification))
+	}
+
+	d := &Document{Shared: shared, Verification: doc.Verification, Jobs: make(map[string]*Spec, len(doc.Jobs))}
 	for name, s := range doc.Jobs {
 		d.Jobs[name] = &s
 	}

@@ -66,8 +66,10 @@ func (e *UnsupportedError) Error() string {
 	return fmt.Sprintf("KEY_TYPE_UNSUPPORTED: %s.%s (%s): %s", e.Table, e.Column, e.Type, e.Reason)
 }
 
-// columnFromSpec classifies one column fact. table is used only in errors.
-func columnFromSpec(table string, c validations.ColumnSpec) (Column, error) {
+// ColumnFromSpec classifies one column fact against the key allowlist (spec §4.4). table
+// is used only in errors. Preflight also uses it for a child's foreign_key columns, which
+// pair with the parent's key columns (spec §8.3).
+func ColumnFromSpec(table string, c validations.ColumnSpec) (Column, error) {
 	t := strings.ToLower(strings.TrimSpace(c.NormalizedType))
 	if t == "" {
 		t = strings.ToLower(strings.TrimSpace(c.Type))

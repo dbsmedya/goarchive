@@ -4,8 +4,9 @@ package config
 // (internal/jobspec), which decodes the same shared blocks but validates its own jobs.
 // They wrap the unexported validators, so 2.x behaviour is unchanged.
 
-// ValidateShared checks every block except jobs: source, destination, replication, the
-// removed 2.0 replica keys, processing, safety, verification and the global logging block.
+// ValidateShared checks every block except jobs and verification: source, destination,
+// replication, the removed 2.0 replica keys, processing, safety and the global logging
+// block. jobspec owns 3.0's verification, one value (R42).
 func (c *Config) ValidateShared() error {
 	var errs ValidationErrors
 	errs = append(errs, c.validateDatabase("source", &c.Source)...)
@@ -14,7 +15,6 @@ func (c *Config) ValidateShared() error {
 	errs = append(errs, c.validateLegacyReplicaKeys()...)
 	errs = append(errs, c.validateProcessing()...)
 	errs = append(errs, c.validateSafety()...)
-	errs = append(errs, c.validateVerification()...)
 	errs = append(errs, validateLoggingConfig(c.Logging, "logging")...)
 	if len(errs) > 0 {
 		return errs
@@ -30,12 +30,6 @@ func (c *Config) Normalize() {
 // ValidateProcessingConfig checks a job's effective (merged) processing settings.
 func ValidateProcessingConfig(prefix string, p ProcessingConfig) ValidationErrors {
 	return (&Config{}).validateProcessingConfig(prefix, &p)
-}
-
-// ValidateVerificationConfig checks a job's effective (merged) verification settings. An
-// empty method is accepted, as for a 2.x job override.
-func ValidateVerificationConfig(prefix string, v VerificationConfig) ValidationErrors {
-	return (&Config{}).validateVerificationConfig(prefix, &v, false)
 }
 
 // ValidateLoggingConfig checks a job's effective (merged) logging settings.

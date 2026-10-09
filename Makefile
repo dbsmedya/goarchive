@@ -175,7 +175,7 @@ deadcode: ## Fail if the production binary carries unreachable functions
 	echo "deadcode: clean"
 
 .PHONY: consumer-policy
-consumer-policy: ## Enforce production-query, sqlmock-budget, and unit wire-format boundaries
+consumer-policy: ## Enforce production-query and unit wire-format boundaries
 	@go test ./internal/archiver/ -run '^TestConsumerPolicy' -count=1 \
 		&& echo "consumer-policy: clean"
 

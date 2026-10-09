@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/dbsmedya/goarchive/v3/internal/archiver"
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/graph"
@@ -14,8 +13,7 @@ import (
 )
 
 var (
-	validateForceTriggers bool
-	validateJob           string
+	validateJob string
 )
 
 var validateCmd = &cobra.Command{
@@ -41,7 +39,6 @@ Example:
 
 func init() {
 	rootCmd.AddCommand(validateCmd)
-	validateCmd.Flags().BoolVar(&validateForceTriggers, "force-triggers", false, "Allow DELETE triggers (triggers will fire during delete)")
 	validateCmd.Flags().StringVarP(&validateJob, "job", "j", "",
 		"Validate only this job (default: validate all jobs)")
 }
@@ -156,9 +153,10 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// validateJobConfig builds the dependency graph for a single job and runs the
-// preflight checks against it, returning the first error encountered. Callers
-// supply the job header/footer, so failures stay attributable per job.
+// validateJobConfig builds the dependency graph for a single job and checks it for
+// cycles. The 2.x preflight was removed in 3.0 M3 (R38); M6 wires the 3.0 preflight
+// (internal/preflight) in here. Callers supply the job header/footer, so failures stay
+// attributable per job.
 func validateJobConfig(
 	ctx context.Context,
 	cfg *config.Config,
@@ -177,17 +175,5 @@ func validateJobConfig(
 		return fmt.Errorf("cycle detected: %d nodes in cycle", len(cycleInfo.UnprocessedNodes))
 	}
 
-	checker, err := archiver.NewPreflightChecker(dbManager.Source, cfg.Source.Database, g, log)
-	if err != nil {
-		return fmt.Errorf("failed to create preflight checker: %w", err)
-	}
-	if err := checker.ConfigureDestination(dbManager.Destination, cfg.Destination.Database, cfg.Destination.EffectiveJobSchema()); err != nil {
-		return fmt.Errorf("failed to configure destination preflight checks: %w", err)
-	}
-	checker.SetVerification(jobCfg.GetJobVerification(cfg.Verification))
-
-	if err := checker.RunAllChecks(ctx, validateForceTriggers); err != nil {
-		return fmt.Errorf("preflight checks failed: %w", err)
-	}
 	return nil
 }
