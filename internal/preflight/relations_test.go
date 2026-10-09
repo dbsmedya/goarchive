@@ -163,6 +163,35 @@ func TestInternalForeignKeys(t *testing.T) {
 			t.Errorf("message = %s", e.Message)
 		}
 	})
+	t.Run("the same edge declared twice", func(t *testing.T) {
+		// R43 as amended: a duplicate constraint over the relation's own columns and pairing
+		// reaches exactly the rows the relation discovers, so it passes, with one advisory.
+		w := healthy(t, jobspec.Archive)
+		w.src.fks = append(w.src.fks, fk("fk_lines_order_duplicate", "order_lines", []string{"order_id"}, "orders", []string{"id"}))
+		w.mustPass()
+		if !w.warned("order_lines(order_id) -> orders(id) is declared twice (fk_lines_order, fk_lines_order_duplicate); " +
+			"redundant, and harmless to this job") {
+			t.Errorf("no duplicate advisory; logs: %v", w.logs.All())
+		}
+	})
+	t.Run("the same composite edge declared in another column order", func(t *testing.T) {
+		// The edge is its set of (child column, parent column) pairs, not the declaration
+		// order.
+		w := healthy(t, jobspec.Archive)
+		w.src.fks = append(w.src.fks, fk("fk_notes_line_again", "line_notes", []string{"line_no", "order_id"},
+			"order_lines", []string{"line_no", "order_id"}))
+		w.mustPass()
+		if !w.warned("is declared twice (fk_notes_line, fk_notes_line_again)") {
+			t.Errorf("no duplicate advisory; logs: %v", w.logs.All())
+		}
+	})
+	t.Run("a single constraint per edge has no advisory", func(t *testing.T) {
+		w := healthy(t, jobspec.Archive)
+		w.mustPass()
+		if w.warned("declared twice") {
+			t.Errorf("advisory on a healthy job; logs: %v", w.logs.All())
+		}
+	})
 	t.Run("a swapped composite pairing", func(t *testing.T) {
 		// Spec §10: refused when the foreign key is declared.
 		w := healthy(t, jobspec.Archive)

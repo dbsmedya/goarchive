@@ -117,6 +117,19 @@ func TestCascadeRulesWarn(t *testing.T) {
 		!w.warned("src.line_notes(order_id,line_no)->src.order_lines(order_id,line_no)") {
 		t.Errorf("no cascade warning naming the composite constraint once; logs: %v", w.logs.All())
 	}
+
+	// Two constraints declaring the same edge, here in another column order, print it once;
+	// the duplicate advisory names both.
+	w = healthy(t, jobspec.Purge)
+	w.src.fks[1].OnDelete = "CASCADE"
+	again := w.src.fks[1]
+	again.ConstraintName = "fk_notes_line_again"
+	again.ChildColumns, again.ParentColumns = []string{"line_no", "order_id"}, []string{"line_no", "order_id"}
+	w.src.fks = append(w.src.fks, again)
+	w.mustPass()
+	if !w.warned("ON DELETE CASCADE rules detected (1)") {
+		t.Errorf("a duplicate CASCADE constraint was reported twice; logs: %v", w.logs.All())
+	}
 }
 
 // TestForeignKeyCoverage: a table outside the job referencing a job table is fatal, for
