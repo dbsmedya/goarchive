@@ -174,13 +174,16 @@ assert_postcondition() {
 # The floor is deterministic -- pure arithmetic over the config, with no
 # dependence on the machine:
 #
-#   floor = ceil(rows / batch_size) * sleep_seconds
-#         + SUM over batches of max(0, delete chunks in the batch - 1) * delete_sleep_seconds
+#   floor = (full batches) * sleep_seconds
+#         + SUM over batches of max(0, delete statements in the batch - 1) * delete_sleep_seconds
 #
-# sleep_seconds fires after EVERY batch including the last (orchestrator.go:457,
-# no guard). delete_sleep_seconds pauses before every delete chunk of a batch
-# except the first, across all tables (delete.go, sleepBetweenChunks), so a
-# batch of 100 rows at batch_delete_size=20 sleeps 4 times, not 5.
+# sleep_seconds fires after every FULL batch -- one that fetched batch_size roots --
+# and not after a short last batch, which ends the run ((*run).loop,
+# internal/engine/run.go). A full last batch is followed by one more fetch that
+# finds nothing, so it does sleep. delete_sleep_seconds separates consecutive
+# delete statements of a batch, across all its tables ((*run).deleteTree,
+# internal/engine/delete.go), so a batch of 100 rows at batch_delete_size=20
+# sleeps 4 times, not 5.
 #
 # Why this is safe to assert, when timing assertions usually are not: it is a
 # ONE-SIDED bound. A slow container, a loaded host, a cold filesystem or a
@@ -190,7 +193,7 @@ assert_postcondition() {
 # that ran once where it should have run twenty. Wall-clock alone cannot tell
 # those apart from a fast machine; the floor can.
 #
-# Compared against goarchive's OWN reported duration, not the shell-measured
+# Compared against goarchive's OWN reported elapsed time, not the shell-measured
 # test duration. The latter includes the source reset, validate and dry-run,
 # which together dwarf the floor and would mask a lost throttle entirely.
 assert_min_duration() {
@@ -203,15 +206,14 @@ assert_min_duration() {
         return 1
     fi
 
-    # The last "duration":<seconds> in the log is the command's own total.
-    # archive, purge and copy-only all emit it as a structured field
-    # (cmd/goarchive/cmd/{archive,purge,copyonly}.go). The phase-level logs spell
-    # duration inside a message string instead, so they cannot collide with this.
+    # The last "elapsed: <seconds>s" line in the log is the run's own wall time:
+    # archive, purge and copy-only print it as the last line of their report
+    # (printReport, cmd/goarchive/cmd/output.go; engine.Report.Elapsed).
     local actual
-    actual=$(grep -o '"duration":[0-9.]*' "$log_file" | tail -1 | cut -d: -f2)
+    actual=$(grep -oE '^  elapsed: [0-9.]+s$' "$log_file" | tail -1 | sed -E 's/^  elapsed: ([0-9.]+)s$/\1/')
     if [[ -z "$actual" ]]; then
-        log_error "  could not read the run's own duration from $log_file"
-        log_error "  the command logs it as a \"duration\" field; if that changed,"
+        log_error "  could not read the run's own elapsed time from $log_file"
+        log_error "  the report prints it as \"elapsed: <seconds>s\"; if that changed,"
         log_error "  this assertion has stopped matching and is no longer checking anything."
         return 1
     fi
@@ -225,5 +227,60 @@ assert_min_duration() {
     fi
 
     log_info "  pacing OK (${actual}s >= ${floor}s floor)"
+    return 0
+}
+
+# Assert the run verified its copies by the declared method, and all of them.
+#
+# Usage: assert_verified <log_file> <method>     method = sha256 | count | none
+#
+# The anchor is the run's report (printReport, cmd/goarchive/cmd/output.go):
+#
+#   copied:  payment=200 rental=200
+#   verified (sha256): payment=200 rental=200
+#
+# The verified line lists the rows whose verification passed, by table, for the
+# committed batches; it is printed only when something was compared. So under
+# sha256 or count the two lists must be EQUAL -- a verified line that covers fewer
+# rows than were copied means some batch committed without verification -- and
+# under none (and for purge, which copies nothing) there must be no verified line.
+#
+# Nothing at any layer asserted that verification ran before 2.x's E2E did, and
+# verification is what makes delete-after-copy safe; a config change or a silently
+# skipped stage would leave every other assertion passing.
+assert_verified() {
+    local log_file=$1
+    local method=$2
+
+    local verified copied
+    verified=$(grep -E '^  verified \(' "$log_file" | tail -1)
+    if [[ "$method" == "none" ]]; then
+        if [[ -n "$verified" ]]; then
+            log_error "  verification ran, but this test declares verify_method=none:"
+            log_error "    $verified"
+            return 1
+        fi
+        log_info "  confirmed: nothing was verified, as expected"
+        return 0
+    fi
+    if [[ -z "$verified" ]]; then
+        log_error "  no verified line in the run's report (expect method=$method)"
+        log_error "    Either nothing was verified, or the report's wording changed and this"
+        log_error "    assertion has stopped matching. Both are findings."
+        return 1
+    fi
+    if [[ "$verified" != "  verified ($method): "* ]]; then
+        log_error "  the run verified by another method than $method:"
+        log_error "    $verified"
+        return 1
+    fi
+    copied=$(grep -E '^  copied:  ' "$log_file" | tail -1)
+    if [[ "${verified#  verified ($method): }" != "${copied#  copied:  }" ]]; then
+        log_error "  verification did not cover every copied row:"
+        log_error "    $copied"
+        log_error "    $verified"
+        return 1
+    fi
+    log_info "  confirmed: every copied row was verified by $method (${copied#  copied:  })"
     return 0
 }

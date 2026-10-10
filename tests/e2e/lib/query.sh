@@ -78,6 +78,10 @@ selftest_get_row_count_fails_loud() {
 # reject an orphan on its own. "200 rentals and 200 payments arrived" therefore
 # stays true even if all 200 payments point at rentals that never did.
 #
+# A composite foreign key is written with "+" between its columns, on both sides:
+# km_item:order_id+line_no:km_line:order_id+line_no. A child whose key columns are
+# all set and that finds no parent row is an orphan.
+#
 # A NULL foreign key is NOT an orphan -- it is a row with no parent reference,
 # which is legal. Load-bearing here rather than defensive: sakila's
 # payment.rental_id is `INT DEFAULT NULL` with ON DELETE SET NULL
@@ -100,20 +104,33 @@ count_orphans() {
     local parent=$7
     local parent_pk=$8
 
-    # `local out` is declared on its own line, for the same reason as in
-    # get_row_count: written as `local out=$(...)` the exit status would be
-    # `local`'s (always 0) rather than the query's.
+    # The child's columns pair with the parent's by position. Column names follow the
+    # config identifier rule ([A-Za-z0-9_]+), so splitting on "+" is safe.
+    local fks pks on="" child_set="" parent_null="" c p
+    fks=(${fk//+/ })
+    pks=(${parent_pk//+/ })
+    if [[ ${#fks[@]} -ne ${#pks[@]} || ${#fks[@]} -eq 0 ]]; then
+        echo "count_orphans: ${child}.${fk} and ${parent}.${parent_pk} name different column counts" >&2
+        return 1
+    fi
+    local i
+    for ((i = 0; i < ${#fks[@]}; i++)); do
+        c=${fks[i]}
+        p=${pks[i]}
+        on="${on:+$on AND }c.\`$c\` = p.\`$p\`"
+        child_set="${child_set:+$child_set AND }c.\`$c\` IS NOT NULL"
+    done
+    parent_null="p.\`${pks[0]}\` IS NULL"
+
     local out
     if ! out=$(MYSQL_QUERY_HOST="$host" MYSQL_QUERY_USER="$user" \
         "$SCRIPT_DIR/mysql-query.sh" "$port" \
         "SELECT COUNT(*) FROM \`$db\`.\`$child\` c \
-         LEFT JOIN \`$db\`.\`$parent\` p ON c.\`$fk\` = p.\`$parent_pk\` \
-         WHERE c.\`$fk\` IS NOT NULL AND p.\`$parent_pk\` IS NULL;"); then
+         LEFT JOIN \`$db\`.\`$parent\` p ON $on \
+         WHERE $child_set AND $parent_null;"); then
         echo "count_orphans: could not check ${db}.${child}.${fk} -> ${db}.${parent} on ${host}:${port}" >&2
         return 1
     fi
-
-    # mysql-query.sh emits the column header, then the value.
     echo "$out" | tail -1
 }
 

@@ -27,11 +27,11 @@
 #   interrupt               "" = one run, today's behaviour | graceful | crash
 #   interrupt_after_batches which batch to interrupt at
 #   interrupt_expect_dest   rows that MUST be in the destination at that point
-#   root_pk                 root table's PK column, for the checkpoint assertion
 #
 # Setting `interrupt` turns STEP 3 into: reset the destination ONCE, run and
 # interrupt, assert what the interrupt left behind, then run again to completion.
-# The four are required TOGETHER and fail closed as a group.
+# The three are required TOGETHER and fail closed as a group. (2.x's fourth,
+# root_pk, fed a checkpoint assertion; 3.0 keeps no cursor, R10.)
 #
 # Note this is a flag on mode="working", NOT a third mode. Every guard below is
 # gated on `mode == "working"`, so a new mode would silently bypass all of them and
@@ -94,8 +94,6 @@ run_e2e_test() {
     local interrupt_expect_dest=""    # destination rows required at the interrupt
                                       # point -- EXACT, so a mistimed interrupt
                                       # fails here instead of invalidating the floor
-    local root_pk=""              # root table's PK column; the checkpoint assertion
-                                  # compares against MAX() of it in the destination
     local start_time end_time duration
     local test_result="PASS"
     local test_error=""
@@ -185,7 +183,7 @@ run_e2e_test() {
             return 1
         fi
 
-        # Fail closed on a half-declared resume test. All four values are needed
+        # Fail closed on a half-declared resume test. All three values are needed
         # together: `interrupt` alone would run the interrupt with no idea where to
         # stop or what to assert, and any missing one degrades the test into a
         # plain single-run archive that passes -- which is exactly the silent-pass
@@ -207,10 +205,9 @@ run_e2e_test() {
             local missing=""
             [[ -z "$interrupt_after_batches" ]] && missing="$missing interrupt_after_batches"
             [[ -z "$interrupt_expect_dest" ]] && missing="$missing interrupt_expect_dest"
-            [[ -z "$root_pk" ]] && missing="$missing root_pk"
             if [[ -n "$missing" ]]; then
                 log_error "Test $test_num: interrupt='$interrupt' but missing:$missing"
-                log_error "  A resume test needs all four together. Without them the interrupt"
+                log_error "  A resume test needs all three together. Without them the interrupt"
                 log_error "  cannot be placed or checked, and the test degrades into an ordinary"
                 log_error "  single-run archive that passes while proving nothing about resume."
                 return 1
@@ -321,8 +318,8 @@ run_e2e_test() {
         # assert_log is the log the STEP 3c/3d assertions read. For a single-run
         # test that is the test log itself. For a resume test it MUST be the second
         # run's output alone: run 1 already verified its first batch, so grepping the
-        # combined log for "Starting verification (method=...)" would be satisfied by
-        # run 1 and pass even if run 2 verified nothing at all.
+        # combined log for a verified line would be satisfied by run 1's report and
+        # pass even if run 2 verified nothing at all.
         local assert_log="$log_file"
 
         if [[ -n "$replication_hold" ]]; then
@@ -364,7 +361,7 @@ run_e2e_test() {
 
             log_info "[STEP 3b-i] Run 1: $command, interrupted ($interrupt) at batch $interrupt_after_batches..."
             if ! run_interrupted_job "$config_file" "$command" "$interrupt" \
-                 "$interrupt_after_batches" "$log_file"; then
+                 "$interrupt_after_batches" "$interrupt_expect_dest" "$log_file"; then
                 log_error "the interrupted run did not reach its interrupt point"
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "" >> "$log_file"
@@ -379,7 +376,7 @@ run_e2e_test() {
             log_info "[STEP 3b-ii] Asserting what the interrupt left behind..."
             tracking_dump "$job_name" "$(tracking_job_id "$job_name" 2>/dev/null)" >> "$log_file" 2>&1
             if ! assert_interrupt_preconditions "$interrupt" "$job_name" \
-                 "$root_table" "$root_pk" "$interrupt_expect_dest"; then
+                 "$root_table" "$interrupt_expect_dest" "$log_file"; then
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "" >> "$log_file"
                 echo "Result: FAIL (interrupt landed outside its window)" >> "$log_file"
@@ -408,16 +405,17 @@ run_e2e_test() {
                 return 1
             fi
 
-            # The discriminator. Recovery replays non-terminal rows, and only a
+            # The discriminator. Recovery replays non-terminal roots, and only a
             # crash leaves any -- so this line must be ABSENT for a graceful stop
             # and PRESENT for a crash. It is the one assertion that keeps the two
             # tests from silently becoming copies of each other, and it asserts the
-            # PATH, which no end-state check can do.
+            # PATH, which no end-state check can do. The anchor is the engine's
+            # "Recovery: replaying <n> <status> roots of <table>" ((*run).recover).
             log_info "[STEP 3b-iv] Asserting the resume took the '$interrupt' path..."
             local recovered=0
-            grep -q "Recovering non-terminal PKs from prior run" "$assert_log" && recovered=1
+            grep -q "Recovery: replaying " "$assert_log" && recovered=1
             if [[ "$interrupt" == "crash" && $recovered -ne 1 ]]; then
-                log_error "run 2 never recovered non-terminal PKs, but run 1 was killed mid-batch"
+                log_error "run 2 never replayed logged roots, but run 1 was killed mid-batch"
                 log_error "  Either the replay path was not taken, or the log line changed and this"
                 log_error "  assertion has stopped matching. Both are findings."
                 end_time=$(date +%s); duration=$((end_time - start_time))
@@ -426,9 +424,9 @@ run_e2e_test() {
                 return 1
             fi
             if [[ "$interrupt" == "graceful" && $recovered -ne 0 ]]; then
-                log_error "run 2 recovered non-terminal PKs after a GRACEFUL stop"
-                log_error "  A cooperative stop leaves every row terminal, so there is nothing to"
-                log_error "  recover and resume must come from the checkpoint alone. Recovery here"
+                log_error "run 2 replayed logged roots after a GRACEFUL stop"
+                log_error "  A cooperative stop leaves every root terminal, so there is nothing to"
+                log_error "  replay and run 2 simply continues the where range. Recovery here"
                 log_error "  means this test has quietly become the crash test."
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "Result: FAIL (recovered after a graceful stop)" >> "$log_file"
@@ -437,14 +435,13 @@ run_e2e_test() {
             fi
             log_info "  confirmed: recovery $([ $recovered -eq 1 ] && echo ran || echo 'did not run'), as '$interrupt' requires"
 
-            # The discriminator proves recovery ran; it does not prove which branch.
-            # A 'copied' row must be promoted through delete-only, not re-copied.
-            # Defence in depth: the realistic form of that regression is caught by
-            # goarchive's own verification (measured), but a crash that deleted
-            # nothing would let a re-copy verify cleanly, and then only this counter
-            # moves. See assert_resume_copy_accounting.
+            # The discriminator proves recovery ran; it does not prove what it did.
+            # A 'copied' root must be promoted by delete-only replay, not re-copied.
+            # A crash that deleted nothing would let a re-copy verify cleanly, and
+            # then only the report's copy counter moves. See
+            # assert_resume_copy_accounting.
             log_info "[STEP 3b-v] Asserting run 2 copied only what was left to copy..."
-            if ! assert_resume_copy_accounting "$interrupt" "$assert_log" \
+            if ! assert_resume_copy_accounting "$interrupt" "$assert_log" "$root_table" \
                  "${expected_arr[0]}" "$interrupt_expect_dest"; then
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "" >> "$log_file"
@@ -454,36 +451,19 @@ run_e2e_test() {
             fi
         fi
 
-        # Step 3c: assert the verify stage actually ran, naming the method.
-        #
-        # Nothing asserted this at any layer before. Verification is what makes
-        # delete-after-copy safe, and a config change or a silently skipped stage
-        # would leave every test passing. The anchor is goarchive's own log line
-        # at internal/verifier/verifier.go -- "Starting verification (method=%s)".
+        # Step 3c: assert the verify stage actually ran, naming the method and
+        # covering every copied row. Verification is what makes delete-after-copy
+        # safe, and a config change or a silently skipped stage would leave every
+        # other assertion passing. The anchor is the run's report -- see
+        # assert_verified.
         log_info "[STEP 3c] Asserting the verify stage ran (expect: $verify_method)..."
-        if [[ "$verify_method" == "none" ]]; then
-            if grep -q "Starting verification (method=" "$assert_log"; then
-                log_error "Verification ran, but this test expects none"
-                end_time=$(date +%s)
-                duration=$((end_time - start_time))
-                echo "" >> "$log_file"
-                echo "Result: FAIL (unexpected verification)" >> "$log_file"
-                echo "Duration: ${duration}s" >> "$log_file"
-                return 1
-            fi
-            log_info "  confirmed: no verification stage, as expected"
-        elif ! grep -q "Starting verification (method=${verify_method})" "$assert_log"; then
-            log_error "No verification with method=${verify_method} in the run output"
-            log_error "  Either the stage did not run, or the log line changed and this"
-            log_error "  assertion has stopped matching. Both are findings."
+        if ! assert_verified "$assert_log" "$verify_method"; then
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
-            echo "Result: FAIL (verification method=${verify_method} not observed)" >> "$log_file"
+            echo "Result: FAIL (verification method=${verify_method} not observed over every copied row)" >> "$log_file"
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
-        else
-            log_info "  confirmed: verification ran with method=$verify_method"
         fi
 
         # Step 3d: the run must not have been FASTER than its own configured
@@ -613,18 +593,18 @@ run_e2e_test() {
         done
     fi
 
-    # Step 6: the tracking tables must be settled (resume tests only).
+    # Step 6: the tracking tables must be settled.
     #
     # A separate axis again. Steps 4 and 5 ask about the DATA; this asks whether
-    # goarchive's own bookkeeping agrees that the work is finished. A replayed batch
-    # that copied and deleted but never reached CompleteBatch leaves the data
-    # perfect and the log table still claiming rows to replay -- so the next run
-    # would replay them again.
+    # goarchive's own bookkeeping agrees that the work is finished. A batch that
+    # copied and deleted but never reached its completion leaves the data perfect
+    # and the log table still claiming roots to replay -- so the next run would
+    # replay them again.
     #
-    # Scoped to resume tests deliberately. Every working test could carry it, and
-    # arguably should, but switching it on for tests 03-07 changes what those tests
-    # assert and is a scope decision, not an implementation detail.
-    if [[ "$mode" == "working" && -n "$interrupt" ]]; then
+    # Every working test, from M7b on: in 3.0 every job type logs every root it
+    # processes (spec §6.3), so the root table's expected count is also the log's
+    # completed count. 2.x scoped this to the resume tests.
+    if [[ "$mode" == "working" ]]; then
         log_info "[STEP 6] Asserting goarchive's tracking tables are settled..."
         local settle_job
         if ! settle_job=$(extract_job_name "$TESTS_DIR/configs/$config_file"); then
@@ -754,12 +734,12 @@ run_e2e_suite() {
         # That breakage has no other symptom. Every test would inherit the
         # previous one's values, every fail-closed guard would stop firing, and
         # the suite would keep reporting a pass.
-        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${root_pk:-}${replication_hold:-}" ]]; then
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${replication_hold:-}" ]]; then
             log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
             log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
             log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
             log_error "  interrupt='${interrupt:-}' interrupt_after_batches='${interrupt_after_batches:-}'"
-            log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}' root_pk='${root_pk:-}'"
+            log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}'"
             log_error "  replication_hold='${replication_hold:-}'"
             log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
             log_error "  the next test and every fail-closed guard in the engine stops firing."

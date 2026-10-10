@@ -1,27 +1,28 @@
 # E2E harness — reading goarchive's own tracking tables.
 #
-# Added by rc-phase-011.
+# Added by rc-phase-011; rewritten for the 3.0 tables in M7b.
 #
 # The tracking tables are how a resumed run knows what it already did, so a resume
 # test cannot be asserted without reading them. Every other assertion in this suite
 # looks at user data; these look at goarchive's bookkeeping.
 #
-#   <job_schema>.archiver_job              one row per job: status + checkpoint
-#   <job_schema>.archiver_job_log_<id>     one row per root PK: log_status
+#   <job_schema>.archiver_job              one row per job: its type, status and binding
+#   <job_schema>.archiver_job_log_<id>     one row per root key: ga_status
 #
 # <job_schema> is destination.job_schema, which defaults to the destination
 # database -- and no test config sets it, so everything here reads $ARCHIVE_DB.
 # The log table is named by archiver_job.id (an autoincrement), NOT by the job
-# name, so the id must always be resolved first.
+# name, so the id must always be resolved first. 3.0 keeps no cursor (R10): there is
+# no checkpoint column to read.
 #
-# log_status: 0=pending 1=copied 2=completed 3=failed(legacy, never written now).
-# 0 and 1 are NON-TERMINAL -- they are what status-aware recovery replays.
+# ga_status: 1=copied 2=completed 4=deleting. 1 and 4 are NON-TERMINAL -- they are
+# what startup recovery replays (spec §6.4). 2 is terminal.
 #
-# job_status: 0=Idle 1=Running 2=Paused 3=Failed. THERE IS NO "COMPLETED".
+# job_status: 0=Idle 1=Running 3=Failed. THERE IS NO "COMPLETED".
 # A finished job returns to Idle(0), the same value a job that never ran carries,
 # so "job_status is terminal" asserts almost nothing on its own. What it IS good
-# for is a crash signature: a SIGKILLed run never reaches cleanup(), so it leaves
-# the row at Running(1).
+# for is a crash signature: a SIGKILLed run never writes its final status, so it
+# leaves the row at Running(1).
 #
 # CONTRACT, deliberately identical to get_row_count's (lib/query.sh):
 #   stdout / exit 0   the value
@@ -34,11 +35,6 @@
 #
 # Depends on the caller having defined: SCRIPT_DIR, ARCHIVE_HOST, ARCHIVE_PORT,
 # ARCHIVE_USER, ARCHIVE_DB. Requires lib/log.sh.
-
-# The sentinel a SQL NULL is mapped to. A bare NULL renders as the four-character
-# string "NULL", which is indistinguishable from a column holding that text; the
-# sentinel cannot be confused with any real checkpoint value.
-TRACKING_NULL='__NULL__'
 
 # Run one scalar query against the destination and emit exactly one value.
 #
@@ -74,32 +70,22 @@ tracking_job_id() {
         "SELECT id FROM \`$ARCHIVE_DB\`.archiver_job WHERE job_name = '$job';"
 }
 
-# archiver_job.job_status (0=Idle 1=Running 2=Paused 3=Failed).
+# archiver_job.job_status (0=Idle 1=Running 3=Failed).
 tracking_job_status() {
     local job="$1"
     _tracking_scalar "job_status for job '$job'" \
         "SELECT job_status FROM \`$ARCHIVE_DB\`.archiver_job WHERE job_name = '$job';"
 }
 
-# archiver_job.last_processed_root_pk_id, or $TRACKING_NULL when it is SQL NULL.
-#
-# The column is a nullable VARCHAR(255) (resume.go:157), so "non-zero" is the wrong
-# test for "a checkpoint exists" -- compare against $TRACKING_NULL instead.
-tracking_checkpoint() {
-    local job="$1"
-    _tracking_scalar "checkpoint for job '$job'" \
-        "SELECT IFNULL(last_processed_root_pk_id, '$TRACKING_NULL') FROM \`$ARCHIVE_DB\`.archiver_job WHERE job_name = '$job';"
-}
-
-# Rows in archiver_job_log_<id> at one specific log_status.
+# Rows in archiver_job_log_<id> at one specific ga_status.
 tracking_status_count() {
     local job_id="$1"
     local status="$2"
-    _tracking_scalar "log_status=$status count in archiver_job_log_${job_id}" \
-        "SELECT COUNT(*) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id} WHERE log_status = $status;"
+    _tracking_scalar "ga_status=$status count in archiver_job_log_${job_id}" \
+        "SELECT COUNT(*) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id} WHERE ga_status = $status;"
 }
 
-# Rows in archiver_job_log_<id> that recovery would replay: pending or copied.
+# Rows in archiver_job_log_<id> that recovery would replay: copied or deleting.
 #
 # This is the single most load-bearing reading in the resume pair, and it means
 # opposite things in each test: test 08 requires it to be ZERO after a graceful
@@ -108,20 +94,19 @@ tracking_status_count() {
 tracking_nonterminal_count() {
     local job_id="$1"
     _tracking_scalar "non-terminal count in archiver_job_log_${job_id}" \
-        "SELECT COUNT(*) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id} WHERE log_status IN (0, 1);"
+        "SELECT COUNT(*) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id} WHERE ga_status IN (1, 4);"
 }
 
 # A one-line breakdown for the test log. Diagnostic only -- never an assertion.
 tracking_dump() {
     local job="$1"
     local job_id="$2"
-    local st ckpt pending copied completed
+    local st copied completed deleting
     st=$(tracking_job_status "$job") || return 1
-    ckpt=$(tracking_checkpoint "$job") || return 1
-    pending=$(tracking_status_count "$job_id" 0) || return 1
     copied=$(tracking_status_count "$job_id" 1) || return 1
     completed=$(tracking_status_count "$job_id" 2) || return 1
-    echo "  tracking: job_status=$st checkpoint=$ckpt log(pending=$pending copied=$copied completed=$completed)"
+    deleting=$(tracking_status_count "$job_id" 4) || return 1
+    echo "  tracking: job_status=$st log(copied=$copied completed=$completed deleting=$deleting)"
 }
 
 # Prove the tracking reads report a failure instead of returning a value.
