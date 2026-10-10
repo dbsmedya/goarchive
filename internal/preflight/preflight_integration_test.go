@@ -147,9 +147,10 @@ func refusedWith(t *testing.T, err error, check string) *Error {
 // TestMySQLCompositeKeysAndTheTwinCollation: a utf8mb3_general_ci composite job copied into
 // utf8mb4_general_ci passes under sha256 verification (R32, spec §10), with MySQL's keys in
 // key order and the caps reported. Under count verification it is refused: the twin
-// exception covers key columns, and line_notes' foreign_key columns are not its key, so
-// they keep the 2.x non-key rule (spec §8.3). The same job into utf8mb4_0900_ai_ci is
-// refused for the key itself.
+// exception covers key columns, and orders.code and line_notes' foreign_key columns are not
+// their table's key, so they keep the 2.x non-key rule (spec §8.3). Both tables are named,
+// each once, and nothing else (M3-F2). The same job into utf8mb4_0900_ai_ci is refused for
+// the key itself.
 func TestMySQLCompositeKeysAndTheTwinCollation(t *testing.T) {
 	src := scratch(t, "TEST_SOURCE", "src")
 	execAll(t, src, orderTables("CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci")...)
@@ -161,8 +162,12 @@ func TestMySQLCompositeKeysAndTheTwinCollation(t *testing.T) {
 		t.Fatalf("Run() = %v, want success", err)
 	}
 	_, err = runOn(t, src, twin, job(t, jobspec.Archive, orderJob))
-	if e := refusedWith(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK"); !hasTable(e, "line_notes(column order_id: character set mismatch") {
-		t.Errorf("tables = %v, want only the non-key foreign_key column", e.Tables)
+	const charset = "character set mismatch (source=utf8mb3, destination=utf8mb4): copying can silently " +
+		"transliterate or truncate text and count verification cannot detect it; align charsets or use sha256 " +
+		"verification; source=utf8mb3, destination=utf8mb4)"
+	if e := refusedWith(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK"); len(e.Tables) != 2 ||
+		e.Tables[0] != "orders(column code: "+charset || e.Tables[1] != "line_notes(column order_id: "+charset {
+		t.Errorf("tables = %q, want exactly the two non-key columns: orders.code and line_notes' foreign_key order_id", e.Tables)
 	}
 	lines := res.Keys["order_lines"]
 	if !slices.Equal(lines.Names(), []string{"order_id", "line_no"}) {
