@@ -81,6 +81,7 @@ const (
 	atCommitted point = "committed" // the destination transaction committed
 	atLogged    point = "logged"    // purge: deleting committed, before any delete
 	atDeleted   point = "deleted"   // one source delete chunk committed
+	atMarked    point = "marked"    // startup: the job is marked running, before its first heartbeat
 	atRunning   point = "running"   // startup: the job is marked running and has beaten once
 )
 
@@ -214,6 +215,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err := job.SetStatus(ctx, tracking.JobRunning); err != nil {
 		return nil, err
 	}
+	r.reached(atMarked)
 	if err := job.Heartbeat(ctx); err != nil {
 		return nil, err
 	}
