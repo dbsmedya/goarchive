@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -26,7 +27,8 @@ type run struct {
 	caps caps
 	job  *tracking.Job
 
-	report *Report
+	report   *Report
+	progress *progressTracker // nil unless --progress is on
 }
 
 // caps are the statement caps preflight computed (spec §4.3), by table. The engine never
@@ -116,7 +118,44 @@ func (r *run) execute(ctx context.Context) error {
 	if r.report.Stopped {
 		return nil
 	}
+	if r.cfg.Progress > 0 {
+		stop, err := r.startProgress(ctx)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	return r.loop(ctx)
+}
+
+// startProgress counts the where range, now that recovery is done, and starts the
+// --progress reporter (R50). The returned stop prints the final line.
+func (r *run) startProgress(ctx context.Context) (func(), error) {
+	var total int64
+	if err := r.cfg.Source.QueryRowContext(ctx, rangeCountSQL(r.root, r.cfg.Spec.Where)).Scan(&total); err != nil {
+		return nil, fmt.Errorf("engine: --progress count on %s: %w", r.root.Table, err)
+	}
+	r.progress = newProgressTracker(total)
+	r.trackProgress()
+	out := r.cfg.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	rep := newProgressReporter(r.progress, r.cfg.Progress, r.typ, out)
+	rep.start()
+	return rep.stop, nil
+}
+
+// trackProgress feeds the run's totals to the progress tracker.
+func (r *run) trackProgress() {
+	var copied, deleted int64
+	for _, n := range r.report.Copied {
+		copied += n
+	}
+	for _, n := range r.report.Deleted {
+		deleted += n
+	}
+	r.progress.update(r.report.Roots+r.report.Skipped, copied, deleted)
 }
 
 // loop runs batches from the start of the where range (spec §6.5): each fetch continues
@@ -141,6 +180,7 @@ func (r *run) loop(ctx context.Context) error {
 			return err
 		}
 		if len(roots) == 0 {
+			r.progress.markComplete()
 			return nil
 		}
 		last = roots[len(roots)-1]
@@ -148,7 +188,9 @@ func (r *run) loop(ctx context.Context) error {
 			return fmt.Errorf("engine: batch %d: %w", r.report.Batches+1, err)
 		}
 		r.report.Batches++
+		r.trackProgress()
 		if len(roots) < r.cfg.Processing.BatchSize {
+			r.progress.markComplete()
 			return nil
 		}
 		if err := interruptibleSleep(ctx, r.cfg.Stop, seconds(r.cfg.Processing.SleepSeconds)); err != nil {

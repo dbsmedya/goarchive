@@ -19,6 +19,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
@@ -65,6 +67,10 @@ type Config struct {
 	Stop <-chan struct{}
 	// Logger defaults to logger.NewDefault().
 	Logger *logger.Logger
+	// Progress is --progress's interval; zero disables it (R50). Out receives the progress
+	// lines and defaults to os.Stdout.
+	Progress time.Duration
+	Out      io.Writer
 
 	// Test seams, nil in production. fault may rewrite a key-addressed statement before it
 	// runs (spec §10, key-set tests); at is called at each crash point.
