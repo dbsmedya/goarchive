@@ -201,3 +201,60 @@ func TestMySQLDestinationUniqueIndexRule(t *testing.T) {
 		})
 	}
 }
+
+// schTwoTables is the orders fixture without line_notes, and schTwoJob its job.
+var schTwoTables = orderTables(schCS)[:2]
+
+const schTwoJob = `
+    root_table: orders
+    primary_key: id
+    where: "1=1"
+    relations:
+      - table: order_lines
+        primary_key: [order_id, line_no]
+        foreign_key: order_id
+`
+
+// schViewTables is schTwoTables with order_lines a view over a base table.
+func schViewTables(t *testing.T) []string {
+	return []string{schTwoTables[0],
+		schSwap(t, schSwap(t, schTwoTables[1], "CREATE TABLE order_lines", "CREATE TABLE order_lines_data"),
+			"CONSTRAINT fk_lines_order", "CONSTRAINT fk_lines_data_order"),
+		"CREATE VIEW order_lines AS SELECT * FROM order_lines_data"}
+}
+
+// TestMySQLViewsAreRefused (M7-3, G14): only base tables take part, on either side.
+//
+// Pair: order_lines a view in the source → TABLE_EXISTENCE_CHECK naming exactly
+// order_lines(VIEW) for archive, purge and copy-only; a base table → all three pass.
+// Pair: order_lines a view in the destination → DEST_TABLE_EXISTENCE_CHECK naming exactly
+// order_lines(VIEW) for archive and copy-only, and purge passes; a base table → archive and
+// copy-only pass.
+func TestMySQLViewsAreRefused(t *testing.T) {
+	srcView := scratch(t, "TEST_SOURCE", "schview")
+	execAll(t, srcView, schViewTables(t)...)
+	src := scratch(t, "TEST_SOURCE", "schbase")
+	execAll(t, src, schTwoTables...)
+	dstView := scratch(t, "TEST_DEST", "schviewdst")
+	execAll(t, dstView, schViewTables(t)...)
+	dst := scratch(t, "TEST_DEST", "schbasedst")
+	execAll(t, dst, schTwoTables...)
+
+	for _, typ := range schTypes {
+		_, _, err := schRun(t, srcView, dst, job(t, typ, schTwoJob), nil)
+		if e := refusedWith(t, err, "TABLE_EXISTENCE_CHECK"); !slices.Equal(e.Tables, []string{"order_lines(VIEW)"}) ||
+			!strings.HasPrefix(e.Message, "Only base tables can be archived.") {
+			t.Errorf("%s: error = %q, tables %q", typ, e.Message, e.Tables)
+		}
+	}
+	schPasses(t, src, dst, schTwoJob, schTypes...)
+
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+		_, _, err := schRun(t, src, dstView, job(t, typ, schTwoJob), nil)
+		if e := refusedWith(t, err, "DEST_TABLE_EXISTENCE_CHECK"); !slices.Equal(e.Tables, []string{"order_lines(VIEW)"}) ||
+			!strings.HasPrefix(e.Message, "Only base tables can receive archived rows.") {
+			t.Errorf("%s: error = %q, tables %q", typ, e.Message, e.Tables)
+		}
+	}
+	schPasses(t, src, dstView, schTwoJob, jobspec.Purge)
+}
