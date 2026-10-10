@@ -494,6 +494,22 @@ func TestParseRefusesANullJobName(t *testing.T) {
 			t.Errorf("a null name through a merge key: %v, want a refusal", errs)
 		}
 	})
+	// Codex M7a N1: a jobs mapping a root-level merge supplies is the one the decoder reads.
+	t.Run("through a root merge", func(t *testing.T) {
+		errs := mustFail(t, "\n<<:\n  jobs:\n    j: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n    ~: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n")
+		if !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a root merge: %v, want a refusal", errs)
+		}
+	})
+	// Codex M7a N2: a key written as an alias is the scalar it names, here a null.
+	t.Run("through a key alias", func(t *testing.T) {
+		_, err := Parse([]byte(strings.Replace(sharedYAML, "user: u\n  database: sakila", "user: u\n  password: &N null\n  database: sakila", 1) +
+			"jobs:\n  j: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n  *N: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n"))
+		var errs config.ValidationErrors
+		if !errors.As(err, &errs) || !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a key alias: %v, want a refusal", err)
+		}
+	})
 	// Quoted, "null" is a name like any other: the control side of the pair.
 	t.Run("quoted null", func(t *testing.T) {
 		d, err := parse(t, "\njobs:\n  \"null\""+body)
@@ -512,13 +528,52 @@ func TestJobNameCollisionInFileOrder(t *testing.T) {
 	job := func(name string) string {
 		return "  " + name + ":\n    job_type: purge\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
 	}
-	errs := mustFail(t, "\njobs:\n"+job("archive_orders")+job("Archive_Orders"))
-	if !hasError(errs, "jobs.Archive_Orders", `job name "Archive_Orders" differs from "archive_orders" only in case`) {
-		t.Errorf("collision not reported on the later name:\n%v", errs)
+	indent := func(s string) string { return strings.ReplaceAll(s, "\n  ", "\n    ") }
+	for name, jobs := range map[string]string{
+		"in jobs": "\njobs:\n" + job("archive_orders") + job("Archive_Orders"),
+		// Codex M7a N1: the jobs mapping a root-level merge supplies.
+		"through a root merge": "\n<<:\n  jobs:\n  " + indent(job("archive_orders")) + "  " + indent(job("Archive_Orders")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := mustFail(t, jobs)
+			if !hasError(errs, "jobs.Archive_Orders", `job name "Archive_Orders" differs from "archive_orders" only in case`) {
+				t.Errorf("collision not reported on the later name:\n%v", errs)
+			}
+			if hasError(errs, "jobs.archive_orders", "only in case") {
+				t.Errorf("collision reported on the earlier name:\n%v", errs)
+			}
+		})
 	}
-	if hasError(errs, "jobs.archive_orders", "only in case") {
-		t.Errorf("collision reported on the earlier name:\n%v", errs)
+}
+
+// TestJobKeyAliasIsItsName (Codex M7a N2): a job key written as an alias is checked as the
+// name it decodes to, not as the anchor's name.
+// Pair: *A (= "host") beside "a" → accepted, the job "host" found; *A beside "HOST" → the
+// collision is reported on HOST, the name written later, naming "host".
+func TestJobKeyAliasIsItsName(t *testing.T) {
+	const spec = ": {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n"
+	doc := func(second string) []byte {
+		return []byte(strings.Replace(sharedYAML, "host: src", "host: &A host", 1) + "jobs:\n  *A" + spec + "  " + second + spec)
 	}
+	t.Run("distinct names", func(t *testing.T) {
+		d, err := Parse(doc("a"))
+		if err != nil {
+			t.Fatalf("an alias job key beside \"a\": %v", err)
+		}
+		if got := d.JobNames(); !slices.Equal(got, []string{"a", "host"}) {
+			t.Errorf("JobNames() = %v, want [a host]", got)
+		}
+		if _, err := d.Job("host", Purge); err != nil {
+			t.Errorf("the job named by the alias: %v", err)
+		}
+	})
+	t.Run("a case-only collision", func(t *testing.T) {
+		_, err := Parse(doc("HOST"))
+		var errs config.ValidationErrors
+		if !errors.As(err, &errs) || !hasError(errs, "jobs.HOST", `job name "HOST" differs from "host" only in case`) {
+			t.Errorf("Parse() = %v, want the collision on jobs.HOST naming \"host\"", err)
+		}
+	})
 }
 
 // TestParseRefusesASecondDocument: yaml.Unmarshal reads only the first document, so a job
