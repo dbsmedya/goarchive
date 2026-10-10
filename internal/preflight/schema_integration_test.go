@@ -3,8 +3,11 @@
 package preflight
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -335,4 +338,58 @@ func TestMySQLSourceStructure(t *testing.T) {
 		}
 	}
 	schPasses(t, src, dst, orderJob, schTypes...)
+}
+
+// TestMySQLInspectionFailureIsNotARefusal (M7-3, G17): when preflight cannot read a fact
+// it returns a plain error wrapping the cause, never a *preflight.Error, which would say
+// the schema is unfit.
+//
+// Pair: a closed source pool → "preflight table_existence inspection failed: …", and a
+// closed destination pool → "preflight job_schema inspection failed: …", neither an
+// *Error; the same config with open pools → a Result with every table's key.
+func TestMySQLInspectionFailureIsNotARefusal(t *testing.T) {
+	src := scratch(t, "TEST_SOURCE", "schinspect")
+	execAll(t, src, orderTables(schCS)...)
+	dst := scratch(t, "TEST_DEST", "schinspectdst")
+	execAll(t, dst, orderTables(schCS)...)
+	srcName, dstName := schemaOf(t, src), schemaOf(t, dst)
+	spec := job(t, jobspec.Archive, orderJob)
+	run := func(s, d *sql.DB) (*Result, error) {
+		return Run(context.Background(), Config{Source: s, SourceDatabase: srcName,
+			Destination: d, DestinationDatabase: dstName, JobSchema: dstName, Spec: spec, Verification: jobspec.VerifyCount})
+	}
+	closed := func(prefix, schema string) *sql.DB {
+		db := openServer(t, prefix, schema)
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return db
+	}
+
+	for _, tc := range []struct {
+		name     string
+		src, dst *sql.DB
+		prefix   string
+	}{
+		{"closed source", closed("TEST_SOURCE", srcName), dst, "preflight table_existence inspection failed: "},
+		{"closed destination", src, closed("TEST_DEST", dstName), "preflight job_schema inspection failed: "},
+	} {
+		res, err := run(tc.src, tc.dst)
+		var pe *Error
+		if err == nil || errors.As(err, &pe) || res != nil {
+			t.Fatalf("%s: Run() = %v, %v; want a plain error", tc.name, res, err)
+		}
+		if !strings.HasPrefix(err.Error(), tc.prefix) || !strings.HasSuffix(err.Error(), "sql: database is closed") ||
+			errors.Unwrap(err) == nil {
+			t.Errorf("%s: error = %q, want %q wrapping the pool's error", tc.name, err, tc.prefix)
+		}
+	}
+
+	res, err := run(src, dst)
+	if err != nil {
+		t.Fatalf("open pools: Run() = %v, want success", err)
+	}
+	if got := slices.Sorted(maps.Keys(res.Keys)); !slices.Equal(got, []string{"line_notes", "order_lines", "orders"}) {
+		t.Errorf("keys for %v", got)
+	}
 }
