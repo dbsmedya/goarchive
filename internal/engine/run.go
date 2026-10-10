@@ -176,7 +176,7 @@ func (r *run) loop(ctx context.Context) error {
 			r.report.Stopped = true
 			return nil
 		}
-		roots, err := r.fetch(ctx, last)
+		roots, err := r.fetch(ctx, r.cfg.Source, last)
 		if err != nil {
 			return err
 		}
@@ -200,14 +200,15 @@ func (r *run) loop(ctx context.Context) error {
 	}
 }
 
-// fetch reads the next batch of root keys (spec §7.2).
-func (r *run) fetch(ctx context.Context, last key.Key) ([]key.Key, error) {
+// fetch reads the next batch of root keys (spec §7.2) on q: the source pool for a run, the
+// connection Explain already holds for dry-run (Codex M6 B1).
+func (r *run) fetch(ctx context.Context, q reader, last key.Key) ([]key.Key, error) {
 	var args []any
 	if last != nil {
 		args = key.AfterArgs(last)
 	}
 	args = append(args, r.cfg.Processing.BatchSize)
-	rows, err := r.cfg.Source.QueryContext(ctx, fetchSQL(r.root, r.cfg.Spec.Where, last != nil), args...)
+	rows, err := q.QueryContext(ctx, fetchSQL(r.root, r.cfg.Spec.Where, last != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: root fetch on %s: %w", r.root.Table, err)
 	}
@@ -359,6 +360,11 @@ func (r *run) queryKeys(ctx context.Context, q queryer, d key.Def, st statement)
 		return nil, fmt.Errorf("engine: %s on %s: %w", st.op, st.table, err)
 	}
 	return out, nil
+}
+
+// reader is a pool, a pinned connection or a transaction, for a read that checks no warning.
+type reader interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // queryer is a pinned connection or a transaction: never a pool, whose SHOW WARNINGS might

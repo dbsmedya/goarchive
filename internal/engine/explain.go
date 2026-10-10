@@ -78,7 +78,7 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 			break
 		}
 	}
-	roots, err := r.fetch(ctx, nil)
+	roots, err := r.fetch(ctx, src, nil)
 	if err != nil {
 		return nil, err
 	}
