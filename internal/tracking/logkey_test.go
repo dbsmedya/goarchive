@@ -121,9 +121,70 @@ func TestCheckKeyNames(t *testing.T) {
 }
 
 func logSpec(cols ...validations.ColumnSpec) validations.TableSpec {
-	return validations.TableSpec{Table: "archiver_job_log_7", Columns: append(cols,
-		validations.ColumnSpec{Name: "ga_status", NormalizedType: "tinyint"},
-		validations.ColumnSpec{Name: "ga_updated_at", NormalizedType: "timestamp"})}
+	return validations.TableSpec{Table: "archiver_job_log_7", Engine: "InnoDB", Captured: validations.SectionIndexes,
+		Columns: append(cols,
+			validations.ColumnSpec{Name: "ga_status", NormalizedType: "tinyint"},
+			validations.ColumnSpec{Name: "ga_updated_at", NormalizedType: "timestamp", OnUpdate: true}),
+		Indexes: []validations.IndexSpec{
+			{Name: "PRIMARY", Unique: true, Parts: []validations.IndexPart{{Column: "k1"}, {Column: "k2"}, {Column: "k3"}}},
+			{Name: "idx_ga_status", Parts: []validations.IndexPart{{Column: "ga_status"}}},
+		}}
+}
+
+// TestCheckLogTable is the log's table check: a status write must roll back with the
+// work it records, and a logged key must fail a second insert (spec §6.2, §6.3). So the
+// log is InnoDB, its primary key is exactly k1…kN, and its bookkeeping columns are as
+// created. idx_ga_status is an access path only.
+func TestCheckLogTable(t *testing.T) {
+	healthy := func() validations.TableSpec { return logSpec(healthyLog()...) }
+	if got := checkLogTable(healthy(), 3); got != "" {
+		t.Fatalf("healthy log: %s", got)
+	}
+	noStatusIndex := healthy()
+	noStatusIndex.Indexes = noStatusIndex.Indexes[:1]
+	if got := checkLogTable(noStatusIndex, 3); got != "" {
+		t.Errorf("a log without idx_ga_status: %s", got)
+	}
+	column := func(s validations.TableSpec, name string) *validations.ColumnSpec {
+		for i := range s.Columns {
+			if s.Columns[i].Name == name {
+				return &s.Columns[i]
+			}
+		}
+		t.Fatalf("no column %s", name)
+		return nil
+	}
+	drop := func(s *validations.TableSpec, name string) {
+		s.Columns = slices.DeleteFunc(s.Columns, func(c validations.ColumnSpec) bool { return c.Name == name })
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(s *validations.TableSpec)
+		want string
+	}{
+		{"MyISAM", func(s *validations.TableSpec) { s.Engine = "MyISAM" }, "its engine is MyISAM, not InnoDB"},
+		{"indexes not read", func(s *validations.TableSpec) { s.Captured, s.Indexes = 0, nil }, "its indexes were not read"},
+		{"no primary key", func(s *validations.TableSpec) { s.Indexes = s.Indexes[1:] }, "its primary key is not (k1, k2, k3)"},
+		{"a reordered primary key", func(s *validations.TableSpec) {
+			s.Indexes[0].Parts[0], s.Indexes[0].Parts[1] = s.Indexes[0].Parts[1], s.Indexes[0].Parts[0]
+		},
+			"its primary key is not (k1, k2, k3)"},
+		{"a shorter primary key", func(s *validations.TableSpec) { s.Indexes[0].Parts = s.Indexes[0].Parts[:2] }, "its primary key is not (k1, k2, k3)"},
+		{"a prefix part", func(s *validations.TableSpec) { s.Indexes[0].Parts[0].SubPart = 4 }, "its primary key is not (k1, k2, k3)"},
+		{"a descending part", func(s *validations.TableSpec) { s.Indexes[0].Parts[2].Descending = true }, "its primary key is not (k1, k2, k3)"},
+		{"no ga_status", func(s *validations.TableSpec) { drop(s, "ga_status") }, "column ga_status is missing or not tinyint NOT NULL"},
+		{"a nullable ga_status", func(s *validations.TableSpec) { column(*s, "ga_status").Nullable = true }, "column ga_status is missing or not tinyint NOT NULL"},
+		{"an int ga_status", func(s *validations.TableSpec) { column(*s, "ga_status").NormalizedType = "int" }, "column ga_status is missing or not tinyint NOT NULL"},
+		{"no ga_updated_at", func(s *validations.TableSpec) { drop(s, "ga_updated_at") }, "column ga_updated_at is missing or not timestamp NOT NULL"},
+		{"a datetime ga_updated_at", func(s *validations.TableSpec) { column(*s, "ga_updated_at").NormalizedType = "datetime" },
+			"column ga_updated_at is missing or not timestamp NOT NULL"},
+	} {
+		s := healthy()
+		tc.edit(&s)
+		if got := checkLogTable(s, 3); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: checkLogTable() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }
 
 func healthyLog() []validations.ColumnSpec {

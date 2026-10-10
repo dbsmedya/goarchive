@@ -372,6 +372,12 @@ func TestMySQLLogKeyCheck(t *testing.T) {
 	if _, err := s.Attach(ctx, in); err != nil {
 		t.Fatalf("reattach = %v", err)
 	}
+	// A registered job's log that is no longer the table GoArchive created is refused.
+	exec(t, db, "ALTER TABLE archiver_job_log_1 ENGINE=MyISAM")
+	if _, err := s.Attach(ctx, in); err == nil || !strings.Contains(err.Error(), "is not the table GoArchive created: its engine is MyISAM, not InnoDB") {
+		t.Errorf("a MyISAM log: %v", err)
+	}
+	exec(t, db, "ALTER TABLE archiver_job_log_1 ENGINE=InnoDB")
 	for _, tc := range []struct {
 		name, alter, reason string
 	}{
@@ -577,12 +583,31 @@ func TestMySQLLeftoverLog(t *testing.T) {
 		}
 	}
 
-	// An empty leftover log of another shape is refused the same way, not as a changed key.
-	exec(t, admin, "CREATE TABLE "+logOf(4)+" (k1 INT NOT NULL PRIMARY KEY)")
-	in.Name = "other_shape"
-	var lk *LogKeyError
-	if _, err := s.Attach(ctx, in); err == nil || errors.As(err, &lk) || !strings.Contains(err.Error(), remedy) {
-		t.Errorf("a leftover log of another shape: %v", err)
+	// An empty leftover log of another shape is refused the same way, not as a changed
+	// key, and so is one whose writes would not roll back or whose key would not be
+	// strict. The row stays unregistered across retries.
+	exec(t, admin, "CREATE TABLE "+logOf(4)+" (k1 INT NOT NULL PRIMARY KEY)",
+		strings.Replace(typedLog(5), "ENGINE=InnoDB", "ENGINE=MyISAM", 1),
+		typedLog(6), "ALTER TABLE "+logOf(6)+" DROP PRIMARY KEY",
+		typedLog(7), "ALTER TABLE "+logOf(7)+" DROP COLUMN ga_updated_at")
+	for _, tc := range []struct{ name, reason string }{
+		{"other_shape", "has 1 key columns and the root key has 3"},
+		{"myisam", "its engine is MyISAM, not InnoDB"},
+		{"no_primary_key", "its primary key is not (k1, k2, k3)"},
+		{"no_updated_at", "column ga_updated_at is missing"},
+	} {
+		in := in
+		in.Name = tc.name
+		var lk *LogKeyError
+		for attempt := 1; attempt <= 2; attempt++ {
+			j, err := s.Attach(ctx, in)
+			if err == nil || j != nil || errors.As(err, &lk) || !strings.Contains(err.Error(), remedy) || !strings.Contains(err.Error(), tc.reason) {
+				t.Errorf("%s, attempt %d: Attach() = %v, %v; want the leftover-log refusal naming %q", tc.name, attempt, j, err, tc.reason)
+			}
+		}
+		if got := keyColumns(tc.name); got != "" {
+			t.Errorf("%s: a refused registration stored root_key_columns %q", tc.name, got)
+		}
 	}
 }
 
