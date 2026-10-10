@@ -3,6 +3,7 @@ package cmd
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
@@ -79,6 +80,37 @@ func TestPrintReport(t *testing.T) {
 	if got := out.String(); !strings.Contains(got, "skipped: 4 roots this job had already copied (resume)") ||
 		strings.Contains(got, "deleted") || strings.Contains(got, "recovered") || strings.Contains(got, "stopped") {
 		t.Errorf("copy-only report = %q", got)
+	}
+}
+
+// TestPrintReportVerifiedAndElapsed (M7b): the report names the verification method with
+// the rows it passed for, per table, and the run's elapsed time. A run that compared
+// nothing prints no verified line.
+func TestPrintReportVerifiedAndElapsed(t *testing.T) {
+	var out strings.Builder
+	printReport(&out, "archive_orders", jobspec.Archive, &engine.Report{
+		Batches: 2, Roots: 3,
+		Copied:       map[string]int64{"orders": 3, "order_lines": 6},
+		Deleted:      map[string]int64{"orders": 3, "order_lines": 6},
+		Verification: jobspec.VerifySHA256,
+		Verified:     map[string]int64{"orders": 3, "order_lines": 6},
+		Elapsed:      1500 * time.Millisecond,
+	})
+	for _, w := range []string{"  verified (sha256): order_lines=6 orders=3\n", "  elapsed: 1.500s\n"} {
+		if !strings.Contains(out.String(), w) {
+			t.Errorf("report %q lacks %q", out.String(), w)
+		}
+	}
+	for _, tc := range []struct {
+		typ jobspec.Type
+		v   jobspec.Verification
+	}{{jobspec.Archive, jobspec.VerifyNone}, {jobspec.Purge, ""}} {
+		out.Reset()
+		printReport(&out, "j", tc.typ, &engine.Report{Batches: 1, Roots: 1, Verification: tc.v,
+			Deleted: map[string]int64{"t": 1}, Elapsed: 20 * time.Millisecond})
+		if got := out.String(); strings.Contains(got, "verified") || !strings.Contains(got, "  elapsed: 0.020s\n") {
+			t.Errorf("%s report with verification %q = %q", tc.typ, tc.v, got)
+		}
 	}
 }
 
