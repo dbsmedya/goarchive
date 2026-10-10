@@ -17,10 +17,12 @@ import (
 // verify checks a batch's copy inside the destination transaction, before the log write
 // (spec §7.4). count compares each server's row count with the number of requested keys,
 // not only with each other (spec §7.1a). sha256 also hashes every row, read in key order on
-// both servers, and compares the hashes; it detects a changed value. none skips both.
-func (r *run) verify(ctx context.Context, src, dst queryer, t *tree) error {
+// both servers, and compares the hashes; it detects a changed value. none skips both. It
+// returns the rows it verified, by table.
+func (r *run) verify(ctx context.Context, src, dst queryer, t *tree) (map[string]int64, error) {
+	verified := map[string]int64{}
 	if r.cfg.Verification == jobspec.VerifyNone {
-		return nil
+		return verified, nil
 	}
 	for _, n := range r.tree.CopyOrder() {
 		keys := t.keys[n.Table]
@@ -34,10 +36,11 @@ func (r *run) verify(ctx context.Context, src, dst queryer, t *tree) error {
 			err = r.verifyHash(ctx, src, dst, n.Table, keys)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
+		verified[n.Table] += int64(len(keys))
 	}
-	return nil
+	return verified, nil
 }
 
 func (r *run) verifyCount(ctx context.Context, src, dst queryer, table string, keys []key.Key) error {

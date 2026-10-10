@@ -67,7 +67,8 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 			copied[n.Table] += int64(len(rows))
 		}
 	}
-	if err := r.verify(ctx, src, tx, t); err != nil {
+	verified, err := r.verify(ctx, src, tx, t)
+	if err != nil {
 		return err
 	}
 	if err := r.job.Insert(ctx, tx, st, t.keys[r.root.Table]); err != nil {
@@ -78,6 +79,9 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	}
 	for table, n := range copied {
 		r.report.Copied[table] += n
+	}
+	for table, n := range verified {
+		r.report.Verified[table] += n
 	}
 	for table, codes := range accepted {
 		if r.report.Conversions[table] == nil {

@@ -59,7 +59,11 @@ func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *trackin
 	r := &run{
 		cfg: cfg, log: cfg.Logger, typ: cfg.Spec.Type, tree: jobspec.NewTree(cfg.Spec),
 		keys: res.Keys, caps: capsOf(res), job: job,
-		report: &Report{Copied: map[string]int64{}, Deleted: map[string]int64{}, Conversions: map[string]map[uint16]uint64{}},
+		report: &Report{Copied: map[string]int64{}, Deleted: map[string]int64{}, Conversions: map[string]map[uint16]uint64{},
+			Verified: map[string]int64{}},
+	}
+	if r.typ != jobspec.Purge {
+		r.report.Verification = cfg.Verification
 	}
 	r.root = res.Keys[cfg.Spec.RootTable]
 	var tables []string

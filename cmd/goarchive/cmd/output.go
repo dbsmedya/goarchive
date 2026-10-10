@@ -54,6 +54,9 @@ func printReport(w io.Writer, name string, typ jobspec.Type, rep *engine.Report)
 	if len(rep.Deleted) > 0 {
 		_, _ = fmt.Fprintf(w, "  deleted: %s\n", perTable(rep.Deleted))
 	}
+	if len(rep.Verified) > 0 {
+		_, _ = fmt.Fprintf(w, "  verified (%s): %s\n", rep.Verification, perTable(rep.Verified))
+	}
 	for _, table := range sortedKeys(rep.Conversions) {
 		var codes []string
 		for _, code := range sortedKeys(rep.Conversions[table]) {
@@ -64,6 +67,7 @@ func printReport(w io.Writer, name string, typ jobspec.Type, rep *engine.Report)
 	if rep.Stopped {
 		_, _ = fmt.Fprintln(w, "  stopped before the end of the where range: run the job again to continue")
 	}
+	_, _ = fmt.Fprintf(w, "  elapsed: %.3fs\n", rep.Elapsed.Seconds())
 }
 
 func perTable(m map[string]int64) string {
