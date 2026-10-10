@@ -357,6 +357,44 @@ jobs:
 	if _, err := d.Job("missing", ""); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("Job(missing) = %v", err)
 	}
+	// 2.x lowercased job names, so a cron line may still name the job in other case (M2-C10).
+	if _, err := d.Job("P", ""); err == nil || !strings.Contains(err.Error(), `job "P" not found in configuration; job names are case-sensitive: did you mean "p"?`) {
+		t.Errorf("Job(P) = %v, want a hint naming p", err)
+	}
+}
+
+// TestEffectiveLoggingInheritsFileOnly (M6-3): a job's logging block overrides only the
+// keys it sets; one that omits file_only keeps the global value.
+func TestEffectiveLoggingInheritsFileOnly(t *testing.T) {
+	d, err := parse(t, `
+logging:
+  output: /var/log/goarchive.log
+  file_only: true
+jobs:
+  quiet:
+    job_type: purge
+    root_table: t
+    primary_key: id
+    where: "1=1"
+    logging:
+      level: debug
+  loud:
+    job_type: purge
+    root_table: u
+    primary_key: id
+    where: "1=1"
+    logging:
+      file_only: false
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Jobs["quiet"].EffectiveLogging(d.Shared.Logging); !got.FileOnly || got.Level != "debug" || got.Output != "/var/log/goarchive.log" {
+		t.Errorf("a block without file_only = %+v, want the global file_only kept", got)
+	}
+	if got := d.Jobs["loud"].EffectiveLogging(d.Shared.Logging); got.FileOnly {
+		t.Errorf("file_only: false = %+v, want it to override the global true", got)
+	}
 }
 
 func TestParseRequiresOneMapping(t *testing.T) {
@@ -407,19 +445,21 @@ func TestJobNames(t *testing.T) {
 	for name, field := range map[string]string{
 		`""`:                     "jobs",
 		`"my job"`:               "jobs.my job",
-		`"tab\tjob"`:             "jobs.tab\tjob",
-		`"line\njob"`:            "jobs.line\njob",
+		`"tab\tjob"`:             `jobs."tab\tjob"`, // quoted, so the path shows what is there (M2-C2)
+		`"line\njob"`:            `jobs."line\njob"`,
 		strings.Repeat("j", 256): "jobs." + strings.Repeat("j", 256),
 		"Café":                   "jobs.Café",
 		// Invisible characters would make two names look equal on screen and differ in the
 		// registry, or the reverse: each is refused (operator, 2026-10-09).
-		`"zero\u200bwidth"`:  "jobs.zero\u200bwidth",  // zero-width space
-		`"\ufeffbom"`:        "jobs.\ufeffbom",        // byte-order mark
-		`"no\u00a0break"`:    "jobs.no\u00a0break",    // no-break space
-		`"soft\u00adhyphen"`: "jobs.soft\u00adhyphen", // soft hyphen
-		`"rtl\u200fmark"`:    "jobs.rtl\u200fmark",    // right-to-left mark
-		`"del\x7fjob"`:       "jobs.del\x7fjob",       // DEL, an ASCII control character
-		`"nul\x00job"`:       "jobs.nul\x00job",       // NUL
+		`"zero\u200bwidth"`:  `jobs."zero\u200bwidth"`,  // zero-width space
+		`"\ufeffbom"`:        `jobs."\ufeffbom"`,        // byte-order mark
+		`"no\u00a0break"`:    `jobs."no\u00a0break"`,    // no-break space
+		`"soft\u00adhyphen"`: `jobs."soft\u00adhyphen"`, // soft hyphen
+		`"rtl\u200fmark"`:    `jobs."rtl\u200fmark"`,    // right-to-left mark
+		`"del\x7fjob"`:       `jobs."del\x7fjob"`,       // DEL, an ASCII control character
+		`"nul\x00job"`:       `jobs."nul\x00job"`,       // NUL
+		// A leading "-" reads as a flag: --job -orders would need "--" (M2-C1).
+		`"-orders"`: "jobs.-orders",
 	} {
 		errs := mustFail(t, "\njobs:\n"+job(name))
 		if !slices.ContainsFunc(errs, func(e config.ValidationError) bool {
