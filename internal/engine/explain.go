@@ -53,11 +53,11 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = logger.NewDefault()
 	}
-	_, _, res, err := prepare(ctx, cfg)
+	srcID, _, res, err := prepare(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	r, err := newRun(ctx, cfg, res, nil)
+	r, err := newRun(ctx, cfg, res, nil, srcID.Schema)
 	if err != nil {
 		return nil, err
 	}

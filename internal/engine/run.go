@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
@@ -54,7 +53,9 @@ func capsOf(res *preflight.Result) caps {
 	return c
 }
 
-func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *tracking.Job) (*run, error) {
+// newRun builds a run from preflight's result. sourceDatabase is the source pool's
+// database, which prepare has already read (M5-F4).
+func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *tracking.Job, sourceDatabase string) (*run, error) {
 	r := &run{
 		cfg: cfg, log: cfg.Logger, typ: cfg.Spec.Type, tree: jobspec.NewTree(cfg.Spec),
 		keys: res.Keys, caps: capsOf(res), job: job,
@@ -78,11 +79,7 @@ func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *trackin
 		}
 	}
 	if r.typ != jobspec.Purge {
-		src, err := database.ReadServerIdentity(ctx, cfg.Source)
-		if err != nil {
-			return nil, err
-		}
-		meta, err := sourceColumns(ctx, cfg.Source, src.Schema, tables)
+		meta, err := sourceColumns(ctx, cfg.Source, sourceDatabase, tables)
 		if err != nil {
 			return nil, err
 		}
