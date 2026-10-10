@@ -136,11 +136,12 @@ never modified from here. Until 3.0-alpha (rulings R33, R34 in
 - The test containers (db1/db2/db3) belong to `../goarchive`'s compose project. Never run
   `make test-up`, `test-down`, `test-reset` or `e2e` from here against them without the
   operator's say.
-- **Between M3 and M6 the commands run with no preflight** (rulings R38–R40): `archive`, `purge`,
-  `copy-only`, `dry-run` and `validate` have neither the 2.x preflight nor `internal/preflight`, and
-  `--skip-validate-preflight` and `--force-triggers` are gone. Never run a v3 build against data
-  that matters. The E2E scripts still pass those flags and cannot run against a v3 binary until
-  M7 rewrites them.
+- **Between M5 and M6 the binary runs no job** (rulings R38–R40, R45): `archive`, `purge`,
+  `copy-only` and `dry-run` refuse with "not wired to the 3.0 engine yet", and `validate` has no
+  preflight. `internal/engine` runs only from its own integration tests until M6 wires the
+  commands to it. `--skip-validate-preflight` and `--force-triggers` are gone until then. Never
+  run a v3 build against data that matters. The E2E scripts still pass the removed flags and
+  cannot run against a v3 binary until M7 rewrites them.
 - The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
   the full gate. From then on the rules above this section apply unchanged.
 
@@ -170,9 +171,9 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 | Directory | Purpose |
 |-----------|---------|
 | `cmd/` | CLI command implementations (Cobra) |
-| `internal/archiver/` | 2.x archive/purge/copy orchestration and batch processing, replaced by `internal/engine` in 3.0 M5 |
 | `internal/config/` | Configuration parsing with Viper, validation |
 | `internal/database/` | Database connection management, signal handling |
+| `internal/engine/` | 3.0 run engine: one run loop for archive, purge and copy-only; startup, recovery, discovery, copy and verification, deletes, INSERT diagnostics |
 | `internal/graph/` | Dependency graph, Kahn's algorithm, cycle detection |
 | `internal/jobspec/` | 3.0 job model: strict config loading, job rules, the table tree and the `references` projection |
 | `internal/key/` | 3.0 key model: key definitions from MySQL facts, typed keys, key SQL shapes, statement cap |
@@ -180,29 +181,35 @@ CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data 
 | `internal/logger/` | Structured logging (Zap wrapper) |
 | `internal/mermaidascii/` | ASCII diagram rendering for plan command |
 | `internal/preflight/` | 3.0 preflight: checks by job type over dbsgomysql facts, key definitions, statement caps |
-| `internal/types/` | Shared types (RecordSet, type conversions) |
-| `internal/verifier/` | Count and SHA256 data verification |
+| `internal/replication/` | Replication lag gate over the library's replica status |
+| `internal/tracking/` | 3.0 tracking: the `3.0` schema label, the job registry and binding, the typed per-job log |
+| `internal/types/` | Temporal column metadata and the temporal read contracts |
 
 SQL identifier quoting and validation now live in the **library**
 (`github.com/dbsmedya/dbsgomysql/pkg/sqlutil`); there is no `internal/sqlutil/`.
 
 ### Processing Flow
 
-1. **Preflight**: validate config, check triggers, verify InnoDB
-2. **Graph Build**: parse relations → Kahn's algorithm → copy order (parent-first), delete order (child-first)
-3. **Batch Loop**: fetch root PKs → BFS discovery → copy transaction → verify → delete
-4. **Safety**: `GET_LOCK()` advisory locks prevent concurrent jobs; replication-lag monitoring pauses processing
+`internal/engine` (spec §7, `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`):
+
+1. **Startup**: preflight (`internal/preflight`) → tracking schema → advisory locks → job registry,
+   log-key and binding checks (`internal/tracking`) → recovery of logged roots
+2. **Batch loop**: fetch root keys after the last batch's → discover children parent-first →
+   per job type, a destination transaction (copy → verify → log) and/or source delete chunks,
+   each its own transaction with an exact row count
+3. **Safety**: `GET_LOCK()` advisory locks, the replication lag gate before every delete chunk,
+   the sentinel pause and a graceful stop at batch boundaries
 
 ### Key Data Structures
 
-- **archiver_job**: tracks job state and last processed PK (checkpoint); integer `id` PK,
-  `job_name` UNIQUE. Lives in `destination.job_schema` (default = destination database).
-- **archiver_job_log_<id>**: per-job table (named by the job's `id`) holding per-root-PK status
-  as TINYINT (0=pending/1=copied/2=completed/3=failed) for crash recovery. Replaces the former
-  shared `archiver_job_log` table.
+- **archiver_job**: the job registry, with the job binding (source identity, destination
+  database, config fingerprint) and `root_key_columns`; integer `id` PK, `job_name` UNIQUE. Lives
+  in `destination.job_schema` (default = destination database). There is no persisted cursor.
+- **archiver_job_log_<id>**: per-job log whose key columns `k1…kN` mirror the root key's types,
+  with `ga_status` TINYINT (1=copied, 2=completed, 4=deleting) for crash recovery.
 - **goarchive_meta**: one-row tracking-schema marker. The binary recognises exactly one label
-  (`trackingSchemaVersion`, `internal/archiver/resume.go`) and refuses every other revision
-  and every populated marker-less schema — no inference, no migration. A release that changes
+  (`SchemaLabel`, `internal/tracking/tracking.go`) and refuses every other revision, 2.x
+  included, and every populated marker-less schema — no inference, no migration. A release that changes
   the tracking tables' layout **or a column's meaning** bumps the label and adds a procedure row
   to `docs/README_JOBS_SCHEMA.md` → *Tracking-schema upgrade procedures*.
 
@@ -239,6 +246,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Removing duplicate rows with one job (keep the minimum primary key) | `docs/README_DUPLICATE_CLEANUP.md` |
 | What the dbsgomysql integration changed, and why | `docs/README_dbsgomysql.md` |
 | Operator migration notes for 2.0 | `docs/README_UPGRADING_2_0.md` |
+| MySQL server behaviours that change how GoArchive binds keys (compatibility issues) | `docs/README_COMPAT.md` |
 
 ### Where behavior lives in code
 
@@ -250,16 +258,19 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Destination unique-index rule (deviation D3) | same file → `checkDestinationUniqueness` |
 | Per-diff-kind disposition, fail-closed `default`. It **parses** the library's `SpecDiff.A`/`.B` strings (types, `"true"`/`"false"`), so a change to their format in a dbsgomysql release changes goarchive policy | same file → `disposeDiff`, `typesCompatible` |
 | Destination key identity and the utf8mb3→utf8mb4 twin (R32) | same file → `checkDestinationKeys`, `twinCollation` |
-| Resume checkpoint floor | `internal/archiver/batch_pipeline.go` → `checkpointFloor` (struct field, `:66`) |
-| Checkpoint write — the only writer, inside the batch's completion transaction | `internal/archiver/resume.go` → `(*ResumeManager).CompleteBatch` |
+| Key-value binding per type, including the TIME compatibility path (`docs/README_COMPAT.md`, R46) | `internal/key/sql.go` → `Placeholder` |
+| The run loop and its in-memory cursor; phases per job type | `internal/engine/run.go` → `(*run).loop`, `(*run).batch` |
+| Log status writes, inside the transaction that does the work | `internal/engine/run.go` → `logDeleting`, `complete`; `internal/engine/copy.go` → `(*run).copy`; `internal/tracking/log.go` → `(*Job).Insert`, `Transition` |
+| Key-set checks: copy-read identity, verification counts, delete row counts, warning 3170 | `internal/engine/copy.go` → `read`; `verify.go` → `verifyCount`, `verifyHash`; `delete.go` → `deleteOne` |
+| Startup recovery (delete-only replay) | `internal/engine/recover.go` → `recover`, `replay` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
 | Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
-| Temporal projection, representation and identity contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalIdentitySet`, `TemporalReadContractError` |
-| INSERT diagnostic session, collection and classification | `internal/archiver/insert_diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
-| Sticky `root_table` on an existing job | `internal/archiver/resume.go` → `GetOrCreateJobWithType` |
+| Temporal projection and representation contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalReadContractError` |
+| INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
+| Sticky `root_table` and job type; log-key and binding checks | `internal/tracking/job.go` → `(*Store).Attach` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |

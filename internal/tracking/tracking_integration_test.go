@@ -688,3 +688,50 @@ func TestMySQLRangeWarning(t *testing.T) {
 		t.Errorf("Transition over the budget = %v, want ErrRangeScan", err)
 	}
 }
+
+// TestMySQLRunning: Running lists the other jobs marked running on a root table, each with
+// its heartbeat age, for the engine's same-root guard (spec §9). The job itself, an idle
+// job and a job on another root table are not listed.
+func TestMySQLRunning(t *testing.T) {
+	ctx := context.Background()
+	schema, db := scratch(t, "running")
+	exec(t, db, ordersDDL, "CREATE TABLE other (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB")
+	s := mustOpen(t, db, schema)
+	attach := func(name, table string, st JobStatus, beat bool) {
+		t.Helper()
+		j, err := s.Attach(ctx, JobInput{Name: name, Type: jobspec.Archive, RootKey: rootKey(t, db, schema, table), Binding: binding("1=1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.SetStatus(ctx, st); err != nil {
+			t.Fatal(err)
+		}
+		if beat {
+			if err := j.Heartbeat(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	attach("me", "orders", JobRunning, true)
+	attach("beating", "orders", JobRunning, true)
+	attach("silent", "orders", JobRunning, false)
+	attach("idle", "orders", JobIdle, true)
+	attach("elsewhere", "other", JobRunning, true)
+	got, err := s.Running(ctx, "orders", "me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]RunningJob{}
+	for _, r := range got {
+		names[r.Name] = r
+	}
+	if len(got) != 2 || !names["beating"].Beat || names["silent"].Beat {
+		t.Fatalf("Running(orders, me) = %+v, want beating (beat) and silent (never beat)", got)
+	}
+	if age := names["beating"].HeartbeatAge; age < 0 || age > 5*time.Second {
+		t.Errorf("beating's heartbeat age = %v", age)
+	}
+	if got, err := s.Running(ctx, "missing", "me"); err != nil || len(got) != 0 {
+		t.Errorf("Running(missing) = %+v, %v", got, err)
+	}
+}

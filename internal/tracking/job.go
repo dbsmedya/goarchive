@@ -14,6 +14,9 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
+// maxJobName is the width of archiver_job.job_name, VARCHAR(255).
+const maxJobName = 255
+
 // JobInput is what a run knows about its job before it touches the log.
 type JobInput struct {
 	Name    string
@@ -92,6 +95,9 @@ func (in JobInput) validate() error {
 	case strings.IndexFunc(in.Name, func(r rune) bool { return r <= ' ' || r > '~' }) >= 0:
 		// job_name is an ascii column; jobspec already refuses such a name (R37).
 		return fmt.Errorf("tracking: job name %q must be printable ASCII without spaces", in.Name)
+	case len(in.Name) > maxJobName:
+		// job_name is VARCHAR(255); jobspec refuses a longer name at load (M4-F4).
+		return fmt.Errorf("tracking: job name %q is longer than %d characters", in.Name, maxJobName)
 	case in.Type != jobspec.Archive && in.Type != jobspec.Purge && in.Type != jobspec.CopyOnly:
 		return fmt.Errorf("tracking: job %q has job_type %q", in.Name, in.Type)
 	case len(in.RootKey.Columns) == 0 || in.RootKey.Table == "":
@@ -322,4 +328,42 @@ func (s *Store) HeartbeatAge(ctx context.Context, name string) (age time.Duratio
 		return 0, false, nil
 	}
 	return time.Duration(seconds.Int64) * time.Second, true, nil
+}
+
+// RunningJob is a job that archiver_job marks running.
+type RunningJob struct {
+	Name         string
+	HeartbeatAge time.Duration
+	Beat         bool // false: the job has never beaten
+}
+
+// Running returns the jobs other than except that archiver_job marks running on rootTable,
+// with their heartbeat ages, for the engine's same-root guard (kept from 2.x, spec §9).
+// Two startups on one root table cannot both pass the guard only if the caller holds the
+// root table's advisory lock from before this call until its own job is marked running, as
+// the engine does.
+func (s *Store) Running(ctx context.Context, rootTable, except string) ([]RunningJob, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s "+
+			"WHERE root_table = ? AND job_status = ? AND job_name <> ? ORDER BY job_name", s.jobTable),
+		rootTable, JobRunning, except)
+	if err != nil {
+		return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RunningJob
+	for rows.Next() {
+		var r RunningJob
+		var seconds sql.NullInt64
+		if err := rows.Scan(&r.Name, &seconds); err != nil {
+			return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
+		}
+		r.Beat = seconds.Valid
+		r.HeartbeatAge = time.Duration(seconds.Int64) * time.Second
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
+	}
+	return out, nil
 }

@@ -70,6 +70,39 @@ func checkDestinationKeys(ctx context.Context, f *facts) error {
 	return nil
 }
 
+// readDestinationKeys reads the destination keys without judging them, for
+// --skip-validate-preflight: the statement caps of destination statements are computed from
+// them (spec §8.3: the key definitions are always read). A destination table without a key
+// the engine can address fails, because no cap could be computed for it.
+func readDestinationKeys(ctx context.Context, f *facts) error {
+	pks, err := f.destPKs(ctx)
+	if err != nil {
+		return inspectionError("destination_keys", err)
+	}
+	specs, err := f.destSpecs(ctx)
+	if err != nil {
+		return inspectionError("destination_keys", err)
+	}
+	byTable := make(map[string]validations.PKInfo, len(pks))
+	for _, pk := range pks {
+		byTable[pk.Table] = pk
+	}
+	dstKeys := make(map[string]key.Def, len(f.tables))
+	for _, t := range f.tables {
+		pk, ok := byTable[t]
+		if !ok {
+			return fmt.Errorf("preflight destination keys: no primary-key fact for destination table %q", t)
+		}
+		dst, err := key.FromFacts(pk, specs[t])
+		if err != nil {
+			return fmt.Errorf("preflight destination keys: %w", err)
+		}
+		dstKeys[t] = dst
+	}
+	f.dstKeys = dstKeys
+	return nil
+}
+
 // keyIdentity returns how dst differs from the source key src, or "".
 func keyIdentity(src, dst key.Def) string {
 	if len(src.Columns) != len(dst.Columns) || !foldEqualAll(src.Names(), dst.Names()) {

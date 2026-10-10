@@ -52,7 +52,7 @@ func MaxTuples(cols []Column, rangeOptimizerMaxMemSize uint64) int {
 }
 
 // partBytes is an upper bound on the bytes one key part of c occupies in an index key image:
-// 8 for integer and temporal parts, the packed size for DECIMAL, and the declared length in
+// 8 for integer and temporal parts, an upper bound on the packed size for DECIMAL, and the declared length in
 // bytes plus a 2-byte length prefix for string and binary parts.
 func partBytes(c Column) int {
 	switch c.Family {
@@ -105,7 +105,8 @@ const WarnRangeMemory = 3170
 // ErrRangeScan reports that MySQL abandoned range access for a key-addressed statement.
 var ErrRangeScan = errors.New("range optimizer memory exceeded; the statement fell back to a full scan")
 
-// Queryer is satisfied by *sql.Conn and *sql.Tx.
+// Queryer is satisfied by *sql.Conn and *sql.Tx. *sql.DB satisfies it too, but
+// CheckRangeWarning refuses one.
 type Queryer interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
@@ -113,12 +114,19 @@ type Queryer interface {
 // CheckRangeWarning runs SHOW WARNINGS on q, which must be the connection or transaction that
 // ran the statement, after its result set was fully read. It returns an error wrapping
 // ErrRangeScan when warning 3170 is present (spec §7.1a). Sessions run with sql_notes=1.
+//
+// A *sql.DB is refused: the pool may run SHOW WARNINGS on another connection than the
+// statement's, where the warning is never seen. For a DELETE, q is the chunk's transaction,
+// which a 3170 rolls back; the locks the full scan took are held until then.
 func CheckRangeWarning(ctx context.Context, q Queryer) error {
+	if _, ok := q.(*sql.DB); ok {
+		return errors.New("key: CheckRangeWarning needs the statement's own connection or transaction, not a connection pool")
+	}
 	rows, err := q.QueryContext(ctx, "SHOW WARNINGS")
 	if err != nil {
 		return fmt.Errorf("key: SHOW WARNINGS: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var level, msg string
 		var code int

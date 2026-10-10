@@ -95,7 +95,6 @@ func (b *Builder) parseRelations(g *Graph, parentTable, parentPK string, relatio
 		if childPK == "" {
 			return fmt.Errorf("primary_key is not specified for relation %q (explicit PK required, no default to 'id')", rel.Table)
 		}
-		g.SetPK(rel.Table, childPK)
 
 		// Recursively parse nested relations
 		if len(rel.Relations) > 0 {

@@ -645,13 +645,13 @@ func TestReadServerIdentity(t *testing.T) {
 		mock.ExpectQuery("server_uuid").
 			WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
 
-		got, err := readServerIdentity(context.Background(), db)
+		got, err := ReadServerIdentity(context.Background(), db)
 		if err != nil {
-			t.Fatalf("readServerIdentity: %v", err)
+			t.Fatalf("ReadServerIdentity: %v", err)
 		}
 		want := ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "app", Hostname: "db1.local", Port: 3306}
 		if got != want {
-			t.Fatalf("readServerIdentity = %+v, want %+v", got, want)
+			t.Fatalf("ReadServerIdentity = %+v, want %+v", got, want)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
@@ -677,7 +677,7 @@ func TestReadServerIdentity(t *testing.T) {
 			mock.ExpectQuery("server_uuid").
 				WillReturnRows(identityProbeRows(identityTestUUIDA, tc.schema, "db1.local", 3306))
 
-			_, err = readServerIdentity(context.Background(), db)
+			_, err = ReadServerIdentity(context.Background(), db)
 			if err == nil || !contains(err.Error(), "no selected schema") {
 				t.Fatalf("expected the no-selected-schema refusal, got %v", err)
 			}
@@ -693,7 +693,7 @@ func TestReadServerIdentity(t *testing.T) {
 		sentinel := errors.New("boom")
 		mock.ExpectQuery("server_uuid").WillReturnError(sentinel)
 
-		_, err = readServerIdentity(context.Background(), db)
+		_, err = ReadServerIdentity(context.Background(), db)
 		if !errors.Is(err, sentinel) || !contains(err.Error(), "identity probe failed") {
 			t.Fatalf("expected a wrapped, attributed probe failure, got %v", err)
 		}

@@ -796,17 +796,6 @@ func TestBuild_CustomPrimaryKeys(t *testing.T) {
 		t.Error("Missing expected nodes in graph")
 	}
 
-	// Verify correct PKs are set
-	if pk := graph.GetPK("users"); pk != "user_id" {
-		t.Errorf("Expected users PK 'user_id', got %q", pk)
-	}
-	if pk := graph.GetPK("orders"); pk != "order_id" {
-		t.Errorf("Expected orders PK 'order_id', got %q", pk)
-	}
-	if pk := graph.GetPK("order_items"); pk != "item_id" {
-		t.Errorf("Expected order_items PK 'item_id', got %q", pk)
-	}
-
 	// Verify correct reference keys
 	ordersNode := graph.GetNode("orders")
 	if ordersNode.ReferenceKey != "user_id" {

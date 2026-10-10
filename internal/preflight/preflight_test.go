@@ -50,7 +50,10 @@ func TestStagesByJobType(t *testing.T) {
 			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps"})},
-		{jobspec.Archive, true, []string{"Keys", "StatementCaps"}},
+		// Under --skip-validate-preflight the keys are still read, the destination's too:
+		// the destination statement caps are computed from them (spec §8.3).
+		{jobspec.Archive, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.CopyOnly, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
 		{jobspec.Purge, true, []string{"Keys", "StatementCaps"}},
 	} {
 		got := enabledStages(Config{Spec: &jobspec.Spec{Type: tc.typ}, SkipPolicy: tc.skip})

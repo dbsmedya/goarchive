@@ -1,6 +1,7 @@
 package tracking
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -11,6 +12,11 @@ func TestJobInputValidate(t *testing.T) {
 	good := JobInput{Name: "j", Type: jobspec.Purge, RootKey: orders(), Binding: base()}
 	if err := good.validate(); err != nil {
 		t.Fatal(err)
+	}
+	longest := good
+	longest.Name = strings.Repeat("n", 255)
+	if err := longest.validate(); err != nil {
+		t.Fatalf("a 255-character name: %v", err)
 	}
 	for name, edit := range map[string]func(in *JobInput){
 		"no name":                 func(in *JobInput) { in.Name = "" },
@@ -23,6 +29,7 @@ func TestJobInputValidate(t *testing.T) {
 		"a non-ASCII name":        func(in *JobInput) { in.Name = "sipariş" },
 		"a name with a space":     func(in *JobInput) { in.Name = "a b" },
 		"a control character":     func(in *JobInput) { in.Name = "a\x01" },
+		"a 256-character name":    func(in *JobInput) { in.Name = strings.Repeat("n", 256) }, // job_name VARCHAR(255) (M4-F4)
 	} {
 		in := good
 		in.RootKey.Columns = orders().Columns

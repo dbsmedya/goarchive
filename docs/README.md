@@ -16,6 +16,7 @@ Detailed specifications for GoArchive. Start at the
 | [Upgrading to 2.2](README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
 | [Upgrading to 2.1](README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
 | [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
+| [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys, the path it takes for each, and what is still open |
 | [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
 
 ## Elsewhere in the repository

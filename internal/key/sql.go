@@ -19,7 +19,12 @@ func Placeholder(c Column) string {
 		// CAST has no TIMESTAMP target; DATETIME(n) compares exactly under the UTC pin.
 		return fmt.Sprintf("CAST(? AS DATETIME(%d))", c.Fsp)
 	case FamilyTime:
-		return fmt.Sprintf("CAST(? AS TIME(%d))", c.Fsp)
+		// MySQL compatibility issue, docs/README_COMPAT.md ("TIME key values bound as
+		// prepared parameters"): CAST(? AS TIME(n)) mis-converts some bound strings on 8.0,
+		// 8.4 and 9.7, and a bare ? in a multi-key IN matches nothing on 8.0 and 8.4. The
+		// cast through CHAR converts the text as a literal is converted, which is exact on
+		// every tested version (R46). Do not simplify it without re-running that page's probe.
+		return fmt.Sprintf("CAST(CAST(? AS CHAR) AS TIME(%d))", c.Fsp)
 	case FamilyYear:
 		return "CAST(? AS YEAR)"
 	default:

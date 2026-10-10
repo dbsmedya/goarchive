@@ -1,6 +1,7 @@
 package key
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -12,7 +13,6 @@ func TestPlaceholderPerFamily(t *testing.T) {
 		"CAST(? AS DATE)":           {Family: FamilyDate},
 		"CAST(? AS DATETIME(3))":    {Family: FamilyDateTime, Fsp: 3},
 		"CAST(? AS DATETIME(6))":    {Family: FamilyTimestamp, Fsp: 6},
-		"CAST(? AS TIME(0))":        {Family: FamilyTime},
 		"CAST(? AS YEAR)":           {Family: FamilyYear},
 	}
 	for want, c := range cases {
@@ -22,6 +22,14 @@ func TestPlaceholderPerFamily(t *testing.T) {
 	}
 	if got := Placeholder(Column{Family: FamilyString}); got != "?" {
 		t.Errorf("Placeholder(string) = %q", got)
+	}
+	// R46, docs/README_COMPAT.md: TIME binds through CHAR, the one form exact on 8.0, 8.4
+	// and 9.7.
+	for _, fsp := range []int{0, 2, 6} {
+		want := fmt.Sprintf("CAST(CAST(? AS CHAR) AS TIME(%d))", fsp)
+		if got := Placeholder(Column{Family: FamilyTime, Fsp: fsp}); got != want {
+			t.Errorf("Placeholder(time(%d)) = %q, want %q", fsp, got, want)
+		}
 	}
 }
 
