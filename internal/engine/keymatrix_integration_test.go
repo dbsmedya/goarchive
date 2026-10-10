@@ -30,6 +30,7 @@ var keyFamilies = []keyFamily{
 	{"varbinary", "VARBINARY(8)", []string{"X''", "X'00'", "X'0000'", "X'FF'"}, "X'AA'"},
 	{"varchar_bin", "VARCHAR(300) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", []string{"'abc'", "'ABC'", "REPEAT('k', 300)", "'é'", "''"}, "'zzz'"}, // > 255 characters
 	{"varchar_nopad", "VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin", []string{"'a'", "'a '", "'a  '"}, "'q'"},                        // NO PAD
+	{"varchar_ci", "VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci", []string{"'alpha'", "'Beta'", "'gämma'", "'Ω-1'"}, "'zeta'"},     // _ci: the pair of varchar_bin
 	{"char_nopad", "CHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci", []string{"'ab'", "'x'"}, "'q'"},                                     // shorter than n (probe P5)
 	{"latin1", "VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci", []string{"'Ñandú'", "'Åsa'", "'naïve'"}, "'q'"},                        // non-ASCII
 	{"date", "DATE", []string{"'1000-01-01'", "'2019-12-31'", "'9999-12-31'"}, "'2025-01-01'"},
