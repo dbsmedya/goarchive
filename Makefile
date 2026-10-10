@@ -176,50 +176,17 @@ deadcode: ## Fail if the production binary carries unreachable functions
 
 .PHONY: consumer-policy
 consumer-policy: ## Enforce production-query and unit wire-format boundaries
-	@go test ./internal/archiver/ -run '^TestConsumerPolicy' -count=1 \
+	@go test ./tests/harness/ -run '^TestConsumerPolicy' -count=1 \
 		&& echo "consumer-policy: clean"
 
-# Integration test configuration
-INTEGRATION_CONFIG_DIR := internal/archiver
-INTEGRATION_CONFIG_TEMPLATE := $(INTEGRATION_CONFIG_DIR)/integration_test.yaml
-
-# Create integration test configuration interactively
-.PHONY: integration-config
-integration-config:
-	@echo "Setting up integration test configuration..."
-	@echo ""
-	@if [ -f "$(INTEGRATION_CONFIG_DIR)/integration_test.yaml" ]; then \
-		echo "Configuration file already exists: $(INTEGRATION_CONFIG_DIR)/integration_test.yaml"; \
-		echo "Edit this file to update your credentials."; \
-		echo ""; \
-	else \
-		cp $(INTEGRATION_CONFIG_TEMPLATE) $(INTEGRATION_CONFIG_DIR)/integration_test.yaml; \
-		echo "Created: $(INTEGRATION_CONFIG_DIR)/integration_test.yaml"; \
-		echo ""; \
-	fi
-	@echo "Please edit the configuration file and set your database credentials."
-	@echo ""
-	@echo "Example configuration:"
-	@echo "  Source:      127.0.0.1:3305 (requires Docker: make test-up)"
-	@echo "  Destination: 127.0.0.1:3307 (requires Docker: make test-up)"
-	@echo ""
-	@echo "You can also set credentials via environment variable:"
-	@echo "  export MYSQL_ROOT_PASSWORD=your_password"
-	@echo ""
-	@echo "Then run integration tests:"
-	@echo "  INTEGRATION_FORCE=true go test -tags=integration -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/..."
-
-# Run integration tests
+# Run the integration tests against the local test estate (db1 source, db2 destination).
+# Load the estate's connection settings first: set -a; source tests/.env; set +a
 .PHONY: test-integration
-test-integration: integration-config
-	@echo "Running integration tests..."
-	@if [ -z "$(MYSQL_ROOT_PASSWORD)" ]; then \
-		echo "WARNING: MYSQL_ROOT_PASSWORD not set. Using value from integration_test.yaml"; \
-		echo "Set it with: export MYSQL_ROOT_PASSWORD=your_password"; \
-		echo ""; \
+test-integration:
+	@if [ -z "$$TEST_SOURCE_HOST" ] || [ -z "$$TEST_DEST_HOST" ]; then \
+		echo "test-integration: load the test estate first: set -a; source tests/.env; set +a"; exit 2; \
 	fi
-	@echo "NOTE: reseed first so the destination is empty: bash tests/scripts/run-tests.sh --setup"
-	INTEGRATION_FORCE=true go test -tags=integration -v -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
+	go test -tags=integration ./internal/... -count=1
 
 # Start test databases (Docker)
 .PHONY: test-up
@@ -332,7 +299,7 @@ help:
 	@echo "  make dev                - Quick dev build (no version injection)"
 	@echo "  make test               - Run all tests"
 	@echo "  make test-unit          - Run unit tests only, with race detection"
-	@echo "  make test-integration   - Run integration tests (requires config + databases)"
+	@echo "  make test-integration   - Run integration tests (load tests/.env; needs db1 and db2)"
 	@echo "  make check              - Run what CI runs (fmt-check, vet, lint, consumer-policy, deadcode, test-unit, build)"
 	@echo "  make github-release     - Full CI pipeline + release build"
 	@echo "  make vet                - Run go vet (CI style)"
@@ -343,7 +310,6 @@ help:
 	@echo "  make release            - Build binaries for all platforms"
 	@echo "  make clean              - Remove build artifacts"
 	@echo "  make version            - Show current version settings"
-	@echo "  make integration-config - Create/edit integration test configuration"
 	@echo "  make test-up            - Start test databases (Docker)"
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
@@ -358,8 +324,8 @@ help:
 	@echo "  make help               - Show this help"
 	@echo ""
 	@echo "Integration Test Quick Start:"
-	@echo "  1. make integration-config  (set your credentials)"
-	@echo "  2. make test-up             (start Docker databases)"
+	@echo "  1. make test-up             (start Docker databases)"
+	@echo "  2. set -a; source tests/.env; set +a"
 	@echo "  3. make test-integration    (run tests)"
 	@echo "  4. make test-down           (stop databases when done)"
 	@echo ""

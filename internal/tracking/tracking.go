@@ -4,8 +4,7 @@
 // root key column; the log-key check and the binding check that run before recovery; and
 // the log status writes, made inside the caller's transaction.
 //
-// It replaces the 2.x ResumeManager (internal/archiver/resume.go), which stays until M5
-// deletes the 2.x orchestrators that use it.
+// It replaces the 2.x ResumeManager. internal/engine is its one caller.
 package tracking
 
 import "fmt"

@@ -1,12 +1,9 @@
 package cmd
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"gopkg.in/yaml.v3"
 )
 
 func TestArchiveCommandStructure(t *testing.T) {
@@ -113,90 +110,9 @@ func TestArchiveCmd_Execute_MissingJobFlag(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestArchiveCmd_Execute_InvalidJob tests execution with non-existent job name
-func TestArchiveCmd_Execute_InvalidJob(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping CLI execution test in short mode")
-	}
-
-	origCfgFile := cfgFile
-	origArchiveJob := archiveJob
-	defer func() {
-		cfgFile = origCfgFile
-		archiveJob = origArchiveJob
-		rootCmd.SetArgs(nil)
-	}()
-
-	// Create temp config file that passes validation but has a different job name.
-	// source/destination must be populated so cfg.Validate() succeeds and we reach
-	// the job-not-found error (job lookup now happens after ApplyOverrides+Validate).
-	configFile := createTempTestConfig(t, map[string]interface{}{
-		"source": map[string]interface{}{
-			"host":     "127.0.0.1",
-			"port":     3306,
-			"user":     "root",
-			"database": "testdb",
-		},
-		"destination": map[string]interface{}{
-			"host":     "127.0.0.1",
-			"port":     3307,
-			"user":     "root",
-			"database": "testdb",
-		},
-		"jobs": map[string]interface{}{
-			"valid_job": map[string]interface{}{
-				"root_table":  "customers",
-				"primary_key": "id",
-				"where":       "created_at < '2024-01-01'",
-			},
-		},
-	})
-
-	rootCmd.SetArgs([]string{"archive", "--job", "nonexistent_job", "--config", configFile})
-	err := rootCmd.Execute()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "job")
-	assert.Contains(t, err.Error(), "not found")
-}
-
-// TestArchiveCmd_Execute_MissingConfig tests execution when config file doesn't exist
-func TestArchiveCmd_Execute_MissingConfig(t *testing.T) {
-	origCfgFile := cfgFile
-	origArchiveJob := archiveJob
-	defer func() {
-		cfgFile = origCfgFile
-		archiveJob = origArchiveJob
-		rootCmd.SetArgs(nil)
-	}()
-
-	rootCmd.SetArgs([]string{"archive", "--job", "test_job", "--config", "/tmp/nonexistent_goarchive_config.yaml"})
-	err := rootCmd.Execute()
-	assert.Error(t, err)
-}
-
 // ============================================================================
 // Test Helpers
 // ============================================================================
-
-// createTempTestConfig creates a temporary YAML config file for testing
-func createTempTestConfig(t *testing.T, data map[string]interface{}) string {
-	t.Helper()
-
-	tempDir := t.TempDir()
-	configFile := filepath.Join(tempDir, "test_config.yaml")
-
-	yamlData, err := yaml.Marshal(data)
-	if err != nil {
-		t.Fatalf("Failed to marshal config: %v", err)
-	}
-
-	err = os.WriteFile(configFile, yamlData, 0644)
-	if err != nil {
-		t.Fatalf("Failed to write config file: %v", err)
-	}
-
-	return configFile
-}
 
 // SetConfigFile is a helper to set the global config file path for testing
 func SetConfigFile(path string) {

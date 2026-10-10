@@ -1,4 +1,4 @@
-package archiver
+package harness
 
 import (
 	"fmt"
@@ -233,7 +233,7 @@ func TestConsumerPolicyReplicationDetectorPatterns(t *testing.T) {
 
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
-	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "replication_forbidden.go.txt")
+	path := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "replication_forbidden.go.txt")
 	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
 		t.Fatalf("parse replication detector fixture: %v", err)
@@ -344,7 +344,7 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 
 func loadDBSGOMySQLWireRules(t *testing.T, root string) []wireRule {
 	t.Helper()
-	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "dbsgomysql_wire_rules.tsv")
+	path := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "dbsgomysql_wire_rules.tsv")
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read dbsgomysql wire rules: %v", err)
@@ -516,7 +516,7 @@ func TestConsumerPolicyWireDetectorPatterns(t *testing.T) {
 	root := moduleRoot(t)
 	rules := loadDBSGOMySQLWireRules(t, root)
 	fset := token.NewFileSet()
-	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "forbidden.go.txt")
+	path := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "forbidden.go.txt")
 	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
 		t.Fatalf("parse detector fixture: %v", err)
@@ -563,7 +563,7 @@ func TestConsumerPolicyWireDetectorPatterns(t *testing.T) {
 		}
 	}
 
-	allowedPath := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "allowed.go.txt")
+	allowedPath := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "allowed.go.txt")
 	allowedFile, err := parser.ParseFile(fset, allowedPath, nil, 0)
 	if err != nil {
 		t.Fatalf("parse allowed detector fixture: %v", err)
@@ -576,21 +576,21 @@ func TestConsumerPolicyWireDetectorPatterns(t *testing.T) {
 func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
-	path := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "integration.go.txt")
+	path := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "integration.go.txt")
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("parse integration fixture: %v", err)
 	}
-	if !isIntegrationTestFile("internal/archiver/characterization_fixture_test.go", file) {
+	if !isIntegrationTestFile("internal/engine/fixture_integration_test.go", file) {
 		t.Fatal("integration build constraint was not classified")
 	}
 
-	nonIntegrationPath := filepath.Join(root, "internal", "archiver", "testdata", "consumer_policy", "nonintegration.go.txt")
+	nonIntegrationPath := filepath.Join(root, "tests", "harness", "testdata", "consumer_policy", "nonintegration.go.txt")
 	nonIntegrationFile, err := parser.ParseFile(fset, nonIntegrationPath, nil, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("parse non-integration fixture: %v", err)
 	}
-	if isIntegrationTestFile("internal/archiver/unit_fixture_test.go", nonIntegrationFile) {
+	if isIntegrationTestFile("internal/engine/unit_fixture_test.go", nonIntegrationFile) {
 		t.Fatal("negated integration build constraint was classified as integration")
 	}
 }
@@ -636,7 +636,7 @@ func TestPolicyWalkSkipsWhatGoToolingIgnores(t *testing.T) {
 			t.Errorf("skipPolicyWalkDir(%q) = false; Go tooling ignores this directory", name)
 		}
 	}
-	for _, name := range []string{"internal", "cmd", "archiver", "harness"} {
+	for _, name := range []string{"internal", "cmd", "engine", "harness"} {
 		if skipPolicyWalkDir(name) {
 			t.Errorf("skipPolicyWalkDir(%q) = true; this directory holds module source", name)
 		}
