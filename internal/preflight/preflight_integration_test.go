@@ -208,7 +208,7 @@ func TestMySQLSwappedPairingIsRefused(t *testing.T) {
         references: %s
 `
 	_, err := runOn(t, src, dst, job(t, jobspec.Purge, fmt.Sprintf(body, "[b, a]")))
-	refusedWith(t, err, "FK_PAIRING_CHECK")
+	_ = refusedWith(t, err, "FK_PAIRING_CHECK")
 
 	// The declared pairing, written in another order, passes, and purge needs no
 	// destination tables (R5).

@@ -227,7 +227,7 @@ func TestMySQLCopyOnlyBinding(t *testing.T) {
 		// The same job with resume: false fails on the first duplicate. (A where-only edit
 		// would be written even with pending work: where is not a compared part of copy-only.)
 		_, err := e.run(t, e.config(t, job(t, jobspec.CopyOnly, orderJob)))
-		wantErr[*DuplicateError](t, err)
+		_ = wantErr[*DuplicateError](t, err)
 		if got := e.storedBinding(t, e.dstSchema); got != bound {
 			t.Errorf("the failed run rebound the job:\n%s\nwas\n%s", got, bound)
 		}
