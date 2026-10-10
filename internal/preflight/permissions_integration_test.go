@@ -205,3 +205,37 @@ func TestMySQLJobSchemaPermission(t *testing.T) {
 		}
 	})
 }
+
+// TestMySQLDestinationWritePermission (M7-3, G2): archive and copy-only need INSERT on
+// every destination table; purge copies nothing and does not ask.
+// Pair: an account that can write its separate job schema and only SELECT the data schema
+// → DEST_WRITE_PERMISSION_CHECK for archive and copy-only naming orders(absent) and
+// order_lines(absent) in copy order, and purge passes; the same account with INSERT
+// granted on each of the two tables → archive and copy-only pass.
+func TestMySQLDestinationWritePermission(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "pdw")
+	jobSchema := schemaOf(t, scratch(t, "TEST_DEST", "pdwjob"))
+	ctx := context.Background()
+	base := []string{"GRANT CREATE, SELECT, INSERT, UPDATE ON `" + jobSchema + "`.* TO {{A}}",
+		"GRANT SELECT ON `" + dstSchema + "`.* TO {{A}}", acctSeesGrants}
+
+	t.Run("no INSERT on the data schema", func(t *testing.T) {
+		as := acctCreate(t, "TEST_DEST", dst, "dwnoinsert", dstSchema, base...)
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+			err := acctRun(ctx, t, src, as, srcSchema, dstSchema, jobSchema, job(t, typ, acctJob))
+			acctTablesAre(t, refusedWith(t, err, "DEST_WRITE_PERMISSION_CHECK"), "orders(absent)", "order_lines(absent)")
+		}
+		if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, jobSchema, job(t, jobspec.Purge, acctJob)); err != nil {
+			t.Errorf("purge: Run() = %v, want success", err)
+		}
+	})
+	t.Run("table-scope INSERT passes", func(t *testing.T) {
+		as := acctCreate(t, "TEST_DEST", dst, "dwtableins", dstSchema, append(base,
+			"GRANT INSERT ON `"+dstSchema+"`.`orders` TO {{A}}", "GRANT INSERT ON `"+dstSchema+"`.`order_lines` TO {{A}}")...)
+		for _, typ := range acctTypes {
+			if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, jobSchema, job(t, typ, acctJob)); err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	})
+}
