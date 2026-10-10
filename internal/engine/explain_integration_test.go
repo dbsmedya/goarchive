@@ -65,7 +65,7 @@ func TestMySQLExplainEmptyRange(t *testing.T) {
 	if ex.Roots != 0 || len(ex.Fetch.Rows) == 0 || len(ex.Discovery) != 0 {
 		t.Errorf("explanation = %+v", ex)
 	}
-	if !strings.Contains(strings.Join(ex.Notes, "\n"), "no rows match") {
+	if !strings.Contains(strings.Join(ex.Notes, "\n"), "No rows match") {
 		t.Errorf("notes = %q, want the empty-range note", ex.Notes)
 	}
 }

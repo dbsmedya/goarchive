@@ -121,6 +121,11 @@ func (c *Config) validate() error {
 	case c.Spec.Type != jobspec.Purge && !c.Verification.Valid():
 		return fmt.Errorf("engine: job %q has verification %q", c.Name, c.Verification)
 	}
+	return nil
+}
+
+// checkPool refuses a destination pool too small for a run (M5-F6).
+func (c *Config) checkPool() error {
 	if n := c.Destination.Stats().MaxOpenConnections; n > 0 && n < minDestinationConnections {
 		return fmt.Errorf("engine: the destination pool allows %d connections, and a run needs at least %d "+
 			"(destination.max_connections): startup holds the root-table and job locks on two of them while it "+
@@ -140,41 +145,54 @@ func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.checkPool(); err != nil {
+		return nil, err
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = logger.NewDefault()
 	}
-	src, err := database.ReadServerIdentity(ctx, cfg.Source)
+	src, dst, res, err := prepare(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("engine: source identity: %w", err)
+		return nil, err
 	}
-	dst, err := database.ReadServerIdentity(ctx, cfg.Destination)
+	return start(ctx, cfg, tracking.Binding{
+		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
+		Fingerprint: tracking.FingerprintOf(cfg.Spec),
+	}, res)
+}
+
+// prepare runs the startup checks that come before any lock, for Run and Explain: each
+// pool's identity and its UTC pin, then preflight (spec §7.1).
+func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity, res *preflight.Result, err error) {
+	src, err = database.ReadServerIdentity(ctx, cfg.Source)
 	if err != nil {
-		return nil, fmt.Errorf("engine: destination identity: %w", err)
+		return src, dst, nil, fmt.Errorf("engine: source identity: %w", err)
+	}
+	dst, err = database.ReadServerIdentity(ctx, cfg.Destination)
+	if err != nil {
+		return src, dst, nil, fmt.Errorf("engine: destination identity: %w", err)
 	}
 	for _, p := range []struct {
 		name string
 		db   *sql.DB
 	}{{"source", cfg.Source}, {"destination", cfg.Destination}} {
 		if err := assertUTC(ctx, p.db); err != nil {
-			return nil, fmt.Errorf("engine: %s: %w", p.name, err)
+			return src, dst, nil, fmt.Errorf("engine: %s: %w", p.name, err)
 		}
 	}
-	res, err := preflight.Run(ctx, preflight.Config{
+	res, err = preflight.Run(ctx, preflight.Config{
 		Source: cfg.Source, SourceDatabase: src.Schema,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
 		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Logger: cfg.Logger,
 	})
 	if err != nil {
-		return nil, err
+		return src, dst, nil, err
 	}
 	if cfg.preflighted != nil {
 		cfg.preflighted(res)
 	}
-	return start(ctx, cfg, tracking.Binding{
-		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
-		Fingerprint: tracking.FingerprintOf(cfg.Spec),
-	}, res)
+	return src, dst, res, nil
 }
 
 // utcProbe returns 86400 only in a session whose time zone is UTC.

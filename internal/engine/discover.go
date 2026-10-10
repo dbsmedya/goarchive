@@ -34,21 +34,13 @@ func (r *run) discover(ctx context.Context, src queryer, roots []key.Key) (*tree
 }
 
 func (r *run) discoverChild(ctx context.Context, src queryer, n *jobspec.Node, parents []key.Key) ([]key.Key, error) {
-	parent, child := r.keys[n.Parent.Table], r.keys[n.Table]
-	idx, err := n.Projection(parent.Names())
+	stmts, err := r.discoveryStatements(n, parents)
 	if err != nil {
-		return nil, fmt.Errorf("engine: discovery of %s: %w", n.Table, err)
+		return nil, err
 	}
-	bind := jobspec.ProjectColumns(parent.Columns, idx)
 	found := key.NewSet()
-	for _, chunk := range key.Chunks(parents, r.discoveryChunk(n.Table)) {
-		projected := make([]key.Key, len(chunk))
-		for i, k := range chunk {
-			projected[i] = jobspec.Project(k, idx)
-		}
-		keys, err := r.queryKeys(ctx, src, child, statement{
-			op: opDiscover, table: n.Table, query: discoverySQL(child, n, bind, len(chunk)), args: key.Args(projected),
-		})
+	for _, st := range stmts {
+		keys, err := r.queryKeys(ctx, src, r.keys[n.Table], st)
 		if err != nil {
 			return nil, err
 		}
@@ -57,4 +49,26 @@ func (r *run) discoverChild(ctx context.Context, src queryer, n *jobspec.Node, p
 		}
 	}
 	return found.Keys(), nil
+}
+
+// discoveryStatements are the statements that find n's rows under parents, one per chunk of
+// parent tuples, each tuple projected into references order.
+func (r *run) discoveryStatements(n *jobspec.Node, parents []key.Key) ([]statement, error) {
+	parent, child := r.keys[n.Parent.Table], r.keys[n.Table]
+	idx, err := n.Projection(parent.Names())
+	if err != nil {
+		return nil, fmt.Errorf("engine: discovery of %s: %w", n.Table, err)
+	}
+	bind := jobspec.ProjectColumns(parent.Columns, idx)
+	var stmts []statement
+	for _, chunk := range key.Chunks(parents, r.discoveryChunk(n.Table)) {
+		projected := make([]key.Key, len(chunk))
+		for i, k := range chunk {
+			projected[i] = jobspec.Project(k, idx)
+		}
+		stmts = append(stmts, statement{
+			op: opDiscover, table: n.Table, query: discoverySQL(child, n, bind, len(chunk)), args: key.Args(projected),
+		})
+	}
+	return stmts, nil
 }
