@@ -3,6 +3,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,30 +225,97 @@ _interrupt_wait_for_copied payment-job 100 "$pid"`
 	}
 }
 
+// fakeTracking writes a mysql-query.sh into dir that answers the crash preconditions'
+// reads by their SQL, so the answers do not depend on the order of the reads.
+func fakeTracking(t *testing.T, dir string, dest, copied, completed, deleting, status int) {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/bash
+echo value
+case "$2" in
+  *"SELECT id FROM"*) echo 7 ;;
+  *"SELECT job_status"*) echo %d ;;
+  *"ga_status IN (1, 4)"*) echo %d ;;
+  *"ga_status = 1;"*) echo %d ;;
+  *"ga_status = 2;"*) echo %d ;;
+  *"ga_status = 4;"*) echo %d ;;
+  *"COUNT(*) FROM "*"payment"*) echo %d ;;
+  *) exit 1 ;;
+esac
+`, status, copied+deleting, copied, completed, deleting, dest)
+	writeFixture(t, filepath.Join(dir, "mysql-query.sh"), script)
+}
+
+// TestE2ECrashPreconditions: a crash after batch N leaves the earlier batches completed and
+// only the last batch at 'copied'. The destination holds every copied root, so it is
+// checked against copied + completed, and only the 'copied' roots are left for recovery,
+// which the preconditions hand to the run-2 accounting as INTERRUPT_PENDING.
+func TestE2ECrashPreconditions(t *testing.T) {
+	for _, tc := range []struct {
+		name                                      string
+		expect, dest, copied, completed, deleting int
+		status                                    int
+		pending                                   string // "" when the preconditions must refuse
+	}{
+		{"batch1", 100, 100, 100, 0, 0, 1, "100"},
+		{"batch2", 200, 200, 100, 100, 0, 1, "100"},
+		{"batch_completed", 200, 200, 0, 200, 0, 1, ""},
+		{"log_short_of_destination", 200, 200, 100, 50, 0, 1, ""},
+		{"deleting", 200, 200, 100, 100, 3, 1, ""},
+		{"exited_normally", 200, 200, 100, 100, 0, 0, ""},
+		{"destination_late", 200, 300, 100, 200, 0, 1, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fakeTracking(t, dir, tc.dest, tc.copied, tc.completed, tc.deleting, tc.status)
+			r := runLib(t, dir, fmt.Sprintf(`assert_interrupt_preconditions crash payment-job payment %d /dev/null || exit 1
+echo "pending=$INTERRUPT_PENDING"`, tc.expect))
+			if tc.pending == "" {
+				if r.rc == 0 {
+					t.Fatalf("preconditions passed: %s%s", r.stdout, r.stderr)
+				}
+				// The refusal must be the assertion's, not a read that failed.
+				if strings.Contains(r.stdout+r.stderr, "tracking:") || strings.Contains(r.stdout+r.stderr, "could not count") {
+					t.Fatalf("preconditions refused on a failed read:\n%s%s", r.stdout, r.stderr)
+				}
+				return
+			}
+			if r.rc != 0 || !strings.Contains(r.stdout, "pending="+tc.pending+"\n") {
+				t.Fatalf("preconditions: rc=%d, want pending=%s\n%s%s", r.rc, tc.pending, r.stdout, r.stderr)
+			}
+		})
+	}
+}
+
 // TestE2EResumeAccounting: run 2 of a crash test reports the recovery of exactly the
-// copied roots and copies only the rest; a graceful run 2 recovers nothing.
+// roots left at 'copied' and copies only the rest; a graceful run 2 recovers nothing.
+// After a crash in batch 2 the destination already held two batches, but only the
+// second was left for recovery.
 func TestE2EResumeAccounting(t *testing.T) {
 	crash := `{"level":"info","msg":"Recovery: replaying 100 copied roots of payment"}
 Job j (archive): 399 roots in 4 batches
   recovered: 100 logged roots finished by replay
   copied:  payment=399
 `
+	crash2 := strings.Replace(crash, "payment=399", "payment=299", 1)
 	graceful := "Job j (archive): 1899 roots in 19 batches\n  copied:  payment=1899\n"
 	for _, tc := range []struct {
-		name, kind, log string
-		total, at       string
-		pass            bool
+		name, kind, log    string
+		total, at, pending string
+		pass               bool
 	}{
-		{"crash", "crash", crash, "499", "100", true},
-		{"crash_recopied", "crash", strings.Replace(crash, "payment=399", "payment=499", 1), "499", "100", false},
-		{"crash_no_recovery", "crash", strings.Replace(crash, "Recovery: replaying 100", "Recovery: replaying 80", 1), "499", "100", false},
-		{"graceful", "graceful", graceful, "1999", "100", true},
-		{"graceful_recovered", "graceful", crash, "499", "100", false},
+		{"crash", "crash", crash, "499", "100", "100", true},
+		{"crash_recopied", "crash", strings.Replace(crash, "payment=399", "payment=499", 1), "499", "100", "100", false},
+		{"crash_no_recovery", "crash", strings.Replace(crash, "Recovery: replaying 100", "Recovery: replaying 80", 1), "499", "100", "100", false},
+		{"crash_batch2", "crash", crash2, "499", "200", "100", true},
+		{"crash_batch2_cumulative", "crash", strings.NewReplacer("replaying 100", "replaying 200", "recovered: 100", "recovered: 200").Replace(crash2), "499", "200", "100", false},
+		{"crash_without_pending", "crash", crash, "499", "100", "", false},
+		{"graceful", "graceful", graceful, "1999", "100", "0", true},
+		{"graceful_recovered", "graceful", crash, "499", "100", "0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			p := writeLog(t, dir, "run2.log", tc.log)
-			r := runLib(t, dir, "assert_resume_copy_accounting "+tc.kind+" \""+p+"\" payment "+tc.total+" "+tc.at)
+			r := runLib(t, dir, "assert_resume_copy_accounting "+tc.kind+" \""+p+"\" payment "+tc.total+" "+tc.at+" "+tc.pending)
 			if (r.rc == 0) != tc.pass {
 				t.Fatalf("accounting %s: rc=%d, want pass=%t\n%s%s", tc.name, r.rc, tc.pass, r.stdout, r.stderr)
 			}
