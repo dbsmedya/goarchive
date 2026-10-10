@@ -115,8 +115,18 @@ func (c *Config) validate() error {
 	case c.Spec.Type != jobspec.Purge && !c.Verification.Valid():
 		return fmt.Errorf("engine: job %q has verification %q", c.Name, c.Verification)
 	}
+	if n := c.Destination.Stats().MaxOpenConnections; n > 0 && n < minDestinationConnections {
+		return fmt.Errorf("engine: the destination pool allows %d connections, and a run needs at least %d "+
+			"(destination.max_connections): startup holds the root-table and job locks on two of them while it "+
+			"reads the job registry on a third", n, minDestinationConnections)
+	}
 	return nil
 }
+
+// minDestinationConnections is the smallest destination pool a run can use: the job lock
+// holds one connection for the whole run, the root-table lock a second during startup, and
+// the registry, the log and the copy need a third (M5-F6). A smaller pool would wait forever.
+const minDestinationConnections = 3
 
 // Run runs one job: startup, recovery, then batches until the where range is exhausted or a
 // graceful stop is requested. It returns what it did, even when it fails part way.
