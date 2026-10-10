@@ -137,3 +137,67 @@ func TestMySQLSchemaCompatibilityFromRealFacts(t *testing.T) {
 		})
 	}
 }
+
+// schNoEquivalent is the D3 refusal of a destination unique index on table t.
+func schNoEquivalent(index string) string {
+	return fmt.Sprintf("t(destination unique index %q has no equivalent on the source; rows the source holds "+
+		"as distinct would collide and fail the copy. Drop the destination unique index, or add an equivalent "+
+		"one to the source)", index)
+}
+
+// TestMySQLDestinationUniqueIndexRule (M7-3, G13): deviation D3. A destination unique
+// index must enforce a uniqueness predicate the source enforces too, compared by parts
+// (column or expression, prefix, collation), never by name or part order.
+//
+// Pair: each destination-only unique predicate (a single column, a subset of a source
+// composite, a new composite, a prefix of a source column, another expression, the source
+// index under a case-insensitive collation) → DEST_SCHEMA_COMPATIBILITY_CHECK naming that
+// index; the identical destination, the index undone → passes. A source functional index
+// matched by the destination's is refused once another column differs in collation, and
+// passes when it does not. Renamed or reordered equivalents and source-only unique indexes
+// pass.
+func TestMySQLDestinationUniqueIndexRule(t *testing.T) {
+	const base = "CREATE TABLE t (id INT NOT NULL PRIMARY KEY, " +
+		"email VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin, a INT, b INT, c INT, note VARCHAR(20) " + schCS +
+		", UNIQUE KEY uk_email (email), UNIQUE KEY uk_ab (a, b), UNIQUE KEY uk_lc ((lower(email)))) ENGINE=InnoDB"
+	src := scratch(t, "TEST_SOURCE", "schuniq")
+	execAll(t, src, base)
+	dst := scratch(t, "TEST_DEST", "schuniqdst")
+	const body = "\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
+
+	swap := func(old, new string) string { return schSwap(t, base, old, new) }
+	add := func(index string) string { return swap(") ENGINE=InnoDB", ", "+index+") ENGINE=InnoDB") }
+	ciEmail := swap("email VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", "email VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")
+	for _, tc := range []struct{ name, ddl, fatal string }{
+		{"identical", base, ""},
+		{"renamed and reordered", swap("UNIQUE KEY uk_email (email), UNIQUE KEY uk_ab (a, b), UNIQUE KEY uk_lc ((lower(email)))",
+			"UNIQUE KEY ux_mail (email), UNIQUE KEY ux_ba (b, a), UNIQUE KEY ux_lc ((lower(email)))"), ""},
+		{"source-only unique indexes", swap(", UNIQUE KEY uk_email (email), UNIQUE KEY uk_ab (a, b), UNIQUE KEY uk_lc ((lower(email)))", ""), ""},
+
+		{"single", add("UNIQUE KEY uk_c (c)"), schNoEquivalent("uk_c")},
+		{"overlapping", add("UNIQUE KEY uk_a (a)"), schNoEquivalent("uk_a")},
+		{"composite", add("UNIQUE KEY uk_bc (b, c)"), schNoEquivalent("uk_bc")},
+		{"prefix", swap("UNIQUE KEY uk_email (email)", "UNIQUE KEY uk_email (email(10))"), schNoEquivalent("uk_email")},
+		{"functional", add("UNIQUE KEY uk_uc ((upper(email)))"), schNoEquivalent("uk_uc")},
+		// uk_lc is left out: its expression would be judged by the functional rule instead.
+		{"collation", schSwap(t, ciEmail, ", UNIQUE KEY uk_lc ((lower(email)))", ""), schNoEquivalent("uk_email")},
+		{"functional with a collation difference", swap("note VARCHAR(20) "+schCS, "note VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"),
+			"t(destination functional unique index \"uk_lc\" matches a source expression textually, but a column " +
+				"differs in charset or collation, so GoArchive cannot prove the expression's equality semantics " +
+				"match. Align the column charsets and collations, or drop the destination index)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schRecreate(t, dst, []string{"t"}, tc.ddl)
+			_, _, err := schRun(t, src, dst, job(t, jobspec.Archive, body), nil)
+			if tc.fatal == "" {
+				if err != nil {
+					t.Fatalf("Run() = %v, want success", err)
+				}
+				return
+			}
+			if e := refusedWith(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK"); !slices.Equal(e.Tables, []string{tc.fatal}) {
+				t.Errorf("tables = %q, want [%q]", e.Tables, tc.fatal)
+			}
+		})
+	}
+}
