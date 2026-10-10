@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -111,7 +112,14 @@ func Parse(data []byte) (*Document, error) {
 	if len(d.Jobs) == 0 {
 		errs = append(errs, config.ValidationError{Field: "jobs", Message: "at least one job must be defined"})
 	}
-	errs = append(errs, validateJobNames(d.JobNames())...)
+	names, nameErrs := jobNamesInFileOrder(top)
+	errs = append(errs, nameErrs...)
+	for _, name := range d.JobNames() {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	errs = append(errs, validateJobNames(names)...)
 	for _, name := range d.JobNames() {
 		errs = append(errs, validateJob(shared, name, d.Jobs[name])...)
 	}
@@ -160,6 +168,46 @@ func validateJobNames(names []string) config.ValidationErrors {
 		first[folded] = name
 	}
 	return errs
+}
+
+// jobNamesInFileOrder returns the jobs mapping's names in the order the file writes them,
+// following merge keys where they appear, so a collision is reported on the name written
+// later (M2-C8). A null key (null, NULL, ~) is refused with its line: the decoder drops it,
+// and the job would vanish without an error (M2-C7).
+func jobNamesInFileOrder(top *yaml.Node) ([]string, config.ValidationErrors) {
+	var names []string
+	var errs config.ValidationErrors
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		for n.Kind == yaml.AliasNode {
+			n = n.Alias
+		}
+		switch n.Kind {
+		case yaml.SequenceNode:
+			for _, item := range n.Content {
+				walk(item)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				k := n.Content[i]
+				switch {
+				case k.Tag == "!!merge":
+					walk(n.Content[i+1])
+				case k.Tag == "!!null":
+					errs = append(errs, config.ValidationError{Field: "jobs", Message: fmt.Sprintf(
+						"a job name must not be null (%q, line %d); quote it to use it as a name", k.Value, k.Line)})
+				case !slices.Contains(names, k.Value):
+					names = append(names, k.Value)
+				}
+			}
+		}
+	}
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		if top.Content[i].Value == "jobs" {
+			walk(top.Content[i+1])
+		}
+	}
+	return names, errs
 }
 
 // jobField is a job's field path, jobs.<name>. A name holding a control or invisible
