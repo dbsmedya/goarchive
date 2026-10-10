@@ -133,15 +133,15 @@ never modified from here. Until 3.0-alpha (rulings R33, R34 in
   are in `.ayder/superpowers_20261007/plans/`. The approved spec is authoritative.
 - The roadmaps named in *Release lines* above live in `../goarchive/.ayder/roadmaps/`. This
   checkout has no copy.
-- The test containers (db1/db2/db3) belong to `../goarchive`'s compose project. Never run
-  `make test-up`, `test-down`, `test-reset` or `e2e` from here against them without the
-  operator's say.
+- The test containers (db1/db2/db3) are dedicated to this checkout since 2026-10-10 (R55): the
+  same compose project and volumes as `../goarchive`'s, and M7 may run `make test-up`,
+  `test-reset` and `e2e` from here. Run nothing else on the estate while they run, and ask the
+  operator before a reset destroys a schema that is not the suite's own.
 - **From M6 the commands run on the 3.0 packages** (R45 lifted): `archive`, `purge` and
   `copy-only` run `internal/engine`, `dry-run` runs `engine.Explain`, `validate` runs
   `internal/preflight`, and `plan` and `list-jobs` read `internal/jobspec`. `--skip-verify` and
   `--force` are gone (R42, R50). Still never run a v3 build against data that matters before
-  3.0-alpha. The E2E scripts still pass the removed flags and cannot run against a v3 binary
-  until M7 rewrites them.
+  3.0-alpha. The E2E suite runs on the 3.0 binary since M7b.
 - The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
   the full gate. From then on the rules above this section apply unchanged.
 

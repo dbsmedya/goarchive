@@ -10,8 +10,8 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09 and 13) | `make e2e` (reset + seed + run) |
-| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11, 12) | `make e2e-examples` |
+| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–16) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
@@ -73,9 +73,10 @@ Credentials first, as always: `set -a; source tests/.env; set +a`.
 
 ## Sakila E2E Test Suite
 
-Eleven focused tests: seven working runs — three archives, one purge, one
-copy-only and two interrupt/resume tests — and four preflight-guardrail
-demonstrations.
+Sixteen focused tests: twelve working runs — five archives, three purges, two
+copy-onlys and two interrupt/resume tests — and four preflight-guardrail
+demonstrations. Thirteen run on Sakila; three (14–16) run on the **key-matrix
+fixture**, tables with the key types Sakila lacks.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
 command it exercises**, with the shared harness in `tests/e2e/lib/`.
@@ -90,22 +91,35 @@ substituting the `MYSQL_ROOT_PASSWORD` placeholder from `tests/.env`. The
 rendered `.yaml` holds a real password, so it is gitignored — and it is
 **overwritten every run**, so edit the template, never the generated file.
 
+**The key-matrix fixture** is `tests/fixtures/keymatrix.sql`. `lib/estate.sh`
+loads it into the source `sakila` database after Sakila, at setup and at every
+source reset, so the destination receives its tables from the same schema dump
+as Sakila's. Its `km_*` tables reference only each other. The full cross-product
+of key types and job types runs in the integration suite
+(`internal/engine`, `TestMySQLKeyMatrix`); the E2E tests carry three shapes
+through the real CLI.
+
 ### Working configurations — the command runs to completion
 
 | Test | Config | Shape | What it exercises |
 |------|--------|-------|-------------------|
-| **03** | `test03_payment_batch.yaml` | `payment` (root, single-col PK) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); verification method inherited (`count`) |
-| **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`); non-diamond GDPR-shaped subgraph |
-| **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification.method: sha256`**, declared explicitly. Also the suite's only `INSERT IGNORE` copy path — `count` forces a plain `INSERT`, `sha256` does not. |
-| **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | Exact-delete **`purge`** control: deletes without copying and has **no verify stage**. Also the first E2E exercise of `PreflightProfileSourceOnly`. |
-| **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | The suite's only **`copy-only`** — the only command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged**. Also the first E2E run of `copyonly_orchestrator.go`'s batch loop. |
-| **08** | `test08_payment_graceful_resume.yaml` | `payment`, same config as 05, run **twice** | **Graceful stop → checkpoint resume.** `SIGTERM` at a batch boundary; the batch completes, so **zero** non-terminal rows are left and resume comes from `last_processed_root_pk_id` alone. |
-| **09** | `test09_payment_crash_replay.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **twice** | **Crash → status-aware replay.** `SIGKILL` inside the delete phase leaves 100 rows at `copied` and the checkpoint `NULL`, so run 2 must find them via `recover()`. The only test that exercises the delete-only replay branch, and the only one that starts from a stale `job_status=1`. |
-| **13** | `test13_purge_replication.yaml` | `payment`, same selected slice as03 (1999 selected rows, reasserted before launch) | Stops the real replica applier, observes a purge hold with unchanged rows, restarts it and requires the same process to finish; exact deletes, no copy or verification. |
+| **01** | `test01_film_tree.yaml` | `film` → `film_text`, `film_actor`, `film_category`, `inventory` → `rental` → `payment` | The film tree, three levels deep, with the **composite-key** association tables `film_actor (actor_id, film_id)` and `film_category (film_id, category_id)`. 2.x refused it with `COMPOSITE_PK_CHECK`; 3.0 binds composite keys whole. Not a GDPR diamond: every table has one parent in the job. `film`'s DELETE trigger needs `--force-triggers`. |
+| **03** | `test03_payment_batch.yaml` | `payment` (root, single-column key) | High-volume multi-batch copy→verify→delete (`batch_size=100`, `payment_id <= 2000`); `verification: count`, declared |
+| **04** | `test04_rental_payment.yaml` | `rental → payment` | 2-level tree archive (`rental_id <= 200`) in one full batch; non-diamond GDPR-shaped subtree; `verification: count` |
+| **05** | `test05_payment_verify_sha256.yaml` | `payment`, same slice as 03 | **`verification: sha256`**, declared explicitly — the A/B pair of 03 |
+| **06** | `test06_payment_purge.yaml` | `payment`, **half the table** (`payment_id <= 8024` → 8022 of 16044 rows) | Exact-delete **`purge`** control: deletes without copying, and **verifies nothing** |
+| **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | **`copy-only`** — the command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged** |
+| **08** | `test08_payment_graceful_resume.yaml` | `payment`, same config as 05, run **twice** | **Graceful stop → resume.** `SIGTERM` after batch 1; the batch completes, so **zero** non-terminal roots are left, recovery has nothing to replay, and run 2 continues the where range. |
+| **09** | `test09_payment_crash_replay.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **twice** | **Crash → replay.** `SIGKILL` inside batch 1's delete phase leaves its 100 roots at `copied`, so run 2's startup recovery replays them delete-only. The only test that starts from a stale `job_status=1`. |
+| **13** | `test13_purge_replication.yaml` | `payment`, same selected slice as 03 (1999 selected rows, reasserted before launch) | Stops the real replica applier, observes a purge hold with unchanged rows, restarts it and requires the same process to finish; exact deletes, no copy or verification. |
+| **14** | `test14_keymatrix_composite.yaml` | `km_line (order_id, line_no)` → `km_item` → `km_item_note` | Key matrix, **archive**: a composite root, a child on the composite key, a grandchild on a three-column foreign key; composite orphan checks |
+| **15** | `test15_keymatrix_binary.yaml` | `km_blob` (`BINARY(16)`) → `km_blob_ref` | Key matrix, **purge**: keys whose bytes are not valid UTF-8 |
+| **16** | `test16_keymatrix_latin1.yaml` | `km_name` (`latin1` `VARCHAR`) → `km_name_tag` | Key matrix, **copy-only**: non-ASCII `latin1` keys, verified by sha256 and logged in a `latin1` key column |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
-> you change one's slice or batch sizes, change the other's.
+> you change one's slice or batch sizes, change the other's. 3.0's default method
+> is `sha256`, so 03, 04 and 07 declare `count`.
 
 > **Why test 06 purges half the table rather than a token slice.** Purge's
 > unrecoverable failure is deleting *more* than the `where` clause selects, and a
@@ -117,29 +131,31 @@ rendered `.yaml` holds a real password, so it is gitignored — and it is
 
 > **04 and 07 are the same graph and the same slice under different commands**, so
 > a failure in 07 alone isolates to `copy-only` — with one deliberate exception.
-> **Their pacing differs, and that is not an oversight.** 04 declares no
-> `processing:` block, so 200 rentals arrive in a *single* batch, and one batch
-> exercises one sleep call: no per-batch accumulation bug is reachable, because
-> there is no second batch. 07 sets `batch_size: 10` for 20 batches. If you make
-> them identical, say which one you meant to weaken.
+> **Their pacing differs, and that is not an oversight.** 04 sets `batch_size: 200`,
+> so 200 rentals arrive in a *single* full batch, and one batch exercises one sleep
+> call: no per-batch accumulation bug is reachable, because there is no second
+> batch. 07 sets `batch_size: 10` for 20 batches. If you make them identical, say
+> which one you meant to weaken.
 
-> **08 and 09 run the binary twice and prove an interruption/recovery path.** After a successful resume the
-> database looks exactly like it does after an uninterrupted run, so the obvious
-> assertions cannot distinguish *"resumed correctly"* from *"never actually
-> interrupted"* — and both sides of that window pass. What holds them shut is an
-> **exact** destination count at the interrupt point plus one log-line assertion
-> (`"Recovering non-terminal PKs from prior run"`, which must be absent for 08 and
-> present for 09). `tests/e2e/resume/README.md` explains the mechanism in full;
-> read it before touching either test.
+> **08 and 09 run the binary twice and prove an interruption/recovery path.** After a
+> successful resume the database looks exactly like it does after an uninterrupted
+> run, so the obvious assertions cannot distinguish *"resumed correctly"* from
+> *"never actually interrupted"* — and both sides of that window pass. What holds
+> them shut is an **exact** destination count at the interrupt point, the log's
+> statuses at that point, and one log-line assertion (`"Recovery: replaying"`,
+> which must be absent for 08 and present for 09). `tests/e2e/resume/README.md`
+> explains the mechanism in full; read it before touching either test.
 >
 > **05 is 08's uninterrupted control** — identical config, so a failure in 08 alone
 > isolates to the interrupt. Keep them in step, as with 03 and 05.
 >
 > **09's `delete_sleep_seconds: 1.0` is the test, not tuning.** The kill has to land
-> between `MarkBatchCopied` committing and `CompleteBatch` running, and the only part
-> of that interval with any duration is the inter-chunk delete throttle. At the 0.2
-> every other config uses, the whole window is 4 × 200 ms. Its slice is smaller
-> (499 rows) precisely because that throttle costs ~4 s per batch.
+> between batch 1's destination commit, which logs its roots `copied`, and its
+> completion, and the only part of that interval with any duration is the throttle
+> between delete statements. The engine logs nothing in between, so the harness
+> polls the log table for the 100 `copied` roots — one `mysqlsh` call per read — and
+> the window must be wide. Its slice is smaller (499 rows) because that throttle
+> costs 4 s per batch.
 
 #### The pacing floor — the one timing number that is not machine-dependent
 
@@ -149,62 +165,55 @@ it. Each working test declares that floor as `min_duration`, and the runner fail
 the test if the run came in under it.
 
 ```
-floor = ceil(rows ÷ batch_size) × sleep_seconds
-      + Σ over batches of max(0, delete chunks in the batch, across all tables − 1) × delete_sleep_seconds
+floor = (full batches) × sleep_seconds
+      + Σ over batches of max(0, delete statements in the batch, across all tables − 1) × delete_sleep_seconds
 ```
 
-`sleep_seconds` fires after **every** batch including the last; `delete_sleep_seconds`
-skips the first chunk of each batch's delete phase, so 5 chunks means 4 pauses.
+`sleep_seconds` fires after every **full** batch — one that fetched `batch_size`
+roots. A short last batch ends the run without a sleep; a full last batch is
+followed by one more fetch that finds nothing, so it sleeps. `delete_sleep_seconds`
+separates consecutive delete statements of a batch, so 5 statements mean 4 pauses.
+(2.x slept after every batch including a short last one, so five floors are one
+`sleep_seconds` lower on 3.0: 03 and 05 from 20.0, 06 from 16.2, 08 from 19.0, 09
+from 16.8.)
 
-| Test | rows | `batch_size` | batches | batch sleep | delete sleep | **floor** |
+| Test | rows | `batch_size` | full + last | batch sleep | delete sleep | **floor** |
 |---|---|---|---|---|---|---|
-| **03** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
-| **04** | 200 | 1000 *(default)* | 1 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
-| **05** | 1999 | 100 | 20 | 20 × 0.2 = 4.0 s | 80 × 0.2 = 16.0 s | **20.0 s** |
-| **06** | 8022 | 500 | 17 | 17 × 0.2 = 3.4 s | 64 × 0.2 = 12.8 s | **16.2 s** |
-| **07** | 200 | 10 | 20 | 20 × 0.5 = 10.0 s | — *(no delete phase)* | **10.0 s** |
-| **08** † | 1899 | 100 | 19 | 19 × 0.2 = 3.8 s | 76 × 0.2 = 15.2 s | **19.0 s** |
-| **09** † | 399 | 100 | 4 | 4 × 0.2 = 0.8 s | 16 × **1.0** = 16.0 s | **16.8 s** |
+| **01** | 50 films | 25 | 2 + 0 | 2 × 0.5 = 1.0 s | 0 *(default)* | **1.0 s** |
+| **03** | 1999 | 100 | 19 + 99 | 19 × 0.2 = 3.8 s | 80 × 0.2 = 16.0 s | **19.8 s** |
+| **04** | 200 | 200 | 1 + 0 | 1 × 1.0 = 1.0 s | 0 *(default)* | **1.0 s** |
+| **05** | 1999 | 100 | 19 + 99 | 19 × 0.2 = 3.8 s | 80 × 0.2 = 16.0 s | **19.8 s** |
+| **06** | 8022 | 500 | 16 + 22 | 16 × 0.2 = 3.2 s | 64 × 0.2 = 12.8 s | **16.0 s** |
+| **07** | 200 | 10 | 20 + 0 | 20 × 0.5 = 10.0 s | — *(copies only)* | **10.0 s** |
+| **08** † | 1899 | 100 | 18 + 99 | 18 × 0.2 = 3.6 s | 76 × 0.2 = 15.2 s | **18.8 s** |
+| **09** † | 399 | 100 | 3 + 99 | 3 × 0.2 = 0.6 s | 16 × **1.0** = 16.0 s | **16.6 s** |
+| **13** | 1999 | 100 | — | 0 | 0 | **0.0 s** |
+| **14** | 180 lines | 50 | 3 + 30 | 3 × 0.2 = 0.6 s | 25 × 0.1 = 2.5 s | **3.1 s** |
+| **15** | 120 blobs | 50 | 2 + 20 | 2 × 0.2 = 0.4 s | 5 × 0.1 = 0.5 s | **0.9 s** |
+| **16** | 60 names | 20 | 3 + 0 | 3 × 0.3 = 0.9 s | — *(copies only)* | **0.9 s** |
 
 † **08 and 09 declare the floor for their *second* run, not the whole slice.** Run 1
 is interrupted and legitimately finishes below any full-slice floor, so the runner
-measures the resumed run's own reported duration. 08's rows are the 1899 left after
+measures the resumed run's own reported time. 08's rows are the 1899 left after
 one batch; 09's are the 399 left after one batch of its 499-row slice.
 
 **09's floor deliberately omits its recovery phase**, and that is the one place in
 this table where a term is left out on purpose. Recovery runs before the batch loop
 and its cost is *variable*: the kill point decides how many of the interrupted
-batch's 100 rows are still present to delete, and so how many chunk sleeps it spends
-— 100 rows is 5 chunks and 4 sleeps, 80 rows is 3, 20 rows is none. A probe measured
-80 remaining. **Zero is legal**, so folding a recovery term in would build a floor a
+batch's 100 rows are still present to delete, and so how many throttle sleeps it
+spends. **Zero is legal**, so folding a recovery term in would build a floor a
 correct run can fail — and the tempting fix would be to lower it. That recovery
 *happened* is asserted by a log line instead, not by timing.
 
-Test 04 declares no `processing:` block at all, so it inherits the global defaults
-(`batch_size: 1000`, `sleep_seconds: 1`, `delete_sleep_seconds: 0`).
+**Copy-only (07, 16) has no delete term.** It deletes nothing; `delete_sleep_seconds`
+and `batch_delete_size` are inert for it, and the configs set neither. Whenever you
+add a test, derive the floor from the phases that command actually executes, not
+from the shape of the formula.
 
-Test 06's 17th batch is a 22-row tail. It contributes to the **batch** term but
-**not** the delete term — 22 rows is a single chunk at `batch_delete_size: 100`,
-and a delete phase's final chunk is never followed by a sleep. Only the 16 full batches
-produce the 4 gaps each that make 64. Counting the tail as though it had gaps
-inflates the floor and produces a gate no correct run can pass.
-
-Its sizing (`500 / 100`) is chosen against this floor rather than copied from 03.
-Over a slice four times larger, 03's `100 / 20` would cost **80.4 s** — 64 s of it
-pure `sleep` — and prove nothing that `500 / 100` does not, since both give five
-delete chunks per batch.
-
-**Test 07 has no delete term at all, and the formula's second line must be dropped
-for it.** `copy-only` runs as `batchCopyVerify`, and the delete phase is gated on
-`batchFull || batchDeleteOnly` (`internal/archiver/batch_pipeline.go:146`), so
-`DeletePhase` never runs. `delete_sleep_seconds` and `batch_delete_size` are inert
-for this command — the config sets neither, and including a delete term in its
-floor would build a gate no correct run can pass. Whenever you add a test, derive
-the floor from the phases that command actually executes, not from the shape of
-the formula.
+**13 sleeps nothing.** The length of its hold is the harness's, not the run's.
 
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
-machine can only push the measured duration *up*, so it can never fail.
+machine can only push the measured time *up*, so it can never fail.
 
 **It is not a test of sleeping.** The floor encodes the run's *shape* — this job
 must process twenty batches with these pauses — so anything that changes that
@@ -217,31 +226,33 @@ while the command still exits 0 with entirely plausible output:
 - a resume path that skipped work it should have replayed;
 - a batch loop that ran once where it should have run twenty.
 
-That is the point. Each working test asserts on four **independent** axes — five
-for a resume test — and the floor is the only one that needs no model of what the
-command means:
+That is the point. Each working test asserts on five **independent** axes, and the
+floor is the only one that needs no model of what the command means:
 
 | Assertion | Answers | Needs to know |
 |---|---|---|
 | post-condition | did **exactly** the right rows move, in the right direction | what the command does, and how many rows the slice holds |
-| verify stage | did verification run, naming its method | the log contract |
+| verify stage | did verification run by the declared method, **over every copied row** | the report's `verified (<method>):` line |
 | referential integrity | are the rows that moved **internally consistent** | the graph's parent→child edges |
 | **pacing floor** | **did the run have the size it was configured to have** | **only the config** |
-| tracking tables *(08/09)* | does **goarchive's own bookkeeping** agree the work is finished | the `log_status` contract |
+| tracking tables | does **goarchive's own bookkeeping** agree the work is finished | the `ga_status` contract |
 
 > **The fifth axis asks a question the other four cannot.** All of them read user
-> data; this one reads `archiver_job_log_<id>`. A replayed batch that copied and
-> deleted but never reached `CompleteBatch` leaves the data perfect and the log still
-> claiming rows to replay — so the next run would replay them again. Currently
-> asserted for the resume tests only; every working test could carry it.
+> data; this one reads `archiver_job_log_<id>`. A batch that copied and deleted but
+> never reached its completion leaves the data perfect and the log still claiming
+> roots to replay — so the next run would replay them again. Every job type logs
+> every root it processes, so every working test asserts it: the root
+> table's expected count is the log's `completed` count, with no root at `copied`
+> or `deleting`.
 
 > **Referential integrity is a separate axis, not a refinement of the count.**
 > Both can hold while the other fails — 200 payments referencing 200 rentals that
 > never arrived satisfies every count. It applies only to multi-table tests, where
 > there is an edge to check, and it exists because every test that *copies* must
 > set `safety.disable_foreign_key_checks: true`: a copied child normally references
-> out-of-graph parents the destination does not hold, so the destination cannot
-> reject an orphan on its own.
+> parents outside the job that the destination does not hold, so the destination
+> cannot reject an orphan on its own. A composite edge names its columns with `+`:
+> `km_item:order_id+line_no:km_line:order_id+line_no`.
 
 > **The floor and the exact count cover opposite directions, and neither
 > substitutes for the other.** The floor is one-sided: a run that did *less* than
@@ -250,10 +261,10 @@ command means:
 > `expected_rows` existed, a purge of the whole table and an archive of the whole
 > table both passed every assertion in the suite.
 
-It is compared against **goarchive's own reported duration**, not the test's
-elapsed time: the latter includes the source reset, `validate` and `dry-run`,
-which dwarf the floor and would hide a lost throttle. For scale, measured against
-the 20.0 s floor, tests 03 and 05 spend about **0.7 s** doing actual work.
+It is compared against **goarchive's own reported time** — the report's
+`elapsed: <s>s` line — not the test's elapsed time: the latter includes the source
+reset, `validate` and `dry-run`, which dwarf the floor and would hide a lost
+throttle.
 
 ### Validation demos — preflight MUST fail
 
@@ -263,36 +274,35 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 
 | Test | Config | Expected error | Why |
 |------|--------|----------------|-----|
-| **01** | `test01_one_to_one.yaml` | `COMPOSITE_PK_CHECK` | Config includes Sakila's composite-PK tables `film_actor` (`actor_id, film_id`) / `film_category` (`film_id, category_id`); GoArchive identifies/deletes by a single PK column, so a multi-column PK is rejected up front. |
-| **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the graph, but `film` is also referenced by out-of-graph `inventory`/`film_actor`/`film_category`; deleting archived films would violate those FKs, so every referencing table must be covered. |
-| **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy** (`internal/archiver/preflight.go`), and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
-| **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two in-graph parents, so one FK edge is always undeclared. |
-| **12** | `test12_same_database.yaml` | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are both `127.0.0.1:3305/sakila`. Every command that opens both connections refuses at connection time, before preflight and before any tracking row is written: an archive into itself would verify the table against itself and delete the only copy (issue #13). The demo runs `validate`; the integration layer proves the source is untouched and nothing is written. |
+| **02** | `test02_one_to_many.yaml` | `FK_COVERAGE_CHECK` | `language → film` pulls `film` into the job, but `film` is also referenced by `inventory`/`film_actor`/`film_category`, which are outside it; deleting archived films would violate those FKs, so every referencing table must be a relation. |
+| **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy**, and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
+| **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two parents in the job, so one foreign key is never a relation. |
+| **12** | `test12_same_database.yaml` | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are both `127.0.0.1:3305/sakila`. Every command that opens both connections refuses at connection time, before preflight and before any tracking row is written: an archive into itself would verify the table against itself and delete the only copy (issue #13). The demo runs `validate`; `TestConnectRefusesSameDatabase_Integration` is the integration witness. |
+
+Test 01 was the fifth demo in 2.x, refused by `COMPOSITE_PK_CHECK`; 3.0 archives
+composite keys, so it is now a working archive.
 
 > **The `customer → rental → payment` (GDPR) shape is unrepresentable, and test 11
 > is the gate for that.** `payment` references **both** `customer` and `rental`, and
-> `rental` references `customer` — a diamond. GoArchive's graph is a strict tree
-> (`config.Relation` carries a single `foreign_key`), and `INTERNAL_FK_COVERAGE`
-> requires every in-graph FK edge to be a represented parent→child relation, so any
-> rooting leaves one edge uncovered. Test 04 (`rental → payment`) is the closest
-> **working** multi-level shape (`customer`/`staff` stay out-of-graph as upstream
-> parents).
+> `rental` references `customer` — a diamond. A job is a strict tree (each relation
+> is nested under one parent), and `INTERNAL_FK_COVERAGE` requires every foreign key
+> between two of the job's tables to be a configured relation, so any rooting leaves
+> one foreign key uncovered. Tests 01 and 04 are the **working** multi-level shapes:
+> `customer` and `staff` stay outside the job as upstream parents.
 >
 > This is not fixable by rearranging, and both halves of that were measured rather
 > than argued: re-nesting `payment` under `rental` only moves which edge is uncovered,
-> and dropping either parent leaves `customer` referenced from outside the graph so
+> and dropping either parent leaves `customer` referenced from outside the job so
 > `FK_COVERAGE_CHECK` fires instead. Collapsing the diamond to test 04's shape is what
 > makes `validate` pass — which is how test 11 is proven able to fail.
 >
 > **Nesting is what assigns a parent, not `foreign_key`.** A relation listed flat
 > becomes a child of the **root**, whatever its `foreign_key` says: writing `payment`
-> as a sibling of `rental` with `foreign_key: rental_id` is read as
-> `customer → payment` via `rental_id` and rejected as an FK column mismatch — a
-> different defect from the diamond. Nest the child under its parent.
-> The earlier tests 04–10 (film hierarchy / actor / category / isolated
-> job_schema) were removed: several archived composite-PK association tables by a
-> single non-key column (over-delete, now blocked by `COMPOSITE_PK_CHECK`); the
-> rest were redundant.
+> as a sibling of `rental` with `foreign_key: rental_id` pairs `rental_id` with the
+> root's key and is refused by `RELATION_KEY_CHECK` — a different defect from the
+> diamond. Nest the child under its parent. (Test 01's 2.x config listed
+> `inventory`, `rental` and `payment` flat; under 3.0 that is refused the same way,
+> so 3.0's config nests them.)
 
 ## Prerequisites
 
@@ -490,10 +500,10 @@ Run them serially with other estate consumers.
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the working tests (03–09 and 13)
+# The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–16)
 make e2e
 
-# Validation demos (01–02) — preflight MUST fail. Needs a seeded estate.
+# Validation demos (02, 10, 11, 12) — preflight MUST fail. Needs a seeded estate.
 make e2e-examples
 
 # The individual steps, if you know why you want one
@@ -503,7 +513,7 @@ make e2e-tests-must-run-after-setup      # 3. run; refuses unless step 2 ran
 
 # Target a single test
 ./scripts/run-tests.sh --sakila -t 4                    # working rental→payment
-./scripts/run-tests.sh --sakila-examples -t 1           # composite-PK demo
+./scripts/run-tests.sh --sakila-examples -t 2           # FK-coverage demo
 ```
 
 > ⚠️ **Run E2E sequentially**, not concurrently with integration tests or other
@@ -549,18 +559,17 @@ tests/scripts/mysql-query.sh 3307 \
   "SELECT COUNT(*) FROM sakila_archive.payment WHERE payment_id <= 2000;"
 ```
 
-### Example: a demo that fails preflight (Test 01)
+### Example: a demo that fails preflight (Test 02)
 
 ```bash
-$ ./bin/goarchive validate --config tests/configs/test01_one_to_one.yaml --force-triggers
-❌ Preflight checks failed: COMPOSITE_PK_CHECK: Composite primary keys are not supported.
-   GoArchive identifies and deletes rows by a single primary-key column; a multi-column
-   PK would over-match and risk deleting rows outside the archived set.
-   (tables: [film_actor(2-column PRIMARY KEY) film_category(2-column PRIMARY KEY)])
+$ ./bin/goarchive validate --config tests/configs/test02_one_to_many.yaml --force-triggers
+[1/1] Job: archive-language-with-films (archive)
+   FAILED: FK_COVERAGE_CHECK: Foreign key constraints not covered by relations (fatal for any ON DELETE rule):
+  - film is referenced by: [sakila.film_actor (ON DELETE RESTRICT) sakila.film_category (ON DELETE RESTRICT) sakila.inventory (ON DELETE RESTRICT)]
 ```
 
 The runner treats this as a **pass** because the failure matches the expected
-category (`COMPOSITE_PK_CHECK`).
+category (`FK_COVERAGE_CHECK`).
 
 ## Preflight Checks
 
