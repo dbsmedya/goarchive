@@ -97,6 +97,8 @@ func TestFingerprintRoundTrip(t *testing.T) {
 func TestParseFingerprintFailsClosed(t *testing.T) {
 	for _, text := range []string{
 		"", "not json", `{"relations":[],"where":"x","extra":1}`, `{"relations":[],"where":"x"} {}`, `{"where":"x"}`,
+		// A stray closing delimiter is not another value, so it needs an end-of-input check.
+		`{"relations":[],"where":"x"}}`, `{"relations":[],"where":"x"}]`,
 	} {
 		if _, err := parseFingerprint(text); err == nil {
 			t.Errorf("parseFingerprint(%q) passed", text)

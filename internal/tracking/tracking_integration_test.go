@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/go-sql-driver/mysql"
@@ -27,7 +28,12 @@ import (
 
 func openDest(t *testing.T, schema string) *sql.DB {
 	t.Helper()
-	host, user, pass := os.Getenv("TEST_DEST_HOST"), os.Getenv("TEST_DEST_USER"), os.Getenv("TEST_DEST_PASSWORD")
+	return openAs(t, schema, os.Getenv("TEST_DEST_USER"), os.Getenv("TEST_DEST_PASSWORD"))
+}
+
+func openAs(t *testing.T, schema, user, pass string) *sql.DB {
+	t.Helper()
+	host := os.Getenv("TEST_DEST_HOST")
 	port, _ := strconv.Atoi(os.Getenv("TEST_DEST_PORT"))
 	if host == "" || user == "" || port == 0 {
 		t.Fatal("integration environment not loaded: set -a; source tests/.env; set +a")
@@ -53,6 +59,19 @@ func scratch(t *testing.T, name string) (string, *sql.DB) {
 	exec(t, admin, "DROP DATABASE IF EXISTS `"+schema+"`", "CREATE DATABASE `"+schema+"`")
 	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS `"+schema+"`") })
 	return schema, openDest(t, schema)
+}
+
+// leastPrivilege returns a pool on schema for a new account holding only the tracking
+// grants docs/README_PERMISSIONS.md documents: CREATE, SELECT, INSERT and UPDATE, and no
+// DELETE.
+func leastPrivilege(t *testing.T, admin *sql.DB, schema string) *sql.DB {
+	t.Helper()
+	user := fmt.Sprintf("ga3m4_lp_%d", os.Getpid())
+	pass := fmt.Sprintf("lp-%d-%d", os.Getpid(), time.Now().UnixNano())
+	exec(t, admin, "DROP USER IF EXISTS '"+user+"'@'%'", "CREATE USER '"+user+"'@'%' IDENTIFIED BY '"+pass+"'",
+		"GRANT CREATE, SELECT, INSERT, UPDATE ON `"+schema+"`.* TO '"+user+"'@'%'")
+	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS '"+user+"'@'%'") })
+	return openAs(t, schema, user, pass)
 }
 
 func exec(t *testing.T, db *sql.DB, stmts ...string) {
@@ -487,16 +506,83 @@ func TestMySQLJobIsFixed(t *testing.T) {
 	if err := db.QueryRow("SELECT job_status FROM archiver_job WHERE id = ?", j.ID).Scan(&st); err != nil || st != int(JobRunning) {
 		t.Errorf("job_status = %d, %v", st, err)
 	}
-	// A leftover log under a new job's id is refused, and the job is not registered.
-	exec(t, db, fmt.Sprintf("CREATE TABLE archiver_job_log_%d (k1 INT NOT NULL PRIMARY KEY)", j.ID+1))
-	in2 := in
-	in2.Name = "second"
-	if _, err := s.Attach(ctx, in2); err == nil || !strings.Contains(err.Error(), "drop it after confirming no job uses it, or restore archiver_job") {
-		t.Fatalf("a new job meeting a leftover log: %v", err)
+}
+
+// TestMySQLLeftoverLog: a log left by a dropped or truncated registry is never adopted,
+// by the run that meets it or by any retry, under the documented grants alone (no
+// DELETE). A registration that a crash interrupted completes on the next run.
+func TestMySQLLeftoverLog(t *testing.T) {
+	ctx := context.Background()
+	schema, admin := scratch(t, "leftover")
+	exec(t, admin, ordersDDL)
+	root := rootKey(t, admin, schema, "orders")
+	db := leastPrivilege(t, admin, schema)
+	s := mustOpen(t, db, schema)
+	in := JobInput{Name: "orders", Type: jobspec.Archive, RootKey: root, Binding: binding("1=1")}
+	logOf := func(id int64) string { _, q := s.logTable(id); return q }
+	typedLog := func(id int64) string {
+		ddl, err := createLogSQL(logOf(id), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ddl
 	}
-	var n int
-	if err := db.QueryRow("SELECT COUNT(*) FROM archiver_job WHERE job_name = 'second'").Scan(&n); err != nil || n != 0 {
-		t.Errorf("the failed job stayed registered: %d, %v", n, err)
+	const remedy = "drop it after confirming no job uses it"
+
+	// The next job's id is 1. Its log is already there, typed as this job's would be,
+	// holding a copied root.
+	exec(t, admin, typedLog(1), fmt.Sprintf("INSERT INTO %s (k1, k2, k3, ga_status) VALUES ('eu', '2026-01-01 00:00:00.000', 42, %d)",
+		logOf(1), StatusCopied))
+	for attempt := 1; attempt <= 3; attempt++ {
+		if j, err := s.Attach(ctx, in); err == nil || j != nil || !strings.Contains(err.Error(), remedy) {
+			t.Fatalf("attempt %d: Attach() = %v, %v; want the leftover-log refusal", attempt, j, err)
+		}
+	}
+	keyColumns := func(name string) string {
+		var text string
+		if err := admin.QueryRow("SELECT root_key_columns FROM archiver_job WHERE job_name = ?", name).Scan(&text); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return text
+	}
+	if got := keyColumns("orders"); got != "" {
+		t.Errorf("a refused registration stored root_key_columns %q", got)
+	}
+	// The DBA drops it; the next run completes the registration with a new, empty log.
+	exec(t, admin, "DROP TABLE "+logOf(1))
+	j, err := s.Attach(ctx, in)
+	if err != nil {
+		t.Fatalf("Attach() after the leftover log was dropped = %v", err)
+	}
+	if roots, err := j.Roots(ctx, db, StatusCopied, nil, 10); err != nil || len(roots) != 0 || j.ID != 1 {
+		t.Errorf("job %d: Roots() = %v, %v; want none", j.ID, roots, err)
+	}
+	if got, want := keyColumns("orders"), encodeKeyColumns(root.Names()); got != want {
+		t.Errorf("root_key_columns = %q, want %q", got, want)
+	}
+
+	// A crash after the registry INSERT leaves a row with no key names, and either no log
+	// (id 2) or the empty log it had just created (id 3). Both complete on the next run.
+	exec(t, admin, typedLog(3))
+	for _, name := range []string{"crashed_before_create", "crashed_after_create"} {
+		exec(t, admin, fmt.Sprintf("INSERT INTO archiver_job (job_name, root_table, job_type, job_status, source_server_uuid, "+
+			"source_database, destination_database, config_fingerprint, root_key_columns) VALUES ('%s', 'orders', 'archive', 0, "+
+			"'%s', 'src', 'dst', '%s', '')", name, in.Binding.SourceServerUUID, in.Binding.Fingerprint.Text()))
+		in := in
+		in.Name = name
+		if _, err := s.Attach(ctx, in); err != nil {
+			t.Errorf("%s: Attach() = %v", name, err)
+		} else if got := keyColumns(name); got != encodeKeyColumns(root.Names()) {
+			t.Errorf("%s: root_key_columns = %q", name, got)
+		}
+	}
+
+	// An empty leftover log of another shape is refused the same way, not as a changed key.
+	exec(t, admin, "CREATE TABLE "+logOf(4)+" (k1 INT NOT NULL PRIMARY KEY)")
+	in.Name = "other_shape"
+	var lk *LogKeyError
+	if _, err := s.Attach(ctx, in); err == nil || errors.As(err, &lk) || !strings.Contains(err.Error(), remedy) {
+		t.Errorf("a leftover log of another shape: %v", err)
 	}
 }
 
