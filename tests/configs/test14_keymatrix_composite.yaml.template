@@ -1,0 +1,58 @@
+# Test 14: key matrix -- a composite root with a grandchild on a composite FK
+#
+# Sakila's keys are all integers, so the key-matrix fixture (tests/fixtures/
+# keymatrix.sql, loaded into sakila by lib/estate.sh) adds the shapes it lacks.
+# This one archives km_line, keyed (order_id, line_no), with its items on the
+# same two columns plus item_no, and the items' notes on a three-column foreign
+# key (spec §10). Root fetch, discovery, copy, verification, the log and the
+# deletes all bind the composite keys whole (spec §4.3).
+#
+# order_id <= 60 selects 180 lines: 3 full batches of 50 and a last one of 30.
+# Deletes run children first, batch_delete_size 40: a full batch is notes 100
+# (3 statements), items 100 (3) and lines 50 (2), 8 statements and 7 gaps; the
+# last batch is 2 + 2 + 1 = 5 statements and 4 gaps.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test14_keymatrix_composite.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-km-lines:
+    job_type: archive
+    root_table: km_line
+    primary_key: [order_id, line_no]
+    where: "order_id <= 60"
+    verification: sha256
+    processing:
+      batch_size: 50
+      batch_delete_size: 40
+      sleep_seconds: 0.2
+      delete_sleep_seconds: 0.1
+    relations:
+      - table: km_item
+        primary_key: [order_id, line_no, item_no]
+        foreign_key: [order_id, line_no]
+        references: [order_id, line_no]
+        relations:
+          - table: km_item_note
+            primary_key: note_id
+            foreign_key: [order_id, line_no, item_no]
+            references: [order_id, line_no, item_no]

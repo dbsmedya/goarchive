@@ -8,9 +8,9 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working E2E tests (01, 03-09, 13)
+#   --sakila            Run the working E2E tests (01, 03-09, 13-16)
 #   --sakila-examples   Run the validation-demo tests (02, 10, 11, 12)
-#   -t, --test NUM      Run only specific E2E test (1-13)
+#   -t, --test NUM      Run only specific E2E test (1-16)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -108,7 +108,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold)"
+            echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold, 14-16 key matrix)"
             echo "  --sakila-examples   Run the validation-demonstration tests (02, 10, 11, 12)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -231,7 +231,7 @@ main() {
     # each category's README. A list of tests in the dispatcher is a list that
     # goes stale, which is how this comment came to omit test 07.
     if [ "$SAKILA" = true ]; then
-        run_e2e_suite "1 3 4 5 6 7 8 9 13" "working"
+        run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16" "working"
         exit 0
     fi
 

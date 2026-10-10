@@ -1,0 +1,46 @@
+# Test 16: key matrix -- copy-only on a latin1 VARCHAR root with non-ASCII values
+#
+# km_name is keyed by latin1 VARCHAR names such as 'Ñandú-001', with two tags per
+# name (tests/fixtures/keymatrix.sql). The key's bytes must survive the root
+# fetch, the copy, sha256 verification and the log unchanged: the log's key
+# column mirrors the root key's type, charset and collation (spec §6.2).
+#
+# old = 1 selects 60 names: 3 full batches of 20, each followed by a sleep, the
+# last by the fetch that finds nothing.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test16_keymatrix_latin1.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  copy-km-names:
+    job_type: copy-only
+    root_table: km_name
+    primary_key: name
+    where: "old = 1"
+    verification: sha256
+    processing:
+      batch_size: 20
+      sleep_seconds: 0.3
+    relations:
+      - table: km_name_tag
+        primary_key: id
+        foreign_key: name
