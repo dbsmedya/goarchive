@@ -161,6 +161,9 @@ func stages(cfg Config) []stage {
 		{"DestinationSchemaCompatibility", destination, checkDestinationSchemaCompatibility},
 		{"DestinationWritePermissions", destination, checkDestinationWritePermissions},
 		{"DestinationInsertTriggers", destination, checkDestinationInsertTriggers},
+		// Under SkipPolicy the destination keys are still read, unjudged: the destination
+		// statement caps are computed from them (spec §8.3).
+		{"DestinationKeyRead", cfg.SkipPolicy && profile != ProfileSourceOnly, readDestinationKeys},
 
 		// Visibility must be proven before coverage relies on the discovered set.
 		{"ForeignKeyMetadataVisibility", deletes, checkForeignKeyMetadataVisibility},
