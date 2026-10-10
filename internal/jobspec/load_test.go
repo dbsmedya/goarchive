@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -474,6 +475,107 @@ func TestJobNames(t *testing.T) {
 	}
 }
 
+// TestParseRefusesANullJobName (M2-C7): a YAML null written as a job's name (null, NULL, ~)
+// is not a name. The decoder dropped such a job without an error, so running it later said
+// "not found"; it is refused with its line.
+func TestParseRefusesANullJobName(t *testing.T) {
+	const body = ":\n    job_type: purge\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
+	for _, k := range []string{"null", "NULL", "Null", "~"} {
+		t.Run(k, func(t *testing.T) {
+			errs := mustFail(t, "\njobs:\n  j"+body+"  "+k+body)
+			if !hasError(errs, "jobs", "line 17") || !hasError(errs, "jobs", "null") {
+				t.Errorf("job name %s: %v, want a refusal naming the null key and its line", k, errs)
+			}
+		})
+	}
+	t.Run("through a merge key", func(t *testing.T) {
+		errs := mustFail(t, "\njobs:\n  j"+body+"  <<: {~: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}}\n")
+		if !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a merge key: %v, want a refusal", errs)
+		}
+	})
+	// Codex M7a N1: a jobs mapping a root-level merge supplies is the one the decoder reads.
+	t.Run("through a root merge", func(t *testing.T) {
+		errs := mustFail(t, "\n<<:\n  jobs:\n    j: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n    ~: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n")
+		if !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a root merge: %v, want a refusal", errs)
+		}
+	})
+	// Codex M7a N2: a key written as an alias is the scalar it names, here a null.
+	t.Run("through a key alias", func(t *testing.T) {
+		_, err := Parse([]byte(strings.Replace(sharedYAML, "user: u\n  database: sakila", "user: u\n  password: &N null\n  database: sakila", 1) +
+			"jobs:\n  j: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n  *N: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n"))
+		var errs config.ValidationErrors
+		if !errors.As(err, &errs) || !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a key alias: %v, want a refusal", err)
+		}
+	})
+	// Quoted, "null" is a name like any other: the control side of the pair.
+	t.Run("quoted null", func(t *testing.T) {
+		d, err := parse(t, "\njobs:\n  \"null\""+body)
+		if err != nil {
+			t.Fatalf("a quoted \"null\" job name: %v", err)
+		}
+		if _, err := d.Job("null", Purge); err != nil {
+			t.Errorf("the job named \"null\": %v", err)
+		}
+	})
+}
+
+// TestJobNameCollisionInFileOrder (M2-C8): a case-only collision is reported on the name
+// written later in the file, whichever sorts first.
+func TestJobNameCollisionInFileOrder(t *testing.T) {
+	job := func(name string) string {
+		return "  " + name + ":\n    job_type: purge\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
+	}
+	indent := func(s string) string { return strings.ReplaceAll(s, "\n  ", "\n    ") }
+	for name, jobs := range map[string]string{
+		"in jobs": "\njobs:\n" + job("archive_orders") + job("Archive_Orders"),
+		// Codex M7a N1: the jobs mapping a root-level merge supplies.
+		"through a root merge": "\n<<:\n  jobs:\n  " + indent(job("archive_orders")) + "  " + indent(job("Archive_Orders")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			errs := mustFail(t, jobs)
+			if !hasError(errs, "jobs.Archive_Orders", `job name "Archive_Orders" differs from "archive_orders" only in case`) {
+				t.Errorf("collision not reported on the later name:\n%v", errs)
+			}
+			if hasError(errs, "jobs.archive_orders", "only in case") {
+				t.Errorf("collision reported on the earlier name:\n%v", errs)
+			}
+		})
+	}
+}
+
+// TestJobKeyAliasIsItsName (Codex M7a N2): a job key written as an alias is checked as the
+// name it decodes to, not as the anchor's name.
+// Pair: *A (= "host") beside "a" → accepted, the job "host" found; *A beside "HOST" → the
+// collision is reported on HOST, the name written later, naming "host".
+func TestJobKeyAliasIsItsName(t *testing.T) {
+	const spec = ": {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}\n"
+	doc := func(second string) []byte {
+		return []byte(strings.Replace(sharedYAML, "host: src", "host: &A host", 1) + "jobs:\n  *A" + spec + "  " + second + spec)
+	}
+	t.Run("distinct names", func(t *testing.T) {
+		d, err := Parse(doc("a"))
+		if err != nil {
+			t.Fatalf("an alias job key beside \"a\": %v", err)
+		}
+		if got := d.JobNames(); !slices.Equal(got, []string{"a", "host"}) {
+			t.Errorf("JobNames() = %v, want [a host]", got)
+		}
+		if _, err := d.Job("host", Purge); err != nil {
+			t.Errorf("the job named by the alias: %v", err)
+		}
+	})
+	t.Run("a case-only collision", func(t *testing.T) {
+		_, err := Parse(doc("HOST"))
+		var errs config.ValidationErrors
+		if !errors.As(err, &errs) || !hasError(errs, "jobs.HOST", `job name "HOST" differs from "host" only in case`) {
+			t.Errorf("Parse() = %v, want the collision on jobs.HOST naming \"host\"", err)
+		}
+	})
+}
+
 // TestParseRefusesASecondDocument: yaml.Unmarshal reads only the first document, so a job
 // written after a "---" line would vanish from the configuration without an error.
 func TestParseRefusesASecondDocument(t *testing.T) {
@@ -541,5 +643,53 @@ func TestParseBoundsAliasExpansion(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("Parse took %v on nested aliases; the decoder's alias guard must run first", elapsed)
+	}
+}
+
+// untaggedFields lists every exported field reachable from t that the unknown-key walk
+// cannot see: no yaml name, or ",inline". The decoder would accept such a key and the walk
+// would refuse it as unknown (yamlFields skips them). A type with its own UnmarshalYAML
+// decodes itself and is not entered.
+func untaggedFields(t reflect.Type, seen map[reflect.Type]bool) []string {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] || reflect.PointerTo(t).Implements(unmarshalerType) {
+		return nil
+	}
+	seen[t] = true
+	var out []string
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, opts, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name == "" || name == "-" || strings.Contains(opts, "inline") {
+			out = append(out, t.Name()+"."+f.Name)
+			continue
+		}
+		out = append(out, untaggedFields(f.Type, seen)...)
+	}
+	return out
+}
+
+// TestDecodedFieldsAreNamed (M2-C11) guards the unknown-key walk: every exported field of the
+// decoded types has a named yaml tag. Pair (R56): a fixture with an untagged and an inline
+// field → both listed; the real document type → none.
+func TestDecodedFieldsAreNamed(t *testing.T) {
+	type inner struct {
+		Z int `yaml:"z"`
+	}
+	type fixture struct {
+		Named    int `yaml:"named"`
+		Untagged int
+		Inlined  inner `yaml:",inline"`
+	}
+	if got, want := untaggedFields(reflect.TypeFor[fixture](), map[reflect.Type]bool{}), []string{"fixture.Untagged", "fixture.Inlined"}; !slices.Equal(got, want) {
+		t.Errorf("fixture: untagged fields = %v, want %v", got, want)
+	}
+	if got := untaggedFields(reflect.TypeFor[document](), map[reflect.Type]bool{}); len(got) > 0 {
+		t.Errorf("decoded fields without a yaml name, which the unknown-key walk would refuse: %v", got)
 	}
 }

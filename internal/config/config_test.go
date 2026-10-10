@@ -23,11 +23,6 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected destination port 3306, got %d", cfg.Destination.Port)
 	}
 
-	// Test replica defaults — the legacy block is a zeroed sentinel in 2.1
-	if cfg.Replica != (ReplicaConfig{}) {
-		t.Errorf("expected legacy replica block to default to its zero value")
-	}
-
 	// Test processing defaults
 	if cfg.Processing.BatchSize != 1000 {
 		t.Errorf("expected batch_size 1000, got %d", cfg.Processing.BatchSize)
@@ -36,13 +31,9 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected batch_delete_size 500, got %d", cfg.Processing.BatchDeleteSize)
 	}
 
-	// Test safety defaults — lag_threshold/check_interval moved to the
-	// replication block in 2.1 and remain zeroed sentinels here.
+	// Test safety defaults
 	if cfg.Safety.DisableForeignKeyChecks {
 		t.Errorf("expected disable_foreign_key_checks false by default")
-	}
-	if cfg.Safety.LagThreshold != 0 {
-		t.Errorf("expected lag_threshold sentinel 0, got %d", cfg.Safety.LagThreshold)
 	}
 
 	// Test logging defaults
@@ -69,14 +60,6 @@ func TestDefaultConfigReplication(t *testing.T) {
 	}
 	if cfg.Replication.CacheTTL != 15 {
 		t.Fatalf("cache_ttl default = %d, want 15", cfg.Replication.CacheTTL)
-	}
-
-	// sentinels must be zero so legacy detection works
-	if cfg.Replica != (ReplicaConfig{}) {
-		t.Fatal("legacy replica block must default to zero value")
-	}
-	if cfg.Safety.LagThreshold != 0 || cfg.Safety.CheckInterval != 0 {
-		t.Fatal("legacy safety fields must default to zero")
 	}
 }
 

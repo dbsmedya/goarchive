@@ -83,12 +83,30 @@ func TestArgsFlattensInKeyOrder(t *testing.T) {
 	}
 }
 
+// TestIdentifiersAreQuoted: every key-SQL shape quotes each column and doubles an embedded
+// backtick. Pair (M1-D2, R56): a reserved word and a name holding a backtick → quoted, the
+// backtick doubled, in In, OrderBy, Projection and After; the same names without the
+// backtick → quoted once, nothing doubled.
 func TestIdentifiersAreQuoted(t *testing.T) {
-	d := Def{Columns: []Column{{Name: "order", Family: FamilySigned}, {Name: "we`ird", Family: FamilySigned}}}
-	if got, want := In(d.Names(), d.Columns, 1), "(`order`,`we``ird`) IN ((?,?))"; got != want {
-		t.Errorf("In = %q, want %q", got, want)
-	}
-	if got, want := OrderBy(d), "`order`, `we``ird`"; got != want {
-		t.Errorf("OrderBy = %q, want %q", got, want)
+	for _, tc := range []struct {
+		name, second, quoted string
+	}{
+		{"a backtick in the name", "we`ird", "`we``ird`"},
+		{"no backtick", "weird", "`weird`"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := Def{Columns: []Column{{Name: "order", Family: FamilySigned}, {Name: tc.second, Family: FamilyDate}}}
+			q := tc.quoted
+			for _, c := range []struct{ shape, got, want string }{
+				{"In", In(d.Names(), d.Columns, 1), "(`order`," + q + ") IN ((?," + Placeholder(d.Columns[1]) + "))"},
+				{"OrderBy", OrderBy(d), "`order`, " + q},
+				{"Projection", Projection(d), "`order`, CAST(" + q + " AS CHAR)"},
+				{"After", After(d), "(`order` > ? OR (`order` = ? AND " + q + " > " + Placeholder(d.Columns[1]) + "))"},
+			} {
+				if c.got != c.want {
+					t.Errorf("%s = %q, want %q", c.shape, c.got, c.want)
+				}
+			}
+		})
 	}
 }

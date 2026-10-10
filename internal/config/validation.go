@@ -221,36 +221,6 @@ func (c *Config) validateReplication() ValidationErrors {
 	return errors
 }
 
-// validateLegacyReplicaKeys rejects configs still carrying the 2.0 keys that
-// 2.1 removed. The fields survive as zero-valued sentinels for exactly this
-// detection, so any non-zero value means the operator has not migrated.
-func (c *Config) validateLegacyReplicaKeys() ValidationErrors {
-	var errors ValidationErrors
-
-	if c.Replica != (ReplicaConfig{}) {
-		errors = append(errors, ValidationError{
-			Field:   "replica",
-			Message: "the replica: block was removed in 2.1 — replication monitoring is now configured by the replication: block; see docs/README_UPGRADING_2_1.md",
-		})
-	}
-
-	if c.Safety.LagThreshold != 0 {
-		errors = append(errors, ValidationError{
-			Field:   "safety.lag_threshold",
-			Message: "lag_threshold was removed in 2.1 — use replication.seconds_behind_source_within; see docs/README_UPGRADING_2_1.md",
-		})
-	}
-
-	if c.Safety.CheckInterval != 0 {
-		errors = append(errors, ValidationError{
-			Field:   "safety.check_interval",
-			Message: "safety.check_interval was removed in 2.1 — use replication.check_interval; see docs/README_UPGRADING_2_1.md",
-		})
-	}
-
-	return errors
-}
-
 func (c *Config) validateProcessing() ValidationErrors {
 	return c.validateProcessingConfig("processing", &c.Processing)
 }
@@ -289,10 +259,9 @@ func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingC
 	return errors
 }
 
-// validateSafety checks the safety block. Its lag_threshold and check_interval
-// rules moved to validateReplication in 2.1; the removed keys are now rejected
-// outright by validateLegacyReplicaKeys, leaving only
-// disable_foreign_key_checks, a bool with nothing to reject.
+// validateSafety checks the safety block: disable_foreign_key_checks, a bool with nothing
+// to reject. The removed 2.0 keys (lag_threshold, check_interval) are unknown keys to
+// jobspec, which refuses them with the upgrade pointer.
 func (c *Config) validateSafety() ValidationErrors {
 	// disable_foreign_key_checks is a bool; there is nothing left to reject.
 	return nil

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,17 +38,7 @@ func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 	metadataCatalog := wireRuleByName(t, loadDBSGOMySQLWireRules(t, root), "information-schema").needle
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
@@ -162,17 +153,7 @@ func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
@@ -296,16 +277,7 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 	rules := loadDBSGOMySQLWireRules(t, root)
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		if !strings.HasSuffix(entry.Name(), "_test.go") {
 			return nil
 		}
@@ -595,13 +567,62 @@ func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	}
 }
 
-// skipPolicyWalkDir reports whether a policy walk skips the directory named name. It
-// mirrors what `go build ./...` ignores: names beginning with "." or "_" (which covers .git
-// and internal directories such as .ayder), testdata, where a fixture may deliberately not
-// parse, and vendor, which holds no first-party source.
+// policyWalk walks root as every policy guard does: it skips the directories
+// skipPolicyWalkDir names, except root itself, whatever root is called, and calls visit
+// for every file.
+func policyWalk(root string, visit func(path string, entry fs.DirEntry) error) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && skipPolicyWalkDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return visit(path, entry)
+	})
+}
+
+// TestPolicyWalkEntersItsRoot (M0-D2): a root whose own name the skip rule matches is still
+// walked; only directories below it are skipped. Pair (R56): walking a directory named
+// ".mod" visits its file; walking its parent skips ".mod" and visits nothing.
+func TestPolicyWalkEntersItsRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, ".mod")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	visited := func(dir string) []string {
+		var got []string
+		if err := policyWalk(dir, func(path string, _ fs.DirEntry) error {
+			rel, err := filepath.Rel(parent, path)
+			got = append(got, rel)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got, want := visited(root), []string{filepath.Join(".mod", "a.go")}; !slices.Equal(got, want) {
+		t.Errorf("walking the root .mod visited %v, want %v", got, want)
+	}
+	if got := visited(parent); len(got) != 0 {
+		t.Errorf("walking its parent visited %v, want nothing: .mod is skipped below the root", got)
+	}
+}
+
+// skipPolicyWalkDir reports whether a policy walk skips the directory named name: names
+// beginning with "." (which covers .git and internal directories such as .ayder),
+// testdata, where a fixture may deliberately not parse, and vendor, which holds no
+// first-party source. A "_" directory is walked: a package there is compiled when imported
+// by path (M0-D1).
 func skipPolicyWalkDir(name string) bool {
-	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
-		name == "testdata" || name == "vendor"
+	return strings.HasPrefix(name, ".") || name == "testdata" || name == "vendor"
 }
 
 // moduleRoot returns the directory holding go.mod, walking up from the package directory
@@ -626,17 +647,18 @@ func moduleRoot(t *testing.T) string {
 }
 
 // TestPolicyWalkSkipsWhatGoToolingIgnores pins the directory rule the policy walkers share.
-// `go build ./...` ignores directories whose names begin with "." or "_", plus testdata and
-// vendor, so none of them holds module source. Before 3.0 the walkers skipped only .git,
-// vendor and testdata, and a reference .go file kept under the ignored .ayder/ directory
-// failed the information_schema guard although no build ever compiles it.
+// Directories whose names begin with ".", plus testdata and vendor, hold no module source.
+// Before 3.0 the walkers skipped only .git, vendor and testdata, and a reference .go file
+// kept under the ignored .ayder/ directory failed the information_schema guard although no
+// build ever compiles it. A "_" directory is walked: `go build ./...` skips it, but a
+// package there that another package imports by path is compiled into the binary (M0-D1).
 func TestPolicyWalkSkipsWhatGoToolingIgnores(t *testing.T) {
-	for _, name := range []string{".git", ".ayder", ".superpowers", "_scratch", "vendor", "testdata"} {
+	for _, name := range []string{".git", ".ayder", ".superpowers", "vendor", "testdata"} {
 		if !skipPolicyWalkDir(name) {
 			t.Errorf("skipPolicyWalkDir(%q) = false; Go tooling ignores this directory", name)
 		}
 	}
-	for _, name := range []string{"internal", "cmd", "engine", "harness"} {
+	for _, name := range []string{"internal", "cmd", "engine", "harness", "_scratch", "_foo"} {
 		if skipPolicyWalkDir(name) {
 			t.Errorf("skipPolicyWalkDir(%q) = true; this directory holds module source", name)
 		}

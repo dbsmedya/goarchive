@@ -242,7 +242,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		return nil, err
 	}
-	r, err := newRun(ctx, cfg, res, job)
+	r, err := newRun(ctx, cfg, res, job, binding.SourceDatabase)
 	if err != nil {
 		return nil, err
 	}

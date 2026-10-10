@@ -30,14 +30,21 @@ func (r *run) recover(ctx context.Context) error {
 	default:
 		return nil
 	}
-	conn, err := r.cfg.Destination.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = conn.Close() }()
+	// The sentinel pause and a first signal take effect at a page boundary, as they do at a
+	// batch boundary: the rest stays logged for the next run (M5-F3, M6-F1). Each page reads
+	// the log on its own connection, after the gate, so a pause holds no idle session that
+	// the server's wait_timeout could close under it.
+	sentinel := newSentinelGate(r.cfg.Processing.SentinelFile, r.log)
 	var after key.Key
 	for {
-		roots, err := r.job.Roots(ctx, conn, st, after, r.cfg.Processing.BatchSize)
+		if err := sentinel.wait(ctx, r.cfg.Stop); err != nil {
+			return err
+		}
+		if stopRequested(r.cfg.Stop) {
+			r.report.Stopped = true
+			return nil
+		}
+		roots, err := r.loggedPage(ctx, st, after)
 		if err != nil {
 			return err
 		}
@@ -53,13 +60,18 @@ func (r *run) recover(ctx context.Context) error {
 		if len(roots) < r.cfg.Processing.BatchSize {
 			return nil
 		}
-		// A first signal stops at a page boundary, as it does at a batch boundary: the
-		// rest stays logged for the next run.
-		if stopRequested(r.cfg.Stop) {
-			r.report.Stopped = true
-			return nil
-		}
 	}
+}
+
+// loggedPage reads the next page of logged roots in status st after the key after, on a
+// connection of its own that it returns before the page is replayed.
+func (r *run) loggedPage(ctx context.Context, st tracking.Status, after key.Key) ([]key.Key, error) {
+	conn, err := r.cfg.Destination.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	return r.job.Roots(ctx, conn, st, after, r.cfg.Processing.BatchSize)
 }
 
 func (r *run) replay(ctx context.Context, st tracking.Status, roots []key.Key) error {
