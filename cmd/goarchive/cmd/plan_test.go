@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/v3/internal/config"
-	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -102,76 +102,6 @@ func TestSanitizeNodeID(t *testing.T) {
 	}
 }
 
-func TestCalculateMaxDepth(t *testing.T) {
-	tests := []struct {
-		name      string
-		relations []config.Relation
-		want      int
-	}{
-		{
-			name:      "empty relations",
-			relations: []config.Relation{},
-			want:      0,
-		},
-		{
-			name: "single level",
-			relations: []config.Relation{
-				{Table: "orders"},
-			},
-			want: 1,
-		},
-		{
-			name: "two levels",
-			relations: []config.Relation{
-				{
-					Table: "orders",
-					Relations: []config.Relation{
-						{Table: "order_items"},
-					},
-				},
-			},
-			want: 2,
-		},
-		{
-			name: "three levels",
-			relations: []config.Relation{
-				{
-					Table: "orders",
-					Relations: []config.Relation{
-						{
-							Table: "order_items",
-							Relations: []config.Relation{
-								{Table: "item_details"},
-							},
-						},
-					},
-				},
-			},
-			want: 3,
-		},
-		{
-			name: "multiple branches different depths",
-			relations: []config.Relation{
-				{Table: "orders"},
-				{
-					Table: "invoices",
-					Relations: []config.Relation{
-						{Table: "invoice_items"},
-					},
-				},
-			},
-			want: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := calculateMaxDepth(tt.relations)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 func TestPrintHeader(t *testing.T) {
 	var buf bytes.Buffer
 	setOutputWriter(&buf)
@@ -196,81 +126,7 @@ func TestPrintSection(t *testing.T) {
 	assert.Contains(t, output, "--")
 }
 
-func TestPrintOrderItem(t *testing.T) {
-	tests := []struct {
-		name     string
-		num      int
-		table    string
-		node     *mockNodeData
-		isDelete bool
-		want     string
-	}{
-		{
-			name:     "root table copy",
-			num:      1,
-			table:    "users",
-			node:     &mockNodeData{IsRoot: true},
-			isDelete: false,
-			want:     "[1] users (root)",
-		},
-		{
-			name:     "child table copy",
-			num:      2,
-			table:    "orders",
-			node:     &mockNodeData{IsRoot: false, ForeignKey: "user_id", ReferenceKey: "id"},
-			isDelete: false,
-			want:     "[2] orders | FK: user_id -> id",
-		},
-		{
-			name:     "child table delete",
-			num:      3,
-			table:    "orders",
-			node:     &mockNodeData{IsRoot: false, ForeignKey: "user_id", ReferenceKey: "id"},
-			isDelete: true,
-			want:     "[3] orders | FK: user_id <- id",
-		},
-		{
-			name:     "nil node",
-			num:      4,
-			table:    "orphan_table",
-			node:     nil,
-			isDelete: false,
-			want:     "[4] orphan_table",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf bytes.Buffer
-			setOutputWriter(&buf)
-			defer resetOutputWriter()
-
-			if tt.node == nil {
-				printOrderItem(tt.num, tt.table, nil, tt.isDelete)
-			} else {
-				printOrderItem(tt.num, tt.table, createNode(tt.node), tt.isDelete)
-			}
-
-			output := buf.String()
-			assert.Contains(t, output, tt.want)
-		})
-	}
-}
-
 // mockNodeData is a test helper to create node data
-type mockNodeData struct {
-	IsRoot       bool
-	ForeignKey   string
-	ReferenceKey string
-}
-
-func createNode(data *mockNodeData) *graph.Node {
-	return &graph.Node{
-		IsRoot:       data.IsRoot,
-		ForeignKey:   data.ForeignKey,
-		ReferenceKey: data.ReferenceKey,
-	}
-}
 
 // VisualWidth tests
 func TestVisualWidth(t *testing.T) {
@@ -305,108 +161,6 @@ func TestVisualWidth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := visualWidth(tt.input)
 			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-// GenerateMermaidSyntax tests
-func TestGenerateMermaidSyntax(t *testing.T) {
-	tests := []struct {
-		name string
-		job  *config.JobConfig
-		cfg  *config.Config
-		want []string // Substrings expected in output
-	}{
-		{
-			name: "simple root table",
-			job: &config.JobConfig{
-				RootTable:  "users",
-				PrimaryKey: "id",
-			},
-			cfg: &config.Config{},
-			want: []string{
-				"graph TD",
-				"users",
-			},
-		},
-		{
-			name: "root with one relation",
-			job: &config.JobConfig{
-				RootTable:  "users",
-				PrimaryKey: "id",
-				Relations: []config.Relation{
-					{Table: "orders", ForeignKey: "user_id", DependencyType: "1-N"},
-				},
-			},
-			cfg: &config.Config{},
-			want: []string{
-				"graph TD",
-				"users",
-				"users -->|1-N| orders",
-			},
-		},
-		{
-			name: "root with multiple relations",
-			job: &config.JobConfig{
-				RootTable:  "users",
-				PrimaryKey: "id",
-				Relations: []config.Relation{
-					{Table: "orders", ForeignKey: "user_id", DependencyType: "1-N"},
-					{Table: "profiles", ForeignKey: "user_id", DependencyType: "1-1"},
-				},
-			},
-			cfg: &config.Config{},
-			want: []string{
-				"graph TD",
-				"users",
-				"users -->|1-N| orders",
-				"users -->|1-1| profiles",
-			},
-		},
-		{
-			name: "nested relations",
-			job: &config.JobConfig{
-				RootTable:  "users",
-				PrimaryKey: "id",
-				Relations: []config.Relation{
-					{
-						Table:          "orders",
-						ForeignKey:     "user_id",
-						DependencyType: "1-N",
-						Relations: []config.Relation{
-							{Table: "order_items", ForeignKey: "order_id", DependencyType: "1-N"},
-						},
-					},
-				},
-			},
-			cfg: &config.Config{},
-			want: []string{
-				"graph TD",
-				"users",
-				"users -->|1-N| orders",
-				"orders -->|1-N| order_items",
-			},
-		},
-		{
-			name: "table with dots in name",
-			job: &config.JobConfig{
-				RootTable:  "mydb.users",
-				PrimaryKey: "id",
-			},
-			cfg: &config.Config{},
-			want: []string{
-				"graph TD",
-				"mydb_users",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := generateMermaidSyntax(tt.job, tt.cfg)
-			for _, want := range tt.want {
-				assert.Contains(t, got, want)
-			}
 		})
 	}
 }
@@ -458,36 +212,100 @@ func TestPrintSideBySide(t *testing.T) {
 // Phase 3: CLI Execution Tests
 // ============================================================================
 
-// TestPlanCmd_Execute_MissingConfig tests plan generation when config doesn't exist
-func TestPlanCmd_Execute_MissingConfig(t *testing.T) {
-	origCfgFile := cfgFile
-	origPlanJob := planJob
-	defer func() {
-		cfgFile = origCfgFile
-		planJob = origPlanJob
-		rootCmd.SetArgs(nil)
-	}()
+// planConfig is a 3.0 file with one three-table job; plan needs no connection.
+const planConfig = `
+source:
+  host: 127.0.0.1
+  port: 1
+  user: u
+  database: src
+destination:
+  host: 127.0.0.1
+  port: 1
+  user: u
+  database: archive_db
+jobs:
+  archive_orders:
+    job_type: archive
+    root_table: orders
+    primary_key: id
+    where: "placed < '2020-01-01'"
+    processing:
+      batch_size: 50
+    relations:
+      - table: order_lines
+        primary_key: [order_id, line_no]
+        foreign_key: order_id
+        relations:
+          - table: line_notes
+            primary_key: note_id
+            foreign_key: [order_id, line_no]
+            references: [order_id, line_no]
+`
 
-	rootCmd.SetArgs([]string{"plan", "--job", "test_job", "--config", "/tmp/nonexistent_plan_config.yaml"})
-	err := rootCmd.Execute()
-	assert.Error(t, err)
+// TestPlanOutput: plan reads the job with jobspec and walks its tree, parent first for the
+// copy and child first for the delete, without a connection (P8).
+func TestPlanOutput(t *testing.T) {
+	out, err := execute(t, "plan", "-c", writeConfig(t, planConfig), "--job", "archive_orders")
+	if err != nil {
+		t.Fatalf("plan: %v\n%s", err, out)
+	}
+	copyAt := strings.Index(out, "[Copy Order (parent tables first)]")
+	deleteAt := strings.Index(out, "[Delete Order (child tables first)]")
+	if copyAt < 0 || deleteAt < copyAt {
+		t.Fatalf("no copy and delete sections:\n%s", out)
+	}
+	copyPart, deletePart := out[copyAt:deleteAt], out[deleteAt:]
+	for _, w := range []string{
+		"[1] orders (root)",
+		"[2] order_lines | (order_id) -> orders (id)",
+		"[3] line_notes | (order_id, line_no) -> order_lines (order_id, line_no)",
+	} {
+		if !strings.Contains(copyPart, w) {
+			t.Errorf("copy order lacks %q:\n%s", w, copyPart)
+		}
+	}
+	for _, w := range []string{
+		"[1] line_notes | (order_id, line_no) <- order_lines (order_id, line_no)",
+		"[3] orders (root)",
+	} {
+		if !strings.Contains(deletePart, w) {
+			t.Errorf("delete order lacks %q:\n%s", w, deletePart)
+		}
+	}
+	for _, w := range []string{
+		"Execution Plan: archive_orders",
+		"Job:          archive_orders (archive)",
+		"Root Table:   orders (primary key: id)",
+		"Tables:       3",
+		"Where:        placed < '2020-01-01'",
+		"Batch Size:          50 (job-specific)",
+		"Verification:        sha256",
+		"Destination DB: archive_db",
+		"Max Depth:      2 levels",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("plan lacks %q:\n%s", w, out)
+		}
+	}
 }
 
-// TestPlanCmd_Execute_InvalidJob tests plan generation with non-existent job
-func TestPlanCmd_Execute_InvalidJob(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping CLI execution test in short mode")
+func TestGenerateMermaidSyntax(t *testing.T) {
+	spec := &jobspec.Spec{RootTable: "orders", Relations: []jobspec.Relation{
+		{Table: "order_lines", Relations: []jobspec.Relation{{Table: "line_notes", DependencyType: "1-1"}}},
+	}}
+	want := "graph TD\n    orders\n    orders -->|1-N| order_lines\n    order_lines -->|1-1| line_notes\n"
+	if got := generateMermaidSyntax(spec); got != want {
+		t.Errorf("mermaid:\n got %q\nwant %q", got, want)
 	}
+}
 
-	origCfgFile := cfgFile
-	origPlanJob := planJob
-	defer func() {
-		cfgFile = origCfgFile
-		planJob = origPlanJob
-		rootCmd.SetArgs(nil)
-	}()
-
-	rootCmd.SetArgs([]string{"plan", "--job", "nonexistent_job", "--config", "/tmp/nonexistent_plan_config.yaml"})
-	err := rootCmd.Execute()
-	assert.Error(t, err)
+func TestCalculateMaxDepth(t *testing.T) {
+	rels := []jobspec.Relation{{Table: "a"}, {Table: "b", Relations: []jobspec.Relation{{Table: "c", Relations: []jobspec.Relation{{Table: "d"}}}}}}
+	if got := calculateMaxDepth(rels); got != 3 {
+		t.Errorf("depth = %d, want 3", got)
+	}
+	if got := calculateMaxDepth(nil); got != 0 {
+		t.Errorf("no relations: depth = %d", got)
+	}
 }
