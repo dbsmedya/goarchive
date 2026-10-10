@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
-	"github.com/dbsmedya/goarchive/v3/internal/graph"
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/mermaidascii"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +27,7 @@ The plan shows:
   - Visual relation tree (using mermaid-ascii)
   - Copy order (parent tables first)
   - Delete order (child tables first)
-  - Detected table relationships
+  - Each table's column pairing with its parent
 
 Example:
   goarchive plan --config archiver.yaml --job archive_old_orders`,
@@ -42,128 +42,62 @@ func init() {
 	rootCmd.AddCommand(planCmd)
 }
 
-func runPlan(cmd *cobra.Command, args []string) error {
-	configFile := GetConfigFile()
-
-	// Load configuration
-	cfg, err := config.Load(configFile)
+func runPlan(c *cobra.Command, _ []string) error {
+	doc, spec, err := loadJob(planJob, "")
 	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+		return err
+	}
+	outputWriter = c.OutOrStdout()
+	tree := jobspec.NewTree(spec)
+	processing := spec.EffectiveProcessing(doc.Shared.Processing)
+	verification := "none needed (purge copies nothing)"
+	if spec.Type != jobspec.Purge {
+		verification = string(spec.EffectiveVerification(doc.Verification))
 	}
 
-	// Apply CLI overrides
-	overrides := GetCLIOverrides()
-	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	// Find the job in configuration
-	jobValue, exists := cfg.Jobs[planJob]
-	if !exists {
-		return fmt.Errorf("job %q not found in configuration", planJob)
-	}
-	job := &jobValue
-
-	// Build dependency graph
-	g, err := graph.BuildFromJob(job)
-	if err != nil {
-		return fmt.Errorf("failed to build dependency graph: %w", err)
-	}
-
-	// Display visual tree using mermaid-ascii
-	if err := printMermaidTree(job, cfg, g); err != nil {
+	if err := printMermaidTree(spec, doc, processing, verification); err != nil {
 		return fmt.Errorf("failed to render tree: %w", err)
 	}
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 
-	// Get copy and delete orders
-	copyOrder, err := g.CopyOrder()
-	if err != nil {
-		return fmt.Errorf("failed to generate copy order: %w", err)
-	}
-
-	deleteOrder, err := g.DeleteOrder()
-	if err != nil {
-		return fmt.Errorf("failed to generate delete order: %w", err)
-	}
-
-	// Print execution plan header
 	printHeader("Execution Plan: %s", planJob)
-
-	// Job overview
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 	printSection("Job Overview")
-	fmt.Printf("  Root Table:  %s (PK: %s)\n", job.RootTable, job.PrimaryKey)
-	fmt.Printf("  Total Tables: %d\n", g.NodeCount())
-	if job.Where != "" {
-		fmt.Printf("  WHERE Clause: %s\n", job.Where)
-	}
+	_, _ = fmt.Fprintf(outputWriter, "  Job:          %s (%s)\n", planJob, spec.Type)
+	_, _ = fmt.Fprintf(outputWriter, "  Root Table:   %s (primary key: %s)\n", spec.RootTable, strings.Join(spec.PrimaryKey, ", "))
+	_, _ = fmt.Fprintf(outputWriter, "  Tables:       %d\n", len(tree.CopyOrder()))
+	_, _ = fmt.Fprintf(outputWriter, "  Where:        %s\n", spec.Where)
 
-	// Copy order section
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 	printSection("Copy Order (parent tables first)")
-	for i, table := range copyOrder {
-		node := g.GetNode(table)
-		printOrderItem(i+1, table, node, false)
+	for i, n := range tree.CopyOrder() {
+		printOrderItem(i+1, n, false)
 	}
-
-	// Delete order section
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 	printSection("Delete Order (child tables first)")
-	for i, table := range deleteOrder {
-		node := g.GetNode(table)
-		printOrderItem(i+1, table, node, true)
+	for i, n := range tree.DeleteOrder() {
+		printOrderItem(i+1, n, true)
 	}
 
-	// Relationships section
-	fmt.Println()
-	printSection("Detected Relationships")
-	for _, edge := range g.AllEdges() {
-		meta := g.GetEdgeMeta(edge.From, edge.To)
-		dependencyType := "unknown"
-		foreignKey := "unknown"
-		if meta != nil {
-			dependencyType = meta.DependencyType
-			foreignKey = meta.ForeignKey
-		}
-		fmt.Printf("  • %s → %s (%s) FK: %s\n",
-			edge.From,
-			edge.To,
-			dependencyType,
-			foreignKey,
-		)
-	}
-
-	// Get job-specific configs
-	jobProcessing := job.GetJobProcessing(cfg.Processing)
-	jobVerification := job.GetJobVerification(cfg.Verification)
-
-	// Configuration section
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 	printSection("Configuration")
-	fmt.Printf("  Batch Size:          %d", jobProcessing.BatchSize)
-	if job.Processing != nil && job.Processing.BatchSize != nil {
-		fmt.Print(" (job-specific)")
+	_, _ = fmt.Fprintf(outputWriter, "  Batch Size:          %d%s\n", processing.BatchSize,
+		jobSpecific(spec.Processing != nil && spec.Processing.BatchSize != nil))
+	if spec.Type != jobspec.CopyOnly {
+		_, _ = fmt.Fprintf(outputWriter, "  Batch Delete Size:   %d%s\n", processing.BatchDeleteSize,
+			jobSpecific(spec.Processing != nil && spec.Processing.BatchDeleteSize != nil))
 	}
-	fmt.Println()
-	fmt.Printf("  Batch Delete Size:   %d", jobProcessing.BatchDeleteSize)
-	if job.Processing != nil && job.Processing.BatchDeleteSize != nil {
-		fmt.Print(" (job-specific)")
-	}
-	fmt.Println()
-	fmt.Printf("  Sleep Between Batches: %.1fs", jobProcessing.SleepSeconds)
-	if job.Processing != nil && job.Processing.SleepSeconds != nil {
-		fmt.Print(" (job-specific)")
-	}
-	fmt.Println()
-	fmt.Printf("  Verification Method: %s", jobVerification.Method)
-	if job.Verification != nil && job.Verification.Method != "" {
-		fmt.Print(" (job-specific)")
-	}
-	fmt.Println()
-
+	_, _ = fmt.Fprintf(outputWriter, "  Sleep Between Batches: %.1fs%s\n", processing.SleepSeconds,
+		jobSpecific(spec.Processing != nil && spec.Processing.SleepSeconds != nil))
+	_, _ = fmt.Fprintf(outputWriter, "  Verification:        %s%s\n", verification, jobSpecific(spec.Verification != nil))
 	return nil
+}
+
+func jobSpecific(set bool) string {
+	if set {
+		return " (job-specific)"
+	}
+	return ""
 }
 
 // printHeader prints a formatted header
@@ -181,74 +115,50 @@ func printSection(title string) {
 	_, _ = fmt.Fprintln(outputWriter, strings.Repeat("-", len(title)+2))
 }
 
-// printOrderItem prints a table in the copy/delete order list
-func printOrderItem(num int, table string, node *graph.Node, isDelete bool) {
+// printOrderItem prints a table in the copy or delete order, with the column pairing that
+// ties it to its parent.
+func printOrderItem(num int, n *jobspec.Node, isDelete bool) {
 	numStr := fmt.Sprintf("[%d]", num)
-	if node == nil {
-		_, _ = fmt.Fprintf(outputWriter, "  %s %s\n", numStr, table)
+	if n.Parent == nil {
+		_, _ = fmt.Fprintf(outputWriter, "  %s %s (root)\n", numStr, n.Table)
 		return
 	}
-
-	if node.IsRoot {
-		_, _ = fmt.Fprintf(outputWriter, "  %s %s (root)\n", numStr, table)
-	} else {
-		arrow := "->"
-		if isDelete {
-			arrow = "<-"
-		}
-		_, _ = fmt.Fprintf(outputWriter, "  %s %s | FK: %s %s %s\n",
-			numStr,
-			table,
-			node.ForeignKey,
-			arrow,
-			node.ReferenceKey,
-		)
+	arrow := "->"
+	if isDelete {
+		arrow = "<-"
 	}
+	_, _ = fmt.Fprintf(outputWriter, "  %s %s | (%s) %s %s (%s)\n", numStr, n.Table,
+		strings.Join(n.ForeignKey, ", "), arrow, n.Parent.Table, strings.Join(n.References, ", "))
 }
 
-// printMermaidTree generates and displays an ASCII tree using mermaid-ascii
-func printMermaidTree(job *config.JobConfig, cfg *config.Config, g *graph.Graph) error {
-	// Generate mermaid syntax for the graph
-	mermaidSyntax := generateMermaidSyntax(job, cfg)
-
-	// Render using mermaid-ascii with default config (nil uses defaults)
-	output, err := mermaidascii.RenderDiagram(mermaidSyntax, nil)
+// printMermaidTree renders the job's tree with mermaid-ascii beside a summary.
+func printMermaidTree(spec *jobspec.Spec, doc *jobspec.Document, processing config.ProcessingConfig, verification string) error {
+	output, err := mermaidascii.RenderDiagram(generateMermaidSyntax(spec), nil)
 	if err != nil {
 		return err
 	}
-
-	// Get job-specific configs for display
-	jobProcessing := job.GetJobProcessing(cfg.Processing)
-	jobVerification := job.GetJobVerification(cfg.Verification)
-
-	// Prepare Tree Summary lines
 	summaryLines := []string{
 		"[ Tree Summary ]",
 		strings.Repeat("-", 16),
-		fmt.Sprintf("Root Table:     %s", job.RootTable),
-		fmt.Sprintf("Relations:      %d tables", g.NodeCount()-1),
-		fmt.Sprintf("Max Depth:      %d levels", calculateMaxDepth(job.Relations)),
-		fmt.Sprintf("Destination DB: %s", cfg.Destination.Database),
+		fmt.Sprintf("Root Table:     %s", spec.RootTable),
+		fmt.Sprintf("Relations:      %d tables", len(jobspec.NewTree(spec).CopyOrder())-1),
+		fmt.Sprintf("Max Depth:      %d levels", calculateMaxDepth(spec.Relations)),
+		fmt.Sprintf("Destination DB: %s", doc.Shared.Destination.Database),
 		"",
 		"[ Processing ]",
 		strings.Repeat("-", 14),
-		fmt.Sprintf("Batch Size:      %d", jobProcessing.BatchSize),
-		fmt.Sprintf("Batch Delete:    %d", jobProcessing.BatchDeleteSize),
-		fmt.Sprintf("Sleep:           %.1fs", jobProcessing.SleepSeconds),
+		fmt.Sprintf("Batch Size:      %d", processing.BatchSize),
+		fmt.Sprintf("Batch Delete:    %d", processing.BatchDeleteSize),
+		fmt.Sprintf("Sleep:           %.1fs", processing.SleepSeconds),
 		"",
 		"[ Verification ]",
 		strings.Repeat("-", 16),
-		fmt.Sprintf("Method:          %s", jobVerification.Method),
+		fmt.Sprintf("Method:          %s", verification),
 	}
-
-	// Print header
-	fmt.Println()
+	_, _ = fmt.Fprintln(outputWriter)
 	printHeader("Relation Tree")
-	fmt.Println()
-
-	// Print side-by-side: mermaid on left, summary on right
+	_, _ = fmt.Fprintln(outputWriter)
 	printSideBySide(output, summaryLines, 4)
-
 	return nil
 }
 
@@ -319,35 +229,24 @@ func visualWidth(s string) int {
 	return width
 }
 
-// generateMermaidSyntax creates mermaid graph syntax from job configuration
-func generateMermaidSyntax(job *config.JobConfig, cfg *config.Config) string {
+// generateMermaidSyntax creates mermaid graph syntax from the job's relations.
+func generateMermaidSyntax(spec *jobspec.Spec) string {
 	var sb strings.Builder
-
 	sb.WriteString("graph TD\n")
-
-	// Add root node (just the name, mermaid-ascii will box it)
-	rootID := sanitizeNodeID(job.RootTable)
-	fmt.Fprintf(&sb, "    %s\n", rootID)
-
-	// Recursively add nodes and edges
-	addRelationsToMermaid(&sb, job.RootTable, job.Relations, cfg)
-
+	_, _ = fmt.Fprintf(&sb, "    %s\n", sanitizeNodeID(spec.RootTable))
+	addRelationsToMermaid(&sb, spec.RootTable, spec.Relations)
 	return sb.String()
 }
 
-// addRelationsToMermaid recursively adds relation nodes and edges to mermaid syntax
-func addRelationsToMermaid(sb *strings.Builder, parentTable string, relations []config.Relation, cfg *config.Config) {
+// addRelationsToMermaid adds each relation's edge, labelled with its dependency type.
+func addRelationsToMermaid(sb *strings.Builder, parentTable string, relations []jobspec.Relation) {
 	for _, rel := range relations {
-		nodeID := sanitizeNodeID(rel.Table)
-		parentID := sanitizeNodeID(parentTable)
-
-		// Add edge from parent to child with dependency type label
-		fmt.Fprintf(sb, "    %s -->|%s| %s\n", parentID, rel.DependencyType, nodeID)
-
-		// Recursively add children
-		if len(rel.Relations) > 0 {
-			addRelationsToMermaid(sb, rel.Table, rel.Relations, cfg)
+		dep := rel.DependencyType
+		if dep == "" {
+			dep = "1-N"
 		}
+		_, _ = fmt.Fprintf(sb, "    %s -->|%s| %s\n", sanitizeNodeID(parentTable), dep, sanitizeNodeID(rel.Table))
+		addRelationsToMermaid(sb, rel.Table, rel.Relations)
 	}
 }
 
@@ -362,7 +261,7 @@ func sanitizeNodeID(table string) string {
 }
 
 // calculateMaxDepth calculates the maximum nesting depth of relations
-func calculateMaxDepth(relations []config.Relation) int {
+func calculateMaxDepth(relations []jobspec.Relation) int {
 	maxDepth := 0
 	for _, rel := range relations {
 		depth := 1

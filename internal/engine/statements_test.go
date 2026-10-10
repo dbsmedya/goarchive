@@ -34,6 +34,15 @@ func TestFetchSQL(t *testing.T) {
 	}
 }
 
+// TestRangeCountSQL: --progress counts the where range once, with the fetch's own predicate.
+func TestRangeCountSQL(t *testing.T) {
+	got := rangeCountSQL(parentAB(), "created < '2020-01-01' -- old")
+	want := "SELECT COUNT(*) FROM `p` WHERE (created < '2020-01-01' -- old\n)"
+	if got != want {
+		t.Errorf("count:\n got %q\nwant %q", got, want)
+	}
+}
+
 // TestDiscoveryProjectsIntoReferencesOrder: spec §7.3's example. foreign_key [pb, pa] pairs
 // with references [b, a], so each placeholder is cast like the parent column it receives,
 // and parent (a=1, b=2) binds as (2, 1).

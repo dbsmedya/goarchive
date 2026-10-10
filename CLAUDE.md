@@ -26,9 +26,9 @@ development of pending plans: each requires the contract's review and dispatch a
 
 ## Project Overview
 
-GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It
-provides automatic dependency resolution using Kahn's algorithm, crash recovery via checkpoint
-logging, and zero-lock batch processing.
+GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It walks
+each job's table tree from its declared relations, recovers an interrupted run by replaying the
+job's typed log, and works in key-ordered batches.
 
 **Edition**: Community. Recommended for single-operator workstation archival of cold data.
 **Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a
@@ -136,12 +136,12 @@ never modified from here. Until 3.0-alpha (rulings R33, R34 in
 - The test containers (db1/db2/db3) belong to `../goarchive`'s compose project. Never run
   `make test-up`, `test-down`, `test-reset` or `e2e` from here against them without the
   operator's say.
-- **Between M5 and M6 the binary runs no job** (rulings R38–R40, R45): `archive`, `purge`,
-  `copy-only` and `dry-run` refuse with "not wired to the 3.0 engine yet", and `validate` has no
-  preflight. `internal/engine` runs only from its own integration tests until M6 wires the
-  commands to it. `--skip-validate-preflight` and `--force-triggers` are gone until then. Never
-  run a v3 build against data that matters. The E2E scripts still pass the removed flags and
-  cannot run against a v3 binary until M7 rewrites them.
+- **From M6 the commands run on the 3.0 packages** (R45 lifted): `archive`, `purge` and
+  `copy-only` run `internal/engine`, `dry-run` runs `engine.Explain`, `validate` runs
+  `internal/preflight`, and `plan` and `list-jobs` read `internal/jobspec`. `--skip-verify` and
+  `--force` are gone (R42, R50). Still never run a v3 build against data that matters before
+  3.0-alpha. The E2E scripts still pass the removed flags and cannot run against a v3 binary
+  until M7 rewrites them.
 - The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
   the full gate. From then on the rules above this section apply unchanged.
 
@@ -160,21 +160,20 @@ make check                                # fmt-check vet lint consumer-policy d
 ## Architecture
 
 ```
-CLI (Cobra) → Config (Viper) → Core Engine → Processing Pipeline → Data Layer
+CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Layer
 ```
 
-**Stack:** Go 1.26+ (builds pinned to go1.26.8 by go.mod's toolchain line), Cobra (CLI), Viper
-(config), Zap (logging), MySQL 8.0.40+ InnoDB only, `dbsgomysql` for validation facts.
+**Stack:** Go 1.26+ (builds pinned to go1.26.8 by go.mod's toolchain line), Cobra (CLI), yaml.v3
+(config, `internal/jobspec`), Zap (logging), MySQL 8.0.40+ InnoDB only, `dbsgomysql` for validation facts.
 
 ### Package Layout
 
 | Directory | Purpose |
 |-----------|---------|
 | `cmd/` | CLI command implementations (Cobra) |
-| `internal/config/` | Configuration parsing with Viper, validation |
+| `internal/config/` | The shared configuration blocks (source, destination, replication, processing, safety, logging) and their validation; `internal/jobspec` loads the file |
 | `internal/database/` | Database connection management, signal handling |
 | `internal/engine/` | 3.0 run engine: one run loop for archive, purge and copy-only; startup, recovery, discovery, copy and verification, deletes, INSERT diagnostics |
-| `internal/graph/` | Dependency graph, Kahn's algorithm, cycle detection |
 | `internal/jobspec/` | 3.0 job model: strict config loading, job rules, the table tree and the `references` projection |
 | `internal/key/` | 3.0 key model: key definitions from MySQL facts, typed keys, key SQL shapes, statement cap |
 | `internal/lock/` | MySQL advisory locking for job concurrency |
@@ -192,7 +191,8 @@ SQL identifier quoting and validation now live in the **library**
 
 `internal/engine` (spec §7, `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`):
 
-1. **Startup**: preflight (`internal/preflight`) → tracking schema → advisory locks → job registry,
+1. **Startup**: the command loads the file (`jobspec.Load`) and picks the job
+   (`Document.Job`) before any connection, then preflight (`internal/preflight`) → tracking schema → advisory locks → job registry,
    log-key and binding checks (`internal/tracking`) → recovery of logged roots
 2. **Batch loop**: fetch root keys after the last batch's → discover children parent-first →
    per job type, a destination transaction (copy → verify → log) and/or source delete chunks,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -26,7 +27,8 @@ type run struct {
 	caps caps
 	job  *tracking.Job
 
-	report *Report
+	report   *Report
+	progress *progressTracker // nil unless --progress is on
 }
 
 // caps are the statement caps preflight computed (spec §4.3), by table. The engine never
@@ -113,13 +115,54 @@ func (r *run) execute(ctx context.Context) error {
 	if err := r.recover(ctx); err != nil {
 		return fmt.Errorf("engine: recovery: %w", err)
 	}
+	if r.report.Stopped {
+		return nil
+	}
+	if r.cfg.Progress > 0 {
+		stop, err := r.startProgress(ctx)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	return r.loop(ctx)
+}
+
+// startProgress counts the where range, now that recovery is done, and starts the
+// --progress reporter (R50). The returned stop prints the final line.
+func (r *run) startProgress(ctx context.Context) (func(), error) {
+	var total int64
+	if err := r.cfg.Source.QueryRowContext(ctx, rangeCountSQL(r.root, r.cfg.Spec.Where)).Scan(&total); err != nil {
+		return nil, fmt.Errorf("engine: --progress count on %s: %w", r.root.Table, err)
+	}
+	r.progress = newProgressTracker(total)
+	r.trackProgress()
+	out := r.cfg.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	rep := newProgressReporter(r.progress, r.cfg.Progress, r.typ, out)
+	rep.start()
+	return rep.stop, nil
+}
+
+// trackProgress feeds the run's totals to the progress tracker.
+func (r *run) trackProgress() {
+	var copied, deleted int64
+	for _, n := range r.report.Copied {
+		copied += n
+	}
+	for _, n := range r.report.Deleted {
+		deleted += n
+	}
+	r.progress.update(r.report.Roots+r.report.Skipped, copied, deleted)
 }
 
 // loop runs batches from the start of the where range (spec §6.5): each fetch continues
 // after the last key of the previous batch, held in memory only.
 func (r *run) loop(ctx context.Context) error {
 	sentinel := newSentinelGate(r.cfg.Processing.SentinelFile, r.log)
+	sentinel.progress = r.progress
 	var last key.Key
 	for {
 		if stopRequested(r.cfg.Stop) {
@@ -133,11 +176,12 @@ func (r *run) loop(ctx context.Context) error {
 			r.report.Stopped = true
 			return nil
 		}
-		roots, err := r.fetch(ctx, last)
+		roots, err := r.fetch(ctx, r.cfg.Source, last)
 		if err != nil {
 			return err
 		}
 		if len(roots) == 0 {
+			r.progress.markComplete()
 			return nil
 		}
 		last = roots[len(roots)-1]
@@ -145,7 +189,9 @@ func (r *run) loop(ctx context.Context) error {
 			return fmt.Errorf("engine: batch %d: %w", r.report.Batches+1, err)
 		}
 		r.report.Batches++
+		r.trackProgress()
 		if len(roots) < r.cfg.Processing.BatchSize {
+			r.progress.markComplete()
 			return nil
 		}
 		if err := interruptibleSleep(ctx, r.cfg.Stop, seconds(r.cfg.Processing.SleepSeconds)); err != nil {
@@ -154,14 +200,15 @@ func (r *run) loop(ctx context.Context) error {
 	}
 }
 
-// fetch reads the next batch of root keys (spec §7.2).
-func (r *run) fetch(ctx context.Context, last key.Key) ([]key.Key, error) {
+// fetch reads the next batch of root keys (spec §7.2) on q: the source pool for a run, the
+// connection Explain already holds for dry-run (Codex M6 B1).
+func (r *run) fetch(ctx context.Context, q reader, last key.Key) ([]key.Key, error) {
 	var args []any
 	if last != nil {
 		args = key.AfterArgs(last)
 	}
 	args = append(args, r.cfg.Processing.BatchSize)
-	rows, err := r.cfg.Source.QueryContext(ctx, fetchSQL(r.root, r.cfg.Spec.Where, last != nil), args...)
+	rows, err := q.QueryContext(ctx, fetchSQL(r.root, r.cfg.Spec.Where, last != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: root fetch on %s: %w", r.root.Table, err)
 	}
@@ -313,6 +360,11 @@ func (r *run) queryKeys(ctx context.Context, q queryer, d key.Def, st statement)
 		return nil, fmt.Errorf("engine: %s on %s: %w", st.op, st.table, err)
 	}
 	return out, nil
+}
+
+// reader is a pool, a pinned connection or a transaction, for a read that checks no warning.
+type reader interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // queryer is a pinned connection or a transaction: never a pool, whose SHOW WARNINGS might

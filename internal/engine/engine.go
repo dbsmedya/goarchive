@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
@@ -66,6 +67,10 @@ type Config struct {
 	Stop <-chan struct{}
 	// Logger defaults to logger.NewDefault().
 	Logger *logger.Logger
+	// Progress is --progress's interval; zero disables it (R50). Out receives the progress
+	// lines and defaults to os.Stdout.
+	Progress time.Duration
+	Out      io.Writer
 
 	// Test seams, nil in production. fault may rewrite a key-addressed statement before it
 	// runs (spec §10, key-set tests); at is called at each crash point.
@@ -82,6 +87,7 @@ const (
 	atCommitted point = "committed" // the destination transaction committed
 	atLogged    point = "logged"    // purge: deleting committed, before any delete
 	atDeleted   point = "deleted"   // one source delete chunk committed
+	atMarked    point = "marked"    // startup: the job is marked running, before its first heartbeat
 	atRunning   point = "running"   // startup: the job is marked running and has beaten once
 )
 
@@ -118,47 +124,75 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// checkPool refuses a destination pool too small for a run (M5-F6).
+func (c *Config) checkPool() error {
+	if n := c.Destination.Stats().MaxOpenConnections; n > 0 && n < minDestinationConnections {
+		return fmt.Errorf("engine: the destination pool allows %d connections, and a run needs at least %d "+
+			"(destination.max_connections): startup holds the root-table and job locks on two of them while it "+
+			"reads the job registry on a third", n, minDestinationConnections)
+	}
+	return nil
+}
+
+// minDestinationConnections is the smallest destination pool a run can use: the job lock
+// holds one connection for the whole run, the root-table lock a second during startup, and
+// the registry, the log and the copy need a third (M5-F6). A smaller pool would wait forever.
+const minDestinationConnections = 3
+
 // Run runs one job: startup, recovery, then batches until the where range is exhausted or a
 // graceful stop is requested. It returns what it did, even when it fails part way.
 func Run(ctx context.Context, cfg Config) (*Report, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.checkPool(); err != nil {
+		return nil, err
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = logger.NewDefault()
 	}
-	src, err := database.ReadServerIdentity(ctx, cfg.Source)
+	src, dst, res, err := prepare(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("engine: source identity: %w", err)
+		return nil, err
 	}
-	dst, err := database.ReadServerIdentity(ctx, cfg.Destination)
+	return start(ctx, cfg, tracking.Binding{
+		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
+		Fingerprint: tracking.FingerprintOf(cfg.Spec),
+	}, res)
+}
+
+// prepare runs the startup checks that come before any lock, for Run and Explain: each
+// pool's identity and its UTC pin, then preflight (spec §7.1).
+func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity, res *preflight.Result, err error) {
+	src, err = database.ReadServerIdentity(ctx, cfg.Source)
 	if err != nil {
-		return nil, fmt.Errorf("engine: destination identity: %w", err)
+		return src, dst, nil, fmt.Errorf("engine: source identity: %w", err)
+	}
+	dst, err = database.ReadServerIdentity(ctx, cfg.Destination)
+	if err != nil {
+		return src, dst, nil, fmt.Errorf("engine: destination identity: %w", err)
 	}
 	for _, p := range []struct {
 		name string
 		db   *sql.DB
 	}{{"source", cfg.Source}, {"destination", cfg.Destination}} {
 		if err := assertUTC(ctx, p.db); err != nil {
-			return nil, fmt.Errorf("engine: %s: %w", p.name, err)
+			return src, dst, nil, fmt.Errorf("engine: %s: %w", p.name, err)
 		}
 	}
-	res, err := preflight.Run(ctx, preflight.Config{
+	res, err = preflight.Run(ctx, preflight.Config{
 		Source: cfg.Source, SourceDatabase: src.Schema,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
 		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Logger: cfg.Logger,
 	})
 	if err != nil {
-		return nil, err
+		return src, dst, nil, err
 	}
 	if cfg.preflighted != nil {
 		cfg.preflighted(res)
 	}
-	return start(ctx, cfg, tracking.Binding{
-		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
-		Fingerprint: tracking.FingerprintOf(cfg.Spec),
-	}, res)
+	return src, dst, res, nil
 }
 
 // utcProbe returns 86400 only in a session whose time zone is UTC.
@@ -215,7 +249,9 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err := job.SetStatus(ctx, tracking.JobRunning); err != nil {
 		return nil, err
 	}
+	r.reached(atMarked)
 	if err := job.Heartbeat(ctx); err != nil {
+		finalStatus(ctx, job, tracking.JobFailed, cfg.Name, log)
 		return nil, err
 	}
 	r.reached(atRunning)
@@ -235,10 +271,16 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		final = tracking.JobFailed
 	}
-	statusCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer done()
-	if serr := job.SetStatus(statusCtx, final); serr != nil {
-		log.Errorw("failed to write the final job status", "job", cfg.Name, "status", final, "error", serr)
-	}
+	finalStatus(ctx, job, final, cfg.Name, log)
 	return r.report, err
+}
+
+// finalStatus writes the job's status at the end of a run that marked it running, on a
+// cleanup context: every way out of such a run writes it (M5-F1).
+func finalStatus(ctx context.Context, job *tracking.Job, st tracking.JobStatus, name string, log *logger.Logger) {
+	statusCtx, done := cleanupContext(ctx)
+	defer done()
+	if err := job.SetStatus(statusCtx, st); err != nil {
+		log.Errorw("failed to write the final job status", "job", name, "status", st, "error", err)
+	}
 }

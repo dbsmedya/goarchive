@@ -53,6 +53,12 @@ func (r *run) recover(ctx context.Context) error {
 		if len(roots) < r.cfg.Processing.BatchSize {
 			return nil
 		}
+		// A first signal stops at a page boundary, as it does at a batch boundary: the
+		// rest stays logged for the next run.
+		if stopRequested(r.cfg.Stop) {
+			r.report.Stopped = true
+			return nil
+		}
 	}
 }
 

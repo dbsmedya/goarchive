@@ -33,7 +33,7 @@ func TestSetKeepsFirstInsertionOrderAndDeduplicates(t *testing.T) {
 	if !s.Add(a) || !s.Add(b) || s.Add(Key{uint64(42), []byte("A-7")}) {
 		t.Fatal("Add returned the wrong novelty")
 	}
-	if s.Len() != 2 || string(s.Keys()[0][1].([]byte)) != "A-7" || !s.Has(b) {
+	if len(s.Keys()) != 2 || string(s.Keys()[0][1].([]byte)) != "A-7" || !s.Has(b) {
 		t.Fatalf("set = %v", s.Keys())
 	}
 }

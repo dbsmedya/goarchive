@@ -45,39 +45,6 @@ func TestPurgeCommandExample(t *testing.T) {
 	assert.Contains(t, purgeCmd.Long, "goarchive purge")
 }
 
-func TestPurgeJobVariable(t *testing.T) {
-	// Save original value and restore after test
-	originalPurgeJob := purgeJob
-	defer func() {
-		purgeJob = originalPurgeJob
-	}()
-
-	tests := []struct {
-		name     string
-		jobValue string
-	}{
-		{
-			name:     "empty job",
-			jobValue: "",
-		},
-		{
-			name:     "simple job name",
-			jobValue: "purge_old_logs",
-		},
-		{
-			name:     "job with hyphens",
-			jobValue: "purge-old-logs",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			purgeJob = tt.jobValue
-			assert.Equal(t, tt.jobValue, purgeJob)
-		})
-	}
-}
-
 func TestPurgeCommandUsage(t *testing.T) {
 	assert.Equal(t, "purge", purgeCmd.Use)
 	assert.NotEmpty(t, purgeCmd.Short)
@@ -89,7 +56,7 @@ func TestPurgeCommandWarning(t *testing.T) {
 	doc := purgeCmd.Long
 	assert.Contains(t, doc, "WARNING")
 	assert.Contains(t, doc, "permanently deletes")
-	assert.Contains(t, doc, "--dry-run")
+	assert.Contains(t, doc, "Run dry-run first")
 }
 
 func TestPurgeCommandNoArchive(t *testing.T) {
@@ -102,7 +69,7 @@ func TestPurgeCommandSteps(t *testing.T) {
 	// Verify the command documents the purge process steps
 	doc := purgeCmd.Long
 	assert.Contains(t, doc, "Discover")
-	assert.Contains(t, doc, "Delete")
+	assert.Contains(t, doc, "delete from source, child first")
 }
 
 // ============================================================================

@@ -45,68 +45,10 @@ func TestGetConfigFile(t *testing.T) {
 }
 
 func TestGetCLIOverrides(t *testing.T) {
-	// Save original values and restore after test
-	originalLogLevel := logLevel
-	originalLogFormat := logFormat
-	originalSkipVerify := skipVerify
-	defer func() {
-		logLevel = originalLogLevel
-		logFormat = originalLogFormat
-		skipVerify = originalSkipVerify
-	}()
-
-	tests := []struct {
-		name       string
-		logLevel   string
-		logFormat  string
-		skipVerify bool
-		want       CLIOverrides
-	}{
-		{
-			name:       "empty overrides",
-			logLevel:   "",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-		{
-			name:       "all overrides set",
-			logLevel:   "debug",
-			logFormat:  "text",
-			skipVerify: true,
-			want: CLIOverrides{
-				LogLevel:   "debug",
-				LogFormat:  "text",
-				SkipVerify: true,
-			},
-		},
-		{
-			name:       "partial overrides",
-			logLevel:   "warn",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "warn",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logLevel = tt.logLevel
-			logFormat = tt.logFormat
-			skipVerify = tt.skipVerify
-
-			got := GetCLIOverrides()
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	originalLogLevel, originalLogFormat := logLevel, logFormat
+	defer func() { logLevel, logFormat = originalLogLevel, originalLogFormat }()
+	logLevel, logFormat = "debug", "text"
+	assert.Equal(t, CLIOverrides{LogLevel: "debug", LogFormat: "text"}, GetCLIOverrides())
 }
 
 func TestRootCommandStructure(t *testing.T) {
@@ -140,10 +82,8 @@ func TestRootCommandPersistentFlags(t *testing.T) {
 		assert.Nil(t, flags.Lookup(removed), "flag --%s should not be registered", removed)
 	}
 
-	// Test skip-verify flag
-	skipVerifyFlag, err := flags.GetBool("skip-verify")
-	assert.NoError(t, err)
-	assert.Equal(t, false, skipVerifyFlag)
+	// --skip-verify is gone: --verification=none replaces it (R42, M6-1).
+	assert.Nil(t, flags.Lookup("skip-verify"))
 }
 
 func TestRootCommandSubcommands(t *testing.T) {
@@ -155,6 +95,7 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	expectedCommands := []string{
 		"archive",
+		"copy-only",
 		"dry-run",
 		"list-jobs",
 		"plan",
@@ -165,13 +106,5 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	for _, expected := range expectedCommands {
 		assert.Contains(t, commandNames, expected, "Expected command %s not found", expected)
-	}
-}
-
-func TestRootCommandConversionHelp(t *testing.T) {
-	want := "Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)"
-	flag := rootCmd.PersistentFlags().Lookup("skip-verify")
-	if flag == nil || flag.Usage != want {
-		t.Fatalf("skip-verify help=%v want=%s", flag, want)
 	}
 }

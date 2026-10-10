@@ -15,7 +15,7 @@ const maxRelationDepth = 10
 // everything here follows from the file alone (spec §5). Whether the documented keys match
 // MySQL's is preflight's check (spec §8.2, M3).
 func validateJob(shared *config.Config, name string, s *Spec) config.ValidationErrors {
-	p := "jobs." + name
+	p := jobField(name)
 	var errs config.ValidationErrors
 	add := func(field, msg string, args ...any) {
 		errs = append(errs, config.ValidationError{Field: field, Message: fmt.Sprintf(msg, args...)})

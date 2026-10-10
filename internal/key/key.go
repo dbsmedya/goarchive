@@ -106,9 +106,6 @@ func (s *Set) Has(k Key) bool { _, ok := s.seen[Encode(k)]; return ok }
 // Keys returns the keys in insertion order. The caller must not modify the slice.
 func (s *Set) Keys() []Key { return s.keys }
 
-// Len returns the number of distinct keys.
-func (s *Set) Len() int { return len(s.keys) }
-
 // Decode converts one row of Projection(d), read as raw bytes, into a Key. It copies
 // every byte slice, so raw may be sql.RawBytes reused by the next rows.Next.
 func (d Def) Decode(raw [][]byte) (Key, error) {

@@ -6,82 +6,46 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
 
+// TestEffectiveJobLogging: the command line beats the job's logging block, which beats the
+// global one; a key the job omits keeps the global value (M6-3).
 func TestEffectiveJobLogging(t *testing.T) {
-	baseCfg := func() *config.Config {
-		cfg := config.DefaultConfig()
-		cfg.Logging = config.LoggingConfig{Level: "warn", Format: "json", Output: "stdout"}
-		return cfg
+	global := config.LoggingConfig{Level: "warn", Format: "json", Output: "stdout"}
+	fileOnly := true
+	job := &jobspec.Spec{Logging: &jobspec.LoggingOverrides{
+		Level: "debug", Format: "text", Output: "/opt/goarchive/ShipmentErrorLogs.log", FileOnly: &fileOnly,
+	}}
+	if got := effectiveJobLogging(global, job, CLIOverrides{}); got.Level != "debug" || got.Format != "text" ||
+		got.Output != "/opt/goarchive/ShipmentErrorLogs.log" || !got.FileOnly {
+		t.Errorf("job over global = %+v", got)
 	}
-	jobWithLogging := &config.JobConfig{
-		Logging: &config.LoggingConfig{
-			Level:    "debug",
-			Format:   "text",
-			Output:   "/opt/goarchive/ShipmentErrorLogs.log",
-			FileOnly: true,
-		},
+	if got := effectiveJobLogging(global, job, CLIOverrides{LogLevel: "error", LogFormat: "json"}); got.Level != "error" ||
+		got.Format != "json" || got.Output != "/opt/goarchive/ShipmentErrorLogs.log" {
+		t.Errorf("flags over job = %+v", got)
 	}
-
-	t.Run("job overrides global", func(t *testing.T) {
-		got := effectiveJobLogging(baseCfg(), jobWithLogging, CLIOverrides{})
-		if got.Level != "debug" || got.Format != "text" ||
-			got.Output != "/opt/goarchive/ShipmentErrorLogs.log" || !got.FileOnly {
-			t.Errorf("expected job logging to override global, got %+v", got)
-		}
-	})
-
-	t.Run("CLI flags override job", func(t *testing.T) {
-		got := effectiveJobLogging(baseCfg(), jobWithLogging, CLIOverrides{LogLevel: "error", LogFormat: "json"})
-		if got.Level != "error" {
-			t.Errorf("expected CLI level error to win over job, got %s", got.Level)
-		}
-		if got.Format != "json" {
-			t.Errorf("expected CLI format json to win over job, got %s", got.Format)
-		}
-		if got.Output != "/opt/goarchive/ShipmentErrorLogs.log" {
-			t.Errorf("expected job output retained, got %s", got.Output)
-		}
-	})
-
-	t.Run("job without logging block uses global", func(t *testing.T) {
-		got := effectiveJobLogging(baseCfg(), &config.JobConfig{}, CLIOverrides{})
-		if got.Level != "warn" || got.Output != "stdout" {
-			t.Errorf("expected global logging, got %+v", got)
-		}
-	})
-
-	t.Run("nil job uses global plus CLI", func(t *testing.T) {
-		got := effectiveJobLogging(baseCfg(), nil, CLIOverrides{LogLevel: "debug"})
-		if got.Level != "debug" || got.Output != "stdout" {
-			t.Errorf("expected global+CLI logging, got %+v", got)
-		}
-	})
+	if got := effectiveJobLogging(global, &jobspec.Spec{}, CLIOverrides{LogLevel: "debug"}); got.Level != "debug" || got.Output != "stdout" {
+		t.Errorf("no job block = %+v, want global plus the flag", got)
+	}
 }
 
 func TestNewJobLoggerTagsJobAndWritesFile(t *testing.T) {
 	logPath := t.TempDir() + "/job.log"
-	cfg := config.DefaultConfig()
-	jobCfg := &config.JobConfig{
-		Logging: &config.LoggingConfig{Format: "json", Output: logPath, FileOnly: true},
-	}
-
-	log, err := newJobLogger(cfg, jobCfg, "archive_shipment_error_logs")
+	fileOnly := true
+	doc := &jobspec.Document{Shared: config.DefaultConfig()}
+	job := &jobspec.Spec{Logging: &jobspec.LoggingOverrides{Format: "json", Output: logPath, FileOnly: &fileOnly}}
+	log, err := newJobLogger(doc, job, "archive_shipment_error_logs")
 	if err != nil {
 		t.Fatalf("newJobLogger failed: %v", err)
 	}
 	log.Info("job tag check")
 	_ = log.Close()
-
 	content, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Fatalf("failed to read job log file: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(content), `"job": "archive_shipment_error_logs"`) &&
-		!strings.Contains(string(content), `"job":"archive_shipment_error_logs"`) {
-		t.Errorf("expected job tag on log entries, got: %s", content)
-	}
-	if !strings.Contains(string(content), "job tag check") {
-		t.Error("expected logged message in job log file")
+	if !strings.Contains(string(content), `"job":"archive_shipment_error_logs"`) && !strings.Contains(string(content), `"job": "archive_shipment_error_logs"`) {
+		t.Errorf("no job tag: %s", content)
 	}
 }

@@ -51,6 +51,12 @@ func fetchSQL(root key.Def, where string, continued bool) string {
 	return b.String()
 }
 
+// rangeCountSQL counts the where range, for --progress's estimate (R50). The where text sits
+// between parentheses exactly as in the fetch.
+func rangeCountSQL(root key.Def, where string) string {
+	return "SELECT COUNT(*) FROM " + sqlutil.QuoteIdentifier(root.Table) + " WHERE (" + where + "\n)"
+}
+
 // discoverySQL reads the keys of child's rows whose foreign_key columns hold one of tuples
 // parent key tuples (spec §7.3). The columns are listed in config order and each is bound
 // like the parent column it pairs with (jobspec.ProjectColumns); the caller binds every

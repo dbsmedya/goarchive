@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -136,11 +137,13 @@ func validateJobNames(names []string) config.ValidationErrors {
 	var errs config.ValidationErrors
 	first := make(map[string]string, len(names))
 	for _, name := range names {
-		field := "jobs." + name
+		field := jobField(name)
 		switch {
 		case name == "":
 			errs = append(errs, config.ValidationError{Field: "jobs", Message: "a job name must not be empty"})
 			continue
+		case strings.HasPrefix(name, "-"):
+			errs = append(errs, config.ValidationError{Field: field, Message: fmt.Sprintf("job name %q must not start with \"-\", which the command line reads as a flag", name)})
 		case strings.IndexFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
 			errs = append(errs, config.ValidationError{Field: field, Message: fmt.Sprintf("job name %q must not contain spaces or control characters", name)})
 		case strings.IndexFunc(name, func(r rune) bool { return r > unicode.MaxASCII }) >= 0:
@@ -157,6 +160,15 @@ func validateJobNames(names []string) config.ValidationErrors {
 		first[folded] = name
 	}
 	return errs
+}
+
+// jobField is a job's field path, jobs.<name>. A name holding a control or invisible
+// character is quoted, so the path shows what is there (M2-C2).
+func jobField(name string) string {
+	if q := strconv.Quote(name); q != `"`+name+`"` {
+		return "jobs." + q
+	}
+	return "jobs." + name
 }
 
 // withGuide appends the upgrade pointer when an error is a sign of a 2.x configuration: a

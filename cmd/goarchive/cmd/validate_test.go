@@ -48,19 +48,17 @@ func TestValidateCommandUsage(t *testing.T) {
 func TestValidateCommandChecks(t *testing.T) {
 	// Verify the command documents the validation checks
 	doc := validateCmd.Long
-	assert.Contains(t, doc, "Checks performed")
-	assert.Contains(t, doc, "Configuration")
-	assert.Contains(t, doc, "Database connectivity")
-	assert.Contains(t, doc, "Table existence")
-	assert.Contains(t, doc, "Foreign key")
-	assert.Contains(t, doc, "DELETE trigger")
-	assert.Contains(t, doc, "CASCADE")
+	assert.Contains(t, doc, "job type's profile")
+	assert.Contains(t, doc, "primary key from MySQL")
+	assert.Contains(t, doc, "permissions, triggers")
+	assert.Contains(t, doc, "foreign-key coverage")
+	assert.Contains(t, doc, "destination compatibility")
 }
 
 func TestValidateCommandPreflight(t *testing.T) {
 	// Verify the command mentions preflight checks
 	doc := validateCmd.Long
-	assert.Contains(t, doc, "preflight checks")
+	assert.Contains(t, doc, "preflight")
 }
 
 func TestValidateCommandOptionalJobFlag(t *testing.T) {

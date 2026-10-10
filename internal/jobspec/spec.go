@@ -12,6 +12,7 @@ package jobspec
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"gopkg.in/yaml.v3"
@@ -72,7 +73,7 @@ type Spec struct {
 	Relations    []Relation                  `yaml:"relations"`
 	Processing   *config.ProcessingOverrides `yaml:"processing"`
 	Verification *Verification               `yaml:"verification"`
-	Logging      *config.LoggingConfig       `yaml:"logging"`
+	Logging      *LoggingOverrides           `yaml:"logging"`
 }
 
 // Relation is one child table and the columns that tie it to its parent (spec §5, §7.3).
@@ -94,7 +95,7 @@ func (s *Spec) ResumeEnabled() bool {
 
 // EffectiveProcessing merges the job's processing overrides over global.
 func (s *Spec) EffectiveProcessing(global config.ProcessingConfig) config.ProcessingConfig {
-	return (&config.JobConfig{Processing: s.Processing}).GetJobProcessing(global)
+	return s.Processing.Apply(global)
 }
 
 // EffectiveVerification is the job's verification, or global when the job sets none.
@@ -105,18 +106,42 @@ func (s *Spec) EffectiveVerification(global Verification) Verification {
 	return global
 }
 
+// LoggingOverrides is a job's logging block: each key it sets overrides the global
+// logging block, and each key it omits keeps the global value (M6-3).
+type LoggingOverrides struct {
+	Level    string `yaml:"level"`
+	Format   string `yaml:"format"`
+	Output   string `yaml:"output"`
+	FileOnly *bool  `yaml:"file_only"`
+}
+
 // EffectiveLogging merges the job's logging overrides over global.
 func (s *Spec) EffectiveLogging(global config.LoggingConfig) config.LoggingConfig {
-	return (&config.JobConfig{Logging: s.Logging}).GetJobLogging(global)
+	out := global
+	o := s.Logging
+	if o == nil {
+		return out
+	}
+	if o.Level != "" {
+		out.Level = o.Level
+	}
+	if o.Format != "" {
+		out.Format = o.Format
+	}
+	if o.Output != "" {
+		out.Output = o.Output
+	}
+	if o.FileOnly != nil {
+		out.FileOnly = *o.FileOnly
+	}
+	return out
 }
 
 // Document is a loaded, validated configuration file.
 type Document struct {
-	// Shared holds every block except jobs and verification; Shared.Jobs is always empty
-	// and Shared.Verification is unused. Never call its job-aware methods (GetJob,
-	// GetJobProcessing, GetJobVerification, GetJobLogging, or ApplyOverrides): with no jobs
-	// they silently fall back to the global blocks. Use the Spec's Effective* methods; M6
-	// applies --verification over Spec.EffectiveVerification.
+	// Shared holds every block except jobs and verification, which the Document holds itself.
+	// Use the Spec's Effective* methods for a job's settings; the commands apply
+	// --verification over Spec.EffectiveVerification.
 	Shared *config.Config
 	// Verification is the file's global verification, sha256 unless set (R41, R42).
 	Verification Verification
@@ -129,6 +154,12 @@ type Document struct {
 func (d *Document) Job(name string, cmd Type) (*Spec, error) {
 	s, ok := d.Jobs[name]
 	if !ok {
+		// 2.x lowercased job names, so a cron line may still spell one in other case.
+		for _, other := range d.JobNames() {
+			if strings.EqualFold(other, name) {
+				return nil, fmt.Errorf("job %q not found in configuration; job names are case-sensitive: did you mean %q?", name, other)
+			}
+		}
 		return nil, fmt.Errorf("job %q not found in configuration", name)
 	}
 	if cmd != "" && s.Type != cmd {

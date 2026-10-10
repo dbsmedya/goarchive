@@ -1,14 +1,11 @@
 package cmd
 
 import (
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/spf13/cobra"
 )
 
-var (
-	archiveJob      string
-	archiveForce    bool
-	archiveProgress string
-)
+var archiveOpts runOptions
 
 var archiveCmd = &cobra.Command{
 	Use:   "archive",
@@ -16,29 +13,21 @@ var archiveCmd = &cobra.Command{
 	Long: `Archive copies matching records from source to destination database,
 verifies the copy, then deletes from source.
 
-The archive process follows these steps:
-  1. Discover all related records using BFS traversal
-  2. Copy records to destination in dependency order (parent-first)
-  3. Verify copy integrity (count or SHA256)
-  4. Delete from source in reverse order (child-first)
+Each batch:
+  1. Fetch the next root keys of the where range, in key order
+  2. Discover every related row, parent first
+  3. Copy them to the destination, verify the copy, and log the roots copied,
+     all in one destination transaction
+  4. Delete from source, child first, each chunk in its own transaction
+
+A run first replays what an interrupted run logged.
 
 Example:
   goarchive archive --config archiver.yaml --job archive_old_orders`,
-	RunE: runArchive,
+	RunE: func(c *cobra.Command, _ []string) error { return runJob(c, jobspec.Archive, &archiveOpts) },
 }
 
 func init() {
-	archiveCmd.Flags().StringVarP(&archiveJob, "job", "j", "",
-		"Job name from configuration file (required)")
-	_ = archiveCmd.MarkFlagRequired("job") // Config-time error, cannot fail
-
-	archiveCmd.Flags().BoolVar(&archiveForce, "force", false,
-		"Refresh a stale heartbeat takeover only. Because archive is destructive, --force CANNOT proceed while the advisory GET_LOCK is still held by another connection (a held lock cannot be safely stolen): verify the prior process is dead and its MySQL session has closed, then retry. Cannot bypass: a live heartbeating job, the same-root concurrency check, or preflight checks.")
-	registerProgressFlag(archiveCmd, &archiveProgress)
-
+	registerRunFlags(archiveCmd, &archiveOpts, jobspec.Archive)
 	rootCmd.AddCommand(archiveCmd)
-}
-
-func runArchive(_ *cobra.Command, _ []string) error {
-	return errUnwired("archive")
 }

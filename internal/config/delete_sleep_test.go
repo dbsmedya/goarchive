@@ -2,11 +2,11 @@ package config
 
 import "testing"
 
-// TestGetJobProcessing_DeleteSleepSecondsOverride verifies that a job-level
+// TestProcessingOverridesApply_DeleteSleepSeconds verifies that a job-level
 // delete_sleep_seconds overrides the global value while other processing fields
 // continue to inherit from the global config, and that a job without its own
 // processing block inherits the global delete_sleep_seconds.
-func TestGetJobProcessing_DeleteSleepSecondsOverride(t *testing.T) {
+func TestProcessingOverridesApply_DeleteSleepSeconds(t *testing.T) {
 	global := ProcessingConfig{
 		BatchSize:          1000,
 		BatchDeleteSize:    500,
@@ -15,8 +15,8 @@ func TestGetJobProcessing_DeleteSleepSecondsOverride(t *testing.T) {
 	}
 
 	deleteSleep := 2.5
-	jc := &JobConfig{Processing: &ProcessingOverrides{DeleteSleepSeconds: &deleteSleep}}
-	got := jc.GetJobProcessing(global)
+	o := &ProcessingOverrides{DeleteSleepSeconds: &deleteSleep}
+	got := o.Apply(global)
 	if got.DeleteSleepSeconds != 2.5 {
 		t.Errorf("expected job delete_sleep_seconds 2.5, got %v", got.DeleteSleepSeconds)
 	}
@@ -27,8 +27,8 @@ func TestGetJobProcessing_DeleteSleepSecondsOverride(t *testing.T) {
 
 	// A job with no processing block inherits the global delete_sleep_seconds.
 	global.DeleteSleepSeconds = 3
-	none := &JobConfig{}
-	if got := none.GetJobProcessing(global); got.DeleteSleepSeconds != 3 {
+	var none *ProcessingOverrides
+	if got := none.Apply(global); got.DeleteSleepSeconds != 3 {
 		t.Errorf("expected inherited delete_sleep_seconds 3, got %v", got.DeleteSleepSeconds)
 	}
 }

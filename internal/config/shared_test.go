@@ -20,9 +20,6 @@ func TestValidateSharedIgnoresJobs(t *testing.T) {
 	if err := c.ValidateShared(); err != nil {
 		t.Fatalf("ValidateShared() = %v, want nil", err)
 	}
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "at least one job") {
-		t.Fatalf("Validate() = %v, want the at-least-one-job error", err)
-	}
 }
 
 // TestValidateSharedReportsEverySharedBlock: one broken setting per block, each reported.
@@ -42,16 +39,6 @@ func TestValidateSharedReportsEverySharedBlock(t *testing.T) {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("ValidateShared() does not report %s:\n%v", field, err)
 		}
-	}
-}
-
-// TestValidateSharedLeavesVerificationToJobspec: 3.0's verification is one value that
-// jobspec owns (R42), so the 2.x verification block is not judged here.
-func TestValidateSharedLeavesVerificationToJobspec(t *testing.T) {
-	c := validShared()
-	c.Verification = VerificationConfig{}
-	if err := c.ValidateShared(); err != nil {
-		t.Errorf("ValidateShared() = %v, want no verification judgement", err)
 	}
 }
 

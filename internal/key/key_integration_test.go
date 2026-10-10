@@ -115,8 +115,8 @@ func TestAfterWalksEveryRowOnceUnderCaseInsensitiveCollation(t *testing.T) {
 		}
 		page = readKeys(t, c, d, next, AfterArgs(page[len(page)-1])...)
 	}
-	if int64(seen.Len()) != total {
-		t.Fatalf("visited %d rows, table has %d", seen.Len(), total)
+	if int64(len(seen.Keys())) != total {
+		t.Fatalf("visited %d rows, table has %d", len(seen.Keys()), total)
 	}
 }
 
@@ -295,8 +295,8 @@ func TestAfterWalksEmptyKeyComponents(t *testing.T) {
 		}
 		page = readKeys(t, c, d, next, AfterArgs(page[0])...)
 	}
-	if seen.Len() != 5 {
-		t.Fatalf("visited %d rows, want 5", seen.Len())
+	if len(seen.Keys()) != 5 {
+		t.Fatalf("visited %d rows, want 5", len(seen.Keys()))
 	}
 }
 

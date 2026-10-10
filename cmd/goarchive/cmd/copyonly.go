@@ -1,14 +1,11 @@
 package cmd
 
 import (
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/spf13/cobra"
 )
 
-var (
-	copyOnlyJob      string
-	copyOnlyForce    bool
-	copyOnlyProgress string
-)
+var copyOnlyOpts runOptions
 
 var copyOnlyCmd = &cobra.Command{
 	Use:   "copy-only",
@@ -16,23 +13,15 @@ var copyOnlyCmd = &cobra.Command{
 	Long: `Copy-only copies matching records from source to destination database,
 verifies the copied data, and never deletes from source.
 
-Default mode runs non-interactively and logs:
-  INFO: Source data will NOT be deleted
+A rerun copies again from the start of the where range. With resume: true
+in the job, it skips the roots this job has already copied.
 
-Force mode (--force) bypasses duplicate preflight checks.`,
-	RunE: runCopyOnly,
+Example:
+  goarchive copy-only --config archiver.yaml --job copy_orders`,
+	RunE: func(c *cobra.Command, _ []string) error { return runJob(c, jobspec.CopyOnly, &copyOnlyOpts) },
 }
 
 func init() {
-	copyOnlyCmd.Flags().StringVarP(&copyOnlyJob, "job", "j", "",
-		"Job name from configuration file (required)")
-	_ = copyOnlyCmd.MarkFlagRequired("job")
-	copyOnlyCmd.Flags().BoolVar(&copyOnlyForce, "force", false,
-		"Proceed past advisory lock contention only when the lock holder's heartbeat is stale (indicating a crashed prior instance). Also bypasses destination duplicate preflight checks after confirmation.")
-	registerProgressFlag(copyOnlyCmd, &copyOnlyProgress)
+	registerRunFlags(copyOnlyCmd, &copyOnlyOpts, jobspec.CopyOnly)
 	rootCmd.AddCommand(copyOnlyCmd)
-}
-
-func runCopyOnly(_ *cobra.Command, _ []string) error {
-	return errUnwired("copy-only")
 }

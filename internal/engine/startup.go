@@ -96,10 +96,20 @@ func lockJob(ctx context.Context, cfg Config, store *tracking.Store) (jobLock, r
 	return jobLock, rl, nil
 }
 
-// releaseLock releases l on a context cancellation cannot skip, bounded so a wedged server
-// cannot hang the exit (2.x issue #79).
+// cleanupTimeout bounds every cleanup statement, so a wedged server cannot hang the exit
+// (2.x issue #79).
+const cleanupTimeout = 5 * time.Second
+
+// cleanupContext is the context for cleanup after work on parent: a lock release, the final
+// job status, the FOREIGN_KEY_CHECKS reset. The run's cancellation, which is often why
+// cleanup is needed, cannot end it, and cleanupTimeout bounds it.
+func cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), cleanupTimeout)
+}
+
+// releaseLock releases l on a cleanup context (cleanupContext).
 func releaseLock(l *lock.AdvisoryLock, log *logger.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := cleanupContext(context.Background())
 	defer cancel()
 	if _, err := l.ReleaseLock(ctx); err != nil {
 		log.Warnw("advisory lock release failed", "error", err)
