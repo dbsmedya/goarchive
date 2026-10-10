@@ -1,8 +1,13 @@
 package key
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 func TestMaxTuples(t *testing.T) {
@@ -81,5 +86,19 @@ func TestChunksDoNotAliasTheSource(t *testing.T) {
 	s.Add(Key{int64(5)})
 	if got := last[len(last)-1][0].(int64); got != 99 {
 		t.Fatalf("appended key became %d: the last chunk aliases the set", got)
+	}
+}
+
+// A pool may run SHOW WARNINGS on another connection than the statement's, where warning
+// 3170 is never seen, so CheckRangeWarning refuses one before it queries (M5-3).
+func TestCheckRangeWarningRefusesAPool(t *testing.T) {
+	db, err := sql.Open("mysql", "u:p@tcp(127.0.0.1:1)/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	err = CheckRangeWarning(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "connection pool") {
+		t.Fatalf("CheckRangeWarning(*sql.DB) = %v, want a refusal naming the connection pool", err)
 	}
 }

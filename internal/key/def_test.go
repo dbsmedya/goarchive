@@ -67,3 +67,18 @@ func TestFromFactsRequiresIndexes(t *testing.T) {
 		t.Fatal("FromFacts accepted a TableSpec captured without indexes")
 	}
 }
+
+// TestFromFactsRefusesAnotherTablesSpec (M1-D1): the key fact and the table spec must
+// describe one table. Letter case may differ, as the library may report a name under
+// lower_case_table_names.
+func TestFromFactsRefusesAnotherTablesSpec(t *testing.T) {
+	pk, spec := orderLinesSpec(0)
+	spec.Table = "orders"
+	if _, err := FromFacts(pk, spec); err == nil {
+		t.Fatal("FromFacts accepted order_lines' key with the spec of orders")
+	}
+	spec.Table = "Order_Lines"
+	if _, err := FromFacts(pk, spec); err != nil {
+		t.Fatalf("a case-only difference: %v", err)
+	}
+}
