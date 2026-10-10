@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"testing"
 
 	"go.uber.org/zap"
@@ -196,4 +197,36 @@ func TestMySQLInternalForeignKeyCoverage(t *testing.T) {
 		execAll(t, src, "ALTER TABLE child DROP FOREIGN KEY fk_child_parent")
 		schPasses(t, src, dst, body, schTypes...)
 	})
+}
+
+// TestMySQLDestinationInsertTriggers (M7-3, G10): a destination INSERT trigger refuses
+// every job type that copies, whatever its timing, and --force-triggers does not lift it.
+//
+// Pair: a BEFORE INSERT trigger on orders and an AFTER INSERT trigger on line_notes in the
+// destination → DEST_INSERT_TRIGGER_CHECK naming orders(trg_orders_bi) and
+// line_notes(trg_notes_ai) for archive and copy-only, with and without ForceTriggers, and
+// purge passes; the triggers dropped → archive and copy-only pass.
+func TestMySQLDestinationInsertTriggers(t *testing.T) {
+	src := scratch(t, "TEST_SOURCE", "schtrg")
+	execAll(t, src, orderTables(schCS)...)
+	dst := scratch(t, "TEST_DEST", "schtrgdst")
+	execAll(t, dst, orderTables(schCS)...)
+	execAll(t, dst,
+		"CREATE TRIGGER trg_orders_bi BEFORE INSERT ON orders FOR EACH ROW SET NEW.code = UPPER(NEW.code)",
+		"CREATE TRIGGER trg_notes_ai AFTER INSERT ON line_notes FOR EACH ROW SET @ga3m3_notes = NEW.note_id")
+
+	want := []string{"line_notes(trg_notes_ai)", "orders(trg_orders_bi)"}
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+		for _, force := range []bool{false, true} {
+			_, _, err := schRun(t, src, dst, job(t, typ, orderJob), func(c *Config) { c.ForceTriggers = force })
+			e := refusedWith(t, err, "DEST_INSERT_TRIGGER_CHECK")
+			if got := slices.Sorted(slices.Values(e.Tables)); !slices.Equal(got, want) {
+				t.Errorf("%s, ForceTriggers %v: tables = %v, want %v", typ, force, e.Tables, want)
+			}
+		}
+	}
+	schPasses(t, src, dst, orderJob, jobspec.Purge)
+
+	execAll(t, dst, "DROP TRIGGER trg_orders_bi", "DROP TRIGGER trg_notes_ai")
+	schPasses(t, src, dst, orderJob, jobspec.Archive, jobspec.CopyOnly)
 }
