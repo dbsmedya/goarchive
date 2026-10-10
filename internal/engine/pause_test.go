@@ -73,3 +73,24 @@ func TestSentinelGate(t *testing.T) {
 		t.Errorf("no sentinel file = %v", err)
 	}
 }
+
+// TestSentinelPauseShowsOnProgress (R50): while the sentinel pauses the run, the --progress
+// line says so and its ETA reads paused; the mark clears when the run resumes.
+func TestSentinelPauseShowsOnProgress(t *testing.T) {
+	tr := newProgressTracker(10)
+	g := newSentinelGate("/var/run/goarchive.pause", logger.NewDefault())
+	g.progress = tr
+	present := 2
+	var during string
+	g.presentFn = func(string) bool { present--; return present >= 0 }
+	g.sleepFn = func(context.Context, time.Duration) error { during = tr.snapshot().pausedReason; return nil }
+	if err := g.wait(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := `sentinel file "/var/run/goarchive.pause" present`; during != want {
+		t.Errorf("paused reason while paused = %q, want %q", during, want)
+	}
+	if got := tr.snapshot().pausedReason; got != "" {
+		t.Errorf("paused reason after resume = %q", got)
+	}
+}
