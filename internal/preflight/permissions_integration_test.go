@@ -429,3 +429,72 @@ func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 		}
 	})
 }
+
+// TestMySQLForeignKeyVisibility (M7-3, G8, deviation D2): archive and purge need proof
+// that foreign-key discovery saw every schema, which is the PROCESS-gated InnoDB registry
+// read; copy-only deletes nothing and is exempt.
+// Pair: a source account with SELECT and DELETE on the source schema and no PROCESS →
+// archive and purge refused with FK_COVERAGE_VISIBILITY_CHECK (state unconfirmed, the
+// query-stage diagnostic), copy-only passes; PROCESS granted directly → every type
+// passes; PROCESS held only through a default role → archive and purge pass too, because
+// the proof is the read's success.
+// Pair (stage order, ForeignKeyMetadataVisibility before ForeignKeyCoverage): an external
+// ON DELETE CASCADE child of orders in another schema plus no PROCESS → archive reports
+// FK_COVERAGE_VISIBILITY_CHECK; with PROCESS → archive and copy-only report
+// FK_COVERAGE_CHECK naming the external child.
+func TestMySQLForeignKeyVisibility(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "pvis")
+	ctx := context.Background()
+	base := []string{"GRANT SELECT, DELETE ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
+	noProcess := acctCreate(t, "TEST_SOURCE", src, "visnoproc", srcSchema, base...)
+	process := acctCreate(t, "TEST_SOURCE", src, "visproc", srcSchema, append(base, "GRANT PROCESS ON *.* TO {{A}}")...)
+	invisible := func(t *testing.T, err error) {
+		t.Helper()
+		e := refusedWith(t, err, "FK_COVERAGE_VISIBILITY_CHECK")
+		acctTablesAre(t, e)
+		acctMessage(t, e, "(state: unconfirmed)", "The primary InnoDB metadata query failed", "GRANT PROCESS ON *.* TO <user>")
+	}
+
+	t.Run("no PROCESS is refused except for copy-only", func(t *testing.T) {
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
+			invisible(t, acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)))
+		}
+		if err := acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.CopyOnly, acctJob)); err != nil {
+			t.Errorf("copy-only: Run() = %v, want success", err)
+		}
+	})
+	t.Run("direct PROCESS passes", func(t *testing.T) {
+		for _, typ := range acctTypes {
+			if err := acctRun(ctx, t, process, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	})
+	t.Run("role-held PROCESS passes", func(t *testing.T) {
+		role := acctRole(t, src, "rproc", "GRANT PROCESS ON *.* TO {{R}}")
+		as := acctCreate(t, "TEST_SOURCE", src, "visroleproc", srcSchema,
+			append(base, "GRANT "+role+" TO {{A}}", "SET DEFAULT ROLE ALL TO {{A}}")...)
+		acctRoleActive(t, as, role)
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
+			if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	})
+
+	// Created after the source schema, so its cleanup drops it first (Error 3730).
+	ext := scratch(t, "TEST_SOURCE", "pvisext")
+	execAll(t, ext, "CREATE TABLE audit (id INT NOT NULL PRIMARY KEY, order_id INT, KEY ix_order (order_id), "+
+		"CONSTRAINT fk_audit_order FOREIGN KEY (order_id) REFERENCES `"+srcSchema+"`.orders (id) ON DELETE CASCADE) ENGINE=InnoDB")
+	external := schemaOf(t, ext) + ".audit (ON DELETE CASCADE)"
+	t.Run("an external child and no PROCESS report visibility", func(t *testing.T) {
+		invisible(t, acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob)))
+	})
+	t.Run("an external child with PROCESS reports coverage", func(t *testing.T) {
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+			err := acctRun(ctx, t, process, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+			e := refusedWith(t, err, "FK_COVERAGE_CHECK")
+			acctMessage(t, e, "orders is referenced by: ["+external+"]")
+		}
+	})
+}
