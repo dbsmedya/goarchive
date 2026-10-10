@@ -10,7 +10,6 @@ import (
 type Config struct {
 	Source      DatabaseConfig    `yaml:"source" mapstructure:"source"`
 	Destination DatabaseConfig    `yaml:"destination" mapstructure:"destination"`
-	Replica     ReplicaConfig     `yaml:"replica" mapstructure:"replica"`
 	Replication ReplicationConfig `yaml:"replication" mapstructure:"replication"`
 	Processing  ProcessingConfig  `yaml:"processing" mapstructure:"processing"`
 	Safety      SafetyConfig      `yaml:"safety" mapstructure:"safety"`
@@ -31,20 +30,6 @@ type DatabaseConfig struct {
 	TLS                string `yaml:"tls" mapstructure:"tls"` // disable, preferred, skip-verify, required
 	MaxConnections     int    `yaml:"max_connections" mapstructure:"max_connections"`
 	MaxIdleConnections int    `yaml:"max_idle_connections" mapstructure:"max_idle_connections"`
-}
-
-// ReplicaConfig is the removed 2.0 replica: block, kept declared only so that a
-// config still carrying it can be detected and rejected with a migration error.
-//
-// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
-type ReplicaConfig struct {
-	Enabled  bool   `yaml:"enabled" mapstructure:"enabled"`
-	Host     string `yaml:"host" mapstructure:"host"`
-	Port     int    `yaml:"port" mapstructure:"port"`
-	User     string `yaml:"user" mapstructure:"user"`
-	Password string `yaml:"password" mapstructure:"password"`
-	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
-	ReplicationChannel string `yaml:"replication_channel" mapstructure:"replication_channel"`
 }
 
 // ReplicationConfig configures the replication gate: the fleet of replicas to
@@ -122,10 +107,6 @@ type ProcessingConfig struct {
 
 // SafetyConfig represents safety settings for archive operations.
 type SafetyConfig struct {
-	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
-	LagThreshold int `yaml:"lag_threshold" mapstructure:"lag_threshold"`
-	// Deprecated: 2.0 legacy sentinel — see validateLegacyReplicaKeys.
-	CheckInterval           int  `yaml:"check_interval" mapstructure:"check_interval"`
 	DisableForeignKeyChecks bool `yaml:"disable_foreign_key_checks" mapstructure:"disable_foreign_key_checks"`
 }
 

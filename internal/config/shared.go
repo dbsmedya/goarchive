@@ -5,14 +5,13 @@ package config
 // They wrap the unexported validators, so 2.x behaviour is unchanged.
 
 // ValidateShared checks every block except jobs and verification: source, destination,
-// replication, the removed 2.0 replica keys, processing, safety and the global logging
+// replication, processing, safety and the global logging
 // block. jobspec owns 3.0's verification, one value (R42).
 func (c *Config) ValidateShared() error {
 	var errs ValidationErrors
 	errs = append(errs, c.validateDatabase("source", &c.Source)...)
 	errs = append(errs, c.validateDatabase("destination", &c.Destination)...)
 	errs = append(errs, c.validateReplication()...)
-	errs = append(errs, c.validateLegacyReplicaKeys()...)
 	errs = append(errs, c.validateProcessing()...)
 	errs = append(errs, c.validateSafety()...)
 	errs = append(errs, validateLoggingConfig(c.Logging, "logging")...)
