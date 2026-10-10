@@ -4,7 +4,9 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
@@ -69,5 +71,40 @@ func TestMySQLRecoveryHonoursStop(t *testing.T) {
 	}
 	if rep := e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob))); rep.Recovered != 2 {
 		t.Errorf("rerun = %+v, want the 2 remaining roots recovered", rep)
+	}
+}
+
+// TestMySQLSmallDestinationPool (M5-F6): startup holds the root-table and job locks, each on
+// its own destination connection, while it reads the registry on a third. A pool limited
+// below three is refused before any lock, naming the setting, instead of waiting forever.
+// Three is enough for a whole run, recovery included.
+func TestMySQLSmallDestinationPool(t *testing.T) {
+	e := newEnv(t, "pool")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	e.interrupted(t, e.config(t, job(t, jobspec.Archive, orderJob)), atCommitted)
+
+	small := openServer(t, "TEST_DEST", e.dstSchema, nil)
+	small.SetMaxOpenConns(2)
+	cfg := e.config(t, job(t, jobspec.Archive, orderJob))
+	cfg.Destination = small
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err := Run(ctx, cfg)
+	if err == nil || !strings.Contains(err.Error(), "destination.max_connections") {
+		t.Fatalf("Run() with a 2-connection destination pool = %v, want a refusal naming destination.max_connections", err)
+	}
+	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobFailed) {
+		t.Errorf("job_status = %d, want the interrupted run's failed status untouched", got)
+	}
+
+	enough := openServer(t, "TEST_DEST", e.dstSchema, nil)
+	enough.SetMaxOpenConns(3)
+	cfg.Destination = enough
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel3()
+	rep, err := Run(ctx3, cfg)
+	if err != nil || rep.Recovered != 2 || rep.Roots != 1 {
+		t.Fatalf("Run() with a 3-connection pool = %+v, %v, want 2 recovered and 1 archived", rep, err)
 	}
 }
