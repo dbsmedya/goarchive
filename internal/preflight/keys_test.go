@@ -99,6 +99,17 @@ func TestSkipPolicyStillReadsKeys(t *testing.T) {
 	if len(res.Keys["order_lines"].Columns) != 2 {
 		t.Errorf("keys = %v, want MySQL's two-column key even though the documented one differs", res.Keys)
 	}
+	// The engine sizes destination statements by the destination's own key, so its caps are
+	// computed under skip too (found by the M5 engine).
+	dst := map[string]bool{}
+	for _, c := range res.Caps {
+		if c.Server == "destination" && c.Statement == "by key" {
+			dst[c.Table] = true
+		}
+	}
+	if len(dst) != len(res.Keys) {
+		t.Errorf("destination caps under skip = %v, want one per table (%d)", dst, len(res.Keys))
+	}
 
 	setColumn(w.src, "orders", col("id", "float", ""))
 	w.refused("KEY_TYPE_UNSUPPORTED")
