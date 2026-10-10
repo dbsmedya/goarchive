@@ -50,7 +50,8 @@ func TestInsertChunks(t *testing.T) {
 
 // TestMembershipNeedsASession: Transition and Logged read warning 3170 after their
 // statement, which proves nothing on a pool, where SHOW WARNINGS may run on another
-// connection. They refuse a *sql.DB.
+// connection, and Insert on a pool would write statuses outside the work's transaction.
+// They refuse a *sql.DB.
 func TestMembershipNeedsASession(t *testing.T) {
 	j := intJob(t)
 	ctx, pool, keys := context.Background(), new(sql.DB), []key.Key{{int64(1)}}
@@ -59,5 +60,9 @@ func TestMembershipNeedsASession(t *testing.T) {
 	}
 	if _, err := j.Logged(ctx, pool, StatusCompleted, keys); err == nil || !strings.Contains(err.Error(), "not a pool") {
 		t.Errorf("Logged on a pool = %v", err)
+	}
+	// A status is written in the transaction that does the work it records (spec §6.3).
+	if err := j.Insert(ctx, pool, StatusCopied, keys); err == nil || !strings.Contains(err.Error(), "not a pool") {
+		t.Errorf("Insert on a pool = %v", err)
 	}
 }
