@@ -239,3 +239,127 @@ func TestMySQLDestinationWritePermission(t *testing.T) {
 		}
 	})
 }
+
+// acctOnTables grants privs on each fixture table of schema, so the account sees the
+// tables without a schema grant.
+func acctOnTables(privs, schema string, tables ...string) []string {
+	var out []string
+	for _, table := range tables {
+		out = append(out, "GRANT "+privs+" ON `"+schema+"`.`"+table+"` TO {{A}}")
+	}
+	return out
+}
+
+// TestMySQLSourceSelectPermission (M7-3, G3): every job type reads the source, so each
+// needs SELECT on every job table.
+// Pair: a source account with PROCESS and table-scope DELETE and INSERT, and SELECT nowhere
+// → SOURCE_SELECT_PERMISSION_CHECK for archive, purge and copy-only naming orders(absent)
+// and order_lines(absent); the same account with SELECT on the schema → every type passes.
+// Order pair (stages: SourceSelectPermissions before SourceDeletePermissions): SELECT and
+// DELETE both withheld → archive reports SOURCE_SELECT_PERMISSION_CHECK; SELECT granted,
+// DELETE still withheld → SOURCE_DELETE_PERMISSION_CHECK.
+// Order pair (InternalForeignKeys before SourceSelectPermissions): SELECT withheld and a
+// declared line_notes → order_lines foreign key the job configures under orders instead →
+// INTERNAL_FK_COVERAGE; the job nesting line_notes under order_lines →
+// SOURCE_SELECT_PERMISSION_CHECK naming all three tables.
+func TestMySQLSourceSelectPermission(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "pss")
+	ctx := context.Background()
+	tables := acctOnTables("DELETE, INSERT", srcSchema, "orders", "order_lines")
+	withProcess := func(grants ...string) []string {
+		return append([]string{"GRANT PROCESS ON *.* TO {{A}}", acctSeesGrants}, grants...)
+	}
+
+	t.Run("no SELECT is refused", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "ssnoselect", srcSchema, withProcess(tables...)...)
+		for _, typ := range acctTypes {
+			err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+			acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"), "orders(absent)", "order_lines(absent)")
+		}
+	})
+	t.Run("with SELECT it passes", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "ssselect", srcSchema,
+			withProcess(append(tables, "GRANT SELECT ON `"+srcSchema+"`.* TO {{A}}")...)...)
+		for _, typ := range acctTypes {
+			if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	})
+
+	insertOnly := acctOnTables("INSERT", srcSchema, "orders", "order_lines")
+	t.Run("SELECT is reported before DELETE", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "ssinsonly", srcSchema, withProcess(insertOnly...)...)
+		err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob))
+		acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"), "orders(absent)", "order_lines(absent)")
+	})
+	t.Run("with SELECT, DELETE is reported", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "ssnodelete", srcSchema,
+			withProcess(append(insertOnly, "GRANT SELECT ON `"+srcSchema+"`.* TO {{A}}")...)...)
+		err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob))
+		acctTablesAre(t, refusedWith(t, err, "SOURCE_DELETE_PERMISSION_CHECK"), "orders(absent)", "order_lines(absent)")
+	})
+
+	const notes = "CREATE TABLE line_notes (id INT NOT NULL PRIMARY KEY, order_id INT NOT NULL, line_id INT NOT NULL, " +
+		"KEY ix_order (order_id), KEY ix_line (line_id), " +
+		"CONSTRAINT fk_notes_line FOREIGN KEY (line_id) REFERENCES order_lines (id)) ENGINE=InnoDB"
+	execAll(t, src, notes)
+	execAll(t, dst, notes)
+	noSelect := acctCreate(t, "TEST_SOURCE", src, "ssnoselectfk", srcSchema,
+		withProcess(acctOnTables("DELETE, INSERT", srcSchema, "orders", "order_lines", "line_notes")...)...)
+	t.Run("an uncovered internal foreign key is reported before SELECT", func(t *testing.T) {
+		err := acctRun(ctx, t, noSelect, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob+`
+      - table: line_notes
+        primary_key: id
+        foreign_key: order_id
+`))
+		e := refusedWith(t, err, "INTERNAL_FK_COVERAGE")
+		acctMessage(t, e, "line_notes(line_id) -> order_lines(id) (constraint fk_notes_line) "+
+			"[no relation: line_notes is not configured under order_lines]")
+	})
+	t.Run("covered, SELECT is reported", func(t *testing.T) {
+		err := acctRun(ctx, t, noSelect, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob+`
+        relations:
+          - table: line_notes
+            primary_key: id
+            foreign_key: line_id
+`))
+		acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"),
+			"orders(absent)", "order_lines(absent)", "line_notes(absent)")
+	})
+}
+
+// TestMySQLSourceDeletePermission (M7-3, G4): archive and purge delete from the source;
+// copy-only does not and is not asked.
+// Pair: a source account with global SELECT and PROCESS and no DELETE → archive and purge
+// refused with SOURCE_DELETE_PERMISSION_CHECK naming orders(absent) and
+// order_lines(absent), and copy-only passes; the same account with a global DELETE (with
+// @@global.partial_revokes OFF, which the test asserts) → archive and purge pass.
+func TestMySQLSourceDeletePermission(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "psd")
+	ctx := context.Background()
+	var partial int
+	if err := src.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&partial); err != nil || partial != 0 {
+		t.Fatalf("@@global.partial_revokes = %d, %v; this test needs it OFF", partial, err)
+	}
+	base := []string{"GRANT SELECT, PROCESS ON *.* TO {{A}}"}
+
+	t.Run("no DELETE is refused", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "sdnodelete", srcSchema, base...)
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
+			err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+			acctTablesAre(t, refusedWith(t, err, "SOURCE_DELETE_PERMISSION_CHECK"), "orders(absent)", "order_lines(absent)")
+		}
+		if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.CopyOnly, acctJob)); err != nil {
+			t.Errorf("copy-only: Run() = %v, want success", err)
+		}
+	})
+	t.Run("a global DELETE passes", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "sddelete", srcSchema, append(base, "GRANT DELETE ON *.* TO {{A}}")...)
+		for _, typ := range acctTypes {
+			if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	})
+}
