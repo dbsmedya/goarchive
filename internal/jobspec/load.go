@@ -173,7 +173,9 @@ func validateJobNames(names []string) config.ValidationErrors {
 // jobNamesInFileOrder returns the jobs mapping's names in the order the file writes them,
 // following merge keys where they appear, so a collision is reported on the name written
 // later (M2-C8). A null key (null, NULL, ~) is refused with its line: the decoder drops it,
-// and the job would vanish without an error (M2-C7).
+// and the job would vanish without an error (M2-C7). The jobs mapping is the one the
+// decoder reads, a root-level merge's included, and a key written as an alias is read as
+// the scalar it names (Codex M7a N1, N2).
 func jobNamesInFileOrder(top *yaml.Node) ([]string, config.ValidationErrors) {
 	var names []string
 	var errs config.ValidationErrors
@@ -189,25 +191,67 @@ func jobNamesInFileOrder(top *yaml.Node) ([]string, config.ValidationErrors) {
 			}
 		case yaml.MappingNode:
 			for i := 0; i+1 < len(n.Content); i += 2 {
-				k := n.Content[i]
+				k := scalarKey(n.Content[i])
 				switch {
 				case k.Tag == "!!merge":
 					walk(n.Content[i+1])
 				case k.Tag == "!!null":
 					errs = append(errs, config.ValidationError{Field: "jobs", Message: fmt.Sprintf(
-						"a job name must not be null (%q, line %d); quote it to use it as a name", k.Value, k.Line)})
+						"a job name must not be null (%q, line %d); quote it to use it as a name", k.Value, n.Content[i].Line)})
 				case !slices.Contains(names, k.Value):
 					names = append(names, k.Value)
 				}
 			}
 		}
 	}
-	for i := 0; i+1 < len(top.Content); i += 2 {
-		if top.Content[i].Value == "jobs" {
-			walk(top.Content[i+1])
-		}
+	if jobs := decodedJobs(top); jobs != nil {
+		walk(jobs)
 	}
 	return names, errs
+}
+
+// decodedJobs returns the node yaml.v3 decodes as m's jobs field: a jobs key written in m
+// wins over a merged one, and of a merged list the first mapping holding jobs wins. Nil
+// when there is none.
+func decodedJobs(m *yaml.Node) *yaml.Node {
+	for m.Kind == yaml.AliasNode {
+		m = m.Alias
+	}
+	if m.Kind != yaml.MappingNode {
+		return nil
+	}
+	var merge *yaml.Node
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		switch k := scalarKey(m.Content[i]); {
+		case k.Tag == "!!merge":
+			merge = m.Content[i+1]
+		case k.Value == "jobs":
+			return m.Content[i+1]
+		}
+	}
+	if merge == nil {
+		return nil
+	}
+	for merge.Kind == yaml.AliasNode {
+		merge = merge.Alias
+	}
+	if merge.Kind == yaml.SequenceNode {
+		for _, item := range merge.Content {
+			if jobs := decodedJobs(item); jobs != nil {
+				return jobs
+			}
+		}
+		return nil
+	}
+	return decodedJobs(merge)
+}
+
+// scalarKey is a mapping key as the decoder reads it: an alias stands for the node it names.
+func scalarKey(k *yaml.Node) *yaml.Node {
+	for k.Kind == yaml.AliasNode {
+		k = k.Alias
+	}
+	return k
 }
 
 // jobField is a job's field path, jobs.<name>. A name holding a control or invisible
