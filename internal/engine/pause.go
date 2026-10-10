@@ -56,8 +56,8 @@ const sentinelPollInterval = time.Second
 const sentinelStillPausedEvery = 30
 
 // sentinelGate is the operator's pause switch (processing.sentinel_file): while the file
-// exists, the loop waits before its next batch. Create the file to pause, delete it to
-// resume.
+// exists, the run waits before its next batch or recovery page. Create the file to pause,
+// delete it to resume.
 type sentinelGate struct {
 	path   string
 	logger *logger.Logger
