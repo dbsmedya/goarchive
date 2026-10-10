@@ -50,7 +50,10 @@ A failure there is an ERROR, not a pass.
 **The log at the interrupt point.** After 08's stop, exactly 100 roots are
 `completed` and none is `copied` or `deleting`, and run 1's report says it stopped
 before the end of the where range. After 09's kill, exactly 100 roots are `copied`,
-none is `deleting`, and the job is still `Running(1)`.
+none is `deleting`, and the job is still `Running(1)`. A crash declared at a later
+batch N leaves batches 1 to N-1 `completed` and only batch N `copied`: the destination
+count is checked against `copied` + `completed`, and only the `copied` roots are
+recovery's work, so `n` below is the `copied` count, not the destination's.
 
 **The discriminator.** The engine's `"Recovery: replaying <n> copied roots of
 payment"` line must be **absent** from 08's second run and **present** in 09's, with

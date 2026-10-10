@@ -265,6 +265,10 @@ run_interrupted_job() {
 #
 # Usage: assert_interrupt_preconditions <kind> <job_name> <root_table> <expect_dest> <run1_log>
 #
+# On success it sets INTERRUPT_PENDING: the roots run 1 left at 'copied', which run 2's
+# recovery must replay (0 after a graceful stop). After a crash in batch N, batches
+# 1..N-1 are 'completed' and only batch N is 'copied', so this is not expect_dest.
+#
 # Every check here is deterministic. The one quantity that is NOT -- how many of the
 # interrupted batch's source rows were already deleted -- is deliberately not
 # asserted: the delete throttle sleeps BETWEEN statements, so a crash can land with
@@ -278,6 +282,7 @@ assert_interrupt_preconditions() {
     local run1_log="$5"
 
     local job_id dest status nonterm copied completed deleting
+    INTERRUPT_PENDING=""
     if ! job_id=$(tracking_job_id "$job_name"); then
         log_error "  no archiver_job row for '$job_name' after run 1"
         log_error "    If the destination database was recreated between the runs, the"
@@ -347,21 +352,32 @@ assert_interrupt_preconditions() {
                 return 1
             fi
             log_info "  job_status=0 (Idle) — the run ended cleanly"
+            INTERRUPT_PENDING=0
             ;;
 
         crash)
             # The crash signature. All of these are things a cooperative stop
             # CANNOT produce, so together they prove the process really died.
+            #
+            # The destination holds every root run 1 copied: the earlier batches'
+            # at 'completed' and the killed batch's at 'copied'. Only the latter are
+            # recovery's work.
             if ! copied=$(tracking_status_count "$job_id" 1); then return 1; fi
-            if [[ "$copied" -ne "$expect_dest" ]]; then
-                log_error "  $copied root(s) at 'copied', expected exactly $expect_dest"
+            if ! completed=$(tracking_status_count "$job_id" 2); then return 1; fi
+            if [[ "$copied" -eq 0 ]]; then
+                log_error "  no root at 'copied' ($completed completed), expected the killed batch's"
                 log_error "    The kill missed its window. 'copied' means the batch's destination"
                 log_error "    commit happened and its completion did not — that interval is the"
                 log_error "    delete phase, whose only duration is the throttle between delete"
                 log_error "    statements. A wider delete_sleep_seconds widens the window."
                 return 1
             fi
-            log_info "  exactly $copied root(s) left at 'copied' — recovery has work to do"
+            if [[ $((copied + completed)) -ne "$expect_dest" ]]; then
+                log_error "  the log holds $copied copied + $completed completed root(s), expected $expect_dest"
+                log_error "    Every root in the destination must be logged as copied or completed."
+                return 1
+            fi
+            log_info "  exactly $copied root(s) left at 'copied' ($completed completed) — recovery has work to do"
 
             if ! deleting=$(tracking_status_count "$job_id" 4); then return 1; fi
             if [[ "$deleting" -ne 0 ]]; then
@@ -377,6 +393,7 @@ assert_interrupt_preconditions() {
                 return 1
             fi
             log_info "  job_status=1 (Running) — stale, because the final status was never written"
+            INTERRUPT_PENDING=$copied
             ;;
         *)
             log_error "assert_interrupt_preconditions: unknown kind '$kind'"
@@ -390,7 +407,10 @@ assert_interrupt_preconditions() {
 # Assert the resumed run copied only what it still had left to copy, by the path
 # its interrupt kind requires.
 #
-# Usage: assert_resume_copy_accounting <kind> <assert_log> <root_table> <expect_total> <expect_at_interrupt>
+# Usage: assert_resume_copy_accounting <kind> <assert_log> <root_table> <expect_total> <expect_at_interrupt> <pending>
+#
+# expect_at_interrupt is every root run 1 copied; pending is the part of it left at
+# 'copied' (assert_interrupt_preconditions's INTERRUPT_PENDING), which recovery replays.
 #
 # After a crash, recovery must promote the 'copied' roots by DELETE-ONLY replay
 # (spec §6.4): their copy already committed and was verified, so it is not redone.
@@ -410,6 +430,14 @@ assert_resume_copy_accounting() {
     local root="$3"
     local expect_total="$4"
     local expect_at_interrupt="$5"
+    local pending="$6"
+
+    case "$pending" in
+        ''|*[!0-9]*)
+            log_error "assert_resume_copy_accounting: pending='$pending' is not a count of copied roots"
+            return 1
+            ;;
+    esac
 
     local want=$((expect_total - expect_at_interrupt))
     local line got
@@ -434,14 +462,14 @@ assert_resume_copy_accounting() {
 
     case "$kind" in
         crash)
-            if ! grep -q "Recovery: replaying ${expect_at_interrupt} copied roots of ${root}\"" "$assert_log" ||
-                ! grep -q "^  recovered: ${expect_at_interrupt} logged roots finished by replay$" "$assert_log"; then
-                log_error "  run 2 did not replay exactly the $expect_at_interrupt copied root(s) of $root"
+            if ! grep -q "Recovery: replaying ${pending} copied roots of ${root}\"" "$assert_log" ||
+                ! grep -q "^  recovered: ${pending} logged roots finished by replay$" "$assert_log"; then
+                log_error "  run 2 did not replay exactly the $pending copied root(s) of $root"
                 log_error "    Observed:"
                 grep -E 'Recovery: replaying|recovered: ' "$assert_log" | head -2 | sed 's/^/      /'
                 return 1
             fi
-            log_info "  recovery replayed exactly $expect_at_interrupt copied root(s) (delete-only)"
+            log_info "  recovery replayed exactly $pending copied root(s) (delete-only)"
             ;;
         graceful)
             if grep -qE 'Recovery: replaying|^  recovered: ' "$assert_log"; then

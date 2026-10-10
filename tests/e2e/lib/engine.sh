@@ -442,7 +442,7 @@ run_e2e_test() {
             # assert_resume_copy_accounting.
             log_info "[STEP 3b-v] Asserting run 2 copied only what was left to copy..."
             if ! assert_resume_copy_accounting "$interrupt" "$assert_log" "$root_table" \
-                 "${expected_arr[0]}" "$interrupt_expect_dest"; then
+                 "${expected_arr[0]}" "$interrupt_expect_dest" "$INTERRUPT_PENDING"; then
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "" >> "$log_file"
                 echo "Result: FAIL (resumed run re-copied work it should have skipped)" >> "$log_file"
