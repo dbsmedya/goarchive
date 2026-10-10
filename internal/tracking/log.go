@@ -11,8 +11,8 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
-// Tx is the caller's destination transaction, or a pinned connection (Transition and
-// Logged refuse a *sql.DB). Statuses are
+// Tx is the caller's destination transaction, or a pinned connection (Insert, Transition
+// and Logged refuse a *sql.DB). Statuses are
 // written in the transaction that does the work they record (spec §6.3), and warning
 // 3170 is read on the same session as its statement (spec §7.1a).
 type Tx interface {
@@ -30,8 +30,8 @@ func (j *Job) quotedKeyColumns() string {
 	return strings.Join(cols, ", ")
 }
 
-// session refuses a pool where a statement reads warning 3170 afterwards: SHOW WARNINGS
-// on a *sql.DB may run on another connection and prove nothing.
+// session refuses a pool: a status written on a *sql.DB is outside the work's
+// transaction, and SHOW WARNINGS on one may run on another connection and prove nothing.
 func (j *Job) session(tx Tx, op string) error {
 	if _, ok := tx.(*sql.DB); ok {
 		return fmt.Errorf("tracking: job %q: %s needs a transaction or a pinned connection, not a pool", j.Name, op)
@@ -54,6 +54,9 @@ func (j *Job) validateKeys(keys []key.Key) error {
 func (j *Job) Insert(ctx context.Context, tx Tx, st Status, keys []key.Key) error {
 	if !st.valid() {
 		return fmt.Errorf("tracking: status %d", st)
+	}
+	if err := j.session(tx, "Insert"); err != nil {
+		return err
 	}
 	if err := j.validateKeys(keys); err != nil {
 		return err
