@@ -339,8 +339,9 @@ type RunningJob struct {
 
 // Running returns the jobs other than except that archiver_job marks running on rootTable,
 // with their heartbeat ages, for the engine's same-root guard (kept from 2.x, spec §9).
-// The caller holds the root table's advisory lock, so two startups on one root table
-// cannot both pass the guard.
+// Two startups on one root table cannot both pass the guard only if the caller holds the
+// root table's advisory lock from before this call until its own job is marked running, as
+// the engine does.
 func (s *Store) Running(ctx context.Context, rootTable, except string) ([]RunningJob, error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
 		"SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s "+

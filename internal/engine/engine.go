@@ -189,11 +189,20 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		return nil, err
 	}
-	jobLock, err := lockJob(ctx, cfg, store)
+	jobLock, rootLock, err := lockJob(ctx, cfg, store)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseLock(jobLock, log)
+	// The root lock is held until the job is marked running (lockJob).
+	rootHeld := true
+	releaseRoot := func() {
+		if rootHeld {
+			releaseLock(rootLock, log)
+			rootHeld = false
+		}
+	}
+	defer releaseRoot()
 
 	job, err := store.Attach(ctx, tracking.JobInput{Name: cfg.Name, Type: cfg.Spec.Type, RootKey: root, Binding: binding})
 	if err != nil {
@@ -210,6 +219,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 		return nil, err
 	}
 	r.reached(atRunning)
+	releaseRoot()
 
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

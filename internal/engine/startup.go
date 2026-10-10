@@ -58,36 +58,42 @@ func (e *ConcurrentError) Error() string {
 		"UPDATE %s SET job_status = 0 WHERE job_name = '<name>'", e.RootTable, strings.Join(stale, ", "), e.JobTable)
 }
 
-// lockJob takes the job's advisory lock. The root table's lock serializes startups on one
-// root table, so the same-root guard and the job lock are decided together.
-func lockJob(ctx context.Context, cfg Config, store *tracking.Store) (*lock.AdvisoryLock, error) {
+// lockJob takes the root table's lock, runs the same-root guard, and takes the job's
+// advisory lock. It returns both locks: the caller keeps the root lock until its job is
+// marked running, so a second startup on the same root table waits for it and then sees
+// this job in the guard (2.x held it the same way). On an error no lock is held.
+func lockJob(ctx context.Context, cfg Config, store *tracking.Store) (jobLock, rootLock *lock.AdvisoryLock, err error) {
 	root := cfg.Spec.RootTable
-	rootLock := lock.NewRootTableLock(cfg.Destination, root)
-	held, err := rootLock.AcquireLock(ctx, lock.TimeoutMedium)
+	rl := lock.NewRootTableLock(cfg.Destination, root)
+	held, err := rl.AcquireLock(ctx, lock.TimeoutMedium)
 	if err != nil {
-		return nil, fmt.Errorf("engine: root-table lock: %w", err)
+		return nil, nil, fmt.Errorf("engine: root-table lock: %w", err)
 	}
 	if !held {
-		return nil, fmt.Errorf("engine: timed out waiting for the root-table lock of %q: another job is starting on it", root)
+		return nil, nil, fmt.Errorf("engine: timed out waiting for the root-table lock of %q: another job is starting on it", root)
 	}
-	defer releaseLock(rootLock, cfg.Logger)
+	defer func() {
+		if err != nil {
+			releaseLock(rl, cfg.Logger)
+		}
+	}()
 
 	running, err := store.Running(ctx, root, cfg.Name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(running) > 0 {
-		return nil, &ConcurrentError{RootTable: root, JobTable: sqlutil.QuoteIdentifier(cfg.JobSchema) + ".archiver_job", Jobs: running}
+		return nil, nil, &ConcurrentError{RootTable: root, JobTable: sqlutil.QuoteIdentifier(cfg.JobSchema) + ".archiver_job", Jobs: running}
 	}
-	jobLock := lock.NewJobLock(cfg.Destination, cfg.Name)
+	jobLock = lock.NewJobLock(cfg.Destination, cfg.Name)
 	held, err = jobLock.TryAcquire(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("engine: job lock: %w", err)
+		return nil, nil, fmt.Errorf("engine: job lock: %w", err)
 	}
 	if !held {
-		return nil, fmt.Errorf("engine: job %q is already running: its advisory lock is held by another session", cfg.Name)
+		return nil, nil, fmt.Errorf("engine: job %q is already running: its advisory lock is held by another session", cfg.Name)
 	}
-	return jobLock, nil
+	return jobLock, rl, nil
 }
 
 // releaseLock releases l on a context cancellation cannot skip, bounded so a wedged server
