@@ -224,6 +224,55 @@ func TestMySQLRecoveryStopsWhilePaused(t *testing.T) {
 	}
 }
 
+// TestMySQLSecondRunWhilePaused: a run paused at the sentinel keeps its job lock, so a
+// second run of the same job (the next cron tick) is refused at startup instead of waiting
+// at the same file; removing the file resumes only the first. Pair (R56): first run paused
+// → the second is refused, "already running", and changes nothing; first run finished →
+// the same second run starts and finds nothing to do.
+func TestMySQLSecondRunWhilePaused(t *testing.T) {
+	e := newEnv(t, "cron")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	sentinel := filepath.Join(t.TempDir(), "pause")
+	if err := os.WriteFile(sentinel, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := e.config(t, job(t, jobspec.Archive, orderJob))
+	first.Processing.SentinelFile = sentinel
+	type result struct {
+		rep *Report
+		err error
+	}
+	done := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	go func() {
+		rep, err := Run(ctx, first)
+		done <- result{rep, err}
+	}()
+	time.Sleep(2*sentinelPollInterval + 500*time.Millisecond) // the first run is paused before its first batch
+
+	second := e.config(t, job(t, jobspec.Archive, orderJob))
+	second.Processing.SentinelFile = sentinel
+	if _, err := e.run(t, second); err == nil || !strings.Contains(err.Error(), `job "j" is already running`) {
+		t.Fatalf("second run while the first is paused = %v, want it refused as already running", err)
+	}
+	if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 4 {
+		t.Errorf("source orders after the refused run = %d, want 4", got)
+	}
+
+	if err := os.Remove(sentinel); err != nil {
+		t.Fatal(err)
+	}
+	res := <-done
+	if res.err != nil || res.rep.Roots != 3 {
+		t.Fatalf("first run = %+v, %v, want the 3 old orders archived", res.rep, res.err)
+	}
+	if rep := e.mustRun(t, second); rep.Roots != 0 || rep.Recovered != 0 {
+		t.Errorf("second run after the first finished = %+v, want nothing to do", rep)
+	}
+}
+
 // TestMySQLSmallDestinationPool (M5-F6): startup holds the root-table and job locks, each on
 // its own destination connection, while it reads the registry on a third. A pool limited
 // below three is refused before any lock, naming the setting, instead of waiting forever.
