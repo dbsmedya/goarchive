@@ -82,6 +82,7 @@ const (
 	atCommitted point = "committed" // the destination transaction committed
 	atLogged    point = "logged"    // purge: deleting committed, before any delete
 	atDeleted   point = "deleted"   // one source delete chunk committed
+	atRunning   point = "running"   // startup: the job is marked running and has beaten once
 )
 
 // Report is what a run did.
@@ -208,6 +209,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err := job.Heartbeat(ctx); err != nil {
 		return nil, err
 	}
+	r.reached(atRunning)
 
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

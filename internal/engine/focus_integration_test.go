@@ -297,6 +297,39 @@ func TestMySQLConcurrency(t *testing.T) {
 	}
 }
 
+// TestMySQLRootLockHeldUntilRunning: the root table's lock is still held when the job is
+// marked running, so a second job starting on the same root table waits for the lock and
+// then sees this one in the same-root guard (2.x held it the same way). Released early, two
+// jobs started together could both pass the guard.
+func TestMySQLRootLockHeldUntilRunning(t *testing.T) {
+	e := newEnv(t, "rootlock")
+	e.both(t, intTables)
+	execAll(t, e.src, "INSERT INTO r VALUES (1, 1)")
+	cfg := e.config(t, job(t, jobspec.Archive, decimalJob))
+	admin := openServer(t, "TEST_DEST", "", nil)
+	name := lock.GenerateRootTableLockName("r")
+	reached := false
+	cfg.at = func(p point) {
+		if p != atRunning {
+			return
+		}
+		reached = true
+		if got := count(t, admin, "SELECT IS_USED_LOCK(?) IS NOT NULL", name); got != 1 {
+			t.Errorf("the root-table lock %s is free once the job is marked running", name)
+		}
+		if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobRunning) {
+			t.Errorf("job_status at the running point = %d, want running", got)
+		}
+	}
+	e.mustRun(t, cfg)
+	if !reached {
+		t.Fatal("the running point was never reached")
+	}
+	if got := count(t, admin, "SELECT IS_USED_LOCK(?) IS NULL", name); got != 1 {
+		t.Errorf("the root-table lock %s is still held after the run", name)
+	}
+}
+
 // TestMySQLVerificationDetectsAChangedValue: a destination trigger changes a non-key value
 // on insert. Preflight refuses destination INSERT triggers, so the run skips its policy
 // checks (--skip-validate-preflight), the one way such a trigger reaches a copy. sha256
