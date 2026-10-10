@@ -31,11 +31,3 @@ func TestCLIFlagsVariables(t *testing.T) {
 	assert.Equal(t, "", logLevel)
 	assert.Equal(t, "", logFormat)
 }
-
-func TestJobVariables(t *testing.T) {
-	// Verify job-specific variables exist
-	assert.Equal(t, "", archiveJob, "archiveJob should default to empty")
-	assert.Equal(t, "", dryrunJob, "dryrunJob should default to empty")
-	assert.Equal(t, "", purgeJob, "purgeJob should default to empty")
-	assert.Equal(t, "", planJob, "planJob should default to empty")
-}

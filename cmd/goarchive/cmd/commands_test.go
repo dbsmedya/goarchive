@@ -22,6 +22,7 @@ func execute(t *testing.T, args ...string) (string, error) {
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs(args)
 	defer func() {
+		resetFlags(rootCmd)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)

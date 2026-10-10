@@ -53,7 +53,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 
 	// Apply CLI overrides
 	overrides := GetCLIOverrides()
-	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, overrides.SkipVerify)
+	cfg.ApplyOverrides(overrides.LogLevel, overrides.LogFormat, false)
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}

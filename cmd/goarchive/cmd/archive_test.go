@@ -45,39 +45,6 @@ func TestArchiveCommandExample(t *testing.T) {
 	assert.Contains(t, archiveCmd.Long, "goarchive archive")
 }
 
-func TestArchiveJobVariable(t *testing.T) {
-	// Save original value and restore after test
-	originalArchiveJob := archiveJob
-	defer func() {
-		archiveJob = originalArchiveJob
-	}()
-
-	tests := []struct {
-		name     string
-		jobValue string
-	}{
-		{
-			name:     "empty job",
-			jobValue: "",
-		},
-		{
-			name:     "simple job name",
-			jobValue: "archive_old_orders",
-		},
-		{
-			name:     "job with hyphens",
-			jobValue: "archive-old-orders",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			archiveJob = tt.jobValue
-			assert.Equal(t, tt.jobValue, archiveJob)
-		})
-	}
-}
-
 func TestArchiveCommandUsage(t *testing.T) {
 	assert.Equal(t, "archive", archiveCmd.Use)
 	assert.NotEmpty(t, archiveCmd.Short)
@@ -89,8 +56,8 @@ func TestArchiveCommandStepsDocumentation(t *testing.T) {
 	doc := archiveCmd.Long
 	assert.Contains(t, doc, "Discover")
 	assert.Contains(t, doc, "Copy")
-	assert.Contains(t, doc, "Verify")
-	assert.Contains(t, doc, "Delete")
+	assert.Contains(t, doc, "verify the copy")
+	assert.Contains(t, doc, "Delete from source, child first")
 }
 
 // ============================================================================
