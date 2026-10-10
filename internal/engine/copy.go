@@ -40,7 +40,9 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 			return err
 		}
 		defer func() {
-			if _, err := conn.ExecContext(context.Background(), "SET FOREIGN_KEY_CHECKS = 1"); err != nil {
+			resetCtx, done := cleanupContext(ctx)
+			defer done()
+			if _, err := conn.ExecContext(resetCtx, "SET FOREIGN_KEY_CHECKS = 1"); err != nil {
 				r.log.Errorf("Failed to reset FOREIGN_KEY_CHECKS on the destination connection: %v", err)
 				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 			}

@@ -19,7 +19,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
@@ -235,7 +234,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		final = tracking.JobFailed
 	}
-	statusCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	statusCtx, done := cleanupContext(ctx)
 	defer done()
 	if serr := job.SetStatus(statusCtx, final); serr != nil {
 		log.Errorw("failed to write the final job status", "job", cfg.Name, "status", final, "error", serr)
