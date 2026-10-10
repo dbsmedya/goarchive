@@ -113,6 +113,9 @@ func (r *run) execute(ctx context.Context) error {
 	if err := r.recover(ctx); err != nil {
 		return fmt.Errorf("engine: recovery: %w", err)
 	}
+	if r.report.Stopped {
+		return nil
+	}
 	return r.loop(ctx)
 }
 
