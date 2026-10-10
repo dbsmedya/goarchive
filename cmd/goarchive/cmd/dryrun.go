@@ -58,7 +58,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		return err
 	}
 	defer func() { _ = mgr.Close() }()
-	_, err = engine.Explain(ctx, engine.Config{
+	ex, err := engine.Explain(ctx, engine.Config{
 		Name: o.job, Spec: spec,
 		Source: mgr.Source, Destination: mgr.Destination,
 		JobSchema:     doc.Shared.Destination.EffectiveJobSchema(),
@@ -67,5 +67,9 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		ForceTriggers: o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Logger: log,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	printExplanation(c.OutOrStdout(), o.job, spec.Type, ex)
+	return nil
 }

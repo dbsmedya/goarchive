@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/dbsmedya/goarchive/v3/internal/database"
@@ -67,6 +68,10 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 		return err
 	}
 	defer syncLogger(log)
+	out := c.OutOrStdout()
+	for _, b := range banners(doc, typ, verification, o.skipPreflight, o.forceTriggers) {
+		_, _ = fmt.Fprintln(out, b)
+	}
 
 	ctx, stop := database.SetupGracefulShutdown(
 		func(os.Signal) {
@@ -87,7 +92,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 		}
 		lag = g
 	}
-	_, err = engine.Run(ctx, engine.Config{
+	rep, err := engine.Run(ctx, engine.Config{
 		Name: o.job, Spec: spec,
 		Source: mgr.Source, Destination: mgr.Destination,
 		JobSchema:               doc.Shared.Destination.EffectiveJobSchema(),
@@ -96,7 +101,10 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Lag: lag, Stop: stop, Logger: log,
-		Progress: progress, Out: c.OutOrStdout(),
+		Progress: progress, Out: out,
 	})
+	if rep != nil {
+		printReport(out, o.job, typ, rep)
+	}
 	return err
 }

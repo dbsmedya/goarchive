@@ -83,7 +83,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = preflight.Run(ctx, preflight.Config{
+		res, err := preflight.Run(ctx, preflight.Config{
 			Source: mgr.Source, SourceDatabase: src.Schema,
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,
 			JobSchema: doc.Shared.Destination.EffectiveJobSchema(),
@@ -95,7 +95,9 @@ func runValidate(c *cobra.Command, _ []string) error {
 			failed = append(failed, name)
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "   PASSED\n\n")
+		_, _ = fmt.Fprintf(out, "   PASSED\n")
+		printCaps(out, res.Caps)
+		_, _ = fmt.Fprintln(out)
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("validation failed for %d of %d job(s): %v", len(failed), len(names), failed)

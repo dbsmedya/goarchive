@@ -35,7 +35,6 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	if r.cfg.DisableForeignKeyChecks {
 		// SET is not transactional: reset it before the connection returns to the pool,
 		// whether the transaction committed or not.
-		r.log.Warn("SAFETY: FOREIGN_KEY_CHECKS is DISABLED for this copy. Destination inserts will not validate FK constraints.")
 		if _, err := conn.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
 			return err
 		}
