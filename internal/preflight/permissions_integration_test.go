@@ -498,3 +498,79 @@ func TestMySQLForeignKeyVisibility(t *testing.T) {
 		}
 	})
 }
+
+// acctWatchdog is how long a preflight run may take before the test calls it blocked.
+const acctWatchdog = 30 * time.Second
+
+// acctStart runs preflight for an archive acctJob in a goroutine and returns the channel
+// its result arrives on.
+func acctStart(t *testing.T, src, dst *sql.DB, srcSchema, dstSchema string) <-chan error {
+	t.Helper()
+	spec := job(t, jobspec.Archive, acctJob)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Run(context.Background(), Config{
+			Source: src, SourceDatabase: srcSchema,
+			Destination: dst, DestinationDatabase: dstSchema, JobSchema: dstSchema,
+			Spec: spec, Verification: jobspec.VerifyCount,
+		})
+		done <- err
+	}()
+	return done
+}
+
+// TestMySQLPrivilegeReadOnAPoolOfOne (M7-5, G6): mysqlServer.Privileges takes a
+// dedicated connection for the grant read and releases it before the next query, so a
+// pool limited to one connection (max_connections: 1) never waits on itself.
+// Pair: the source pool, then separately the destination pool, limited to one connection
+// → an archive preflight passes inside the watchdog; the same pool of one while the test
+// holds its only connection → the run is still blocked after two seconds, which is what
+// the watchdog detects, and once the test releases the connection the same run passes.
+func TestMySQLPrivilegeReadOnAPoolOfOne(t *testing.T) {
+	_, _, srcSchema, dstSchema := acctFixture(t, "ppool")
+	for _, side := range []string{"source", "destination"} {
+		t.Run(side, func(t *testing.T) {
+			src, dst := openServer(t, "TEST_SOURCE", srcSchema), openServer(t, "TEST_DEST", dstSchema)
+			one := src
+			if side == "destination" {
+				one = dst
+			}
+			one.SetMaxOpenConns(1)
+
+			t.Run("free pool of one passes", func(t *testing.T) {
+				select {
+				case err := <-acctStart(t, src, dst, srcSchema, dstSchema):
+					if err != nil {
+						t.Fatalf("Run() = %v, want success", err)
+					}
+				case <-time.After(acctWatchdog):
+					t.Fatalf("Run() did not return within %s on a %s pool of one", acctWatchdog, side)
+				}
+			})
+			t.Run("held pool of one blocks until released", func(t *testing.T) {
+				conn, err := one.Conn(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				done := acctStart(t, src, dst, srcSchema, dstSchema)
+				select {
+				case err := <-done:
+					_ = conn.Close()
+					t.Fatalf("Run() = %v while the test held the only %s connection, want it blocked", err, side)
+				case <-time.After(2 * time.Second):
+				}
+				if err := conn.Close(); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("Run() after release = %v, want success", err)
+					}
+				case <-time.After(acctWatchdog):
+					t.Fatalf("Run() did not return within %s after the %s connection was released", acctWatchdog, side)
+				}
+			})
+		})
+	}
+}
