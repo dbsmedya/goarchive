@@ -595,13 +595,13 @@ func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	}
 }
 
-// skipPolicyWalkDir reports whether a policy walk skips the directory named name. It
-// mirrors what `go build ./...` ignores: names beginning with "." or "_" (which covers .git
-// and internal directories such as .ayder), testdata, where a fixture may deliberately not
-// parse, and vendor, which holds no first-party source.
+// skipPolicyWalkDir reports whether a policy walk skips the directory named name: names
+// beginning with "." (which covers .git and internal directories such as .ayder),
+// testdata, where a fixture may deliberately not parse, and vendor, which holds no
+// first-party source. A "_" directory is walked: a package there is compiled when imported
+// by path (M0-D1).
 func skipPolicyWalkDir(name string) bool {
-	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") ||
-		name == "testdata" || name == "vendor"
+	return strings.HasPrefix(name, ".") || name == "testdata" || name == "vendor"
 }
 
 // moduleRoot returns the directory holding go.mod, walking up from the package directory
