@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,17 +38,7 @@ func TestConsumerPolicyNoResidualInformationSchemaQueries(t *testing.T) {
 	metadataCatalog := wireRuleByName(t, loadDBSGOMySQLWireRules(t, root), "information-schema").needle
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
@@ -162,17 +153,7 @@ func TestConsumerPolicyNoReplicationStatusSQL(t *testing.T) {
 	root := moduleRoot(t)
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			return nil
@@ -296,16 +277,7 @@ func TestConsumerPolicyNoDBSGOMySQLWireFormatInUnitTests(t *testing.T) {
 	rules := loadDBSGOMySQLWireRules(t, root)
 	fset := token.NewFileSet()
 
-	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipPolicyWalkDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
+	walkErr := policyWalk(root, func(path string, entry fs.DirEntry) error {
 		if !strings.HasSuffix(entry.Name(), "_test.go") {
 			return nil
 		}
@@ -592,6 +564,55 @@ func TestConsumerPolicyIntegrationBuildConstraint(t *testing.T) {
 	}
 	if isIntegrationTestFile("internal/engine/unit_fixture_test.go", nonIntegrationFile) {
 		t.Fatal("negated integration build constraint was classified as integration")
+	}
+}
+
+// policyWalk walks root as every policy guard does: it skips the directories
+// skipPolicyWalkDir names, except root itself, whatever root is called, and calls visit
+// for every file.
+func policyWalk(root string, visit func(path string, entry fs.DirEntry) error) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && skipPolicyWalkDir(entry.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		return visit(path, entry)
+	})
+}
+
+// TestPolicyWalkEntersItsRoot (M0-D2): a root whose own name the skip rule matches is still
+// walked; only directories below it are skipped. Pair (R56): walking a directory named
+// ".mod" visits its file; walking its parent skips ".mod" and visits nothing.
+func TestPolicyWalkEntersItsRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, ".mod")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	visited := func(dir string) []string {
+		var got []string
+		if err := policyWalk(dir, func(path string, _ fs.DirEntry) error {
+			rel, err := filepath.Rel(parent, path)
+			got = append(got, rel)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got, want := visited(root), []string{filepath.Join(".mod", "a.go")}; !slices.Equal(got, want) {
+		t.Errorf("walking the root .mod visited %v, want %v", got, want)
+	}
+	if got := visited(parent); len(got) != 0 {
+		t.Errorf("walking its parent visited %v, want nothing: .mod is skipped below the root", got)
 	}
 }
 
