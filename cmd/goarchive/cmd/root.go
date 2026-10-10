@@ -35,11 +35,13 @@ for known limits. Enterprise edition (with metrics, parallelism, and load-
 tested scaling) is planned separately.
 
 Features:
-  - Automatic table dependency resolution using Kahn's algorithm
-  - Transactional batch processing with configurable sizes
-  - Crash recovery via checkpoint logging
-  - Replication lag monitoring
-  - Data verification (count and SHA256)`,
+  - Parent/child trees from the job's declared relations, with composite and
+    non-integer keys
+  - Key-ordered batches: copy, verification and the log write in one destination
+    transaction; deletes in chunks committed only on an exact row count
+  - Crash recovery by replaying the job's log
+  - Replication lag gate before every delete
+  - Verification by SHA256 (default) or count`,
 	Version: Version,
 	// Errors from RunE are already reported with command-specific context;
 	// Cobra's usage block would only add noise after the error.

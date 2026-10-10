@@ -95,7 +95,7 @@ func (s *Spec) ResumeEnabled() bool {
 
 // EffectiveProcessing merges the job's processing overrides over global.
 func (s *Spec) EffectiveProcessing(global config.ProcessingConfig) config.ProcessingConfig {
-	return (&config.JobConfig{Processing: s.Processing}).GetJobProcessing(global)
+	return s.Processing.Apply(global)
 }
 
 // EffectiveVerification is the job's verification, or global when the job sets none.
@@ -139,11 +139,9 @@ func (s *Spec) EffectiveLogging(global config.LoggingConfig) config.LoggingConfi
 
 // Document is a loaded, validated configuration file.
 type Document struct {
-	// Shared holds every block except jobs and verification; Shared.Jobs is always empty
-	// and Shared.Verification is unused. Never call its job-aware methods (GetJob,
-	// GetJobProcessing, GetJobVerification, GetJobLogging, or ApplyOverrides): with no jobs
-	// they silently fall back to the global blocks. Use the Spec's Effective* methods; M6
-	// applies --verification over Spec.EffectiveVerification.
+	// Shared holds every block except jobs and verification, which the Document holds itself.
+	// Use the Spec's Effective* methods for a job's settings; the commands apply
+	// --verification over Spec.EffectiveVerification.
 	Shared *config.Config
 	// Verification is the file's global verification, sha256 unless set (R41, R42).
 	Verification Verification

@@ -296,32 +296,6 @@ func (m *Manager) closeExistingConnections() error {
 	return m.Close()
 }
 
-// Ping verifies all connections are alive.
-func (m *Manager) Ping(ctx context.Context) error {
-	if m.Source != nil {
-		if err := m.Source.PingContext(ctx); err != nil {
-			return fmt.Errorf("source ping failed: %w", err)
-		}
-	}
-
-	if m.Destination != nil {
-		if err := m.Destination.PingContext(ctx); err != nil {
-			return fmt.Errorf("destination ping failed: %w", err)
-		}
-	}
-
-	for i, replica := range m.Replicas {
-		if replica == nil {
-			continue
-		}
-		if err := replica.PingContext(ctx); err != nil {
-			return fmt.Errorf("replica %s ping failed: %w", m.replicaAddr(i), err)
-		}
-	}
-
-	return nil
-}
-
 // replicaAddr names fleet member i for logs and errors. Replicas is
 // index-paired with the configured servers; the index itself is the fallback
 // if a caller ever populates the fleet without matching config (tests do).

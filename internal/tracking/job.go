@@ -313,23 +313,6 @@ func (j *Job) Heartbeat(ctx context.Context) error {
 	return nil
 }
 
-// HeartbeatAge returns how long ago job name last beat. ok is false when the job does not
-// exist or has never beaten. The stale-lock takeover (--force) reads it before Attach.
-func (s *Store) HeartbeatAge(ctx context.Context, name string) (age time.Duration, ok bool, err error) {
-	var seconds sql.NullInt64
-	err = s.db.QueryRowContext(ctx, fmt.Sprintf(
-		"SELECT TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s WHERE job_name = ?", s.jobTable), name).Scan(&seconds)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, fmt.Errorf("tracking: read the heartbeat of job %q: %w", name, err)
-	case !seconds.Valid:
-		return 0, false, nil
-	}
-	return time.Duration(seconds.Int64) * time.Second, true, nil
-}
-
 // RunningJob is a job that archiver_job marks running.
 type RunningJob struct {
 	Name         string

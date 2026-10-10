@@ -496,14 +496,8 @@ func TestMySQLJobIsFixed(t *testing.T) {
 			t.Errorf("Attach() = %v, want %q", err, tc.want)
 		}
 	}
-	if _, ok, err := s.HeartbeatAge(ctx, "Orders"); err != nil || ok {
-		t.Errorf("HeartbeatAge before a beat = %v, %v", ok, err)
-	}
 	if err := j.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
-	}
-	if age, ok, err := s.HeartbeatAge(ctx, "Orders"); err != nil || !ok || age > 5e9 || age < 0 {
-		t.Errorf("HeartbeatAge after a beat = %v, %v, %v", age, ok, err)
 	}
 	if err := j.SetStatus(ctx, JobRunning); err != nil {
 		t.Fatal(err)

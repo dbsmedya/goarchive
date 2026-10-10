@@ -115,9 +115,6 @@ jobs:
 		d.Verification != VerifySHA256 || c.Logging.Format != "json" {
 		t.Fatalf("defaults lost: %+v", c)
 	}
-	if len(c.Jobs) != 0 {
-		t.Fatal("Shared.Jobs must stay empty")
-	}
 }
 
 // TestParseRefusesUnknownKeys at every level, with the path and line of each.

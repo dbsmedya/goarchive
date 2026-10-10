@@ -186,7 +186,7 @@ test-integration:
 	@if [ -z "$$TEST_SOURCE_HOST" ] || [ -z "$$TEST_DEST_HOST" ]; then \
 		echo "test-integration: load the test estate first: set -a; source tests/.env; set +a"; exit 2; \
 	fi
-	go test -tags=integration ./internal/... -count=1
+	go test -tags=integration ./internal/... ./cmd/... -count=1
 
 # Start test databases (Docker)
 .PHONY: test-up
