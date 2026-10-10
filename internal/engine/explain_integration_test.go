@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
@@ -50,6 +51,29 @@ func TestMySQLExplain(t *testing.T) {
 	var name string
 	if err := e.dst.QueryRowContext(context.Background(), "SHOW TABLES LIKE 'archiver_job'").Scan(&name); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("dry-run created the tracking tables (%q, %v)", name, err)
+	}
+}
+
+// TestMySQLExplainOneSourceConnection (Codex M6 B1): dry-run holds one source connection for
+// its EXPLAINs and discovery, so the root fetch must use that connection too. With
+// source.max_connections: 1, a fetch through the pool would wait forever for a second one.
+// TestMySQLExplain, on the default pool, is the larger-pool control.
+func TestMySQLExplainOneSourceConnection(t *testing.T) {
+	e := newEnv(t, "explainone")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	one := openServer(t, "TEST_SOURCE", e.srcSchema, nil)
+	one.SetMaxOpenConns(1)
+	cfg := e.config(t, job(t, jobspec.Archive, orderJob))
+	cfg.Source = one
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ex, err := Explain(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Explain() with a 1-connection source pool = %v, want the plans", err)
+	}
+	if ex.Roots != 2 || len(ex.Discovery) != 2 {
+		t.Errorf("explanation = %d roots, %d discovery plans, want 2 and 2", ex.Roots, len(ex.Discovery))
 	}
 }
 
