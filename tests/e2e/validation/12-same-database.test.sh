@@ -9,18 +9,13 @@
 # and refuses to start when source and destination match — at connection time,
 # before preflight, out of reach of --skip-validate-preflight (issue #13).
 #
-# The demo runs `validate` only. The unchanged-source and no-tracking-write
-# assertions live in the integration layer
-# (internal/archiver/identity_guard_integration_test.go), which continues into
-# Execute when the guard is absent so the row count witnesses the deletion.
+# The demo runs `validate` only. The integration witness is
+# TestConnectRefusesSameDatabase_Integration (internal/database).
 #
-# Why the root is `payment`, which carries a BEFORE INSERT trigger: with the
-# identity guard absent, this config is refused by DEST_INSERT_TRIGGER_CHECK
-# instead (observed 2026-09-05 with the guard commented out). So the demo pins
-# not only the category but that the guard runs BEFORE preflight — move it
-# after, and the trigger check wins and the category stops matching. What the
-# demo does NOT show is an unguarded run destroying data; that witness is
-# TestArchiveAgainstItselfIsRefused_Integration, on a trigger-free table.
+# The root is `payment`, which carries a BEFORE INSERT trigger: were the
+# identity guard to run after preflight, the destination's trigger would be
+# refused first and the category would stop matching. So the demo also pins
+# that the guard runs BEFORE preflight.
 
 test_name="Test12_SameDatabaseRefused"
 test_desc="Same-database refusal: source and destination are both 127.0.0.1:3305/sakila [validation demo]"

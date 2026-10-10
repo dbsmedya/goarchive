@@ -1,7 +1,7 @@
 # The E2E suite — structure and the per-test file format
 
 End-to-end tests that run the real `goarchive` binary against the real Sakila
-estate.
+estate, and the key-matrix fixture loaded beside it (`../fixtures/keymatrix.sql`).
 
 **This file owns the *mechanics*: the layout, the test-file format, and how to add
 a test.** It does not describe what the individual tests prove — `../README.md`
@@ -17,11 +17,11 @@ the file.
 ```
 tests/e2e/
 ├── lib/                    the harness: shared, written once
-├── validation/    01 02 10 11 12  configs that MUST fail preflight
-├── archive/       03 04 05 copy → verify → delete
-├── purge/         06 13    exact deletion and live replication hold
-├── copy-only/     07       copy without deleting
-└── resume/        08 09    interrupt a live run, then finish it
+├── validation/    02 10 11 12     configs that MUST fail preflight
+├── archive/       01 03 04 05 14  copy → verify → delete
+├── purge/         06 13 15        exact deletion and live replication hold
+├── copy-only/     07 16           copy without deleting
+└── resume/        08 09           interrupt a live run, then finish it
 ```
 
 Categories are **by command under test**. That is the axis the suite's own
@@ -61,23 +61,22 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `verify_method` | the method the run must report, or `none` to assert none ran |
 | `min_duration` | pacing floor in seconds — formula in `../README.md` |
 | `expected_rows` | exact rows moved, **one per entry in `tables`, same order** |
-| `orphan_checks` | `child:fk:parent:parent_pk`, space-separated |
+| `orphan_checks` | `child:fk:parent:parent_pk`, space-separated; a composite key joins its columns with `+` (`km_item:order_id+line_no:km_line:order_id+line_no`) |
 | `interrupt` | *(resume only)* `graceful` \| `crash` — turns on the two-run arm |
 | `interrupt_after_batches` | *(resume only)* which batch to interrupt at |
 | `interrupt_expect_dest` | *(resume only)* destination rows required **exactly** at that point |
-| `root_pk` | *(resume only)* root table's PK column, for the checkpoint assertion |
 | `replication_hold` | `stopped-applier` for the working purge replication witness; cannot be combined with `interrupt` |
 
 Do **not** put `--force-triggers` anywhere. `run_archive_job` applies it per
 command, and `copy-only` does not accept the flag at all.
 
-### Four variables fail closed — and the resume group makes eight
+### Four variables fail closed — and the resume group makes seven
 
 A `working` test that omits `verify_method`, `min_duration`, `expected_rows`, or —
 once `tables` names more than one table — `orphan_checks` is **refused, not run**.
 
-The four `interrupt*`/`root_pk` variables fail closed as a **group**: declare
-`interrupt` and the other three become mandatory, and an unrecognised `interrupt`
+The three `interrupt*` variables fail closed as a **group**: declare
+`interrupt` and the other two become mandatory, and an unrecognised `interrupt`
 value is refused rather than quietly treated as "no interrupt". Both checks run
 before the 60-second source reseed, so a misdeclared resume test fails in
 **0 seconds**. `interrupt_expect_dest=0` is refused outright — it would assert that
@@ -136,28 +135,13 @@ postconditions still apply; `replication_hold` is not a separate mode.
 
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
-   - working → `run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`
-   - demos → `run_e2e_suite "1 2 10 11 12 NN" "validation demos"`
+   - working → `run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 NN" "working"`
+   - demos → `run_e2e_suite "2 10 11 12 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
 
 5. **Verify:** `./scripts/run-tests.sh --sakila -t NN` (or `--sakila-examples -t NN`).
    Both `-t 7` and `-t 07` work.
-
-## Focused value-preservation CLI witnesses
-
-`internal/archiver/value_preservation_cli_integration_test.go` runs the built CLI
-under the integration tag: its layer is E2E. Set `VP_CLI` to a freshly built
-absolute binary path and route `INTEGRATION_CONFIG` plus `TEST_*` to the disposable
-MySQL profile. Select it with `VP_MATRIX_PROFILE=default`, `empty`, or `raw` (choose
-one to match the server setup). Without a profile it deliberately skips on the
-estate; a selected cell cannot pass with a missing binary, absent test or SKIP.
-
-The test retains normal preflight for payload conversion and checks process exit,
-exact override notices, raw CAST values, both databases and copied/completed
-markers. Collision cases exercise archive/copy-only/purge under verification and
-preflight overrides; none may bypass temporal identity refusal. Dry-run always
-rolls back. The existing registered Sakila suite remains the full gate's E2E layer.
 
 ## Four invariants to know before editing `lib/`
 
@@ -185,13 +169,13 @@ tracking tables live inside it.** `destination.job_schema` defaults to the
 destination database and no test config overrides it, so that call takes
 `archiver_job` and `archiver_job_log_<id>` with it. For a single-run test that is
 exactly what you want — no state leaks between tests and job ids restart. For the
-**two-run** resume tests it is fatal: call it between the runs and the checkpoint,
-the log table and the rows run 1 copied all disappear, so run 2 starts from scratch
+**two-run** resume tests it is fatal: call it between the runs and the job, its
+log table and the rows run 1 copied all disappear, so run 2 starts from scratch
 and **every end-state assertion still passes**.
 
-It is called once, in STEP 3a, before run 1. Measured: inserting a second call
-before run 2 is caught only by `expected_rows` (`archive put 1899 row(s) in the
-destination, expected 1999`) — the interrupt preconditions run *before* run 2 and
-never see it, and the discriminator, the verify grep and the pacing floor all pass
-straight through. If that exact count were ever relaxed to a direction check,
-nothing would catch this.
+It is called once, in STEP 3a, before run 1. Measured on 2.x: inserting a second
+call before run 2 was caught only by `expected_rows` (`archive put 1899 row(s) in
+the destination, expected 1999`) — the interrupt preconditions run *before* run 2
+and never see it. 3.0's STEP 6 would now also see it (the log would hold only run
+2's roots). If those exact counts were ever relaxed to a direction check, nothing
+would catch this.

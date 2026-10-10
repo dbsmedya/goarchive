@@ -1,17 +1,22 @@
 # Test 03: High-volume payment archive (batch_size throughput)
+#
 # Archives a large slice of the payment table (a leaf in the Sakila graph)
 # directly as the root, with batch_size=100, to exercise the batched pipeline
-# over many batches (multi-batch copy + delete chunking).
+# over many batches (multi-batch copy + chunked deletes) through the real CLI
+# (validate -> dry-run -> archive). payment is a leaf (no table references it), so
+# it needs no relations; FK checks are disabled for the copy into the archive
+# destination, whose payment table references the uncopied customer and staff.
 #
-# payment has ~16k rows; archiving payment_id <= 2000 drives ~20 batches of
-# 100-row copy/delete chunks through the real CLI (validate -> dry-run ->
-# archive). payment is a leaf (no table references it), so it needs no child
-# relations; FK checks are disabled for the copy into the archive destination.
+# payment_id <= 2000 selects 1999 rows (MEASURED: payment_id is not contiguous):
+# 19 full batches of 100 and a last batch of 99.
+#
+# verification: count, declared. 3.0's default is sha256 (R41); test 05 is the
+# same slice under sha256, so the pair is an A/B on the method alone.
 #
 # This template is the tracked source of truth. run-tests.sh renders it to
-# test03_payment_batch.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
-# placeholder from tests/.env. Edit this file, never the generated .yaml --
-# that one is gitignored (it holds a real password) and is overwritten.
+# test03_payment_batch.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
@@ -30,21 +35,22 @@ destination:
 safety:
   disable_foreign_key_checks: true
 
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
 jobs:
   archive-payment-rows:
+    job_type: archive
     root_table: payment
     primary_key: payment_id
     # Archive a large slice to span many batches at batch_size=100
     where: "payment_id <= 2000"
-    # batch_size=100 -> ~20 batches over the 2000 selected payment rows.
-    # batch_delete_size=20 -> 5 delete chunks per batch (100 delete chunks total),
-    # to observe how sleep_seconds interacts with delete chunking.
+    verification: count
     processing:
       batch_size: 100
+      # 5 delete statements per batch, so 4 throttle sleeps per batch.
       batch_delete_size: 20
-      # 0.2s, not 1s. At 1s this single test spent 20s of its 42s idling between
-      # batches, and the throttle is exercised just as well at 0.2s.
+      # Slept after each of the 19 full batches; the short last batch ends the run.
       sleep_seconds: 0.2
-      # Throttle deletes: pause 0.2s between each batch_delete_size delete chunk
-      # to limit binlog generation / replication lag.
+      # Between consecutive delete statements of a batch, to limit binlog bursts.
       delete_sleep_seconds: 0.2

@@ -1,21 +1,21 @@
 # purge — delete from source, copy nothing
 
 The destructive command with no safety net: there is no copy and **no
-verification stage at all**, so nothing can be checked after the fact. Deleted is
+verification at all**, so nothing can be checked after the fact. Deleted is
 deleted.
 
 | Test | Shape | Why it is here |
 |---|---|---|
 | 06 | `payment`, exactly half | over-deletion is purge's unrecoverable failure, and the exact count is the only thing that catches it |
 | 13 | `payment`, live replica enabled | an observed replication hold preserves rows; the same process resumes and completes after the applier restarts |
+| 15 | `km_blob` (`BINARY(16)`) → `km_blob_ref` | the key matrix's binary root: keys whose bytes are not valid UTF-8 must reach the delete statements unchanged |
 
 Two assertions carry this category, and both are about what must *not* happen:
 
-**`verify_method="none"`** asserts the verification line is **absent**. Purge is
-`batchDeleteOnly`, and the verify block sits inside the
-`batchFull || batchCopyVerify` gate, so the verifier is never called. Asserting
-absence catches a purge that silently gained a verify stage — and an archive
-misconfigured as a purge.
+**`verify_method="none"`** asserts the report has **no** verified line. Purge copies
+nothing, so it verifies nothing, and a purge job with `verification` set is refused.
+Asserting absence catches a purge that silently gained a verify stage — and an
+archive misconfigured as a purge.
 
 **`expected_rows` is exact.** Direction alone was measured blind: with
 conservation-only checks, purging the *entire* table passed. The pacing floor
@@ -32,5 +32,8 @@ Test13 adds a live hold/release witness to these exact outcome checks. Its helpe
 restores the applier and confirms the replica is caught up even when a test fails.
 Test06 remains the ordinary purge control. The suite catalogue owns the selected
 counts; `../README.md` owns the declaration and cleanup mechanics.
+
+15 declares an orphan check because every multi-table test must; purge copies
+nothing, so it checks an empty destination.
 
 See `../README.md` for the file format.

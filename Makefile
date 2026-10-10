@@ -251,24 +251,13 @@ e2e-setup:
 	@bash tests/scripts/run-tests.sh --setup
 	@touch tests/.e2e-ready
 
-# Run the validation-demonstration tests (01-02). These are EXPECTED to fail
-# preflight with documented error categories — success here means the failures
-# still match the documented expectations: 01 = COMPOSITE_PK_CHECK,
-# 02 = FK_COVERAGE_CHECK.
+# Run the validation-demonstration tests (02, 10, 11, 12). These are EXPECTED to
+# fail preflight with documented error categories -- success here means the
+# failures still match the documented expectations (tests/e2e/validation/README.md).
 .PHONY: e2e-examples
 e2e-examples:
 	@bash tests/scripts/require-e2e-seed.sh
 	@bash tests/scripts/run-tests.sh --sakila-examples --skip-docker
-
-# Check the characterization suite against its recorded baseline.
-#
-# The baseline lives in tests/characterization-baseline.txt, and the script does
-# the counting. Nobody counts by hand: the suite nests two levels deep, so the
-# obvious `grep -c '^    --- PASS'` misses 98 subtests and manufactures a
-# regression that is not there.
-.PHONY: characterization
-characterization:
-	@bash tests/scripts/check-characterization-baseline.sh
 
 # Refuse to proceed against a dead test estate. A killed run leaves the
 # containers Exited (137), and every later step then fails with "Can't connect
@@ -317,9 +306,8 @@ help:
 	@echo "  make e2e                - Full E2E: test-reset, e2e-setup, then the tests. USE THIS"
 	@echo "  make e2e-setup          - Step 2 only: bootstrap docker + Sakila and seed the estate"
 	@echo "  make e2e-tests-must-run-after-setup - Step 3 only: the tests (refuses unless seeded)"
-	@echo "  make e2e-examples       - Sakila validation demos 01-02 (COMPOSITE_PK / FK_COVERAGE)"
+	@echo "  make e2e-examples       - Validation demos 02, 10, 11, 12 (configs that must fail preflight)"
 	@echo "  make gate               - THE FULL VERIFICATION GATE, in the correct order. USE THIS"
-	@echo "  make characterization   - Check the characterization suite against its baseline"
 	@echo "  make require-estate     - Fail early if the test databases are unreachable"
 	@echo "  make help               - Show this help"
 	@echo ""

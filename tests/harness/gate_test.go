@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var gateStages = []string{"estate", "fmt-check", "vet", "lint", "consumer-policy", "deadcode", "unit", "integration", "characterization", "e2e", "e2e-examples"}
+var gateStages = []string{"estate", "fmt-check", "vet", "lint", "consumer-policy", "deadcode", "unit", "integration", "e2e", "e2e-examples"}
 
 func writeFixture(t *testing.T, path, data string) {
 	t.Helper()
@@ -50,7 +50,6 @@ case "$name" in
  lint) echo '0 issues' ;;
  consumer-policy|deadcode) echo "$name: clean" ;;
  integration) echo 'PASS=7 FAIL=0 SKIP=2' ;;
- characterization) echo 'baseline: OK (fixture)' ;;
  e2e|e2e-examples) echo 'Passed: 3 / Failed: 0' ;;
 esac
 if [[ "${FIXTURE_BLOCK:-}" == 1 && "$name" == estate ]]; then
@@ -65,7 +64,7 @@ fi
 exit 0
 `
 	writeFixture(t, filepath.Join(root, "tests/scripts/stage.sh"), stage)
-	for script, name := range map[string]string{"require-containers-up.sh": "estate", "run-tests.sh": "integration", "check-characterization-baseline.sh": "characterization"} {
+	for script, name := range map[string]string{"require-containers-up.sh": "estate", "run-tests.sh": "integration"} {
 		writeFixture(t, filepath.Join(root, "tests/scripts", script), "#!/bin/bash\nexec /bin/bash tests/scripts/stage.sh "+name+"\n")
 	}
 	writeFixture(t, filepath.Join(root, "fakebin/make"), "#!/bin/bash\nexec /bin/bash tests/scripts/stage.sh \"$1\"\n")
@@ -187,7 +186,7 @@ func readTSV(t *testing.T, path, header string, rows int) [][]string {
 }
 func manifest(t *testing.T, dir string) [][]string {
 	t.Helper()
-	return readTSV(t, filepath.Join(dir, "summary.tsv"), "stage\tstatus\tcommand_exit\tcapture_exit\tlog\theadline", 11)
+	return readTSV(t, filepath.Join(dir, "summary.tsv"), "stage\tstatus\tcommand_exit\tcapture_exit\tlog\theadline", 10)
 }
 func runMetadata(t *testing.T, dir string) []string {
 	t.Helper()
@@ -326,11 +325,11 @@ func TestGatePersistsSuccess(t *testing.T) {
 				t.Fatalf("completion disagrees: %q stdout=%s", complete, result.stdout)
 			}
 			human := readFixture(t, filepath.Join(dir, "summary.txt"))
-			if len(strings.Split(strings.TrimSuffix(human, "\n"), "\n")) != 12 {
+			if len(strings.Split(strings.TrimSuffix(human, "\n"), "\n")) != 11 {
 				t.Fatalf("human summary not multiline: %q", human)
 			}
 			rows := manifest(t, dir)
-			if rows[7][5] != "PASS=7 FAIL=0 SKIP=2" || rows[8][5] != "OK (fixture)" || rows[9][5] != "Passed: 3  Failed: 0" {
+			if rows[7][5] != "PASS=7 FAIL=0 SKIP=2" || rows[8][5] != "Passed: 3  Failed: 0" || rows[9][5] != "Passed: 3  Failed: 0" {
 				t.Fatalf("stage headlines lost: %v %v %v", rows[7], rows[8], rows[9])
 			}
 			if !reflect.DeepEqual(commandMarkers(t, root), gateStages) {

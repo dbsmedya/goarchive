@@ -3,17 +3,17 @@
 # Both connection blocks point at 127.0.0.1:3305/sakila. Every command that opens
 # both connections — archive, purge, copy-only, dry-run, validate — refuses this at
 # connection time with SRC_DEST_IDENTITY_CHECK, before preflight and before any
-# tracking row is written. An archive into itself would copy nothing (every INSERT
-# IGNORE hits its own primary key), verify the table against itself, and then
-# delete the only copy (issue #13). No --skip-* flag reaches this check.
+# tracking row is written. An archive into itself would verify the table against
+# itself and then delete the only copy (issue #13). No --skip-* flag reaches this
+# check.
 #
 # Everything else here is deliberately valid: a real base table with an integer
 # primary key and no relations. The ONLY defect is the identical endpoint.
 #
 # This template is the tracked source of truth. run-tests.sh renders it to
-# test12_same_database.yaml on every run, substituting the password placeholder
-# from tests/.env. Edit this file, never the generated .yaml -- that one is
-# gitignored (it holds a real password) and is overwritten.
+# test12_same_database.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
@@ -29,8 +29,12 @@ destination:
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila
 
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
 jobs:
   archive-payment-into-itself:
+    job_type: archive
     root_table: payment
     primary_key: payment_id
     where: "payment_id <= 10"

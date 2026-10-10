@@ -1,31 +1,30 @@
-# Test 08 — a graceful stop, then a checkpoint-driven resume.
+# Test 08 — a graceful stop, then a resume that has nothing to replay.
 #
-# Run 1 is signalled with SIGTERM part-way through and stops COOPERATIVELY at a
-# batch boundary; run 2 picks up from the checkpoint and finishes the slice.
+# Run 1 is signalled with SIGTERM after batch 1 and stops COOPERATIVELY at the
+# batch boundary; run 2 continues the where range and finishes the slice.
 #
-# The pair with test 09 is not two samples of one thing. A single SIGTERM closes a
-# stop channel the loops observe at batch boundaries, so the in-flight batch always
-# runs to a terminal state and this test leaves ZERO non-terminal rows. Resume
-# therefore happens entirely through last_processed_root_pk_id, and recover() finds
-# nothing to replay. Test 09 covers the other path.
+# The pair with test 09 is not two samples of one thing. A single SIGTERM is
+# honoured at batch boundaries, so the batch in flight always reaches 'completed'
+# and this test leaves ZERO non-terminal roots. Run 2's recovery finds nothing to
+# replay; the roots run 1 archived are gone from the source, so the where range
+# itself carries the progress (3.0 keeps no cursor, R10). Test 09 covers the
+# replay path.
 #
 # Test 05 is this test's uninterrupted control: the config is identical, so a
 # failure here but not in 05 isolates to the interrupt.
 
 test_name="Test08_PaymentGracefulResume"
-test_desc="Working archive: payment interrupted by SIGTERM at a batch boundary, then resumed from its checkpoint"
+test_desc="Working archive: payment interrupted by SIGTERM at a batch boundary, then resumed"
 config_file="test08_payment_graceful_resume.yaml"
 tables="payment"
 mode="working"
 command="archive"
 
-# Interrupt at the start of batch 1 and let that batch finish on its own.
+# Interrupt after batch 1.
 #
-# "Processing batch" is logged AFTER the loop's stop checks, so seeing it proves
-# batch 1 has passed them; the signal then lands mid-batch, the batch completes, and
-# the next loop-top check breaks. Exactly one batch -- measured, and measured at
-# batch 3 as well, so this is not a mechanism that merely always stops after the
-# first one.
+# The engine logs "Batch 1: 100 roots of payment (archive)" at the end of batch 1
+# and then sleeps sleep_seconds before its stop check; the signal lands in that
+# sleep, and the run stops before fetching batch 2. Exactly one batch.
 interrupt="graceful"
 interrupt_after_batches="1"
 
@@ -36,26 +35,20 @@ interrupt_after_batches="1"
 # run 2.
 interrupt_expect_dest="100"
 
-# For the checkpoint assertion: last_processed_root_pk_id must equal MAX(payment_id)
-# in the destination. Presence alone is too weak -- a checkpoint BELOW what actually
-# landed re-opens completed roots to the forward scan and is invisible to every
-# end-state count, because the rows it re-reads have already been deleted.
-root_pk="payment_id"
-
 verify_method="sha256"
 
 # RUN 2's floor, not the whole slice's. Run 1 completes batch 1, so run 2 processes
-# the remaining 1899 rows in ceil(1899/100) = 19 batches, and every one of them --
-# including the 99-row tail, ceil(99/20) = 5 chunks -- has 4 delete sleeps:
+# the remaining 1899 rows in 18 full batches and a last one of 99, each with 5
+# delete statements and so 4 gaps:
 #
-#   19 x 0.2          =  3.8   batch sleep
+#   18 x 0.2          =  3.6   batch sleep (the short last batch has none)
 #   19 x 4 x 0.2      = 15.2   delete throttle
 #                       ----
-#                        19.0
+#                        18.8
 #
 # Exact, unlike test 09's, because a graceful stop's boundary is clean: no recovery
-# runs and the batch count is fixed.
-min_duration="19.0"
+# runs and the batch count is fixed. (2.x slept after the short last batch: 19.0.)
+min_duration="18.8"
 
 # The full slice, after BOTH runs. 1999 rows, measured -- payment_id is not
 # contiguous, so <= 2000 is not 2000.

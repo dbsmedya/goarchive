@@ -14,11 +14,12 @@ config_file="test04_rental_payment.yaml"
 tables="rental payment"
 mode="working"
 command="archive"
+# The config declares verification: count (3.0's default is sha256).
 verify_method="count"
 
-# This config declares no processing block at all, so it inherits the
-# global defaults: batch_size 1000, sleep_seconds 1, and
-# delete_sleep_seconds 0. 200 rentals / 1000 = a single batch.
+# The config sets batch_size 200 and inherits sleep_seconds 1 and
+# delete_sleep_seconds 0. 200 rentals / 200 = one FULL batch, which is
+# followed by one more fetch that finds nothing, so the run sleeps once:
 #   batch sleep:  1 x 1.0 = 1.0s
 #   delete sleep: disabled by default
 min_duration="1.0"

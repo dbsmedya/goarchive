@@ -141,6 +141,10 @@ setup_environment() {
     fi
     
     log_info "Sakila database loaded successfully"
+
+    if ! load_key_matrix "$source_uri"; then
+        exit 1
+    fi
     
     # Dump and load schemas
     log_info "Dumping schemas from source..."
@@ -202,7 +206,25 @@ reset_source_database() {
         return 1
     fi
     
+    if ! load_key_matrix "$source_uri"; then
+        return 1
+    fi
+
     log_info "Source database reset complete"
+}
+
+# Load the key-matrix fixture (spec §10) into the source sakila database, after
+# Sakila itself: tables whose keys Sakila does not have -- a composite root with a
+# grandchild on a composite foreign key, a BINARY(16) root, a latin1 VARCHAR root.
+# It is part of the source schema, so ensure_destination_schema's dump carries its
+# tables to the destination like Sakila's. Tests 14-16 run on it.
+load_key_matrix() {
+    local source_uri="$1"
+    log_info "Loading the key-matrix fixture..."
+    if ! mysqlsh --uri "$source_uri/sakila" --sql < "$TESTS_DIR/fixtures/keymatrix.sql"; then
+        log_error "Failed to load the key-matrix fixture"
+        return 1
+    fi
 }
 
 # Ensure the destination database has the same schema as source. Idempotent.

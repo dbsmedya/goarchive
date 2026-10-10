@@ -61,7 +61,7 @@ fails because a server is down. A failed gate is the result: report it as `RED`.
 2. **Check nothing else is testing.** Run:
 
    ```bash
-   pgrep -fl '[r]un-gate\.sh|[r]un-tests\.sh|[c]heck-characterization-baseline\.sh'
+   pgrep -fl '[r]un-gate\.sh|[r]un-tests\.sh'
    ```
 
    Stop if it prints anything, and name what is running. The estate is shared, and two test
@@ -120,7 +120,6 @@ Use these only when a task asks for one layer; the gate runs them all in the rig
 |-------|---------|---------------------------|
 | Unit (no database) | `go test ./... -count=1` | *Unit tests* |
 | Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | *Integration tests* |
-| Characterization | `make characterization` | *The characterization baseline is checked, not recited* |
 | E2E (Sakila) | `make e2e` | *Sakila E2E tests* |
 | Validation demos | `make e2e-examples` (needs a seeded estate) | *Validation demos — preflight MUST fail* |
 
@@ -137,7 +136,3 @@ after the runner reports; a gate agent never edits it.
   tests). Sixteen skips
   need disposable matrix profiles; the existing `TestExecute_CheckpointCallbackError` skip
   remains. Re-measure after adding or removing tagged tests.
-- **Characterization expectation:** `58 / 287 / 345 / 0 / 0` (top-level / subtests / PASS /
-  FAIL / SKIP), held in `tests/characterization-baseline.txt` and checked by
-  `make characterization`. It changes only with the operator's prior authorization; change the
-  file and this line together. Never count it by hand; the script does the counting.

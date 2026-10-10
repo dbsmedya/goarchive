@@ -104,6 +104,13 @@ type Report struct {
 	Conversions map[string]map[uint16]uint64
 	// Stopped reports that a graceful stop ended the run before the where range was done.
 	Stopped bool
+	// Verification is the method the run's copies were verified by; empty for purge.
+	Verification jobspec.Verification
+	// Verified holds, by table, the copied rows whose verification passed, for committed
+	// batches. It is empty when nothing was compared (verification: none, or purge).
+	Verified map[string]int64
+	// Elapsed is the run's wall time, from Run's start until it returns.
+	Elapsed time.Duration
 }
 
 func (c *Config) validate() error {
@@ -141,7 +148,13 @@ const minDestinationConnections = 3
 
 // Run runs one job: startup, recovery, then batches until the where range is exhausted or a
 // graceful stop is requested. It returns what it did, even when it fails part way.
-func Run(ctx context.Context, cfg Config) (*Report, error) {
+func Run(ctx context.Context, cfg Config) (rep *Report, err error) {
+	began := time.Now()
+	defer func() {
+		if rep != nil {
+			rep.Elapsed = time.Since(began)
+		}
+	}()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}

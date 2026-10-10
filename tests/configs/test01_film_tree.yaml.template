@@ -1,0 +1,91 @@
+# Test 01: the film tree, with composite-key children (working archive)
+#
+# Roots at `film` and archives the films' whole tree: film_text, the two
+# association tables film_actor (actor_id, film_id) and film_category
+# (film_id, category_id), and inventory -> rental -> payment.
+#
+# 2.x refused this config with COMPOSITE_PK_CHECK: it identified and deleted
+# rows by a single primary-key column, so a two-column key would over-match. 3.0
+# reads every key from MySQL and binds composite keys whole (spec §4), so the
+# composite children are archived exactly. Each relation documents its table's
+# whole PRIMARY KEY; preflight refuses one that does not match (spec §5).
+#
+# NOT a GDPR diamond: every table of the job has one parent in it. film_actor and
+# film_category also reference actor and category, and rental and payment
+# reference customer and staff, but those stay outside the job as upstream
+# parents -- nothing outside the job references a table inside it. So
+# INTERNAL_FK_COVERAGE and FK_COVERAGE_CHECK both pass (measured; compare test 11,
+# where payment has two parents in the job).
+#
+# NESTING IS WHAT ASSIGNS A PARENT. 2.x's config listed inventory, rental and
+# payment flat, as children of film; written that way, 3.0 pairs rental.inventory_id
+# with film.film_id and refuses it with RELATION_KEY_CHECK. Each child is nested
+# under its parent here.
+#
+# film carries a DELETE trigger (del_film, which deletes the film's film_text
+# row), so the run needs --force-triggers, which the runner passes for archive.
+# film_text is deleted first, children before parents, so the trigger finds
+# nothing. FK checks are disabled for the copy into the destination, whose tables
+# reference the uncopied actor, category, store, customer and staff.
+#
+# 50 films in 2 full batches of 25, so the run sleeps twice: the 1.0 s floor.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test01_film_tree.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-film-tree:
+    job_type: archive
+    root_table: film
+    primary_key: film_id
+    where: "film_id <= 50"
+    processing:
+      batch_size: 25
+      sleep_seconds: 0.5
+    relations:
+      # film_text extends film, one row per film. Sakila declares no foreign key
+      # for it; the relation alone makes it part of the tree.
+      - table: film_text
+        primary_key: film_id
+        foreign_key: film_id
+      # The composite-key association tables. foreign_key names the column that
+      # references film's one-column key, so references may be omitted.
+      - table: film_actor
+        primary_key: [actor_id, film_id]
+        foreign_key: film_id
+      - table: film_category
+        primary_key: [film_id, category_id]
+        foreign_key: film_id
+      - table: inventory
+        primary_key: inventory_id
+        foreign_key: film_id
+        relations:
+          - table: rental
+            primary_key: rental_id
+            foreign_key: inventory_id
+            relations:
+              - table: payment
+                primary_key: payment_id
+                foreign_key: rental_id

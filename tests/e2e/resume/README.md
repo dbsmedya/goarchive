@@ -1,24 +1,27 @@
 # resume — interrupt a live run, then finish it
 
 These tests run the binary **twice** and prove the actual interruption and recovery
-path. The Go archive/copy-only crash-recovery tests instead seed exact durable
-states and check recovery or refusal; they do not deliver process signals.
+path through the CLI. The engine's integration tests kill a child process at named
+points too (`internal/engine`, `TestMySQLKillRecovery`); these run the shipped
+binary on Sakila, with a real signal and a fresh process.
 
 | Test | Interrupt | Leaves behind | Resume path |
 |---|---|---|---|
-| 08 | one `SIGTERM` at a batch boundary | checkpoint set, **zero** non-terminal rows | forward scan from `last_processed_root_pk_id` |
-| 09 | `SIGKILL` inside the delete phase | checkpoint `NULL`, 100 rows at `copied`, `job_status=1` | `recover()` → `recoverChunks(copied, batchDeleteOnly)` |
+| 08 | one `SIGTERM` after batch 1 | batch 1's 100 roots `completed`, **zero** non-terminal roots, `job_status=0` | nothing to replay; run 2 continues the where range |
+| 09 | `SIGKILL` inside batch 1's delete phase | its 100 roots at `copied`, `job_status=1` | startup recovery replays them **delete-only**, then the batch loop continues |
+
+3.0 keeps no cursor. After an archive, the roots a run finished are gone from
+the source, so the where range itself carries the progress; the log carries what a
+crash left unfinished.
 
 ## Why two tests and not one
 
-A single `SIGTERM` is **cooperative**. It closes a stop channel the batch loops
-check at boundaries, so the in-flight batch always runs to a terminal state and a
-graceful stop leaves **nothing** for recovery to replay. `recover()`'s replay is
-reachable only by killing the process outright.
+A single `SIGTERM` is **cooperative**. The run finishes the batch in flight and stops
+at the next batch boundary, so a graceful stop leaves **nothing** for recovery to
+replay. Recovery's replay is reachable only by killing the process outright.
 
 So the two tests do not differ in degree; they exercise different code. Asking one
-test for both sets of preconditions cannot pass — an earlier version of this plan
-did, and could not have.
+test for both sets of preconditions cannot pass.
 
 ## The hazard: this test is vacuous on *both* sides of its window
 
@@ -37,64 +40,68 @@ It is also the only test here whose vacuity can arrive **later, with nobody edit
 it**: a faster machine, a changed `batch_size`, and the interrupt slides out of the
 window while the test goes on passing.
 
-Three things hold it shut, and all three are in `../lib/interrupt.sh`:
+Four things hold it shut, all in `../lib/interrupt.sh` and `../lib/engine.sh`:
 
 **The interrupt point is asserted exactly**, not as a range. `interrupt_expect_dest`
 must match the destination row count at the interrupt — `0` means nothing was copied,
 more means the interrupt landed late and `min_duration` no longer describes run 2.
 A failure there is an ERROR, not a pass.
 
-**The discriminator.** `"Recovering non-terminal PKs from prior run"` must be
-**absent** from 08's second run and **present** in 09's. One grep, and it is the only
+**The log at the interrupt point.** After 08's stop, exactly 100 roots are
+`completed` and none is `copied` or `deleting`, and run 1's report says it stopped
+before the end of the where range. After 09's kill, exactly 100 roots are `copied`,
+none is `deleting`, and the job is still `Running(1)`. A crash declared at a later
+batch N leaves batches 1 to N-1 `completed` and only batch N `copied`: the destination
+count is checked against `copied` + `completed`, and only the `copied` roots are
+recovery's work, so `n` below is the `copied` count, not the destination's.
+
+**The discriminator.** The engine's `"Recovery: replaying <n> copied roots of
+payment"` line must be **absent** from 08's second run and **present** in 09's, with
+`n` = 100, and 09's report must count them under `recovered:`. It is the only
 assertion that catches 08 quietly becoming a crash test or 09 quietly becoming a
 graceful one — because it asserts the path, which no end-state check can reach.
+Run 2's `copied:` count must be the slice minus the 100 already copied: a re-copy of
+the replayed roots would verify cleanly and change no total.
 
 **`ensure_destination_schema` runs once, before run 1, and never between the runs.**
 It drops and recreates the destination database, and `destination.job_schema`
-defaults to that same database — so calling it between runs deletes the checkpoint,
-the log table and the copied rows. Run 2 would start from scratch and every
-end-state assertion would still pass. This is the easiest possible way to make these
-tests vacuous.
+defaults to that same database — so calling it between runs deletes the job, its
+log and the copied rows. Run 2 would start from scratch and every end-state
+assertion would still pass. This is the easiest possible way to make these tests
+vacuous.
 
 ## How the interrupt is placed
 
-The harness waits on goarchive's **own log**, not on a row count: every
-`get_row_count` spawns `mysqlsh` at ~0.3 s against a ~1 s deadline, while grepping a
-file is milliseconds. Measured marker-to-signal latency is 0.004–0.008 s.
-
-| Test | Marker | Why that line |
+| Test | Waits for | Why that point |
 |---|---|---|
-| 08 | `"Processing batch"` with `"batch":N` | logged *after* the loop's stop checks, so batch N has passed them; the batch then completes on its own and the next check breaks the loop |
-| 09 | the Nth `"Starting delete phase"` | logged after `MarkBatchCopied` committed and before the first throttle sleep, so the rows are already `copied` |
+| 08 | the engine's `"Batch N:"` log line | logged at the end of batch N; the loop then sleeps `sleep_seconds` before its stop check, the signal lands in that sleep, and the run stops before fetching batch N+1 — exactly N batches |
+| 09 | the log table holding N batches' roots, the last batch's at `copied` | the engine logs nothing between a batch's destination commit and its deletes, so the harness reads the log table itself, one `mysqlsh` call (~0.3 s) per poll, inside a window of 4 × 1 s |
 
-**Exactly N batches, with no sentinel and no sleep.** Verified at N=1 (100 rows) and
-N=3 (300 rows) — N=3 is the one that matters, since it rules out a mechanism that
-always stops after the first batch and would have made N=1 a vacuous pass.
+08 polls the run's **own log**, not the database: the marker-to-signal latency is
+milliseconds against a 0.2 s sleep. 09 cannot, and its wide delete throttle is what
+makes the database poll safe.
 
-`sentinel_file` was tried and dropped: it faces the same deadline (create a file
-rather than send a signal), so it bought no determinism, and a leftover file pauses
-the next run indefinitely with no diagnostic.
+`sentinel_file` is not used: creating a file faces the same deadline as sending a
+signal, so it buys no determinism, and a leftover file pauses the next run.
 
 ## Two things that look like blockers and are not
 
-**No wait is needed between the runs.** A killed process closes its MySQL session, so
-`GET_LOCK` auto-releases; the 60 s heartbeat-staleness threshold is consulted only
-when the lock was *not* acquired. Confirmed by probe: `IS_USED_LOCK` is `NULL`
-immediately after the kill and run 2 acquires it with no `--force`.
+**No wait is needed between the runs.** A killed process closes its MySQL sessions,
+so its advisory locks are released at once and run 2 takes them.
 
-**A stale `job_status=1` does not block the re-run.** `CheckSameRootConcurrency`
-filters `job_name != ?`, so a crashed job's own Running row is excluded from its own
-concurrency check.
+**A stale `job_status=1` does not block the re-run.** The advisory lock, not the
+status column, says whether a job is running.
 
 ## There is no "completed" job status
 
-`archiver_job.job_status` is `Idle(0)` / `Running(1)` / `Paused(2)` / `Failed(3)`. A
-finished job returns to **Idle(0)** — the same value a job that never ran carries —
-so "the job reached a terminal state" asserts almost nothing on its own.
+`archiver_job.job_status` is `Idle(0)` / `Running(1)` / `Failed(3)`. A finished job
+returns to **Idle(0)** — the same value a job that never ran carries — so "the job
+reached a terminal state" asserts almost nothing on its own.
 
-STEP 6 asserts the **log table** instead: every root PK at `completed`, none left
-replayable. That is the assertion `job_status` cannot make. `job_status` earns its
-place only as 09's crash signature, where `Running(1)` proves `cleanup()` never ran.
+STEP 6 asserts the **log table** instead: every root at `completed`, none at
+`copied` or `deleting`. That is the assertion `job_status` cannot make. `job_status`
+earns its place only as 09's crash signature, where `Running(1)` proves the final
+status was never written.
 
 ## If one of these goes flaky
 

@@ -1,6 +1,8 @@
 # Test13 — a stopped SQL applier must hold the actual purge process.
 # The helper observes the hold, checks retained source rows, restores the
 # applier and waits for the same process. Ordinary exact-count checks still run.
+# min_duration is 0.0: the config sleeps nothing, and the hold's length is the
+# harness's, not the run's.
 test_name="Test13_PurgeReplicationHold"
 test_desc="Purge holds on a stopped replica and resumes on the same invocation"
 config_file="test13_purge_replication.yaml"
