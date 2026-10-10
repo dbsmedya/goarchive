@@ -363,3 +363,69 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 		}
 	})
 }
+
+// acctRoleActive asserts the account behind db has role active and that the role's
+// grant is effective: it can count orders.
+func acctRoleActive(t *testing.T, db *sql.DB, role string) {
+	t.Helper()
+	var active string
+	var n int
+	if err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&active); err != nil || active != strings.ReplaceAll(role, "'", "`") {
+		t.Fatalf("CURRENT_ROLE() = %q, %v; want %s active", active, err, role)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&n); err != nil {
+		t.Fatalf("the role's grant is not effective: %v", err)
+	}
+}
+
+// TestMySQLRoleHeldGrantsFailClosed (M7-3, G5, deviation D1): a schema grant held only
+// through an active default role is effective, but MySQL does not show a role's grant rows
+// to the account, so the privilege is unconfirmed and the check fails closed.
+// Pair (source): SELECT on the source schema held through a default role, with PROCESS and
+// DELETE direct → archive refused with SOURCE_SELECT_PERMISSION_CHECK naming
+// orders(unconfirmed) and order_lines(unconfirmed); the same SELECT granted directly →
+// archive passes.
+// Pair (destination): CREATE, SELECT, INSERT, UPDATE on the job schema held through a
+// default role → JOB_SCHEMA_PERMISSION_CHECK with all four unconfirmed and the advice to
+// grant directly; the same four granted directly → archive passes.
+// The partial_revokes half of D1 needs SET GLOBAL and is not built here (plan M7c).
+func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "prole")
+	ctx := context.Background()
+	srcSelect := "GRANT SELECT ON `" + srcSchema + "`.* TO "
+	direct := []string{"GRANT PROCESS ON *.* TO {{A}}", "GRANT DELETE ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
+	dstAll := "GRANT CREATE, SELECT, INSERT, UPDATE ON `" + dstSchema + "`.* TO "
+
+	t.Run("source SELECT through a role is refused", func(t *testing.T) {
+		role := acctRole(t, src, "rsrc", srcSelect+"{{R}}")
+		as := acctCreate(t, "TEST_SOURCE", src, "rlsrcrole", srcSchema,
+			append(direct, "GRANT "+role+" TO {{A}}", "SET DEFAULT ROLE ALL TO {{A}}")...)
+		acctRoleActive(t, as, role)
+		err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob))
+		acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"), "orders(unconfirmed)", "order_lines(unconfirmed)")
+	})
+	t.Run("source SELECT granted directly passes", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "rlsrcdirect", srcSchema, append(direct, srcSelect+"{{A}}")...)
+		if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob)); err != nil {
+			t.Errorf("Run() = %v, want success", err)
+		}
+	})
+
+	t.Run("job schema grants through a role are refused", func(t *testing.T) {
+		role := acctRole(t, dst, "rdst", dstAll+"{{R}}")
+		as := acctCreate(t, "TEST_DEST", dst, "rldstrole", dstSchema,
+			acctSeesGrants, "GRANT "+role+" TO {{A}}", "SET DEFAULT ROLE ALL TO {{A}}")
+		acctRoleActive(t, as, role)
+		err := acctRun(ctx, t, src, as, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob))
+		e := refusedWith(t, err, "JOB_SCHEMA_PERMISSION_CHECK")
+		acctTablesAre(t, e)
+		acctMessage(t, e, "(states: CREATE(unconfirmed), SELECT(unconfirmed), INSERT(unconfirmed), UPDATE(unconfirmed))",
+			"Grant each missing privilege directly to the account at schema scope")
+	})
+	t.Run("job schema grants held directly pass", func(t *testing.T) {
+		as := acctCreate(t, "TEST_DEST", dst, "rldstdirect", dstSchema, acctSeesGrants, dstAll+"{{A}}")
+		if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob)); err != nil {
+			t.Errorf("Run() = %v, want success", err)
+		}
+	})
+}
