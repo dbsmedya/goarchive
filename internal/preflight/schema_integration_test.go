@@ -258,3 +258,49 @@ func TestMySQLViewsAreRefused(t *testing.T) {
 	}
 	schPasses(t, src, dstView, schTwoJob, jobspec.Purge)
 }
+
+// TestMySQLNoAdvisoryForAFatalTable (M7-3, G15): advisories are logged for compatible
+// tables only. A table refused for one difference does not also warn about another.
+//
+// Pair: orders with a collation-only difference, and order_lines with a collation
+// difference on sku and a type change on qty → DEST_SCHEMA_COMPATIBILITY_CHECK naming
+// only order_lines' qty, and exactly the orders advisory is logged; qty's type undone →
+// passes with exactly the orders and the order_lines advisories, in copy order.
+func TestMySQLNoAdvisoryForAFatalTable(t *testing.T) {
+	tables := []string{
+		"CREATE TABLE orders (id INT NOT NULL PRIMARY KEY, note VARCHAR(20) " + schCS + ") ENGINE=InnoDB",
+		"CREATE TABLE order_lines (order_id INT NOT NULL, line_no INT NOT NULL, sku VARCHAR(32) " + schCS + ", qty INT, " +
+			"PRIMARY KEY (order_id, line_no)) ENGINE=InnoDB",
+	}
+	src := scratch(t, "TEST_SOURCE", "schworder")
+	execAll(t, src, tables[0], schSwap(t, tables[1], "PRIMARY KEY (order_id, line_no))",
+		"PRIMARY KEY (order_id, line_no), CONSTRAINT fk_lines_order FOREIGN KEY (order_id) REFERENCES orders (id))"))
+	dst := scratch(t, "TEST_DEST", "schworderdst")
+
+	const unicode = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+	collated := func(table, column string) string {
+		return fmt.Sprintf("Table %s column %s: collation differs (source=utf8mb4_0900_ai_ci destination=utf8mb4_unicode_ci); "+
+			"stored bytes are identical but comparisons and sorting may differ in the archive", table, column)
+	}
+	orders := schSwap(t, tables[0], "note VARCHAR(20) "+schCS, "note VARCHAR(20) "+unicode)
+	lines := schSwap(t, tables[1], "sku VARCHAR(32) "+schCS, "sku VARCHAR(32) "+unicode)
+
+	schRecreate(t, dst, nil, orders, schSwap(t, lines, "qty INT", "qty BIGINT"))
+	_, warnings, err := schRun(t, src, dst, job(t, jobspec.Archive, schTwoJob), nil)
+	if e := refusedWith(t, err, "DEST_SCHEMA_COMPATIBILITY_CHECK"); !slices.Equal(e.Tables,
+		[]string{"order_lines(column qty: column type mismatch; source=int, destination=bigint)"}) {
+		t.Errorf("tables = %q", e.Tables)
+	}
+	if want := []string{collated("orders", "note")}; !slices.Equal(warnings, want) {
+		t.Errorf("fatal order_lines: warnings = %q, want %q", warnings, want)
+	}
+
+	schRecreate(t, dst, []string{"order_lines"}, lines)
+	_, warnings, err = schRun(t, src, dst, job(t, jobspec.Archive, schTwoJob), nil)
+	if err != nil {
+		t.Fatalf("Run() = %v, want success", err)
+	}
+	if want := []string{collated("orders", "note"), collated("order_lines", "sku")}; !slices.Equal(warnings, want) {
+		t.Errorf("compatible order_lines: warnings = %q, want %q", warnings, want)
+	}
+}
