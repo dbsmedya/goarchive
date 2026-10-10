@@ -19,6 +19,9 @@ import (
 //
 // Go never orders keys (spec §4.2 rule 1) and compares them only byte for byte, for values
 // read back from the same column (rule 2).
+//
+// A Key is immutable once built. Set, the log and every statement keep it, byte slices
+// included, without copying (M1-D3); Decode is what copies a row's bytes.
 type Key []any
 
 // Validate reports whether k has one element of the right Go type per column of d.

@@ -2,6 +2,7 @@ package key
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 )
@@ -34,6 +35,9 @@ func (e *NoPrimaryKeyError) Error() string {
 // or functional key part, and every type outside the §4.4 allowlist.
 func FromFacts(pk validations.PKInfo, spec validations.TableSpec) (Def, error) {
 	table := spec.Table
+	if !strings.EqualFold(pk.Table, table) {
+		return Def{}, fmt.Errorf("key: the primary-key fact is for %s but the table spec is for %s", pk.Table, table)
+	}
 	if pk.Kind == validations.PKNone || len(pk.Columns) == 0 {
 		return Def{}, &NoPrimaryKeyError{Table: table}
 	}
