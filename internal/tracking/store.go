@@ -26,7 +26,7 @@ func (f inspectorFacts) Tables(ctx context.Context, tables []string) ([]validati
 }
 
 func (f inspectorFacts) TableSpec(ctx context.Context, table string) (validations.TableSpec, error) {
-	return f.insp.TableSpec(ctx, validations.Ref(f.schema, table))
+	return f.insp.TableSpec(ctx, validations.Ref(f.schema, table), validations.WithIndexes())
 }
 
 // Store is the tracking schema on the destination server.

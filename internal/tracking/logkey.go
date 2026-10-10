@@ -110,6 +110,45 @@ func decodeKeyColumns(text string) ([]string, error) {
 	return names, nil
 }
 
+// checkLogTable is the log's table check, the part of its shape that holds spec §6.3's
+// guarantees: InnoDB, so a status write rolls back with the work it records; a primary
+// key of exactly k1…kN, whole and ascending, so a logged key fails a second insert (R25);
+// and the bookkeeping columns as created. idx_ga_status is an access path only. It
+// returns why spec is not such a log, or "".
+func checkLogTable(spec validations.TableSpec, n int) string {
+	if !strings.EqualFold(spec.Engine, "InnoDB") {
+		return fmt.Sprintf("its engine is %s, not InnoDB", spec.Engine)
+	}
+	if spec.Captured&validations.SectionIndexes == 0 {
+		return "its indexes were not read"
+	}
+	want := make([]string, n)
+	for i := range want {
+		want[i] = logColumnName(i)
+	}
+	pk := func() bool {
+		for _, ix := range spec.Indexes {
+			if ix.Name != "PRIMARY" {
+				continue
+			}
+			return slices.EqualFunc(ix.Parts, want, func(p validations.IndexPart, c string) bool {
+				return p.Column == c && p.Expression == "" && p.SubPart == 0 && !p.Descending
+			})
+		}
+		return false
+	}
+	if !pk() {
+		return fmt.Sprintf("its primary key is not (%s)", strings.Join(want, ", "))
+	}
+	for _, b := range []struct{ name, typ string }{{colStatus, "tinyint"}, {colUpdatedAt, "timestamp"}} {
+		i := slices.IndexFunc(spec.Columns, func(c validations.ColumnSpec) bool { return c.Name == b.name })
+		if i < 0 || spec.Columns[i].Nullable || strings.ToLower(spec.Columns[i].NormalizedType) != b.typ {
+			return fmt.Sprintf("column %s is missing or not %s NOT NULL", b.name, b.typ)
+		}
+	}
+	return ""
+}
+
 // LogKeyError refuses a job whose root key changed since the job was created (spec §6.2):
 // the log's typed columns are fixed for the job's life.
 type LogKeyError struct {

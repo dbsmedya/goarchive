@@ -154,7 +154,14 @@ func (s *Store) checkLog(ctx context.Context, j *Job, row jobRow, root key.Def) 
 	if err != nil {
 		return err
 	}
-	return checkLogColumns(j.Name, spec, root)
+	if err := checkLogColumns(j.Name, spec, root); err != nil {
+		return err
+	}
+	if reason := checkLogTable(spec, len(root.Columns)); reason != "" {
+		return fmt.Errorf("tracking: job %q: its log %s is not the table GoArchive created: %s. Restore it, or retire the job "+
+			"(docs/README_JOBS_SCHEMA.md, \"Retiring a job completely\")", j.Name, j.logTable, reason)
+	}
+	return nil
 }
 
 func (s *Store) logSpec(ctx context.Context, j *Job) (validations.TableSpec, error) {
@@ -195,7 +202,8 @@ func (s *Store) create(ctx context.Context, in JobInput) (*Job, error) {
 }
 
 // register completes the registration of job j: it creates the job's log, or finds the
-// empty one of exactly the log's shape that an interrupted registration left, and only
+// empty one of exactly the log's shape (checkLogTable, checkLogColumns) that an
+// interrupted registration left, and only
 // then writes the root key's names. A log that holds rows, or has another shape, was left
 // by a dropped or truncated registry and is never adopted, on this run or any later one.
 func (s *Store) register(ctx context.Context, j *Job, root key.Def) error {
@@ -211,6 +219,9 @@ func (s *Store) register(ctx context.Context, j *Job, root key.Def) error {
 		return leftoverLog(j, lk.Reason)
 	} else if err != nil {
 		return err
+	}
+	if reason := checkLogTable(spec, len(root.Columns)); reason != "" {
+		return leftoverLog(j, reason)
 	}
 	var one int
 	switch err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s LIMIT 1", j.logTable)).Scan(&one); {
