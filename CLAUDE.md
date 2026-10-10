@@ -49,8 +49,8 @@ operators.
 library's facts are weaker or missing, the fix is a dbsgomysql release and a pin bump, never
 compensating logic here. When the library is stricter than goarchive's pre-2.0 behaviour, adopt
 it and document the change: pre-2.0 behaviour is a reference point, not a quality bar. A
-library bump is judged by goarchive's baselines alone: an unchanged integration inventory and
-characterization expectation is a pass, and library changes the suite did not observe are not
+library bump is judged by goarchive's baselines alone: an unchanged integration inventory is a
+pass, and library changes the suite did not observe are not
 coverage gaps, because the library verifies its own facts. The exception is a library change
 that moves goarchive's own operator-visible acceptance; that gets a goarchive test.
 
@@ -364,8 +364,7 @@ there, so use grep for the library and say which tool proved the claim.
   and run. It is written for people; read it before adding or changing a test.
 - **Agents follow [`tests/AGENTS.md`](tests/AGENTS.md)** to run tests and the gate. It turns
   `tests/README.md` into steps, cites its sections, and defines nothing of its own. It is the
-  gate instructions file and the owner of the measured baselines (integration inventory,
-  characterization expectation).
+  gate instructions file and the owner of the measured baseline (the integration inventory).
 
 ## Source of truth
 

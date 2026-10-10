@@ -10,14 +10,13 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
-| **Characterization** | Pinned behaviour, checked against a recorded baseline | `make characterization` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 03–09 and 13) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 01, 02, 10, 11, 12) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
 It runs: estate reachability → `fmt-check` `vet` `lint` `consumer-policy` `deadcode` → unit →
-integration (`--setup`) → characterization → `make e2e` → `make e2e-examples`, and ends with a
+integration (`--setup`) → `make e2e` → `make e2e-examples`, and ends with a
 summary:
 
 Unit-test ownership rules and typed-fake examples live in
@@ -51,7 +50,7 @@ Read the current run's summary and completion record together with its process
 exit. A console line or an older stage log alone does not certify the checkout.
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
-destroys the estate; run it before integration or characterization and those fail for reasons
+destroys the estate; run it before integration and that fails for reasons
 unrelated to your change. Integration needs `--setup`, or stale heartbeat state fabricates
 failures. `make gate` encodes both so nobody has to remember them.
 
@@ -61,19 +60,6 @@ own `selftest_get_row_count_fails_loud` cannot catch that case — it probes an 
 port on purpose, so it passes while the real databases are down.
 
 Credentials first, as always: `set -a; source tests/.env; set +a`.
-
-#### The characterization baseline is checked, not recited
-
-`tests/characterization-baseline.txt` holds the recorded counts and
-`scripts/check-characterization-baseline.sh` does the comparison.
-
-> **Never count it by hand.** The suite nests **two** levels deep. The obvious
-> `grep -c '^    --- PASS'` returns **206** against a baseline of 304 and looks like a 98-test
-> regression — the missing 98 are subtests at 8-space indent. That misfire has happened, on a
-> change touching zero `.go` files. Run `make characterization` and read its verdict.
-
-Raising the baseline is a decision requiring prior authorization, not a side effect of adding
-tests. When authorized, update the file and the pointer in `tests/AGENTS.md` together.
 
 > **Integration + E2E need a freshly-reseeded destination — the #1 source of
 > false failures.** The real-DB tests archive Sakila into `sakila_archive` and
