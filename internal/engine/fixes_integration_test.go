@@ -32,3 +32,42 @@ func TestMySQLFailedFirstHeartbeat(t *testing.T) {
 		t.Errorf("job_status = %d, want failed (%d)", got, tracking.JobFailed)
 	}
 }
+
+// TestMySQLRecoveryHonoursStop (M5-F3): a first signal during a long recovery takes effect
+// at the next page boundary, as it does at a batch boundary. The page in flight finishes,
+// the run reports Stopped with the job idle, and the next run recovers the rest.
+func TestMySQLRecoveryHonoursStop(t *testing.T) {
+	e := newEnv(t, "recstop")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	whole := e.config(t, job(t, jobspec.Archive, orderJob))
+	whole.Processing.BatchSize = 3
+	e.interrupted(t, whole, atCommitted) // three roots copied, none deleted
+
+	stop := make(chan struct{})
+	cfg := e.config(t, job(t, jobspec.Archive, orderJob))
+	cfg.Processing.BatchSize = 1 // recovery pages of one root
+	cfg.Stop = stop
+	cfg.at = func(p point) {
+		if p == atDeleted {
+			select {
+			case <-stop:
+			default:
+				close(stop)
+			}
+		}
+	}
+	rep := e.mustRun(t, cfg)
+	if !rep.Stopped || rep.Recovered != 1 || rep.Batches != 0 {
+		t.Fatalf("report = %+v, want one recovered page, then a stop", rep)
+	}
+	if got := statuses(t, e.dst, e.dstSchema); got[int(tracking.StatusCopied)] != 2 || got[int(tracking.StatusCompleted)] != 1 {
+		t.Errorf("log = %v, want 2 copied and 1 completed", got)
+	}
+	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobIdle) {
+		t.Errorf("job_status = %d, want idle", got)
+	}
+	if rep := e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob))); rep.Recovered != 2 {
+		t.Errorf("rerun = %+v, want the 2 remaining roots recovered", rep)
+	}
+}
