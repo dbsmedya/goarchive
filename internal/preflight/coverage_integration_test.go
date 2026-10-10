@@ -127,3 +127,73 @@ func TestMySQLCrossSchemaForeignKeyCoverage(t *testing.T) {
 		schPasses(t, src, dst, orderJob, schTypes...)
 	})
 }
+
+// TestMySQLInternalForeignKeyCoverage (M7-3, G9): a foreign key declared between two of
+// the job's tables must be one of its relations, with the same foreign_key columns.
+//
+// Pair: line_notes declares fk_notes_line to order_lines while the job lists line_notes
+// under orders → INTERNAL_FK_COVERAGE "[no relation: …]"; the constraint dropped → passes.
+// Pair: child declares fk_child_parent on pid while its relation's foreign_key is alt →
+// INTERNAL_FK_COVERAGE "[the relation's foreign_key is (alt)]"; the constraint dropped →
+// passes. Each for archive, purge and copy-only.
+func TestMySQLInternalForeignKeyCoverage(t *testing.T) {
+	const hint = "\n\nHint: nest each child under its parent, with foreign_key and references matching the constraint."
+	const prefix = "Foreign keys between the job's tables must each be a configured relation with the same foreign_key columns:\n"
+
+	t.Run("no relation", func(t *testing.T) {
+		src := scratch(t, "TEST_SOURCE", "schifk")
+		execAll(t, src, orderTables(schCS)...)
+		dst := scratch(t, "TEST_DEST", "schifkdst")
+		execAll(t, dst, orderTables(schCS)...)
+		const siblings = `
+    root_table: orders
+    primary_key: id
+    where: "1=1"
+    relations:
+      - table: order_lines
+        primary_key: [order_id, line_no]
+        foreign_key: order_id
+      - table: line_notes
+        primary_key: note_id
+        foreign_key: order_id
+`
+		want := prefix + "  - line_notes(order_id, line_no) -> order_lines(order_id, line_no) (constraint fk_notes_line) " +
+			"[no relation: line_notes is not configured under order_lines]" + hint
+		for _, typ := range schTypes {
+			_, _, err := schRun(t, src, dst, job(t, typ, siblings), nil)
+			if e := refusedWith(t, err, "INTERNAL_FK_COVERAGE"); e.Message != want {
+				t.Errorf("%s: message = %q, want %q", typ, e.Message, want)
+			}
+		}
+		execAll(t, src, "ALTER TABLE line_notes DROP FOREIGN KEY fk_notes_line")
+		schPasses(t, src, dst, siblings, schTypes...)
+	})
+
+	t.Run("other foreign_key column", func(t *testing.T) {
+		tables := []string{
+			"CREATE TABLE parent (id INT NOT NULL PRIMARY KEY) ENGINE=InnoDB",
+			"CREATE TABLE child (id INT NOT NULL PRIMARY KEY, pid INT, alt INT, KEY ix_pid (pid), KEY ix_alt (alt), " +
+				"CONSTRAINT fk_child_parent FOREIGN KEY (pid) REFERENCES parent (id)) ENGINE=InnoDB",
+		}
+		src := scratch(t, "TEST_SOURCE", "schifkcol")
+		execAll(t, src, tables...)
+		dst := scratch(t, "TEST_DEST", "schifkcoldst")
+		execAll(t, dst, tables...)
+		const body = `
+    root_table: parent
+    primary_key: id
+    where: "1=1"
+    relations:
+      - {table: child, primary_key: id, foreign_key: alt}
+`
+		want := prefix + "  - child(pid) -> parent(id) (constraint fk_child_parent) [the relation's foreign_key is (alt)]" + hint
+		for _, typ := range schTypes {
+			_, _, err := schRun(t, src, dst, job(t, typ, body), nil)
+			if e := refusedWith(t, err, "INTERNAL_FK_COVERAGE"); e.Message != want {
+				t.Errorf("%s: message = %q, want %q", typ, e.Message, want)
+			}
+		}
+		execAll(t, src, "ALTER TABLE child DROP FOREIGN KEY fk_child_parent")
+		schPasses(t, src, dst, body, schTypes...)
+	})
+}
