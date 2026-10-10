@@ -154,8 +154,13 @@ func TestInMatchesExactlyPerFamily(t *testing.T) {
 			Column{Family: FamilyBinary, Length: 16}},
 		{"date", "DATE", "('2024-02-29'),('0001-01-01'),('9999-12-31')",
 			Column{Family: FamilyDate}},
-		{"time2", "TIME(2)", "('-01:00:00.50'),('00:00:00.00'),('838:59:59.00')",
+		// R46: values CAST(? AS TIME(n)) mis-converts on 8.0, 8.4 and 9.7, beside the edges.
+		{"time2", "TIME(2)", "('-01:00:00.50'),('00:00:00.00'),('838:59:59.00'),('10:00:00.01'),('09:06:03.18'),('14:06:23.05')",
 			Column{Family: FamilyTime, Fsp: 2}},
+		{"time0", "TIME", "('03:03:00'),('04:00:09'),('05:11:06'),('-838:59:59')",
+			Column{Family: FamilyTime}},
+		{"time1", "TIME(1)", "('01:09:13.1'),('06:12:22.2'),('09:08:13.1')",
+			Column{Family: FamilyTime, Fsp: 1}},
 		{"year", "YEAR", "(1901),(2000),(2155)",
 			Column{Family: FamilyYear}},
 		// Empty keys are values, not NULL: they must bind as '' and self-match.
