@@ -304,3 +304,35 @@ func TestMySQLNoAdvisoryForAFatalTable(t *testing.T) {
 		t.Errorf("compatible order_lines: warnings = %q, want %q", warnings, want)
 	}
 }
+
+// TestMySQLSourceStructure (M7-3, G16): every job table must be an InnoDB base table of
+// the source database.
+//
+// Pair: line_notes absent from the source (present in the destination) →
+// TABLE_EXISTENCE_CHECK naming only line_notes, for archive, purge and copy-only;
+// line_notes a MyISAM table → STORAGE_ENGINE_CHECK naming line_notes(MyISAM); line_notes
+// an InnoDB table, the one fact undone → all three pass.
+func TestMySQLSourceStructure(t *testing.T) {
+	tables := orderTables(schCS)
+	missing := scratch(t, "TEST_SOURCE", "schmissing")
+	execAll(t, missing, tables[:2]...)
+	myisam := scratch(t, "TEST_SOURCE", "schmyisam")
+	execAll(t, myisam, tables[0], tables[1], schSwap(t, tables[2], "ENGINE=InnoDB", "ENGINE=MyISAM"))
+	src := scratch(t, "TEST_SOURCE", "schinnodb")
+	execAll(t, src, tables...)
+	dst := scratch(t, "TEST_DEST", "schstructdst")
+	execAll(t, dst, tables...)
+
+	for _, typ := range schTypes {
+		_, _, err := schRun(t, missing, dst, job(t, typ, orderJob), nil)
+		if e := refusedWith(t, err, "TABLE_EXISTENCE_CHECK"); !slices.Equal(e.Tables, []string{"line_notes"}) ||
+			e.Message != "Tables not found in source database" {
+			t.Errorf("%s: error = %q, tables %q", typ, e.Message, e.Tables)
+		}
+		_, _, err = schRun(t, myisam, dst, job(t, typ, orderJob), nil)
+		if e := refusedWith(t, err, "STORAGE_ENGINE_CHECK"); !slices.Equal(e.Tables, []string{"line_notes(MyISAM)"}) {
+			t.Errorf("%s: tables = %q", typ, e.Tables)
+		}
+	}
+	schPasses(t, src, dst, orderJob, schTypes...)
+}
