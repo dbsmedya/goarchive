@@ -474,6 +474,52 @@ func TestJobNames(t *testing.T) {
 	}
 }
 
+// TestParseRefusesANullJobName (M2-C7): a YAML null written as a job's name (null, NULL, ~)
+// is not a name. The decoder dropped such a job without an error, so running it later said
+// "not found"; it is refused with its line.
+func TestParseRefusesANullJobName(t *testing.T) {
+	const body = ":\n    job_type: purge\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
+	for _, k := range []string{"null", "NULL", "Null", "~"} {
+		t.Run(k, func(t *testing.T) {
+			errs := mustFail(t, "\njobs:\n  j"+body+"  "+k+body)
+			if !hasError(errs, "jobs", "line 17") || !hasError(errs, "jobs", "null") {
+				t.Errorf("job name %s: %v, want a refusal naming the null key and its line", k, errs)
+			}
+		})
+	}
+	t.Run("through a merge key", func(t *testing.T) {
+		errs := mustFail(t, "\njobs:\n  j"+body+"  <<: {~: {job_type: purge, root_table: t, primary_key: id, where: \"1=1\"}}\n")
+		if !hasError(errs, "jobs", "must not be null") {
+			t.Errorf("a null name through a merge key: %v, want a refusal", errs)
+		}
+	})
+	// Quoted, "null" is a name like any other: the control side of the pair.
+	t.Run("quoted null", func(t *testing.T) {
+		d, err := parse(t, "\njobs:\n  \"null\""+body)
+		if err != nil {
+			t.Fatalf("a quoted \"null\" job name: %v", err)
+		}
+		if _, err := d.Job("null", Purge); err != nil {
+			t.Errorf("the job named \"null\": %v", err)
+		}
+	})
+}
+
+// TestJobNameCollisionInFileOrder (M2-C8): a case-only collision is reported on the name
+// written later in the file, whichever sorts first.
+func TestJobNameCollisionInFileOrder(t *testing.T) {
+	job := func(name string) string {
+		return "  " + name + ":\n    job_type: purge\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n"
+	}
+	errs := mustFail(t, "\njobs:\n"+job("archive_orders")+job("Archive_Orders"))
+	if !hasError(errs, "jobs.Archive_Orders", `job name "Archive_Orders" differs from "archive_orders" only in case`) {
+		t.Errorf("collision not reported on the later name:\n%v", errs)
+	}
+	if hasError(errs, "jobs.archive_orders", "only in case") {
+		t.Errorf("collision reported on the earlier name:\n%v", errs)
+	}
+}
+
 // TestParseRefusesASecondDocument: yaml.Unmarshal reads only the first document, so a job
 // written after a "---" line would vanish from the configuration without an error.
 func TestParseRefusesASecondDocument(t *testing.T) {
