@@ -217,6 +217,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	}
 	r.reached(atMarked)
 	if err := job.Heartbeat(ctx); err != nil {
+		finalStatus(ctx, job, tracking.JobFailed, cfg.Name, log)
 		return nil, err
 	}
 	r.reached(atRunning)
@@ -236,10 +237,16 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		final = tracking.JobFailed
 	}
+	finalStatus(ctx, job, final, cfg.Name, log)
+	return r.report, err
+}
+
+// finalStatus writes the job's status at the end of a run that marked it running, on a
+// cleanup context: every way out of such a run writes it (M5-F1).
+func finalStatus(ctx context.Context, job *tracking.Job, st tracking.JobStatus, name string, log *logger.Logger) {
 	statusCtx, done := cleanupContext(ctx)
 	defer done()
-	if serr := job.SetStatus(statusCtx, final); serr != nil {
-		log.Errorw("failed to write the final job status", "job", cfg.Name, "status", final, "error", serr)
+	if err := job.SetStatus(statusCtx, st); err != nil {
+		log.Errorw("failed to write the final job status", "job", name, "status", st, "error", err)
 	}
-	return r.report, err
 }
