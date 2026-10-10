@@ -162,6 +162,7 @@ func (r *run) trackProgress() {
 // after the last key of the previous batch, held in memory only.
 func (r *run) loop(ctx context.Context) error {
 	sentinel := newSentinelGate(r.cfg.Processing.SentinelFile, r.log)
+	sentinel.progress = r.progress
 	var last key.Key
 	for {
 		if stopRequested(r.cfg.Stop) {

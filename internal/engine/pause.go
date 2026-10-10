@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -65,6 +66,9 @@ type sentinelGate struct {
 	// does not silently disable the pause.
 	statErrWarned bool
 
+	// progress shows the pause on the --progress line; nil when progress is off.
+	progress *progressTracker
+
 	// Test seams, nil in production.
 	presentFn func(path string) bool
 	sleepFn   func(ctx context.Context, d time.Duration) error
@@ -106,6 +110,8 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 		return nil
 	}
 	g.logger.Warnf("Paused: sentinel file %q is present; remove it to resume", g.path)
+	g.progress.setPaused(fmt.Sprintf("sentinel file %q present", g.path))
+	defer g.progress.clearPaused()
 	for waited := 1; ; waited++ {
 		if err := g.sleep(ctx, stop, sentinelPollInterval); err != nil {
 			g.logger.Warnf("Sentinel pause interrupted: %v", err)
