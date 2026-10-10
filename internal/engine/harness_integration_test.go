@@ -23,7 +23,7 @@ import (
 // destination on TEST_DEST_* (db2, whose global time_zone is +03:00). Each test creates its
 // own ga3m5_<name>_<pid> schemas on both servers and drops them afterwards.
 
-// openServer opens a pool pinned to UTC, as internal/database's DSN pins every session
+// openServer opens a pool pinned to UTC and autocommit, as internal/database's DSN pins every session
 // (spec §4.5). params adds or overrides session variables.
 func openServer(t *testing.T, prefix, schema string, params map[string]string) *sql.DB {
 	t.Helper()
@@ -34,7 +34,7 @@ func openServer(t *testing.T, prefix, schema string, params map[string]string) *
 	}
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port), schema
-	cfg.Params = map[string]string{"time_zone": "'+00:00'", "sql_notes": "1"}
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "sql_notes": "1", "autocommit": "1"}
 	for k, v := range params {
 		cfg.Params[k] = v
 	}

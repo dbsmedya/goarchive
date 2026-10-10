@@ -817,3 +817,16 @@ func TestBuildDSNDiagnosticInitialization(t *testing.T) {
 		t.Fatalf("diagnostic DSN initialization missing or auto-zero expression changed: %#v", dsn.Params)
 	}
 }
+
+// TestBuildDSNPinsAutocommit (M7c F1): every session commits each statement on its own,
+// whatever the server's global autocommit. Tracking writes outside a transaction rely on
+// it: under a global autocommit=0 they would never commit and would hold their locks.
+func TestBuildDSNPinsAutocommit(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dsn.Params["autocommit"]; got != "1" {
+		t.Fatalf("DSN autocommit = %q, want \"1\" (params %#v)", got, dsn.Params)
+	}
+}
