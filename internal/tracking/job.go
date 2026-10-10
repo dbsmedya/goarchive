@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
@@ -39,7 +41,8 @@ type Job struct {
 //  1. the job's type and root table are fixed for its life (2.x issue #14's schema-free
 //     half), and its name may not differ from the stored one only in letter case;
 //  2. the log-key check (§6.2): root_key_columns against in.RootKey's names, then the
-//     log's k1…kN facts against in.RootKey's columns;
+//     log's k1…kN facts against in.RootKey's columns. A job whose registration did not
+//     complete has no names yet, and completes it instead (register);
 //  3. the binding check (§6.2, §6.4): with pending work, a binding that differs in a
 //     compared part is refused with *BindingError; with none, it is overwritten.
 //
@@ -68,24 +71,12 @@ func (s *Store) Attach(ctx context.Context, in JobInput) (*Job, error) {
 			"replayed against another table. Retire the job (docs/README_JOBS_SCHEMA.md, \"Retiring a job completely\") "+
 			"or use a new job name", in.Name, row.rootTable, in.RootKey.Table)
 	}
-	stored, err := decodeKeyColumns(row.keyColumns)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkKeyNames(in.Name, stored, in.RootKey); err != nil {
-		return nil, err
-	}
 	j := s.newJob(row.id, in)
-	// A run that crashed between registering the job and creating its log left no log.
-	if err := s.createLog(ctx, j, in.RootKey, true); err != nil {
-		return nil, err
-	}
-	name, _ := s.logTable(row.id)
-	spec, err := s.facts.TableSpec(ctx, name)
-	if err != nil {
-		return nil, fmt.Errorf("tracking: read the log %s.%s: %w", s.schema, name, err)
-	}
-	if err := checkLogColumns(in.Name, spec, in.RootKey); err != nil {
+	if row.keyColumns == unregistered {
+		if err := s.register(ctx, j, in.RootKey); err != nil {
+			return nil, err
+		}
+	} else if err := s.checkLog(ctx, j, row, in.RootKey); err != nil {
 		return nil, err
 	}
 	if err := s.bind(ctx, j, row, in.Binding); err != nil {
@@ -146,14 +137,49 @@ func (s *Store) newJob(id int64, in JobInput) *Job {
 		maxTuples: maxTuples, insertMax: insertMax}
 }
 
-// create registers a new job and creates its log. A new job's log must not exist yet: a
-// leftover log of a dropped job would otherwise be adopted with its rows.
+// checkLog is the log-key check of a registered job.
+func (s *Store) checkLog(ctx context.Context, j *Job, row jobRow, root key.Def) error {
+	stored, err := decodeKeyColumns(row.keyColumns)
+	if err != nil {
+		return err
+	}
+	if err := checkKeyNames(j.Name, stored, root); err != nil {
+		return err
+	}
+	// A registered job's log exists unless a DBA dropped it; it is then recreated empty.
+	if err := s.createLog(ctx, j, root); err != nil {
+		return err
+	}
+	spec, err := s.logSpec(ctx, j)
+	if err != nil {
+		return err
+	}
+	return checkLogColumns(j.Name, spec, root)
+}
+
+func (s *Store) logSpec(ctx context.Context, j *Job) (validations.TableSpec, error) {
+	name, _ := s.logTable(j.ID)
+	spec, err := s.facts.TableSpec(ctx, name)
+	if err != nil {
+		return spec, fmt.Errorf("tracking: read the log %s.%s: %w", s.schema, name, err)
+	}
+	return spec, nil
+}
+
+// unregistered is root_key_columns of a job whose registration has not completed. The
+// row comes first, because the log is named by its id, and the key's names are written
+// only once the log is known to be the job's own. GoArchive holds no DELETE on the
+// tracking schema (docs/README_PERMISSIONS.md), so a failed or interrupted registration
+// cannot remove its row: this marker keeps every later run from taking it as registered.
+const unregistered = ""
+
+// create registers a new job: its row, marked unregistered, then its log (register).
 func (s *Store) create(ctx context.Context, in JobInput) (*Job, error) {
 	res, err := s.db.ExecContext(ctx, fmt.Sprintf(
 		"INSERT INTO %s (job_name, root_table, job_type, job_status, source_server_uuid, source_database, "+
 			"destination_database, config_fingerprint, root_key_columns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", s.jobTable),
 		in.Name, in.RootKey.Table, string(in.Type), JobIdle, in.Binding.SourceServerUUID, in.Binding.SourceDatabase,
-		in.Binding.DestinationDatabase, in.Binding.Fingerprint.Text(), encodeKeyColumns(in.RootKey.Names()))
+		in.Binding.DestinationDatabase, in.Binding.Fingerprint.Text(), unregistered)
 	if err != nil {
 		return nil, fmt.Errorf("tracking: register job %q: %w", in.Name, err)
 	}
@@ -162,25 +188,54 @@ func (s *Store) create(ctx context.Context, in JobInput) (*Job, error) {
 		return nil, fmt.Errorf("tracking: read the id of job %q: %w", in.Name, err)
 	}
 	j := s.newJob(id, in)
-	if err := s.createLog(ctx, j, in.RootKey, false); err != nil {
-		err = fmt.Errorf("%w. If a table of that name already exists, a dropped or truncated registry left it: "+
-			"drop it after confirming no job uses it, or restore archiver_job", err)
-		// Unregister, so the next run does not adopt whatever log holds the name.
-		if _, derr := s.db.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = ?", s.jobTable), id); derr != nil {
-			return nil, errors.Join(err, fmt.Errorf("tracking: unregister job %q after the failed log create: %w", in.Name, derr))
-		}
+	if err := s.register(ctx, j, in.RootKey); err != nil {
 		return nil, err
 	}
 	return j, nil
 }
 
-func (s *Store) createLog(ctx context.Context, j *Job, root key.Def, ifNotExists bool) error {
-	ddl, err := createLogSQL(j.logTable, root)
+// register completes the registration of job j: it creates the job's log, or finds the
+// empty one of exactly the log's shape that an interrupted registration left, and only
+// then writes the root key's names. A log that holds rows, or has another shape, was left
+// by a dropped or truncated registry and is never adopted, on this run or any later one.
+func (s *Store) register(ctx context.Context, j *Job, root key.Def) error {
+	if err := s.createLog(ctx, j, root); err != nil {
+		return err
+	}
+	spec, err := s.logSpec(ctx, j)
 	if err != nil {
 		return err
 	}
-	if !ifNotExists {
-		ddl = "CREATE TABLE " + ddl[len("CREATE TABLE IF NOT EXISTS "):]
+	var lk *LogKeyError
+	if err := checkLogColumns(j.Name, spec, root); errors.As(err, &lk) {
+		return leftoverLog(j, lk.Reason)
+	} else if err != nil {
+		return err
+	}
+	var one int
+	switch err := s.db.QueryRowContext(ctx, fmt.Sprintf("SELECT 1 FROM %s LIMIT 1", j.logTable)).Scan(&one); {
+	case err == nil:
+		return leftoverLog(j, "it holds rows")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("tracking: read the log of job %q: %w", j.Name, err)
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET root_key_columns = ? WHERE id = ?", s.jobTable),
+		encodeKeyColumns(root.Names()), j.ID); err != nil {
+		return fmt.Errorf("tracking: register job %q: %w", j.Name, err)
+	}
+	return nil
+}
+
+func leftoverLog(j *Job, reason string) error {
+	return fmt.Errorf("tracking: job %q cannot be registered: a table %s already exists under its log's name, and %s. "+
+		"A dropped or truncated registry left it, and GoArchive never adopts it: drop it after confirming no job uses it, "+
+		"or restore archiver_job. The job stays unregistered until then", j.Name, j.logTable, reason)
+}
+
+func (s *Store) createLog(ctx context.Context, j *Job, root key.Def) error {
+	ddl, err := createLogSQL(j.logTable, root)
+	if err != nil {
+		return err
 	}
 	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("tracking: create the log of job %q (%s): %w", j.Name, j.logTable, err)

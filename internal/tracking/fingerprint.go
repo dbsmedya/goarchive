@@ -3,7 +3,9 @@ package tracking
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
@@ -73,7 +75,7 @@ func parseFingerprint(text string) (Fingerprint, error) {
 	if err := dec.Decode(&f); err != nil {
 		return Fingerprint{}, fmt.Errorf("tracking: unreadable config_fingerprint %q: %w", text, err)
 	}
-	if dec.More() {
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return Fingerprint{}, fmt.Errorf("tracking: unreadable config_fingerprint %q: trailing data", text)
 	}
 	if f.Relations == nil {
