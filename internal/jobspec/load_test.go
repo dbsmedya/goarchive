@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -587,5 +588,53 @@ func TestParseBoundsAliasExpansion(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("Parse took %v on nested aliases; the decoder's alias guard must run first", elapsed)
+	}
+}
+
+// untaggedFields lists every exported field reachable from t that the unknown-key walk
+// cannot see: no yaml name, or ",inline". The decoder would accept such a key and the walk
+// would refuse it as unknown (yamlFields skips them). A type with its own UnmarshalYAML
+// decodes itself and is not entered.
+func untaggedFields(t reflect.Type, seen map[reflect.Type]bool) []string {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Map {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || seen[t] || reflect.PointerTo(t).Implements(unmarshalerType) {
+		return nil
+	}
+	seen[t] = true
+	var out []string
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, opts, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name == "" || name == "-" || strings.Contains(opts, "inline") {
+			out = append(out, t.Name()+"."+f.Name)
+			continue
+		}
+		out = append(out, untaggedFields(f.Type, seen)...)
+	}
+	return out
+}
+
+// TestDecodedFieldsAreNamed (M2-C11) guards the unknown-key walk: every exported field of the
+// decoded types has a named yaml tag. Pair (R56): a fixture with an untagged and an inline
+// field → both listed; the real document type → none.
+func TestDecodedFieldsAreNamed(t *testing.T) {
+	type inner struct {
+		Z int `yaml:"z"`
+	}
+	type fixture struct {
+		Named    int `yaml:"named"`
+		Untagged int
+		Inlined  inner `yaml:",inline"`
+	}
+	if got, want := untaggedFields(reflect.TypeFor[fixture](), map[reflect.Type]bool{}), []string{"fixture.Untagged", "fixture.Inlined"}; !slices.Equal(got, want) {
+		t.Errorf("fixture: untagged fields = %v, want %v", got, want)
+	}
+	if got := untaggedFields(reflect.TypeFor[document](), map[reflect.Type]bool{}); len(got) > 0 {
+		t.Errorf("decoded fields without a yaml name, which the unknown-key walk would refuse: %v", got)
 	}
 }
