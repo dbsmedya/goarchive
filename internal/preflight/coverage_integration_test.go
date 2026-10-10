@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -229,4 +230,49 @@ func TestMySQLDestinationInsertTriggers(t *testing.T) {
 
 	execAll(t, dst, "DROP TRIGGER trg_orders_bi", "DROP TRIGGER trg_notes_ai")
 	schPasses(t, src, dst, orderJob, jobspec.Archive, jobspec.CopyOnly)
+}
+
+// TestMySQLCascadeAdvisory (M7-3, G11): an ON DELETE CASCADE between two job tables is
+// legitimate, so archive and purge pass with one advisory naming the edge once, although
+// the constraint is both incoming and outgoing; copy-only deletes nothing and does not
+// look.
+//
+// Pair: fk_lines_order ON DELETE CASCADE → archive and purge pass and log exactly the two
+// cascade warnings, the first naming <src>.order_lines(order_id)-><src>.orders(id) once,
+// and copy-only logs none; the same constraint without ON DELETE CASCADE → archive and
+// purge log no warning.
+func TestMySQLCascadeAdvisory(t *testing.T) {
+	cascade := orderTables(schCS)
+	cascade[1] = strings.Replace(cascade[1], "REFERENCES orders (id)", "REFERENCES orders (id) ON DELETE CASCADE", 1)
+	src := scratch(t, "TEST_SOURCE", "schcasc")
+	execAll(t, src, cascade...)
+	plain := scratch(t, "TEST_SOURCE", "schnocasc")
+	execAll(t, plain, orderTables(schCS)...)
+	dst := scratch(t, "TEST_DEST", "schcascdst")
+	execAll(t, dst, orderTables(schCS)...)
+
+	s := schemaOf(t, src)
+	want := []string{
+		fmt.Sprintf("ON DELETE CASCADE rules detected (1): [%s.order_lines(order_id)->%s.orders(id)]", s, s),
+		"CASCADE rules may cause automatic deletion of related records. Verify this is intended behavior.",
+	}
+	for _, tc := range []struct {
+		typ  jobspec.Type
+		src  *sql.DB
+		want []string
+	}{
+		{jobspec.Archive, src, want},
+		{jobspec.Purge, src, want},
+		{jobspec.CopyOnly, src, nil},
+		{jobspec.Archive, plain, nil},
+		{jobspec.Purge, plain, nil},
+	} {
+		_, warnings, err := schRun(t, tc.src, dst, job(t, tc.typ, orderJob), nil)
+		if err != nil {
+			t.Fatalf("%s on %s: Run() = %v, want success", tc.typ, schemaOf(t, tc.src), err)
+		}
+		if !slices.Equal(warnings, tc.want) {
+			t.Errorf("%s on %s: warnings = %q, want %q", tc.typ, schemaOf(t, tc.src), warnings, tc.want)
+		}
+	}
 }
