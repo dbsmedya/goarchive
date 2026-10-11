@@ -131,10 +131,9 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** to be re-measured by the gate's integration stage on the 3.0-alpha
-  release PR. The last measurement, `go test -json -tags=integration ./internal/... ./cmd/...`
-  on the estate at `cb319de` with `TestMySQLLiveReplicationGate` run on its own: `PASS=1126
-  FAIL=0 SKIP=4`, counted at every level. Re-measure after adding or removing tagged tests.
-- **Gate duration:** the whole gate must finish inside one 600-second Bash call. A trial on
-  2026-10-10 took 371 s; record each new measurement here, since the margin shrinks as tests are
-  added.
+- **Integration inventory:** `PASS=1126 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261011T225705Z-24902` on 2026-10-12 (the 3.0-alpha release PR). Re-measure after adding or
+  removing tagged tests.
+- **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
+  409 s, leaving about 190 s; record each new measurement here, since the margin shrinks as tests
+  are added.
