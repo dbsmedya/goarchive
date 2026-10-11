@@ -244,12 +244,15 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | The run loop and its in-memory cursor; phases per job type | `internal/engine/run.go` → `(*run).loop`, `(*run).batch` |
 | Log status writes, inside the transaction that does the work | `internal/engine/run.go` → `logDeleting`, `complete`; `internal/engine/copy.go` → `(*run).copy`; `internal/tracking/log.go` → `(*Job).Insert`, `Transition` |
 | Key-set checks: copy-read identity, verification counts, delete row counts, warning 3170 | `internal/engine/copy.go` → `read`; `verify.go` → `verifyCount`, `verifyHash`; `delete.go` → `deleteOne` |
+| Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
+| Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
 | Startup recovery (delete-only replay) | `internal/engine/recover.go` → `recover`, `replay` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
 | Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
+| Session pins on every connection (UTC, `sql_notes`, `sql_mode`, `autocommit`) | `internal/database/database.go` → `BuildDSN` |
 | Temporal projection and representation contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalReadContractError` |
 | INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
 | Sticky `root_table` and job type; log-key and binding checks | `internal/tracking/job.go` → `(*Store).Attach` |
