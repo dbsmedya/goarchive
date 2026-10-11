@@ -478,6 +478,10 @@ Every key-addressed statement — the copy read, verification, the delete chunk,
 by `foreign_key`, and the tracking log's statements on the destination — carries at most
 its statement cap of key tuples (logged as `Statement cap:` lines). Preflight bounds the
 larger of the two packets each sends at its cap: the prepared text and the bound values.
+The values are counted as they travel: integers as 8 bytes; `DECIMAL` and temporal keys as
+SQL text; character keys at four bytes a character, because they are read and bound in the
+session's `utf8mb4` whatever the column's charset; and, for discovery, the parent key's
+values, which are bound against the child's `foreign_key` index.
 If that bound exceeds a server's `max_allowed_packet`, or the client's own 64 MiB limit,
 the run is refused before any row is read, naming the server, the table, the cap and the
 bytes needed. Without the check the statement would fail mid-run with error 1153.
