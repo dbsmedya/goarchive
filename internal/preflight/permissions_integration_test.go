@@ -340,8 +340,11 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "psd")
 	ctx := context.Background()
 	var partial int
-	if err := src.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&partial); err != nil || partial != 0 {
-		t.Fatalf("@@global.partial_revokes = %d, %v; this test needs it OFF", partial, err)
+	if err := src.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&partial); err != nil {
+		t.Fatal(err)
+	}
+	if partial != 0 {
+		t.Skipf("@@global.partial_revokes = %d: this pair needs it OFF; the environment matrix row partial_revokes_on is TestMySQLPartialRevokes's", partial)
 	}
 	base := []string{"GRANT SELECT, PROCESS ON *.* TO {{A}}"}
 

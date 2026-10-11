@@ -190,7 +190,9 @@ func TestMySQLInsertDiagnosticsRetention(t *testing.T) {
 			execAll(t, e.src, "CREATE TABLE r (id BIGINT NOT NULL PRIMARY KEY, a INT NOT NULL, b INT NOT NULL) ENGINE=InnoDB",
 				fmt.Sprintf("INSERT INTO r VALUES (1, 999, %d), (2, 999, %d)", tc.b, tc.b))
 			execAll(t, e.dst, "CREATE TABLE r (id BIGINT NOT NULL PRIMARY KEY, a TINYINT NOT NULL, b TINYINT NOT NULL) ENGINE=InnoDB")
-			params := map[string]string{}
+			// The default capacity is pinned too, so a server whose global differs (the
+			// environment matrix's max_error_count_0 row, M7c-2) keeps the premise.
+			params := map[string]string{"max_error_count": "1024"}
 			if tc.capacity != "" {
 				params["max_error_count"] = tc.capacity
 			}
