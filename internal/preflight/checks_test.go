@@ -254,4 +254,43 @@ func TestMaxAllowedPacket(t *testing.T) {
 	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
 		t.Errorf("message %q does not name the client's limit", e.Message)
 	}
+
+	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
+	// four bytes a character, so a purge's log INSERT at 8,272 roots needs about 8.5 MB, not
+	// the 2.2 MB its stored bytes suggest. 4 MiB on the destination is refused; 16 MiB passes.
+	keyed := func(typ jobspec.Type, parent, child string) *world {
+		w := healthy(t, typ)
+		w.jobYAML = withoutNotes
+		w.src.fks = w.src.fks[:1]
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			setColumn(s, "orders", col("id", parent, "utf8mb4 utf8mb4_bin"))
+			setColumn(s, "order_lines", col("order_id", child, "utf8mb4 utf8mb4_bin"))
+		}
+		return w
+	}
+	latin1 := healthy(t, jobspec.Purge)
+	latin1.jobYAML = withoutNotes
+	latin1.src.fks = latin1.src.fks[:1]
+	for _, s := range []*fakeServer{latin1.src, latin1.dst} {
+		setColumn(s, "orders", col("id", "varchar(255)", "latin1 latin1_bin"))
+		setColumn(s, "order_lines", col("order_id", "varchar(255)", "latin1 latin1_bin"))
+	}
+	latin1.dst.packet = 4 << 20
+	if e := latin1.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "destination max_allowed_packet") {
+		t.Errorf("latin1 key: message %q does not name the destination", e.Message)
+	}
+	latin1.dst.packet = 16 << 20
+	latin1.mustPass()
+
+	// Codex M7c-1 review B2: discovery binds the parent's key values against the child's
+	// foreign_key index. A VARCHAR(255) parent key over a VARCHAR(1) foreign key gets the
+	// narrow index's cap of 16,000 tuples, each a 1,020-byte parent value: about 16 MB, not the
+	// child's width. 4 MiB on the source is refused, naming discovery; 32 MiB passes.
+	wide := keyed(jobspec.Archive, "varchar(255)", "varchar(1)")
+	wide.src.packet = 4 << 20
+	if e := wide.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a discovery statement on order_lines") {
+		t.Errorf("wide parent key: message %q does not name discovery on order_lines", e.Message)
+	}
+	wide.src.packet = 32 << 20
+	wide.mustPass()
 }

@@ -154,7 +154,10 @@ var widestKeys = []struct {
 	{"timestamp(6)", Column{Name: "k", Family: FamilyTimestamp, Fsp: 6}, "2024-01-01 12:34:56.123456"},
 	{"time(6)", Column{Name: "k", Family: FamilyTime, Fsp: 6}, "-838:59:59.000000"},
 	{"varchar(255) utf8mb4", Column{Name: "k", Family: FamilyString, Length: 255, Charset: "utf8mb4"}, []byte(strings.Repeat("x", 1020))},
-	{"char(10) latin1", Column{Name: "k", Family: FamilyString, Length: 10, Charset: "latin1"}, []byte(strings.Repeat("x", 10))},
+	// A latin1 key comes back converted to the session's utf8mb4 (character_set_results), so
+	// '€', one byte stored, is three on the wire (Codex M7c-1 review B1).
+	{"char(10) latin1", Column{Name: "k", Family: FamilyString, Length: 10, Charset: "latin1"}, []byte(strings.Repeat("€", 10))},
+	{"varchar(255) latin1", Column{Name: "k", Family: FamilyString, Length: 255, Charset: "latin1"}, []byte(strings.Repeat("€", 250) + "12345")},
 	{"binary(16)", Column{Name: "k", Family: FamilyBinary, Length: 16}, []byte(strings.Repeat("x", 16))},
 }
 

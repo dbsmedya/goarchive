@@ -416,3 +416,40 @@ func TestAfterUsesRangeAccessOnThreeColumnKey(t *testing.T) {
 		t.Fatalf("Handler_read_next = %d for a 100-row page: the continuation is not a range scan", reads)
 	}
 }
+
+// TestKeyWireBytesFollowTheResultCharset (M7c F3, Codex M7c-1 review B1): a character key is
+// read back in the session's character_set_results, utf8mb4, whatever its column's charset,
+// and bound with those bytes. A latin1 '€' is one byte stored and three read, so the packet
+// bound must charge the read bytes, not the stored ones. Read through the production path:
+// the key projection and Def.Scan on a session like the DSN's.
+func TestKeyWireBytesFollowTheResultCharset(t *testing.T) {
+	c := sourceConn(t)
+	ctx := context.Background()
+	var results string
+	if err := c.QueryRowContext(ctx, "SELECT @@SESSION.character_set_results").Scan(&results); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, c, "CREATE TEMPORARY TABLE ga3_wire (k VARCHAR(10) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL, PRIMARY KEY (k))")
+	mustExec(t, c, "INSERT INTO ga3_wire VALUES (REPEAT('€', 10))")
+	d := Def{Table: "ga3_wire", Columns: []Column{{Name: "k", Family: FamilyString, Length: 10, Charset: "latin1", Collation: "latin1_bin"}}}
+	rows, err := c.QueryContext(ctx, "SELECT "+Projection(d)+" FROM ga3_wire")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		t.Fatal("no row")
+	}
+	k, err := d.Scan(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := k[0].([]byte)
+	t.Logf("character_set_results = %s; a latin1 VARCHAR(10) of ten '€' reads as %d bytes", results, len(read))
+	if len(read) != 30 {
+		t.Fatalf("read %d bytes, want 30 (utf8mb4 '€' is three)", len(read))
+	}
+	if got, sent := StatementBytes(d.Names(), d.Columns, 1, 0, 0), driverExecuteBytes([]any{read}); got < uint64(sent) {
+		t.Errorf("StatementBytes = %d for one key, below the %d bytes the driver sends", got, sent)
+	}
+}
