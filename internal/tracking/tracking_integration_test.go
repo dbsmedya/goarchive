@@ -582,8 +582,21 @@ func TestMySQLLeftoverLog(t *testing.T) {
 	// strict. The row stays unregistered across retries.
 	exec(t, admin, "CREATE TABLE "+logOf(4)+" (k1 INT NOT NULL PRIMARY KEY)",
 		strings.Replace(typedLog(5), "ENGINE=InnoDB", "ENGINE=MyISAM", 1),
-		typedLog(6), "ALTER TABLE "+logOf(6)+" DROP PRIMARY KEY",
 		typedLog(7), "ALTER TABLE "+logOf(7)+" DROP COLUMN ga_updated_at")
+	// The keyless leftover is built on one session that allows it: a server running with
+	// sql_require_primary_key or sql_generate_invisible_primary_key refuses the DROP
+	// (M7c environment matrix), and this table is what such a server would never hold.
+	keyless, err := admin.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{"SET SESSION sql_require_primary_key = 0", "SET SESSION sql_generate_invisible_primary_key = 0",
+		typedLog(6), "ALTER TABLE " + logOf(6) + " DROP PRIMARY KEY"} {
+		if _, err := keyless.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = keyless.Close()
 	for _, tc := range []struct{ name, reason string }{
 		{"other_shape", "has 1 key columns and the root key has 3"},
 		{"myisam", "its engine is MyISAM, not InnoDB"},
