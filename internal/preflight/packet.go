@@ -29,6 +29,10 @@ type bound struct {
 	mem                      uint64 // the server's range_optimizer_max_mem_size
 	knobs                    []knob // the settings that bound it below its cap
 	bytes                    func(tuples int) uint64
+	// continuation is a statement after the last key (key.After): it binds every prefix of
+	// that key, whatever the batch size, so neither the knobs nor the cap shrink it (Codex
+	// M7c-2 review B1).
+	continuation bool
 }
 
 // sized is a bound over its server's limit: at tuples key tuples it needs size bytes.
@@ -48,9 +52,11 @@ type sized struct {
 // run's batch_size when that is smaller, or for the source's by-key statements, which
 // include the deletes (except under copy-only), the larger of batch_size and
 // batch_delete_size (M7c-F4; engine byKeyChunk, discoveryChunk, deleteChunk; the log sees
-// one batch of roots). Each bound counts the prepared text and the bytes the driver sends
-// (key.StatementBytes, key.InsertBytes; Fable M7c-1 review I1). The copy's INSERTs carry
-// rows, not keys, and are not bounded here.
+// one batch of roots). The continuations after the last key, the root fetch and recovery's
+// log pages, bind every prefix of that key at any batch size and are bounded as such
+// (key.AfterBytes; Codex M7c-2 review B1). Each bound counts the prepared text and the
+// bytes the driver sends (key.StatementBytes, key.InsertBytes; Fable M7c-1 review I1). The
+// copy's INSERTs carry rows, not keys, and are not bounded here.
 func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 	specs, err := f.sourceSpecs(ctx)
 	if err != nil {
@@ -73,8 +79,8 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 				knobs = []knob{batch, deletes}
 			}
 		}
-		bounds = append(bounds, bound{c.Server, c.Statement, c.Table, c.Tuples, mem, knobs,
-			func(n int) uint64 { return key.StatementBytes(c.Columns, c.binds(), n, 0, other) }})
+		bounds = append(bounds, bound{server: c.Server, statement: c.Statement, table: c.Table, cap: c.Tuples, mem: mem, knobs: knobs,
+			bytes: func(n int) uint64 { return key.StatementBytes(c.Columns, c.binds(), n, 0, other) }})
 	}
 	root := f.keys[f.cfg.Spec.RootTable]
 	parts := max(len(root.Columns), 1)
@@ -87,10 +93,30 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 	members := min(key.MaxTuples(root.Columns, f.dstMem), (65535-2)/parts)
 	rows := min(members, 65535/(parts+1))
 	bounds = append(bounds,
-		bound{"destination", "tracking log", f.cfg.Spec.RootTable, members, f.dstMem, []knob{batch},
-			func(n int) uint64 { return key.StatementBytes(logNames, root.Columns, n, 2, other) }},
-		bound{"destination", "tracking log insert", f.cfg.Spec.RootTable, rows, f.dstMem, []knob{batch},
-			func(n int) uint64 { return key.InsertBytes(root.Columns, n, 1, other) }})
+		bound{server: "destination", statement: "tracking log", table: f.cfg.Spec.RootTable, cap: members, mem: f.dstMem, knobs: []knob{batch},
+			bytes: func(n int) uint64 { return key.StatementBytes(logNames, root.Columns, n, 2, other) }},
+		bound{server: "destination", statement: "tracking log insert", table: f.cfg.Spec.RootTable, cap: rows, mem: f.dstMem, knobs: []knob{batch},
+			bytes: func(n int) uint64 { return key.InsertBytes(root.Columns, n, 1, other) }})
+
+	// The continuations (Codex M7c-2 review B1): the root fetch after each batch binds every
+	// prefix of the last root key and its LIMIT (engine fetchSQL); archive and purge
+	// recovery read later log pages the same way over k1…kN, with a status (tracking
+	// (*Job).Roots). The fetch's text carries the job's where.
+	fetchOther := 1024 + len(f.cfg.Spec.Where)
+	for _, c := range root.Columns {
+		fetchOther += 2 * (4*len(c.Name) + 128) // the projection and ORDER BY
+	}
+	logKey := key.Def{Table: "log", Columns: make([]key.Column, len(root.Columns))}
+	for i, c := range root.Columns {
+		c.Name = logNames[i]
+		logKey.Columns[i] = c
+	}
+	bounds = append(bounds, bound{server: "source", statement: "root fetch", table: f.cfg.Spec.RootTable, mem: f.srcMem,
+		continuation: true, bytes: func(int) uint64 { return key.AfterBytes(root, 1, fetchOther) }})
+	if typ := f.cfg.Spec.Type; typ == jobspec.Archive || typ == jobspec.Purge {
+		bounds = append(bounds, bound{server: "destination", statement: "tracking log page", table: f.cfg.Spec.RootTable, mem: f.dstMem,
+			continuation: true, bytes: func(int) uint64 { return key.AfterBytes(logKey, 1, other) }})
+	}
 
 	for _, side := range []struct {
 		name   string
@@ -107,6 +133,9 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 				continue
 			}
 			n := min(b.cap, sendsAtMost(b.knobs))
+			if b.continuation {
+				n = 1 // the last key
+			}
 			if bytes := b.bytes(n); bytes > limit {
 				over = append(over, sized{b, n, bytes})
 			}
@@ -120,9 +149,13 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 				worst = o
 			}
 		}
+		shape := fmt.Sprintf("at %d key tuples", worst.tuples)
+		if worst.continuation {
+			shape = "after the last key, binding every prefix of it,"
+		}
 		return &Error{Check: "MAX_ALLOWED_PACKET_CHECK", Message: fmt.Sprintf(
-			"%s max_allowed_packet is %d bytes; a %s statement on %s at %d key tuples can need %d bytes. %s.",
-			side.name, packet, worst.statement, worst.table, worst.tuples, worst.size,
+			"%s max_allowed_packet is %d bytes; a %s statement on %s %s can need %d bytes. %s.",
+			side.name, packet, worst.statement, worst.table, shape, worst.size,
 			packetRemedy(side.name, packet, limit, worst.size, over)),
 			Tables: []string{worst.table}}
 	}
@@ -140,14 +173,21 @@ func sendsAtMost(knobs []knob) int {
 }
 
 // packetRemedy says how to make every statement in over fit limit: raise the server's
-// packet to the worst one's size (when the client's 64 MiB is not what binds); lower each
-// processing setting above the largest key count that fits every statement it bounds; and,
-// when a statement is at its cap, shrink the cap through range_optimizer_max_mem_size
-// (set one at 0, which is unlimited: Fable M7c-1 review M4(b)).
+// packet to the worst one's size (when the client's 64 MiB is not what binds); unless a
+// continuation is over, which only the packet helps, lower each processing setting above
+// the largest key count that fits every statement it bounds, and, when a statement is at
+// its cap, shrink the cap through range_optimizer_max_mem_size (set one at 0, which is
+// unlimited: Fable M7c-1 review M4(b)).
 func packetRemedy(server string, packet, limit, worst uint64, over []sized) string {
 	var ways []string
 	if packet < clientMaxAllowedPacket {
 		ways = append(ways, fmt.Sprintf("Raise max_allowed_packet on the %s to at least %d", server, worst))
+	}
+	// A continuation does not shrink with a batch size or the cap: only the packet helps.
+	for _, o := range over {
+		if o.continuation {
+			return clientLimited(packet, strings.Join(ways, "; or "))
+		}
 	}
 	fits := map[string]int{} // setting → the largest key count that fits every statement it bounds
 	atCap, unlimited := false, false
@@ -184,9 +224,16 @@ func packetRemedy(server string, packet, limit, worst uint64, over []sized) stri
 		}
 		ways = append(ways, fmt.Sprintf("%s range_optimizer_max_mem_size on the %s to shrink the cap", verb, server))
 	}
-	remedy := strings.Join(ways, "; or ")
-	if packet >= clientMaxAllowedPacket {
-		remedy = "The statement exceeds the client's 64 MiB packet limit: " + remedy
+	return clientLimited(packet, strings.Join(ways, "; or "))
+}
+
+// clientLimited prefixes remedy when the client's 64 MiB, not the server, is the limit.
+func clientLimited(packet uint64, remedy string) string {
+	if packet < clientMaxAllowedPacket {
+		return remedy
 	}
-	return remedy
+	if remedy == "" {
+		return "The statement exceeds the client's 64 MiB packet limit"
+	}
+	return "The statement exceeds the client's 64 MiB packet limit: " + remedy
 }

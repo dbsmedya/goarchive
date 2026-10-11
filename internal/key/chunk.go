@@ -77,6 +77,21 @@ func InsertBytes(cols []Column, rows, ints, other int) uint64 {
 	return max(text, executeBytes(rows*(len(cols)+ints), uint64(rows)*perRow))
 }
 
+// AfterBytes is StatementBytes for a continuation after the last key of d (After,
+// AfterArgs): its text, which is After's plus other bytes outside it, and its execute
+// packet, every prefix of the key, N(N+1)/2 values for N parts, and ints integer
+// parameters (a LIMIT, a tracking status). It does not depend on a batch size (Codex
+// M7c-2 review B1).
+func AfterBytes(d Def, ints, other int) uint64 {
+	text := uint64(len(After(d)) + other)
+	params, values := ints, uint64(ints)*intWireBytes
+	for i := range d.Columns {
+		params += i + 1
+		values += keyWireBytes(d.Columns[:i+1])
+	}
+	return max(text, executeBytes(params, values))
+}
+
 // intWireBytes is an int64 or uint64 parameter in COM_STMT_EXECUTE.
 const intWireBytes = 8
 
