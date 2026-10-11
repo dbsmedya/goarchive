@@ -16,6 +16,8 @@ type Cap struct {
 	Statement string   // "by key": copy read, verification, delete; "discovery": child rows by foreign_key
 	Columns   []string // the columns of the index the statement addresses
 	Tuples    int
+
+	parts []key.Column // Columns' key types, for the packet bound (checkMaxAllowedPacket)
 }
 
 // reportStatementCaps computes and logs the effective caps from each server's
@@ -33,7 +35,7 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 	var caps []Cap
 	for _, n := range f.tree.CopyOrder() {
 		def := f.keys[n.Table]
-		caps = append(caps, Cap{n.Table, "source", "by key", def.Names(), key.MaxTuples(def.Columns, srcMem)})
+		caps = append(caps, Cap{n.Table, "source", "by key", def.Names(), key.MaxTuples(def.Columns, srcMem), def.Columns})
 		if n.Parent == nil {
 			continue
 		}
@@ -49,16 +51,19 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 			}
 			cols = append(cols, c)
 		}
-		caps = append(caps, Cap{n.Table, "source", "discovery", n.ForeignKey, key.MaxTuples(cols, srcMem)})
+		caps = append(caps, Cap{n.Table, "source", "discovery", n.ForeignKey, key.MaxTuples(cols, srcMem), cols})
 	}
+	// The destination's budget is read for every job type: purge has no destination
+	// tables, but its tracking log statements run there (checkMaxAllowedPacket).
+	dstMem, err := f.dst.RangeOptimizerMaxMemSize(ctx)
+	if err != nil {
+		return inspectionError("statement_caps", err)
+	}
+	f.dstMem = dstMem
 	if f.dstKeys != nil {
-		dstMem, err := f.dst.RangeOptimizerMaxMemSize(ctx)
-		if err != nil {
-			return inspectionError("statement_caps", err)
-		}
 		for _, t := range f.tables {
 			def := f.dstKeys[t]
-			caps = append(caps, Cap{t, "destination", "by key", def.Names(), key.MaxTuples(def.Columns, dstMem)})
+			caps = append(caps, Cap{t, "destination", "by key", def.Names(), key.MaxTuples(def.Columns, dstMem), def.Columns})
 		}
 	}
 	for _, c := range caps {

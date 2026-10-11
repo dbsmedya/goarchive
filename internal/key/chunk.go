@@ -51,6 +51,20 @@ func MaxTuples(cols []Column, rangeOptimizerMaxMemSize uint64) int {
 	return int(max(limit, 1))
 }
 
+// StatementBytes is an upper bound on the larger of the two packets a key-addressed
+// statement of tuples tuples over cols (named names) sends (M7c F3): COM_STMT_PREPARE,
+// its text, which is the IN list plus other bytes outside it, and COM_STMT_EXECUTE, its
+// bound values, each charged partBytes plus 11 bytes of type, length and null-bitmap
+// overhead. Both must fit the server's max_allowed_packet.
+func StatementBytes(names []string, cols []Column, tuples, other int) uint64 {
+	text := uint64(len(In(names, cols, tuples)) + other)
+	var perTuple uint64
+	for _, c := range cols {
+		perTuple += uint64(partBytes(c)) + 11
+	}
+	return max(text, uint64(tuples)*perTuple+64)
+}
+
 // partBytes is an upper bound on the bytes one key part of c occupies in an index key image:
 // 8 for integer and temporal parts, an upper bound on the packed size for DECIMAL, and the declared length in
 // bytes plus a 2-byte length prefix for string and binary parts.

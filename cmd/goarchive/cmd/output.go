@@ -18,7 +18,7 @@ func banners(doc *jobspec.Document, typ jobspec.Type, v jobspec.Verification, sk
 	var out []string
 	if skipPolicy {
 		out = append(out, "WARNING: --skip-validate-preflight: preflight's policy checks are skipped (permissions, triggers, "+
-			"foreign-key coverage, destination compatibility). The keys are still read from MySQL, and the log-key and "+
+			"foreign-key coverage, destination compatibility, packet size). The keys are still read from MySQL, and the log-key and "+
 			"binding checks still run. A misspelled foreign_key column fails as a statement-caps error instead of "+
 			"RELATION_KEY_CHECK.")
 	}

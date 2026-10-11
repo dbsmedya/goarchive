@@ -5,7 +5,8 @@
 // and returns those definitions with the effective statement caps. The documented
 // primary_key, foreign_key and references of the job are checked against the facts; the
 // policy checks (permissions, triggers, foreign-key coverage, destination compatibility)
-// are the 2.x checks carried over, with the key-shaped ones reworked for composite keys.
+// are the 2.x checks carried over, with the key-shaped ones reworked for composite keys;
+// the packet size is 3.0's (M7c).
 //
 // goarchive never queries information_schema; every schema fact comes from the library.
 package preflight
@@ -178,5 +179,6 @@ func stages(cfg Config) []stage {
 		{"CascadeRules", deletes, warnCascadeRules},
 
 		{"StatementCaps", true, reportStatementCaps},
+		{"MaxAllowedPacket", policy, checkMaxAllowedPacket},
 	}
 }

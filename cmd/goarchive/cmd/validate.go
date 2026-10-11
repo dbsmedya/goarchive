@@ -24,7 +24,8 @@ destination-table checks, copy-only no delete checks.
 
 The checks read every table's primary key from MySQL and check the job's
 documented keys and relations against it, then the permissions, triggers,
-foreign-key coverage and destination compatibility.
+foreign-key coverage and destination compatibility, and that each statement cap fits
+the server's max_allowed_packet.
 
 Example:
   goarchive validate --config archiver.yaml
