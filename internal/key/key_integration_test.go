@@ -199,11 +199,11 @@ func TestInMatchesExactlyPerFamily(t *testing.T) {
 	}
 }
 
-// TestCheckRangeWarningDetectsFullScanFallback lowers the session's range budget so a long
-// IN list exceeds it, and checks that CheckRangeWarning reports ErrRangeScan, while a list
-// inside the cap reports nothing (spec §4.3 statement size cap, §7.1a, probe P2).
-func TestCheckRangeWarningDetectsFullScanFallback(t *testing.T) {
-	c := sourceConn(t)
+// rangeFixture is a 10,000-row composite-key table on c under a 1 MiB range budget. run
+// reads n of its keys in one IN list and returns CheckRangeWarning's verdict; capped is
+// MaxTuples for that budget.
+func rangeFixture(t *testing.T, c *sql.Conn) (run func(n int) error, capped int) {
+	t.Helper()
 	ctx := context.Background()
 	mustExec(t, c, "CREATE TEMPORARY TABLE ga3_cap (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a, b))")
 	mustExec(t, c, `INSERT INTO ga3_cap
@@ -219,7 +219,7 @@ func TestCheckRangeWarningDetectsFullScanFallback(t *testing.T) {
 		}
 		return out
 	}
-	run := func(n int) error {
+	run = func(n int) error {
 		keys := keysOf(n)
 		rows, err := c.QueryContext(ctx, "SELECT a, b FROM ga3_cap WHERE "+In(d.Names(), d.Columns, n), Args(keys)...)
 		if err != nil {
@@ -232,11 +232,40 @@ func TestCheckRangeWarningDetectsFullScanFallback(t *testing.T) {
 		}
 		return CheckRangeWarning(ctx, c)
 	}
-	if err := run(MaxTuples(d.Columns, 1048576)); err != nil {
+	return run, MaxTuples(d.Columns, 1048576)
+}
+
+// TestCheckRangeWarningDetectsFullScanFallback lowers the session's range budget so a long
+// IN list exceeds it, and checks that CheckRangeWarning reports ErrRangeScan, while a list
+// inside the cap reports nothing (spec §4.3 statement size cap, §7.1a, probe P2).
+func TestCheckRangeWarningDetectsFullScanFallback(t *testing.T) {
+	run, capped := rangeFixture(t, sourceConn(t))
+	if err := run(capped); err != nil {
 		t.Fatalf("a statement at the cap reported %v", err)
 	}
 	if err := run(5000); !errors.Is(err, ErrRangeScan) {
 		t.Fatalf("a statement past the budget reported %v, want ErrRangeScan", err)
+	}
+}
+
+// TestCheckRangeWarningFailsClosedWithoutRetainedWarnings (M7c F2): a session whose
+// max_error_count is 0 keeps no warnings, so SHOW WARNINGS cannot show 3170 and the check
+// must refuse a statement that raised any warning it cannot read, naming max_error_count.
+// Pair (R56, at session scope): the same statement past the budget is refused as
+// unreadable here and as ErrRangeScan under the default capacity
+// (TestCheckRangeWarningDetectsFullScanFallback); a statement that raised no warning still
+// passes at capacity 0.
+func TestCheckRangeWarningFailsClosedWithoutRetainedWarnings(t *testing.T) {
+	c := sourceConn(t)
+	run, capped := rangeFixture(t, c)
+	mustExec(t, c, "SET SESSION max_error_count = 0")
+	t.Cleanup(func() { _, _ = c.ExecContext(context.Background(), "SET SESSION max_error_count = DEFAULT") })
+	if err := run(capped); err != nil {
+		t.Fatalf("a statement at the cap, no warnings, at capacity 0 reported %v", err)
+	}
+	err := run(5000)
+	if err == nil || errors.Is(err, ErrRangeScan) || !strings.Contains(err.Error(), "max_error_count") {
+		t.Fatalf("a statement past the budget at capacity 0 reported %v, want a refusal naming max_error_count", err)
 	}
 }
 
