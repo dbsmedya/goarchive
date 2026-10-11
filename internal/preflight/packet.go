@@ -15,9 +15,10 @@ const clientMaxAllowedPacket = 64 << 20
 // checkMaxAllowedPacket (MAX_ALLOWED_PACKET_CHECK, M7c F3) refuses a run when a
 // key-addressed statement at its statement cap could exceed a server's max_allowed_packet:
 // MySQL would reject it with error 1153 in mid-run. It bounds the source's statements by
-// key and by foreign_key, the destination's by key, and the tracking log's statements on
-// the destination: its lookups and transitions (the root key in an IN list, up to two
-// statuses) and its INSERT (the root key and a status per row, in VALUES text), at the caps
+// key and by foreign_key (binding the parent's key values), the destination's by key, and
+// the tracking log's statements on the destination: its lookups and transitions (the root
+// key in an IN list, up to two statuses) and its INSERT (the root key and a status per
+// row, in VALUES text), at the caps
 // internal/tracking derives from the root key ((*Store).newJob). Each bound counts the
 // prepared text and the bytes the driver sends (key.StatementBytes, key.InsertBytes; Fable
 // M7c-1 review I1). The copy's INSERTs carry rows, not keys, and are not bounded here.
@@ -38,7 +39,7 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 			other += 4*len(col.Name) + 128 // the select list and its hash wrappers
 		}
 		bounds = append(bounds, bound{c.Server, c.Statement, c.Table, c.Tuples,
-			key.StatementBytes(c.Columns, c.parts, c.Tuples, 0, other)})
+			key.StatementBytes(c.Columns, c.binds(), c.Tuples, 0, other)})
 	}
 	root := f.keys[f.cfg.Spec.RootTable]
 	parts := max(len(root.Columns), 1)
