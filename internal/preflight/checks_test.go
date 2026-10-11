@@ -207,15 +207,15 @@ func TestStatementCaps(t *testing.T) {
 func TestMaxAllowedPacket(t *testing.T) {
 	// These cases describe statements at their caps (M7c-1): batch sizes above every cap
 	// keep the bound there (M7c-F4, TestMaxAllowedPacketBatchBound).
-	healthy := func(t *testing.T, typ jobspec.Type) *world {
+	atCaps := func(t *testing.T, typ jobspec.Type) *world {
 		w := healthy(t, typ)
 		w.cfg.Processing = config.ProcessingConfig{BatchSize: 1 << 20, BatchDeleteSize: 1 << 20}
 		return w
 	}
-	healthy(t, jobspec.Archive).mustPass()
+	atCaps(t, jobspec.Archive).mustPass()
 	for _, side := range []string{"source", "destination"} {
 		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
-			w := healthy(t, typ)
+			w := atCaps(t, typ)
 			if side == "source" {
 				w.src.packet = 16 << 10
 			} else {
@@ -232,7 +232,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 			}
 		}
 	}
-	w := healthy(t, jobspec.Archive)
+	w := atCaps(t, jobspec.Archive)
 	w.src.packet, w.cfg.SkipPolicy = 16<<10, true
 	w.mustPass()
 
@@ -241,7 +241,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 	// than its key lookups (Fable M7c-1 review I1). 320,000 bytes on the destination must be
 	// refused, naming that statement.
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
-		w := healthy(t, typ)
+		w := atCaps(t, typ)
 		w.dst.packet = 320000
 		if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a tracking log insert statement on orders") {
 			t.Errorf("%s: message %q does not name the tracking log's INSERT", typ, e.Message)
@@ -251,7 +251,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 	// Above the driver's own 64 MiB, the client's limit decides: a VARCHAR(255) utf8mb4 key
 	// at an unlimited range budget (the 65,535-placeholder cap) needs about 67 MB, and the
 	// remedy is to shrink the caps, not to raise the server's packet.
-	w = healthy(t, jobspec.Archive)
+	w = atCaps(t, jobspec.Archive)
 	w.jobYAML = withoutNotes
 	w.src.fks = w.src.fks[:1]
 	for _, s := range []*fakeServer{w.src, w.dst} {
@@ -270,7 +270,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
 	// four bytes a character, so a purge's log INSERT at 8,272 roots needs about 8.5 MB, not
 	// the 2.2 MB its stored bytes suggest. 4 MiB on the destination is refused; 16 MiB passes.
-	latin1 := healthy(t, jobspec.Purge)
+	latin1 := atCaps(t, jobspec.Purge)
 	latin1.jobYAML = withoutNotes
 	latin1.src.fks = latin1.src.fks[:1]
 	for _, s := range []*fakeServer{latin1.src, latin1.dst} {
@@ -301,7 +301,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 		{"DECIMAL(65,0) over DECIMAL(10,0)", "decimal(65,0)", "decimal(10,0)", "", 768 << 10, 2 << 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := healthy(t, jobspec.Archive)
+			w := atCaps(t, jobspec.Archive)
 			w.jobYAML = withoutNotes
 			w.src.fks = w.src.fks[:1]
 			for _, s := range []*fakeServer{w.src, w.dst} {
