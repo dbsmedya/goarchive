@@ -186,11 +186,12 @@ The normal `max_error_count=1024` retention capacity also caps each INSERT's row
 count. A 5000-row candidate INSERT with 13 columns becomes
 1024/1024/1024/1024/904 rows: five INSERT/count pairs in the same transaction.
 Configured fetch chunks and placeholder limits can make it smaller already.
-Session facts add one query per copy/sample operation. Key-addressed statements are
-checked the same way: after each one GoArchive compares `SHOW COUNT(*) WARNINGS` with the
-warnings the session kept, and refuses the batch when it kept fewer and none of them is warning 3170 (the range
-optimizer's fallback to a full scan), because the fallback can then not be ruled out. Network RTT and subdivision affect
-throughput; twice as many SQL statements does not imply twice the whole-job duration.
+Session facts add one query per copy/sample operation. Key-addressed statements get the
+same count-and-list comparison as INSERTs: after each one GoArchive compares
+`SHOW COUNT(*) WARNINGS` with the warnings the session kept, and refuses the batch when it
+kept fewer and none of them is warning 3170 (the range optimizer's fallback to a full scan),
+because the fallback can then not be ruled out. Network RTT and subdivision affect throughput;
+twice as many SQL statements does not imply twice the whole-job duration.
 
 A session whose `max_error_count` is 0 keeps none of a statement's warnings, so GoArchive
 could read neither its INSERT diagnostics nor the range check above. Every new source and
