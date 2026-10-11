@@ -6,24 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `tests/README.md`. Anything duplicated here rots — record it in its owning file and point at
 it from here.
 
-## Primary development workflow
-
-**dev-contract** is the primary workflow for non-trivial development, including specs, plans,
-reviews, implementation dispatch, gates and PR preparation. Read the globally
-installed skill through the agent's skill catalog; its filesystem location depends on the
-installation. A workstation may expose `.agents/skills/dev-contract` as an optional local
-discovery link, but that ignored link is not shipped with this repository. Do not assume it
-exists or maintain a second copy here.
-
-It takes precedence over the older development-workflow, software-architect and Superpowers
-workflow instructions. Other skills may support work within this contract. This file and
-`tests/README.md` continue to own repository-specific facts and test procedures;
-`tests/AGENTS.md` only turns `tests/README.md` into steps for agents.
-
-Read the operator's rulings and approved spec before the plan. Existing approved specs remain
-authoritative; converting a plan does not reopen its spec. Workflow adoption does not approve
-development of pending plans: each requires the contract's review and dispatch authorization.
-
 ## Project Overview
 
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It walks
@@ -296,12 +278,12 @@ start, **Basic Usage**, **Architecture**, and project status. Reference material
 
 ### RULE: internal development documentation goes under `.ayder/superpowers_<YYYYMMDD>/`
 
-Every dev-contract internal artifact — designs, specs, implementation plans,
+Every internal artifact — designs, specs, implementation plans,
 architectural decisions — **MUST** be written to:
 
 ```
 .ayder/superpowers_<YYYYMMDD>/
-├── plans/       # dev-contract implementation plans, one per PR
+├── plans/       # implementation plans, one per PR
 ├── specs/       # designs and specifications
 ├── decisions/   # architectural decision records; why an approach was chosen/rejected
 └── pr/          # PR bodies and their gate evidence, one per PR of this effort
@@ -315,8 +297,7 @@ architectural decisions — **MUST** be written to:
   an archived artifact by path when a current document cites it. Only in-flight efforts stay
   at `.ayder/superpowers_<YYYYMMDD>/`.
 - File naming: `YYYY-MM-DD-<topic>.md`, designs suffixed `-design.md`.
-- Keep the existing `superpowers_<YYYYMMDD>` directory convention under dev-contract.
-  Reviews live under `.ayder/reviews/` as the contract specifies. Never create
+- Reviews live under `.ayder/reviews/`. Never create
   `docs/superpowers/` for internal artifacts.
 - `docs/` is exclusively published user-facing documentation. Never place a plan, spec,
   decision record, review, or session note there.
