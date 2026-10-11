@@ -6,7 +6,7 @@
 
 **GoArchive respects foreign key constraints and ORM relations. Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
 
-GoArchive is a Go CLI for archiving related MySQL rows across servers. You declare the parent-child relations once in the job config. Foreign keys the schema already declares are checked against that declaration, and relations an ORM enforces only in application code are just as valid. Copy runs parent-first and delete runs child-first, so deleting old `orders` never leaves orphaned `order_items` behind. With verification on, each batch is checked by row count or SHA256 before its source rows are deleted, and an interrupted run resumes from its checkpoint.
+GoArchive is a Go CLI for archiving related MySQL rows across servers. You declare the parent-child relations once in the job config. Foreign keys the schema already declares are checked against that declaration, and relations an ORM enforces only in application code are just as valid. Copy runs parent-first and delete runs child-first, so deleting old `orders` never leaves orphaned `order_items` behind. Each batch is verified (SHA256 by default, or by row count) before its source rows are deleted, and the roots an interrupted run left in the job's log are finished when the job next starts.
 
 ## What problem does this solve?
 
@@ -18,7 +18,7 @@ You need to delete or archive old data from a production MySQL database, but tho
 - Single-table archivers move the parent and leave the children behind
 - Deleting in the wrong order fails with MySQL Error 1451 (`Cannot delete or update a parent row`)
 
-GoArchive takes a declared parent-child relation tree, discovers every dependent row by BFS traversal, copies the whole subgraph to an archive server **parent-first**, verifies it arrived intact, then deletes from the source **child-first**.
+GoArchive takes a declared parent-child relation tree, discovers every dependent row by walking that tree, copies the whole subgraph to an archive server **parent-first**, verifies it arrived intact, then deletes from the source **child-first**.
 
 **Typical uses:** MySQL data retention and GDPR right-to-erasure · shrinking oversized tables to restore query performance · moving cold data to an archive server · purging staging data while preserving referential integrity.
 
@@ -26,31 +26,32 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 
 [pt-archiver](https://docs.percona.com/percona-toolkit/pt-archiver.html) is the mature, widely-adopted standard for MySQL archiving. The table below is the comparison — weigh it before choosing.
 
-| | pt-archiver | GoArchive |
+| | GoArchive | pt-archiver |
 |---|---|---|
-| Parent-child-aware multi-table archiving | Requires custom orchestration / plugins | ✅ Archives a root and its full child subgraph in dependency order |
-| Dependency ordering | manual, via plugin | automatic (Kahn's algorithm) |
-| Verify copy before delete | ❌ | ✅ count or SHA256 |
-| Inspect INSERT conversion / truncation warnings before source deletion | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
-| Crash recovery / resume | ❌ | ✅ per-root status and a batch checkpoint |
-| Foreign key coverage check | ❌ | ✅ blocks uncovered FKs |
-| Composite primary keys | ✅ | ❌ |
-| Non-integer primary keys | ✅ | Root: ❌; child: ✅ subject to temporal-key restrictions |
-| File / CSV output, `LOAD DATA INFILE` | ✅ | ❌ |
-| MyISAM sources / MySQL 5.x (EOL) | ✅ | Unsupported; no support planned |
-| Batched write mechanisms | `LOAD DATA LOCAL INFILE` / range DELETE | Parameterized multi-row INSERT / chunked `DELETE WHERE pk IN (...)` |
-| PXC flow control | ✅ | ❌ |
-| Extensibility | ✅ 9 plugin hooks | ❌ |
+| Parent-child-aware multi-table archiving | ✅ Archives a root and its full child subgraph in dependency order | Requires custom orchestration / plugins |
+| Dependency ordering | automatic, from the declared relation tree | manual, via plugin |
+| Verify copy before delete | ✅ SHA256 (default) or count | ❌ |
+| Inspect INSERT conversion / truncation warnings before source deletion | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
+| Crash recovery / resume | ✅ a per-root log; interrupted roots are finished at the next start | ❌ |
+| Foreign key coverage check | ✅ blocks uncovered FKs | ❌ |
+| Composite primary keys | ✅ root and child, with composite foreign keys | ✅ |
+| Non-integer primary keys | ✅ root and child (string, UUID, DECIMAL, temporal); FLOAT/DOUBLE, ENUM/SET and BIT keys are refused | ✅ |
+| File / CSV output, `LOAD DATA INFILE` | ❌ | ✅ |
+| MyISAM sources / MySQL 5.x (EOL) | Unsupported; no support planned | ✅ |
+| Batched write mechanisms | Parameterized multi-row INSERT / chunked `DELETE … WHERE (key) IN (...)` | `LOAD DATA LOCAL INFILE` / range DELETE |
+| PXC flow control | ❌ | ✅ |
+| Extensibility | ❌ | ✅ 9 plugin hooks |
 
 This comparison covers the reviewed pt-archiver v3.7.1 source linked above. GoArchive's
 [verification policy](docs/README_CONFIGURATION.md#verification) defines the narrow
-conversion-warning override. pt-archiver starts each invocation from the beginning of its index, so a row that becomes eligible later is still found. GoArchive continues from its checkpoint instead, so its `where` must select cold rows ([the eligibility rule](docs/README_LIMITATIONS.md#no-ddl-and-no-concurrent-writes-during-a-run-contract)).
+conversion-warning override. Like pt-archiver, every GoArchive run starts at the beginning of its `where` range, so a row that becomes eligible later is found by the next run. While GoArchive handles a root, the rows of its tree must not change ([the run contract](docs/README_LIMITATIONS.md#no-ddl-and-no-concurrent-writes-during-a-run-contract)).
 
 ## Is GoArchive right for your schema?
 
 GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
-where every participating table has a **single-column primary key**. Preflight rejects anything
-outside that envelope before any data moves.
+where every participating table has a **primary key**, single-column or composite, of a
+supported type ([Limitations](docs/README_LIMITATIONS.md)). Preflight rejects anything outside
+that envelope before any data moves.
 
 ## The Philosophy
 
@@ -92,16 +93,17 @@ Testing, backups and the other cautions before production: [Limitations](docs/RE
 
 Complete end-to-end archive, purge, and copy-only workflows:
 
-- **Automatic foreign key dependency resolution** - Kahn's algorithm orders the related tables, so no operation ever orphans a row
+- **Dependency ordering** - Parents are copied before their children and children deleted before their parents, following the declared relation tree, so no operation ever orphans a row
 - **Referential integrity checks** - Detects foreign keys from outside the archive set pointing into it, including across schemas, and refuses to run rather than let an external `ON DELETE CASCADE` delete uncopied rows
-- **Preflight before any data moves** - DELETE triggers, destination INSERT triggers, incompatible destination schemas, composite primary keys and more, all [enumerated in Validation & Preflight](docs/README_VALIDATION.md)
-- **Verification before deletion** - Optional row count or SHA256 comparison between source and destination, per batch; a mismatch stops that batch before its delete, and batches already completed stay archived ([SHA256 verification](docs/README_VALIDATION.md#sha256-verification))
-- **Crash recovery and resume** - Per-root status and a batch checkpoint persisted in MySQL; an interrupted run resumes where it stopped instead of restarting
+- **Preflight before any data moves** - DELETE triggers, destination INSERT triggers, incompatible destination schemas, a `primary_key` that differs from MySQL's, unsupported key types and more, all [enumerated in Validation & Preflight](docs/README_VALIDATION.md)
+- **Verification before deletion** - SHA256 (the default) or row-count comparison between source and destination, per batch; a mismatch rolls that batch back and stops the run before its delete, and batches already completed stay archived ([SHA256 verification](docs/README_VALIDATION.md#sha256-verification))
+- **Crash recovery** - Each batch's roots are logged in MySQL with their status; the next start finishes the roots an interrupted run left, then the run begins again at the start of the `where` range
+- **Composite and non-integer keys** - String, UUID, DECIMAL and temporal keys, single-column or composite, at the root and at every child
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table — except that `copy-only --force` proceeds past a held lock whose heartbeat is stale ([`--force`](docs/README_OPERATIONS.md#--force-only-matters-for-copy-only))
+- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
 - **Dry-run mode** - Preview the execution plan and filtered row counts; never deletes from the source ([Dry-run payload validation](docs/README_VALIDATION.md#dry-run-payload-validation))
-- **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source
+- **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
 
 ## Quick Start
@@ -142,6 +144,7 @@ destination:
 # Archive jobs configuration
 jobs:
   archive_old_orders:
+    job_type: archive
     root_table: orders
     primary_key: id
     where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
@@ -183,7 +186,7 @@ replication:
       password: change_me
 ```
 
-`where` is required on every job — use `where: "1=1"` to deliberately process a whole table. A complete annotated example: [configs/archiver.yaml.example](configs/archiver.yaml.example). Every option: [Configuration](docs/README_CONFIGURATION.md).
+`job_type` (`archive`, `purge` or `copy-only`) must match the command that runs the job. `where` is required on every job — use `where: "1=1"` to deliberately process a whole table. Verification defaults to `sha256`. A complete annotated example: [configs/archiver.yaml.example](configs/archiver.yaml.example). Every option: [Configuration](docs/README_CONFIGURATION.md).
 
 ### Basic Usage
 
@@ -211,7 +214,7 @@ goarchive plan -c archiver.yaml --job archive_old_orders
 │  order_items   │     │ order_payments │         │ shipments │
 │                │     │                │         │           │    [ Verification ]
 └────────────────┘     └────────────────┘         └─────┬─────┘    ----------------
-                                                        │          Method:          count
+                                                        │          Method:          sha256
                                                         │
                                                         │
                                                        1-N
@@ -227,17 +230,17 @@ goarchive plan -c archiver.yaml --job archive_old_orders
 [Copy Order (parent tables first)]
 ----------------------------------
   [1] orders (root)
-  [2] order_items | FK: order_id -> id
-  [3] order_payments | FK: order_id -> id
-  [4] shipments | FK: order_id -> id
-  [5] shipment_items | FK: shipment_id -> id
+  [2] order_items | (order_id) -> orders (id)
+  [3] order_payments | (order_id) -> orders (id)
+  [4] shipments | (order_id) -> orders (id)
+  [5] shipment_items | (shipment_id) -> shipments (id)
 
 [Delete Order (child tables first)]
 -----------------------------------
-  [1] shipment_items | FK: shipment_id <- id
-  [2] shipments | FK: order_id <- id
-  [3] order_payments | FK: order_id <- id
-  [4] order_items | FK: order_id <- id
+  [1] shipment_items | (shipment_id) <- shipments (id)
+  [2] shipments | (order_id) <- orders (id)
+  [3] order_payments | (order_id) <- orders (id)
+  [4] order_items | (order_id) <- orders (id)
   [5] orders (root)
 
 # Validate configuration and run preflight checks
@@ -249,14 +252,11 @@ goarchive dry-run -c archiver.yaml --job archive_old_orders
 # Execute archive (runs preflight, copies to destination, verifies, then deletes)
 goarchive archive -c archiver.yaml --job archive_old_orders
 
-# Copy-only (copies to destination, never deletes source)
-goarchive copy-only -c archiver.yaml --job archive_old_orders
+# Copy-only (copies to destination, never deletes source); a job with job_type: copy-only
+goarchive copy-only -c archiver.yaml --job copy_old_orders
 
-# Copy-only with --force (see Operations for what it bypasses)
-goarchive copy-only -c archiver.yaml --job archive_old_orders --force
-
-# Purge only (deletes without copying - USE WITH CAUTION!)
-goarchive purge -c archiver.yaml --job archive_old_orders
+# Purge only (deletes without copying - USE WITH CAUTION!); a job with job_type: purge
+goarchive purge -c archiver.yaml --job purge_old_sessions
 ```
 
 **Recommended workflow:** `validate` → `dry-run` → `archive`. Every command and flag: [Operations](docs/README_OPERATIONS.md).
@@ -264,57 +264,49 @@ goarchive purge -c archiver.yaml --job archive_old_orders
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────────────┐
-│   CLI       │────▶│   Config    │────▶│   Database Manager  │
-│  (Cobra)    │     │  (Viper)    │     │   (Connection Pool) │
-└─────────────┘     └─────────────┘     └─────────────────────┘
-                                                │
-                         ┌──────────────────────┼──────────────────────┐
-                         ▼                      ▼                      ▼
-                   ┌──────────┐          ┌──────────┐          ┌──────────────┐
-                   │  Source  │          │  Archive │          │   Replica    │
-                   │  (MySQL) │          │  (MySQL) │          │   (MySQL)    │
-                   └──────────┘          └──────────┘          └──────────────┘
-                         │                      │
-                         └──────────────────────┘
-                                    │
-                         ┌──────────┴──────────┐
-                         ▼                     ▼
-                ┌─────────────────┐    ┌──────────────┐
-                │  Graph Builder  │    │  Replication │
-                │ (Kahn's Algo)   │    │     Gate     │
-                └─────────────────┘    └──────────────┘
-                         │
-         ┌───────────────┼───────────────┐
-         ▼               ▼               ▼
-   ┌──────────┐   ┌──────────┐   ┌──────────┐
-   │  Copy    │   │ Verify   │   │  Delete  │
-   │  Phase   │──▶│ (Count/  │──▶│  Phase   │
-   │          │   │ SHA256)  │   │          │
-   └──────────┘   └──────────┘   └──────────┘
+┌─────────────┐     ┌──────────────────┐     ┌──────────────────────┐
+│     CLI     │────▶│    Job config    │────▶│      Preflight       │
+│   (Cobra)   │     │ (jobspec, YAML)  │     │ (dbsgomysql facts)   │
+└─────────────┘     └──────────────────┘     └──────────┬───────────┘
+                                                        │
+                                                        ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ Engine                                                             │
+│  startup:    tracking schema → locks → job binding → recovery      │
+│  batch loop: fetch root keys → discover children (parent-first)    │
+│              → copy → verify → log → delete (child-first)          │
+└─────────┬──────────────────────┬───────────────────────┬───────────┘
+          │                      │                       │
+          ▼                      ▼                       ▼
+   ┌─────────────┐      ┌─────────────────┐      ┌───────────────┐
+   │   Source    │      │   Destination   │      │   Replicas    │
+   │   (MySQL)   │      │ + tracking log  │      │  (lag gate)   │
+   └─────────────┘      └─────────────────┘      └───────────────┘
 ```
 
 ### Processing pipeline
 
-1. **Preflight** - the checks that apply to the command run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
-2. **Graph build** - Kahn's algorithm puts parents before children for the copy; the delete order is its exact reverse (`plan` prints both)
-3. **Batch loop** - fetch root IDs → BFS discovery of every child row → copy transaction → verify → delete → checkpoint. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
-4. **Safety** - one run per job name and per root table, except `copy-only --force` past a stale held lock ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing while any monitored replica is lagging, stopped, or unreachable
+1. **Preflight** - the checks that apply to the job type run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
+2. **Startup** - the tracking schema, the job and root-table locks, the job's binding check, then the roots an interrupted run left in the job's log are finished
+3. **Batch loop** - fetch the next root keys → discover every child row, parent-first → copy, verify and log in one destination transaction → delete child-first in chunks, each its own transaction with an exact row count. Purge skips the copy and copy-only the delete. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
+4. **Safety** - one run per job name and per root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing before every delete chunk while any monitored replica is lagging, stopped, or unreachable; a sentinel file pauses the run, and SIGTERM/SIGINT stops it at a batch boundary
 
 ### Key Components
 
 | Package | Purpose |
 |---------|---------|
 | `cmd/` | CLI command implementations (Cobra) |
-| `internal/config/` | Configuration parsing with Viper |
-| `internal/database/` | Database connection pooling and management |
-| `internal/graph/` | Dependency graph builder with Kahn's algorithm |
-| `internal/archiver/` | Core archive/purge/copy/delete logic |
-| `internal/verifier/` | Count and SHA256 verification |
+| `internal/jobspec/` | Strict config loading, job rules, the relation tree |
+| `internal/config/` | The shared configuration blocks and their validation |
+| `internal/preflight/` | Checks by job type over dbsgomysql facts, key definitions, statement caps |
+| `internal/key/` | Key definitions read from MySQL, typed keys, key SQL shapes |
+| `internal/engine/` | The run loop for archive, purge and copy-only: startup, recovery, discovery, copy and verification, deletes |
+| `internal/tracking/` | The tracking schema, the job registry and binding, the per-job log |
+| `internal/database/` | Connection pools and their session settings |
 | `internal/replication/` | Replication gate on the library's replica status facts |
-| `internal/lock/` | MySQL advisory lock implementation |
+| `internal/lock/` | MySQL advisory locks |
 | `internal/logger/` | Structured logging with Zap |
-| `internal/types/` | Shared row and value types |
+| `internal/types/` | Temporal column metadata and read contracts |
 | `internal/mermaidascii/` | ASCII diagram rendering for `plan` |
 
 ## Requirements
@@ -382,7 +374,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Acknowledgments
 
 - [Cobra](https://github.com/spf13/cobra) - CLI framework
-- [Viper](https://github.com/spf13/viper) - Configuration management
+- [yaml.v3](https://github.com/go-yaml/yaml) - Configuration parsing
+- [dbsgomysql](https://github.com/dbsmedya/dbsgomysql) - MySQL schema, privilege and replication facts
 - [Zap](https://github.com/uber-go/zap) - Structured logging
 - [MySQL Driver](https://github.com/go-sql-driver/mysql) - Go MySQL driver
 - [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) - ASCII diagram generation for table relationship visualization
