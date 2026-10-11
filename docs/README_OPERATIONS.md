@@ -188,7 +188,11 @@ count. A 5000-row candidate INSERT with 13 columns becomes
 Configured fetch chunks and placeholder limits can make it smaller already.
 Session facts add one query per copy/sample operation. Capacity zero permits
 clean INSERTs, but positive diagnostic counts fail as uninspectable. Configure
-retention through the DBA; GoArchive does not increase it. Network RTT and subdivision affect
+retention through the DBA; GoArchive does not increase it: setting `max_error_count` on a
+session needs `SESSION_VARIABLES_ADMIN`. Key-addressed statements follow the same rule:
+after each one GoArchive compares `SHOW COUNT(*) WARNINGS` with the warnings the session
+kept, and refuses the batch when it kept fewer and none of them is warning 3170 (the range
+optimizer's fallback to a full scan), because the fallback can then not be ruled out. Network RTT and subdivision affect
 throughput; twice as many SQL statements does not imply twice the whole-job duration.
 
 `--skip-verify` follows the narrow conversion policy in

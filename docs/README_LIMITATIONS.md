@@ -224,6 +224,14 @@ level, start with a small `batch_size` and scale up only after observing actual
 memory use. Sizing guidance lives in
 [Tuning throughput](README_OPERATIONS.md#tuning-throughput).
 
+#### A row set larger than `max_allowed_packet` fails its batch
+
+[`MAX_ALLOWED_PACKET_CHECK`](README_VALIDATION.md#max_allowed_packet_check) bounds every
+key-addressed statement before the run, but not the INSERTs, whose size is the rows'
+own: a wide `BLOB` or `TEXT` row set can exceed the destination's `max_allowed_packet`.
+That INSERT fails with error 1153, the batch's destination transaction rolls back, and
+nothing is deleted; raise `max_allowed_packet` or lower `batch_size`, then rerun.
+
 #### The copy-phase transaction spans all tables
 
 **One** destination transaction covers the entire copy phase. It holds row locks
