@@ -33,5 +33,6 @@ lower_case_table_names_1	init	cnf/init/lower_case_table_names_1.cnf	pass
 v80_percona	version	percona/percona-server:8.0	pass
 v97_percona	version	percona/percona-server:9.7	pass
 v8040_oracle	version	mysql:8.0.40	pass
+v8046_oracle	version	mysql:8.0.46	pass
 v84_oracle	version	mysql:8.4	pass
 v97_oracle	version	mysql:9.7	pass
