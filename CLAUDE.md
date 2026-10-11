@@ -72,6 +72,13 @@ passes. **Agents never create tags or releases; the operator does.** The release
 - The test containers db1/db2/db3 are dedicated to this checkout (R55). Run nothing else on
   them while `make test-reset`, `e2e` or the gate runs, and ask the operator before a reset
   drops a schema that is not the suite's own.
+- **Branches and PRs.** 3.0 PRs target `v3` on origin; 2.x stays frozen on `main` until `v3` is
+  merged onto it by its own PR. The 3.0-alpha PR is the first.
+- **Merge order for every PR into `v3`:** work on a branch (a `test` commit, then a `fix`
+  commit) → Fable's final review for behaviour changes, when available → `gate-agent` reports
+  GREEN on the final SHA (`tests/AGENTS.md`; re-measure the baselines when tests change) →
+  Codex's MR verdict on that SHA → the operator's verdict → push, open the PR, CI → merge. A
+  release folds its version bump into its last PR; the operator tags.
 
 ## Build & guards
 
