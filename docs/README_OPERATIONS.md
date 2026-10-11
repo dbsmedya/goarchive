@@ -169,12 +169,12 @@ that batch's copy transaction before its copied marker or source deletion.
 Earlier completed batches remain completed; a later hash mismatch can leave a
 committed destination copy while preserving its source rows.
 
-Every physical connection initializes `sql_notes=1`, and each copy/sample operation reads
-`sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses unproved session
-facts. GoArchive never repairs these settings on pooled sessions and needs no extra privilege
-or config field. DATE, DATETIME and TIMESTAMP payloads are read and copied as SQL text, never
-normalized; legacy temporal payloads are copied when the destination accepts them and the
-diagnostics and verification policy permit it.
+Every physical connection initializes `sql_notes=1`, and every new source and destination
+connection raises a session `max_error_count` of 0 to 1024 (below). Each copy/sample operation
+reads `sql_notes`, `sql_mode` and `max_error_count` before its INSERTs and refuses unproved
+session facts. None of this needs a config field. DATE, DATETIME and TIMESTAMP payloads are
+read and copied as SQL text, never normalized; legacy temporal payloads are copied when the
+destination accepts them and the diagnostics and verification policy permit it.
 
 Source and destination SQL modes need not match. To accept legacy payloads, a DBA can
 configure the destination's server-level `sql_mode` for new sessions, or an applicable
@@ -186,14 +186,31 @@ The normal `max_error_count=1024` retention capacity also caps each INSERT's row
 count. A 5000-row candidate INSERT with 13 columns becomes
 1024/1024/1024/1024/904 rows: five INSERT/count pairs in the same transaction.
 Configured fetch chunks and placeholder limits can make it smaller already.
-Session facts add one query per copy/sample operation. Capacity zero permits
-clean INSERTs, but positive diagnostic counts fail as uninspectable. Configure
-retention through the DBA; GoArchive does not increase it: setting `max_error_count` on a
-session needs `SESSION_VARIABLES_ADMIN`. Key-addressed statements follow the same rule:
-after each one GoArchive compares `SHOW COUNT(*) WARNINGS` with the warnings the session
-kept, and refuses the batch when it kept fewer and none of them is warning 3170 (the range
-optimizer's fallback to a full scan), because the fallback can then not be ruled out. Network RTT and subdivision affect
-throughput; twice as many SQL statements does not imply twice the whole-job duration.
+Session facts add one query per copy/sample operation. Key-addressed statements get the
+same count-and-list comparison as INSERTs: after each one GoArchive compares
+`SHOW COUNT(*) WARNINGS` with the warnings the session kept, and refuses the batch when it
+kept fewer and none of them is warning 3170 (the range optimizer's fallback to a full scan),
+because the fallback can then not be ruled out. Network RTT and subdivision affect throughput;
+twice as many SQL statements does not imply twice the whole-job duration.
+
+A session whose `max_error_count` is 0 keeps none of a statement's warnings, so GoArchive
+could read neither its INSERT diagnostics nor the range check above. Every new source and
+destination connection therefore reads its session value and, at 0, sets it to 1024, MySQL's
+default; a session above 0 is never changed. Setting it needs `SESSION_VARIABLES_ADMIN`
+([Permissions](README_PERMISSIONS.md#privilege-matrix)). Without it, a connection whose
+session is at 0 fails with `MAX_ERROR_COUNT_CHECK`
+([Validation](README_VALIDATION.md#error-prefixes-that-are-not-checks)); an account without
+the privilege never meets it on a server whose global is above 0. At startup the command
+stops before any change. Mid-run, a pooled connection is retired 10 minutes after it was
+opened, or after 5 minutes idle, once it is back in the pool, and its replacement takes the
+global as it is then: if that is 0 and the account lacks the privilege, the refused connection
+is never used and the run stops. Only the transaction in progress rolls back: a batch's copy
+and its delete chunks each commit on their own, so what they committed stays, and the next run
+finishes the batch once the setting or the grant is fixed
+([Crash recovery](#crash-recovery)). Connections the run holds throughout (the job lock's
+session, a source session pinned through a lag wait) keep the value they started with. A
+connection that dies during the check is an ordinary connection failure. Replica connections
+read replica status only and are not checked. GoArchive never changes the global.
 
 `--skip-verify` follows the narrow conversion policy in
 [Configuration](README_CONFIGURATION.md#verification), with visible committed-copy

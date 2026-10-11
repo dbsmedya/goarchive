@@ -95,6 +95,9 @@ The boundary is ownership, not whether a statement happens to inspect MySQL. The
 - `database.Manager.Connect` proves, on every pool, that the session honours the UTC
   `time_zone` the DSN pins (by its effective offset) and that its `sql_mode` carries
   `NO_AUTO_VALUE_ON_ZERO` (`AUTO_INCREMENT_ZERO_MODE_CHECK`).
+- Every new source and destination connection reads `@@SESSION.max_error_count` and, at 0,
+  runs `SET SESSION max_error_count = 1024` (`MAX_ERROR_COUNT_CHECK`). Its unit tests run it
+  on a fake driver connection that records each statement.
 - `database.Manager.Connect` reads `@@GLOBAL.server_uuid`, `DATABASE()`, `@@GLOBAL.hostname`
   and `@@GLOBAL.port` from both pools to refuse a configuration whose source and
   destination are one database (`SRC_DEST_IDENTITY_CHECK`, issue #13). It inspects what the

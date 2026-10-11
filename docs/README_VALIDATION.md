@@ -541,6 +541,26 @@ before this named assertion runs. Otherwise, diagnose any wrapped query cause in
 error. This is not an additional preflight check and `--skip-validate-preflight` does not
 disable it.
 
+`MAX_ERROR_COUNT_CHECK` is a **connection failure** on the source or destination, at startup or
+on a connection the pool opens later. MySQL keeps at most `max_error_count` of a statement's
+warnings, and GoArchive reads them after every INSERT and every key-addressed statement; at 0
+it could read none. Every new source and destination connection reads its session value and
+sets a 0 to 1024. The failure means it could not. The binary prints it with the outer prefix
+the command adds, as for `SRC_DEST_IDENTITY_CHECK`:
+
+```
+failed to connect to databases: failed to connect to destination database: destination: MAX_ERROR_COUNT_CHECK: db2:3306: the session's max_error_count is 0, so MySQL keeps none of a statement's warnings for GoArchive to read, and this account may not raise it (Error 1227 (42000): Access denied; you need (at least one of) the SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation). Raise the server's global max_error_count (MySQL's default is 1024), or grant SESSION_VARIABLES_ADMIN to this account so GoArchive raises its own sessions to 1024
+```
+
+Either have a DBA raise the global (`SET PERSIST max_error_count = 1024`), or grant
+`SESSION_VARIABLES_ADMIN` to the account named in the configuration for that server
+([Permissions](README_PERMISSIONS.md#privilege-matrix)). Other forms of the message (the
+server refusing the probe, a result of the wrong shape, the `SET` failing for another reason)
+carry the server's error; diagnose that. A connection that dies during the check is not named:
+it is an ordinary connection failure, retried like one. Replica connections are not checked:
+they read replica status only. This is not an additional preflight check, and
+`--skip-validate-preflight` does not disable it.
+
 Runtime value-preservation errors are also separate from the preflight check count:
 
 | Identifier | Meaning | Where it is explained |

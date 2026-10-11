@@ -84,13 +84,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 	}
 
 	// Connect to source database
-	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
+	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source, true)
 	if err != nil {
 		return fmt.Errorf("failed to connect to source database: %w", err)
 	}
 
 	// Connect to destination database
-	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination)
+	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination, true)
 	if err != nil {
 		_ = m.Source.Close() // Ignore error during cleanup of failed connection
 		m.Source = nil
@@ -116,7 +116,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 		for _, s := range m.config.Replication.Servers {
 			addr := s.Addr()
 
-			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s))
+			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s), false)
 			if replicaErr != nil {
 				// Ignore errors during cleanup of a failed connection set.
 				for _, opened := range m.Replicas {
@@ -137,8 +137,9 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return nil
 }
 
-// connectWithRetry attempts to connect with exponential backoff.
-func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig) (*sql.DB, error) {
+// connectWithRetry attempts to connect with exponential backoff. readsWarnings is true for
+// the source and destination pools, whose statements read warnings (warningsConnector).
+func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
 	var db *sql.DB
 	var err error
 
@@ -146,7 +147,7 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 	backoff := time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		db, err = m.connect(cfg)
+		db, err = m.connect(cfg, readsWarnings)
 		if err == nil {
 			// Verify connection
 			if pingErr := db.PingContext(ctx); pingErr == nil {
@@ -162,6 +163,12 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 				return db, nil
 			} else {
 				_ = db.Close()
+				// The first connection ran the max_error_count check: a property of the
+				// server and the account, not a transient, so no retry.
+				var mec *MaxErrorCountError
+				if errors.As(pingErr, &mec) {
+					return nil, fmt.Errorf("%s: %w", name, pingErr)
+				}
 				err = pingErr
 			}
 		}
@@ -179,14 +186,13 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
 }
 
-// connect creates a database connection.
-func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
-	dsn := BuildDSN(cfg)
-
-	db, err := sql.Open("mysql", dsn)
+// connect creates a database connection pool.
+func (m *Manager) connect(cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
+	connector, err := poolConnector(cfg, readsWarnings)
 	if err != nil {
 		return nil, err
 	}
+	db := sql.OpenDB(connector)
 
 	// Configure connection pool
 	maxOpen := cfg.MaxConnections
