@@ -132,7 +132,7 @@ goarchive archive -c archiver.yaml -j archive_old_orders
 
 Step 2 matters more than it looks: it shows the row counts the run would actually touch,
 filtered through the real relation chain, and validates `batch_size` against the destination
-([Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation)).
+([Dry-run payload validation](README_VALIDATION.md#max_allowed_packet_check)).
 
 Use `goarchive plan -j <job>` at any point to see the relation tree, copy order,
 and delete order without touching either database.
@@ -149,7 +149,7 @@ table — root and children alike — in chunks of up to `batch_size` rows.
 INSERT subdivision can make individual statements smaller.
 
 It is bounded by MySQL's placeholder limit and `max_allowed_packet`, both checked by
-[`dry-run`](README_VALIDATION.md#dry-run-payload-validation). It also drives memory — BFS
+[`dry-run`](README_VALIDATION.md#max_allowed_packet_check). It also drives memory — BFS
 discovery holds the batch's whole descendant set
 ([why it is unbounded](README_LIMITATIONS.md#deep-or-wide-graphs-can-exhaust-memory)). On deep,
 high-fanout schemas start at `100` and scale up while watching memory.
@@ -199,7 +199,7 @@ destination connection therefore reads its session value and, at 0, sets it to 1
 default; a session above 0 is never changed. Setting it needs `SESSION_VARIABLES_ADMIN`
 ([Permissions](README_PERMISSIONS.md#privilege-matrix)). Without it, a connection whose
 session is at 0 fails with `MAX_ERROR_COUNT_CHECK`
-([Validation](README_VALIDATION.md#error-prefixes-that-are-not-checks)); an account without
+([Validation](README_VALIDATION.md#max_error_count_check)); an account without
 the privilege never meets it on a server whose global is above 0. At startup the command
 stops before any change. Mid-run, a pooled connection is retired 10 minutes after it was
 opened, or after 5 minutes idle, once it is back in the pool, and its replacement takes the

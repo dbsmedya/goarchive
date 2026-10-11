@@ -77,7 +77,7 @@ detected:
 #### Source and destination must be different databases
 
 `SRC_DEST_IDENTITY_CHECK` refuses a source and destination with the same `server_uuid` **and**
-the same schema name ([the check](README_VALIDATION.md#connection-identity-check)). Same server,
+the same schema name ([the check](README_VALIDATION.md#src_dest_identity_check)). Same server,
 different schema is supported.
 
 - Schema names are compared case-insensitively on every server, so `App` and `app` are refused

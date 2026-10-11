@@ -82,12 +82,12 @@ transactions; under a global `autocommit = 0` those writes would stay open and h
 locks. Only the session is set; the server's global value is never changed.
 
 Source and destination must be different databases
-([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#connection-identity-check)). Every connection
+([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#src_dest_identity_check)). Every connection
 also preserves explicit AUTO_INCREMENT zero values
-([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)),
+([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#auto_increment_zero_mode_check)),
 every source and destination connection keeps a statement's warnings, raising a session
 `max_error_count` of 0 to 1024
-([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)),
+([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)),
 and session SQL modes and INSERT diagnostics are covered in
 [Operations](README_OPERATIONS.md#insert-diagnostics-and-subdivision).
 
@@ -257,7 +257,7 @@ Batch sizing and pacing.
 
 How to choose values: [Tuning throughput](README_OPERATIONS.md#tuning-throughput);
 `sentinel_file`: [Pausing a run](README_OPERATIONS.md#pausing-a-run-sentinel_file); the limits
-`batch_size` must respect: [Dry-run payload validation](README_VALIDATION.md#dry-run-payload-validation).
+`batch_size` must respect: [Dry-run payload validation](README_VALIDATION.md#max_allowed_packet_check).
 
 ---
 

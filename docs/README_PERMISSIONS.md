@@ -155,7 +155,7 @@ schema's contents ([the check](README_VALIDATION.md#fk_coverage_visibility_check
 The server's global `max_error_count` is 0, and the account named for that server may not
 raise its own session's value. Have a DBA raise the global (MySQL's default is 1024), or
 grant the account `SESSION_VARIABLES_ADMIN`
-([the failure](README_VALIDATION.md#error-prefixes-that-are-not-checks)).
+([the failure](README_VALIDATION.md#max_error_count_check)).
 
 **Least-privilege deployments**
 

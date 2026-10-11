@@ -1,7 +1,7 @@
 # Validation & Preflight Reference
 
-Every preflight check GoArchive runs, what it inspects, why it exists, which
-commands run it, and how to fix a failure.
+Every check GoArchive runs before it moves a row: what it inspects, why, which job types run
+it, and how to fix a failure.
 
 **Related:** [Configuration](README_CONFIGURATION.md) ·
 [Permissions](README_PERMISSIONS.md) · [Operations](README_OPERATIONS.md) ·
@@ -14,6 +14,7 @@ commands run it, and how to fix a failure.
 
 - [How preflight works](#how-preflight-works)
 - [Which checks run for which command](#which-checks-run-for-which-command)
+- [Connection checks](#connection-checks)
 - [Source structure checks](#source-structure-checks)
 - [Primary key checks](#primary-key-checks)
 - [Destination checks](#destination-checks)
@@ -22,101 +23,87 @@ commands run it, and how to fix a failure.
 - [Trigger checks](#trigger-checks)
 - [Server variable checks](#server-variable-checks)
 - [Warnings](#warnings)
+- [Error prefixes that are not checks](#error-prefixes-that-are-not-checks)
 - [Schema compatibility rules](#schema-compatibility-rules)
 - [SHA256 verification](#sha256-verification)
-- [Dry-run payload validation](#dry-run-payload-validation)
 - [Bypassing preflight](#bypassing-preflight)
 
 ---
 
 ## How preflight works
 
-Preflight runs **before any state is written** and before any row is copied or
-deleted. `archive`, `purge`, and `copy-only` run it automatically at startup, with their own
-account; `dry-run` and `validate` exist to run it on demand. A prior `validate` result is
-not carried forward to a later run.
+Preflight runs **before any tracking state is written** and before any row is read for copying
+or deleting. `archive`, `purge` and `copy-only` run it at startup with their own accounts;
+`validate` (every job, or one with `--job`) and `dry-run` run it on demand. A passing `validate`
+is not carried forward to a later run.
 
-A failure returns a named check identifier, a message, and usually the offending
-tables:
+The checks that run follow the job's `job_type`, under `validate` and `dry-run` too: a purge
+job is never asked for destination tables. Checks run in a fixed order and **stop at the first
+failure**, so fixing one can reveal the next. `validate` reports each job `PASSED` or `FAILED`
+and goes on to the next job.
+
+A failure names the check, says what is wrong, and lists the offending tables:
 
 ```
-preflight checks failed (run 'goarchive validate' for full diagnostics):
-COMPOSITE_PK_CHECK: Composite primary keys are not supported. GoArchive
-identifies and deletes rows by a single primary-key column; a multi-column PK
-would over-match and risk deleting rows outside the archived set.
-See README 'Known Limits & Caution' [film_actor(2-column PRIMARY KEY)]
+PK_COLUMN_CHECK: The configured primary_key must list the PRIMARY KEY's columns, all of them, in
+key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_id, line_no))])
 ```
 
-Checks run in a fixed order and **abort at the first failure**, so fixing one
-error can reveal the next. `goarchive validate` is the fastest way to iterate.
-
-GoArchive selects one of three profiles per command:
-
-| Profile | Used by | Skips |
-|---------|---------|-------|
-| Full | `archive`, `validate` | nothing |
-| Source-only | `purge` | destination checks (nothing is copied) |
-| Non-destructive | `copy-only`, `dry-run` | source delete permission, DELETE triggers, CASCADE warning |
-
-`copy-only` additionally skips `FK_COVERAGE_VISIBILITY_CHECK`; `dry-run` runs it.
+A passing preflight logs one `Statement cap:` line per key-addressed statement, the most key
+tuples it carries; `validate` and `dry-run` print them.
 
 ---
 
 ## Which checks run for which command
 
-20 preflight checks, plus the connection-time `SRC_DEST_IDENTITY_CHECK` (21 rows).
-✅ = enforced, ❌ = not run.
+In run order. ✅ = enforced, ❌ = not run. `validate` and `dry-run` run the column of the job's
+type.
 
-| Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
-|-------|:---------:|:-------:|:-----------:|:---------:|:----------:|
-| `SRC_DEST_IDENTITY_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `PK_COLUMN_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `PK_COLUMN_CASE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `COMPOSITE_PK_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `ROOT_PK_TYPE_UNSUPPORTED` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `STORAGE_ENGINE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `JOB_SCHEMA_PERMISSION_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `DEST_TABLE_EXISTENCE_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
-| `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
-| `DEST_WRITE_PERMISSION_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
-| `DEST_INSERT_TRIGGER_CHECK` | ✅ | ❌ | ✅ | ✅ | ✅ |
-| `FK_INDEX_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `FK_COVERAGE_VISIBILITY_CHECK` | ✅ | ✅ | **❌** | ✅ | ✅ |
-| `FK_COVERAGE_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `INTERNAL_FK_COVERAGE` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
-| `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
-| `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Check | archive | purge | copy-only |
+|-------|:-------:|:-----:|:---------:|
+| `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ |
+| `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ |
+| `KEY_TYPE_UNSUPPORTED` | ✅ | ✅ | ✅ |
+| `PK_COLUMN_CASE_CHECK` | ✅ | ✅ | ✅ |
+| `PK_COLUMN_CHECK` | ✅ | ✅ | ✅ |
+| `STORAGE_ENGINE_CHECK` | ✅ | ✅ | ✅ |
+| `RELATION_KEY_CHECK` | ✅ | ✅ | ✅ |
+| `FK_INDEX_CHECK` | ✅ | ✅ | ✅ |
+| `JOB_SCHEMA_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
+| `DEST_TABLE_EXISTENCE_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_KEY_IDENTITY_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_WRITE_PERMISSION_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_INSERT_TRIGGER_CHECK` | ✅ | ❌ | ✅ |
+| `FK_COVERAGE_VISIBILITY_CHECK` | ✅ | ✅ | ❌ |
+| `FK_COVERAGE_CHECK` | ✅ | ✅ | ✅ |
+| `INTERNAL_FK_COVERAGE` | ✅ | ✅ | ✅ |
+| `FK_PAIRING_CHECK` | ✅ | ✅ | ✅ |
+| `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
+| `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ |
+| `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ |
+| `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ |
 
-Notes:
-
-- **`purge`** still runs `JOB_SCHEMA_PERMISSION_CHECK`, because it writes tracking state.
-- **`copy-only` is exempt from `FK_COVERAGE_VISIBILITY_CHECK`** because it never
-  deletes from source, so no external cascade can fire. It still runs
-  `FK_COVERAGE_CHECK` — a `copy-only` run is still blocked by an uncovered
-  cross-schema foreign key.
-- **`SRC_DEST_IDENTITY_CHECK` is not a preflight check** — it runs at connection time
-  ([below](#connection-identity-check)) — and is listed because it refuses a run the way a
-  check does.
-
-`DEST_*` checks additionally require a configured destination connection, which
-every command that runs preflight has when `destination.database` is set.
+- **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
+  it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
+- **Copy-only** deletes nothing, so no external cascade can fire: it skips the visibility proof,
+  the delete permission and the DELETE-trigger check. It still runs `FK_COVERAGE_CHECK`, but
+  without `PROCESS` that check sees only the foreign keys the account can read, so a
+  cross-schema one can pass unseen.
+- [Connection checks](#connection-checks) run before preflight, for every command.
 
 ---
 
-## Connection identity check
+## Connection checks
+
+These run when GoArchive connects, before preflight and before any tracking row is written.
+`--skip-validate-preflight` does not reach them.
 
 ### `SRC_DEST_IDENTITY_CHECK`
 
-Source and destination report the same `server_uuid` and the same schema name
-(compared without regard to letter case). GoArchive refuses at connection time,
-before preflight and before any tracking row is written, and `--skip-validate-preflight`
-does not reach it: an archive into itself
-would copy nothing, verify the table against itself, and then delete the only
-copy.
+Source and destination report the same `server_uuid` and the same schema name (compared without
+regard to letter case). An archive into itself would verify the table against itself and then
+delete the only copy.
 
 ```
 failed to connect to databases: SRC_DEST_IDENTITY_CHECK: source and destination
@@ -125,11 +112,35 @@ schema=app at db1:3306). GoArchive refuses: it would verify the table against
 itself and delete the only copy. …
 ```
 
-**Fix:** point `destination` at a different server or a different schema. If the
-two schema names differ only in letter case, GoArchive treats them as one schema
-on every server — rename one. If the two servers were cloned from one data
-directory they share `auto.cnf`; the remedy is in
+**Fix:** point `destination` at a different server or schema. Letter case and servers cloned
+from one data directory:
 [Source and destination must be different databases](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
+
+### `AUTO_INCREMENT_ZERO_MODE_CHECK`
+
+Every connection — source, destination and replica, including those a pool opens later — adds
+`NO_AUTO_VALUE_ON_ZERO` to its inherited session SQL modes, so an explicit zero in an
+AUTO_INCREMENT column stays zero while other modes remain intact. The failure means GoArchive
+could not prove the session does this. Check whether the server or a proxy honors connection
+initialization; a wrapped query cause in the message comes first.
+
+### `MAX_ERROR_COUNT_CHECK`
+
+MySQL keeps at most `max_error_count` of a statement's warnings, and GoArchive reads them after
+every INSERT and every key-addressed statement. Every new source and destination connection,
+at startup or opened later by its pool, reads its session value and raises a 0 to 1024. The
+failure means it could not:
+
+```
+failed to connect to databases: failed to connect to destination database: destination: MAX_ERROR_COUNT_CHECK: db2:3306: the session's max_error_count is 0, so MySQL keeps none of a statement's warnings for GoArchive to read, and this account may not raise it (Error 1227 (42000): Access denied; you need (at least one of) the SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation). Raise the server's global max_error_count (MySQL's default is 1024), or grant SESSION_VARIABLES_ADMIN to this account so GoArchive raises its own sessions to 1024
+```
+
+**Fix:** have a DBA raise the global (`SET PERSIST max_error_count = 1024`), or grant
+`SESSION_VARIABLES_ADMIN` to the account named for that server
+([Permissions](README_PERMISSIONS.md#privilege-matrix)). Other forms of the message carry the
+server's error; diagnose that. A connection that dies during the check is an ordinary
+connection failure, retried like one. Replica connections are not checked: they read replica
+status only.
 
 ---
 
@@ -137,175 +148,140 @@ directory they share `auto.cnf`; the remedy is in
 
 ### `TABLE_EXISTENCE_CHECK`
 
-Every table in the graph — root and all relations — must exist in the source
-schema, **and must be a `BASE TABLE`**. Views, `SYSTEM VIEW`, and any other
-`TABLE_TYPE` are rejected fail-closed — the copy/delete model is defined only for
-real tables. The error names the object together with its observed type, e.g.
-`orders(VIEW)`, so an operator can tell which object and why from the message
-alone.
+Every job table must exist in the source schema **as a base table**. A view or any other object
+is refused, named with its type, e.g. `orders(VIEW)`. If the account has no privilege at all on
+the source schema, MySQL hides it entirely and this check fails rather than
+`SOURCE_SELECT_PERMISSION_CHECK`.
 
-**Fix:** correct the table name in `relations`, or point `source.database` at the
-right schema. Table names are matched as configured. If the object is a view,
-archive the underlying table instead.
+**Fix:** correct the table name, or point `source.database` at the right schema. Archive a
+view's underlying table instead. Under `lower_case_table_names=1`, write table names in lower
+case.
 
 ### `STORAGE_ENGINE_CHECK`
 
-Every participating **source** table must use **InnoDB**. The check covers source tables
-only; the destination engine is the operator's choice, and it matters: MyISAM, MEMORY and
-ARCHIVE keep rows after `ROLLBACK`, so they void the per-batch rollback and keep `dry-run`'s
-sample rows; BLACKHOLE stores nothing, so verification fails unless it is skipped.
+Every source job table must be **InnoDB**. A base table whose engine MySQL reports as `NULL` is
+refused too, as `<table>(<unknown>)`; that usually means a corrupted or unknown-engine table.
+The destination engine is not checked
+([why it matters](README_LIMITATIONS.md#innodb-only)).
 
 **Fix:** `ALTER TABLE <table> ENGINE=InnoDB;`
-
-**Anomalous metadata:** a `BASE TABLE` whose `ENGINE` is reported as `NULL` also
-fails here, closed, named as `<table>(<unknown>)`. This is not a condition to
-expect in normal operation — MySQL associates NULL-heavy
-`information_schema.TABLES` rows with views (already excluded by
-`TABLE_EXISTENCE_CHECK`), so a NULL `ENGINE` on a genuine `BASE TABLE` typically
-indicates a corrupted or unknown-engine table.
 
 ---
 
 ## Primary key checks
 
-Four checks guard the same invariant: GoArchive identifies, copies, verifies, and
-**deletes** rows by a single primary-key column (`WHERE pk IN (...)`). Anything
-that breaks the one-column-uniquely-identifies-one-row assumption risks deleting
-rows outside the archived set.
-
-They are reported separately because the fixes differ.
-
-### `PK_COLUMN_CHECK`
-
-The configured `primary_key` column does not exist in the source table at all, or
-was never configured (there is no implicit default to `id`).
-
-**Fix:** set `primary_key` to a real column name on that table.
-
-### `PK_COLUMN_CASE_CHECK`
-
-A column exists but its name differs **only in letter case** — e.g. configured
-`log_id`, actual `LOG_ID`.
-
-This has its own check because MySQL's `information_schema.COLUMNS.COLUMN_NAME`
-collates case-insensitively (`utf8mb3_tolower_ci`), so a plain lookup would treat
-the two as equal. GoArchive fetches the real column name and compares it in Go,
-so a mere casing typo gets a clear "fix the casing" message instead of the
-data-loss-flavoured `PRIMARY_KEY_CHECK`.
-
-**Fix:** set `primary_key` to the exact case used in the schema.
-
-### `COMPOSITE_PK_CHECK`
-
-The table's `PRIMARY KEY` spans **more than one column**.
-
-**Fix:** composite primary keys are not supported in Community edition. Remove
-the table from the archive graph. See
-[Limitations](README_LIMITATIONS.md#known-limits--caution).
+GoArchive reads every table's primary key from MySQL and builds all SQL from it. The configured
+`primary_key` documents the key; it is checked against MySQL and never reaches a statement.
 
 ### `PRIMARY_KEY_CHECK`
 
-The table has **no `PRIMARY KEY`**, or the configured `primary_key` is a real
-column that is **not** the table's `PRIMARY KEY`.
+A job table has no `PRIMARY KEY`, so its rows cannot be addressed.
 
-Either way the column is probably not unique, so deleting by it would over-match.
+**Fix:** add a `PRIMARY KEY` to the table.
 
-**Fix:** add a single-column `PRIMARY KEY`, or set `primary_key` to the column
-that actually is the primary key.
+### `KEY_TYPE_UNSUPPORTED`
 
-### `ROOT_PK_TYPE_UNSUPPORTED`
+A primary-key column cannot identify rows. Allowed: the integer types, `DECIMAL`, `CHAR`,
+`VARCHAR`, `BINARY`, `VARBINARY`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` and `YEAR`, without a
+prefix length. `FLOAT`/`DOUBLE` are approximate, `ENUM`/`SET` sort by their internal index, and
+`BIT` is not supported. Temporal key values must also be valid
+([temporal identities](README_LIMITATIONS.md#temporal-values-and-identities)).
 
-The **root** table's primary key must be an integer type: `TINYINT`, `SMALLINT`,
-`MEDIUMINT`, `INT`/`INTEGER`, or `BIGINT`, signed or unsigned. Checkpointing
-advances a numeric high-water mark, which requires an ordered integer key.
+**Fix:** choose another root table, or leave the table out of the job.
 
-UUID, `VARCHAR`, `DECIMAL`, `FLOAT`, and datetime root primary keys are rejected.
-**Child tables may use single-column PK types**, subject to the
-[temporal identity rules](README_LIMITATIONS.md#temporal-values-and-identities).
+`PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under `--skip-validate-preflight`,
+because the SQL is built from the keys.
 
-**Fix:** choose a different root table, or archive from a table with an integer
-PK. (A related `ROOT_PK_TYPE_LOOKUP` error means the column's type could not be
-read at all — usually a permissions or naming problem.)
+### `PK_COLUMN_CASE_CHECK`
+
+The configured `primary_key` names the key's columns but differs in letter case, e.g. `log_id`
+for `LOG_ID`. Reported before `PK_COLUMN_CHECK` because its fix differs.
+
+**Fix:** write each column exactly as the database spells it.
+
+### `PK_COLUMN_CHECK`
+
+The configured `primary_key` is not the table's `PRIMARY KEY`: a column is missing, extra, or out
+of key order.
+
+**Fix:** list every key column, in key order. A composite key is a list:
+`primary_key: [order_id, line_no]`.
+
+### `RELATION_KEY_CHECK`
+
+Each `foreign_key` column must exist in its table and pair with the parent key column it
+references (`references`, by position): two integer types of the same signedness, two `DECIMAL`
+types, two character types with the same charset and collation, `BINARY(n)` with `BINARY(n)`,
+`VARBINARY` with `VARBINARY`, or the same temporal type with the same fractional precision. A
+nullable `foreign_key` column is allowed: a child row with a NULL in it matches no parent.
+
+**Fix:** correct `foreign_key` or `references`, or align the column types.
 
 ---
 
 ## Destination checks
 
-Skipped by `purge`, which copies nothing.
+Skipped for purge jobs, which copy nothing.
 
 ### `DEST_TABLE_EXISTENCE_CHECK`
 
-Every participating table must also exist in the destination schema, with the
-same name, **and must be a `BASE TABLE`**. Views, `SYSTEM VIEW`, and any other
-`TABLE_TYPE` are rejected fail-closed, named with their observed type, e.g.
-`orders(VIEW)`.
+Every job table must exist in the destination schema, under the same name, as a base table.
 
-**Fix:** create the destination tables. A schema-only dump of the source is the
-usual approach — see the note on
-[`disable_foreign_key_checks`](README_CONFIGURATION.md#disable_foreign_key_checks)
-if the destination's lookup tables will be empty. If the object is a view,
-create a real table instead.
+**Fix:** create the destination tables, usually from a schema-only dump of the source. If the
+destination's lookup tables will be empty, see
+[`disable_foreign_key_checks`](README_CONFIGURATION.md#disable_foreign_key_checks).
+
+### `DEST_KEY_IDENTITY_CHECK`
+
+The destination `PRIMARY KEY` must have the source's columns, in key order, with the same type,
+charset and collation: a different collation changes which keys collide and the order
+verification reads rows in. One widening is allowed: a `utf8mb3` key column copied into
+`utf8mb4` with the twin collation, such as `utf8mb3_general_ci` to `utf8mb4_general_ci`.
+
+**Fix:** give the destination table the source's primary key.
 
 ### `DEST_SCHEMA_COMPATIBILITY_CHECK`
 
-Matches source and destination columns **by name** (ASCII letter case ignored, as MySQL
-does), then compares each matched pair's attributes and its ordinal position. See
-[Schema compatibility rules](#schema-compatibility-rules) for the full matrix.
+Matches source and destination columns **by name** (ASCII letter case ignored, as MySQL does),
+then compares each pair. The destination may be looser than the source, never stricter: the
+[Schema compatibility rules](#schema-compatibility-rules) list every difference.
 
 ### `DEST_INSERT_TRIGGER_CHECK`
 
-Hard-fails if any destination table has an `INSERT` trigger.
+A destination table has an `INSERT` trigger. It would change copied rows before verification
+reads them.
 
-A trigger firing during the copy would mutate archived data outside GoArchive's
-knowledge, and the verification hash would then disagree with what was actually
-stored.
-
-**Fix:** drop or disable the destination INSERT triggers. There is **no** force
-flag for this one.
+**Fix:** drop the destination INSERT triggers. `--force-triggers` does not apply.
 
 ---
 
 ## Foreign key checks
 
-**Declared foreign keys are a floor, not a ceiling.** A relation does not need a foreign key in
-the database: schemas whose relations live only in the application (ORM-managed) are archived
-the same way, and you declare each relation in the config. When the checks that apply to a
-command pass, they guarantee two things about the foreign keys the database **does** declare:
-no table outside the graph references a graph table (`FK_COVERAGE_CHECK`), and every foreign
-key between two different graph tables matches a relation (`INTERNAL_FK_COVERAGE`).
-`FK_COVERAGE_VISIBILITY_CHECK` proves GoArchive saw all of them; `copy-only` skips that proof.
-Self-referencing foreign keys are outside the guarantee
-([`INTERNAL_FK_COVERAGE`](#internal_fk_coverage)). A relation with no declared foreign key is
-checked by none of them, so its correctness and the index on its join column are yours: discovery
-selects child rows by the join column, so without an index each discovery query scans the child
-table.
+**Declared foreign keys are a floor, not a ceiling.** A relation needs no foreign key in the
+database: relations kept only by an application (an ORM) are declared in the config and archived
+the same way. For the foreign keys the database **does** declare, these checks guarantee that no
+table outside the job references a job table (`FK_COVERAGE_CHECK`) and that every one between two
+job tables is a configured relation, paired the same way (`INTERNAL_FK_COVERAGE`,
+`FK_PAIRING_CHECK`). `FK_COVERAGE_VISIBILITY_CHECK` proves GoArchive saw all of them. A
+self-referencing foreign key (`category.parent_id → category.id`) is not a relation and is
+skipped ([supported relationship types](README_LIMITATIONS.md#supported-relationship-types)).
 
 ### `FK_INDEX_CHECK`
 
-Every declared foreign key on an **in-graph child table** must have its supporting index.
+Every relation needs an index on its child whose leading columns are exactly the `foreign_key`
+columns, in any order: discovery reads the child by `foreign_key`, and without such an index
+every batch scans the table. A prefix, functional or `INVISIBLE` index does not count. This
+covers relations without a declared foreign key too.
 
-This is a defensive assertion: MySQL creates that index with every InnoDB foreign key and
-refuses to drop it, so the check does not fire against a real server. It does not cover
-relations without a declared foreign key. Out-of-graph children are
-`FK_COVERAGE_CHECK`'s concern.
+**Fix:** `CREATE INDEX idx_fk ON <table> (<foreign_key columns>)`.
 
 ### `FK_COVERAGE_CHECK`
 
-Finds tables **outside** the graph that hold a foreign key **referencing a table
-inside** the graph, and fails.
-
-Deleting an in-graph parent while an unmodelled child still references it either
-fails outright (`RESTRICT` / `NO ACTION`) or silently mutates rows GoArchive never
-copied (`CASCADE` / `SET NULL`). **Every ON DELETE rule is fatal** — the failure
-mode differs, but none of them is safe.
-
-The check inspects **incoming** foreign keys by *referenced* schema, so a
-constraint defined in another schema that points at an in-graph table is
-detected. A cross-schema child cannot be added to the graph
-([identifier rules](README_CONFIGURATION.md#identifier-rules)), so such a foreign key is
-always fatal.
-
-Errors group by referenced table:
+A table **outside** the job holds a foreign key **into** a job table. Deleting the parent either
+fails (`RESTRICT`, `NO ACTION`) or changes rows GoArchive never copied (`CASCADE`, `SET NULL`), so
+**every `ON DELETE` rule is fatal**. Incoming keys are found by the referenced schema, so a
+constraint defined in another schema is detected; such a table can never join the job
+([identifier rules](README_CONFIGURATION.md#identifier-rules)).
 
 ```
 FK_COVERAGE_CHECK: Foreign key constraints not covered by relations
@@ -313,142 +289,101 @@ FK_COVERAGE_CHECK: Foreign key constraints not covered by relations
   - orders is referenced by: [analytics.order_snapshots (ON DELETE CASCADE)]
 ```
 
-**Fix:** add the referencing table to `relations` if it is in the same schema and
-should be archived; otherwise drop the constraint, or exclude the referenced
-table from the archive.
+**Fix:** add the referencing table to the job if it is in the same schema and should be archived;
+otherwise drop the constraint, or leave the referenced table out of the job.
 
 ### `INTERNAL_FK_COVERAGE`
 
-Where `FK_COVERAGE_CHECK` looks outward, this looks **inward**: for foreign keys
-where *both* tables are in the graph, the configured relation must match the real
-constraint. It reports four distinct problems:
+A foreign key between two job tables is not a configured relation with the same `foreign_key`
+columns. Each line names the constraint and why:
 
-- **`[no graph edge]`** — the tables are related in the database but the config
-  declares them as siblings rather than parent and child.
-- **`[FK column mismatch]`** — `foreign_key` names a different column than the
-  constraint uses.
-- **`[reference column mismatch]`** — the parent's configured `primary_key` is
-  not the column the constraint references.
-- **`[multi-column foreign key]`** — a relation carries one `foreign_key`/`primary_key`
-  pair, so a multi-column constraint between two graph tables cannot be modelled.
+- `[no relation: … is not configured under …]` — the child is not nested under that parent;
+- `[the relation's foreign_key is …]` — the relation uses other columns;
+- `[it references …, which is not the PRIMARY KEY of …]` — a foreign key to a parent's unique
+  key; `references` lists the parent's primary key, so this is not supported.
 
-The first three produce a wrong delete order and MySQL Error 1451 at delete time.
-A self-referencing foreign key (`category.parent_id → category.id`) is not a graph edge,
-so this check does not examine it and no check rejects it; the model still cannot archive
-such a hierarchy ([supported relationship types](README_LIMITATIONS.md#supported-relationship-types)).
+A table appears once in a job, so a second foreign key from one child to the same parent over
+other columns cannot be configured. Unfixed, the delete fails with error 1451, or `ON DELETE
+CASCADE` removes child rows that were never copied.
 
-**Fix:** nest child tables under their true parent, and make `foreign_key` and
-`primary_key` match the real constraint. A multi-column foreign key between graph tables is
-not supported: remove one of the two tables from the graph.
+**Fix:** nest each child under its parent, with `foreign_key` and `references` matching the
+constraint, or leave one of the two tables out of the job.
 
-> Note the name: this is the one check without a `_CHECK` suffix.
+### `FK_PAIRING_CHECK`
+
+The relation's `foreign_key` columns match the constraint, but `references` pairs them with the
+parent's key columns differently. A swapped composite pairing would select another parent's
+children.
+
+**Fix:** list `references` in the order that pairs with `foreign_key`.
 
 ### `FK_COVERAGE_VISIBILITY_CHECK`
 
-Fails when GoArchive cannot prove it saw **every** foreign key pointing into the archive
-graph — including ones defined in schemas the account has no privilege on. Without that
-proof, an external `ON DELETE CASCADE` or `SET NULL` could delete or mutate rows that were
-never copied.
+GoArchive cannot prove it saw **every** foreign key pointing into the job, including those in
+schemas the account cannot read. Without that proof an external `ON DELETE CASCADE` or `SET NULL`
+could change rows that were never copied.
 
-**How completeness is proven.** Foreign-key discovery reads InnoDB's own metadata registry,
-which requires the `PROCESS` privilege. A successful read is the proof, and the check
-reports `complete`. If that read fails, discovery falls back to `information_schema` — which
-only shows constraints on tables the account is privileged for — and the state becomes
-`unconfirmed`; a visibility-filtered view cannot prove completeness. A state of `unknown`
-means no completeness proof was populated at all. **Only `complete` passes**, and the error
-names the state it saw.
+The proof is a successful read of InnoDB's foreign-key registry, which needs `PROCESS`; the state
+is then `complete`, the only one that passes. If that read fails, discovery falls back to a
+view filtered by the account's privileges and the state is `unconfirmed`; `unknown` means no
+proof was populated. The message says which stage failed: a query-stage failure can be
+privileges, connectivity or server state, so read the logged MySQL cause first; a read-stage
+failure (rows returned but not decoded) is not fixed by grants — check MySQL and dbsgomysql
+compatibility.
 
-For `unconfirmed`, GoArchive also reports which primary-source stage failed. A query-stage
-failure can be caused by missing privileges, but also by connectivity, server state, or
-another query error; inspect the error-level log before changing grants. A read-stage
-failure means rows were returned but could not be scanned or decoded. Changing privileges
-does not repair that case—inspect the logged cause and verify MySQL and `dbsgomysql`
-compatibility. An absent or unrecognized reason remains a generic fail-closed diagnostic.
-The raw MySQL error is logged once and is not copied into the structured preflight error.
-
-**Fix**, when the logged query-stage cause is a privilege rejection: grant `PROCESS`, which
-is accepted even when held through a role ([Permissions](README_PERMISSIONS.md#the-provable-grant-rule)).
-
-**Applies to:** `archive`, `purge`, `dry-run`, `validate`. Skipped by `copy-only`.
+**Fix**, when the logged cause is a privilege rejection: `GRANT PROCESS ON *.* TO <user>`. A
+`PROCESS` held through a role is accepted
+([Permissions](README_PERMISSIONS.md#the-provable-grant-rule)).
 
 ---
 
 ## Permission checks
 
-Four checks verify privileges: `DEST_WRITE_PERMISSION_CHECK`,
-`SOURCE_SELECT_PERMISSION_CHECK`, `SOURCE_DELETE_PERMISSION_CHECK` and
-`JOB_SCHEMA_PERMISSION_CHECK`.
-
-Each passes only when the privilege is provable for the object
-([the provable-grant rule](README_PERMISSIONS.md#the-provable-grant-rule)). Three states
-fail:
+`SOURCE_SELECT_PERMISSION_CHECK`, `SOURCE_DELETE_PERMISSION_CHECK`,
+`DEST_WRITE_PERMISSION_CHECK` and `JOB_SCHEMA_PERMISSION_CHECK` each pass only when the privilege
+is provable for the object ([the provable-grant rule](README_PERMISSIONS.md#the-provable-grant-rule)).
+Three states fail, and the message names the state:
 
 | State | Meaning | Fix |
 |---|---|---|
 | absent | no grant exists at any scope | grant the privilege |
-| unconfirmed | a grant may exist but cannot be proven — held through a role, or a global grant while `@@global.partial_revokes` is enabled | grant it **directly** to the account, at schema or table scope |
-| unknown | the privilege fact was not populated | report it; this indicates an inspection problem, not a configuration one |
+| unconfirmed | a grant may exist but cannot be proven: held through a role, a global grant while `@@global.partial_revokes` is enabled, or a privilege granted nowhere seen by an account that cannot read the `mysql` schema | grant it **directly** to the account, at schema or table scope |
+| unknown | the privilege fact was not populated | report it: an inspection problem, not a configuration one |
 
-The error message names the state, so "absent" and "unconfirmed" are distinguishable
-without re-reading the grant tables. **How it names the subject depends on the check's
-scope**, and the difference is deliberate:
-
-- **Table-scoped** checks (`DEST_WRITE`, `SOURCE_SELECT`, `SOURCE_DELETE`) report
-  `TABLE(state)` — e.g. `orders(unconfirmed)`. The privilege is not repeated because each
-  of these checks tests exactly one privilege, already named in its own message.
-- **Schema-scoped** `JOB_SCHEMA_PERMISSION_CHECK` reports `PRIVILEGE(state)` — e.g.
-  `CREATE(absent)` — because it tests four privileges against one schema.
-
-Privilege introspection itself needs no extra grants — MySQL always exposes the
-connected account's own privilege rows. Each check's fix is the matching
+A least-privileged account therefore sees `unconfirmed`, not `absent`, for a privilege it was
+never granted. Table-scoped checks name `TABLE(state)`, e.g. `orders(unconfirmed)`;
+`JOB_SCHEMA_PERMISSION_CHECK` names `PRIVILEGE(state)`, e.g. `CREATE(unconfirmed)`, because it
+tests four privileges on one schema. Each fix is a
 [grant recipe](README_PERMISSIONS.md#grant-recipes).
-
-### `DEST_WRITE_PERMISSION_CHECK`
-
-The destination account needs `INSERT` on every participating table. Verified up
-front because otherwise the failure lands mid-run, after copy has already
-committed rows. The check proves `INSERT` only; verification also needs destination
-`SELECT`, which preflight does not check, so grant both
-([recipe](README_PERMISSIONS.md#grant-recipes)).
 
 ### `SOURCE_SELECT_PERMISSION_CHECK`
 
-Fails when the source account cannot be *proven* to hold `SELECT` on a participating table.
-Every GoArchive command reads source rows or estimates from them, so this check runs for
-all five commands, before any work starts.
-
-**Note on a related failure:** if the account has *no* privilege at all on the source
-schema, MySQL hides the schema from `information_schema` entirely and you will see
-`TABLE_EXISTENCE_CHECK` instead. `SOURCE_SELECT_PERMISSION_CHECK` catches the partial
-case — the account can see the tables but cannot read them.
+The source account needs `SELECT` on every job table. Runs for every job type.
 
 ### `SOURCE_DELETE_PERMISSION_CHECK`
 
-The source account needs `DELETE` on every participating table. `dry-run` does **not** run
-this check, even though it previews a delete; `validate` does, without deleting anything, so
-it catches a missing grant before `archive` fails part-way through, after rows have already
-been copied.
+The source account needs `DELETE` on every job table of an archive or purge job. `validate` and
+`dry-run` check it too, so a missing grant is caught before a run has copied anything.
+
+### `DEST_WRITE_PERMISSION_CHECK`
+
+The destination account needs `INSERT` on every job table. Verification also needs destination
+`SELECT`, which this check does not prove, so grant both
+([recipe](README_PERMISSIONS.md#grant-recipes)).
 
 ### `JOB_SCHEMA_PERMISSION_CHECK`
 
-The destination account needs `CREATE`, `SELECT`, `INSERT`, and `UPDATE` on the
-tracking schema (`destination.job_schema`, defaulting to the destination
-database). `CREATE` is required **at runtime** because per-job log tables are
-created on the fly.
-
-Checked at global and schema scope only — there is no per-table fallback, because
-the per-job tracking tables do not exist yet at preflight time.
-
-The error names the exact grant needed, and prefixes `CREATE DATABASE` when the
-schema itself is missing (GoArchive never creates it;
-[`job_schema`](README_CONFIGURATION.md#job_schema-destination-only)):
+The destination account needs `CREATE`, `SELECT`, `INSERT` and `UPDATE` on the tracking schema
+(`destination.job_schema`, by default the destination database). `CREATE` is needed at run time:
+each job's log table is created the first time the job runs. The message names the grant, and
+`CREATE DATABASE` when `CREATE` is missing, since GoArchive never creates the schema
+([`job_schema`](README_CONFIGURATION.md#job_schema-destination-only)):
 
 ```
-JOB_SCHEMA_PERMISSION_CHECK: destination account lacks provable CREATE, UPDATE
-on tracking schema "goarchive" (states: CREATE(absent), UPDATE(absent)).
-GoArchive 2.0 requires each privilege to be provable for the object: grant each
-missing privilege directly to the account at schema scope (DBA must:
-CREATE DATABASE `goarchive`; GRANT CREATE, UPDATE ON `goarchive`.* TO <user>)
+JOB_SCHEMA_PERMISSION_CHECK: destination account lacks provable CREATE, UPDATE on tracking
+schema "goarchive" (states: CREATE(unconfirmed), UPDATE(unconfirmed)). Grant each missing
+privilege directly to the account at schema scope (DBA must: CREATE DATABASE `goarchive`;
+GRANT CREATE, UPDATE ON `goarchive`.* TO <user>)
 ```
 
 ---
@@ -457,16 +392,11 @@ CREATE DATABASE `goarchive`; GRANT CREATE, UPDATE ON `goarchive`.* TO <user>)
 
 ### `DELETE_TRIGGER_CHECK`
 
-Fails if any source table has a `DELETE` trigger.
+A source table of an archive or purge job has a `DELETE` trigger. GoArchive cannot see what it
+does, and its side effects are outside the archive and its verification.
 
-GoArchive has no visibility into trigger logic. A trigger that modifies other
-tables when a row is deleted produces side effects outside the archive model and
-outside verification.
-
-**Override:** `--force-triggers`, accepted by `archive`, `purge`, and `validate`.
-Triggers **will fire** during the delete phase. Audit what they do first.
-
-`copy-only` and `dry-run` never run this check.
+**Override:** `--force-triggers` (on `archive`, `purge`, `validate` and `dry-run`); the triggers
+then fire on every delete. Audit them first.
 
 ---
 
@@ -474,266 +404,166 @@ Triggers **will fire** during the delete phase. Audit what they do first.
 
 ### `MAX_ALLOWED_PACKET_CHECK`
 
-Every key-addressed statement — the copy read, verification, the delete chunk, discovery
-by `foreign_key`, and the tracking log's statements on the destination — carries at most
-its statement cap of key tuples (logged as `Statement cap:` lines). Preflight bounds the
-larger of the two packets each sends at its cap: the prepared text and the bound values.
-The values are counted as they travel: integers as 8 bytes; `DECIMAL` and temporal keys as
-SQL text; character keys at four bytes a character, because they are read and bound in the
-session's `utf8mb4` whatever the column's charset; and, for discovery, the parent key's
-values, which are bound against the child's `foreign_key` index.
-If that bound exceeds a server's `max_allowed_packet`, or the client's own 64 MiB limit,
-the run is refused before any row is read, naming the server, the table, the cap and the
-bytes needed. Without the check the statement would fail mid-run with error 1153.
+Every key-addressed statement — the copy read, verification, delete chunks, discovery by
+`foreign_key`, and the tracking log's statements — carries at most its statement cap of key
+tuples, and at most `batch_size` (the source's by-key statements: the larger of `batch_size` and
+`batch_delete_size`). Preflight sizes each statement at that many keys, counting the prepared
+text and the bound values as they travel (character keys at four bytes a character, in the
+session's `utf8mb4`). The statements after the last key, the root fetch and recovery's log
+pages, are sized at any batch size. If one exceeds a server's `max_allowed_packet`, or the
+client's 64 MiB, the run is refused before any row is read; without the check it would fail
+mid-run with error 1153.
 
-Fix: raise `max_allowed_packet` on that server, or lower `range_optimizer_max_mem_size`,
-which shrinks the caps. INSERTs carry rows rather than keys and are not bounded here
+The message names the server, the statement, the table and the bytes needed, and the remedies
+that fit: raise `max_allowed_packet` to at least that size; lower `batch_size` or
+`batch_delete_size` to the largest count that fits; or, for a statement at its cap, lower
+`range_optimizer_max_mem_size` (set it, when it is 0) to shrink the cap. INSERTs carry rows, not
+keys, and are not bounded here
 ([Known Limits](README_LIMITATIONS.md#a-row-set-larger-than-max_allowed_packet-fails-its-batch)).
+
+---
 
 ## Warnings
 
-Not all findings are fatal.
+Logged, never fatal:
 
-- **`ON DELETE CASCADE` rules** — logged as a warning listing every cascading
-  constraint found among graph tables. Cascades can delete related records
-  automatically, outside GoArchive's ordering. Verify the behaviour is intended.
-  Runs for `archive`, `purge`, and `validate`.
-- **Collation mismatch** (outside a destination unique index), **charset mismatch** under a
-  running sha256 verification, and **column names differing only in ASCII letter case** —
-  see [Schema compatibility rules](#schema-compatibility-rules).
-- **`disable_foreign_key_checks: true`** — a loud warning on every validate and
-  every copy run.
+- **`ON DELETE CASCADE`** among the job's tables, for archive and purge jobs: GoArchive deletes
+  children first itself, so a cascade is redundant work outside its ordering. Verify it is
+  intended.
+- **A relation's edge declared by several foreign keys** with the same columns and pairing: one
+  advisory naming them; redundant and harmless to the job.
+- **Schema advisories:** a collation difference outside the keys and destination unique indexes,
+  a charset difference under sha256 verification, and column names that differ only in ASCII
+  letter case ([Schema compatibility rules](#schema-compatibility-rules)).
+
+`validate` logs them at warning level, so `logging.level: error` hides them.
 
 ---
 
 ## Error prefixes that are not checks
 
-These prefixes can appear in preflight output. **They are not additional named checks — the
-count remains 20 preflight checks** — and they do not indicate a configuration problem.
+These can appear in preflight output. They are not checks and do not point at your schema or
+grants: they mean GoArchive and its validation library disagree, and preflight fails closed
+rather than guess. Report them with the full message.
 
-| Prefix | Meaning | What to do |
+| Prefix | Meaning |
+|---|---|
+| `PREFLIGHT_INSPECTION_INTEGRITY` | An inspection result was internally inconsistent |
+| `PREFLIGHT_UNEXPECTED_FACTS` | A check arrived carrying facts of the wrong type |
+| `PREFLIGHT_UNKNOWN_FINDING` | The library returned a check GoArchive does not recognise |
+| `PREFLIGHT_UNEXPECTED_DIFF` | A schema difference GoArchive's inspection cannot produce |
+| `PREFLIGHT_UNKNOWN_DIFF` | A schema difference kind GoArchive does not recognise |
+
+`preflight <stage> inspection failed: <cause>` is different: a database failure (a lost
+connection, a query error) while reading facts. Diagnose the cause.
+
+These run-time failures are not preflight checks either, and stay active under
+`--skip-validate-preflight`:
+
+| Identifier | Meaning | Explained in |
 |---|---|---|
-| `PREFLIGHT_INSPECTION_INTEGRITY` | An inspection result was internally inconsistent — a fact that must be populated was not, or was captured for only one side of a comparison | Report it |
-| `PREFLIGHT_UNEXPECTED_FACTS` | A recognised check arrived carrying a payload of the wrong type | Report it |
-| `PREFLIGHT_UNKNOWN_FINDING` | A validation check GoArchive does not recognise was returned | Report it |
-| `PREFLIGHT_UNEXPECTED_DIFF` | A schema difference was reported that GoArchive's inspection cannot produce | Report it |
-| `PREFLIGHT_UNKNOWN_DIFF` | A schema difference kind GoArchive does not recognise | Report it |
-
-The five above signal a **contract failure between GoArchive and its validation library**,
-not a fault in your schema or grants. They fail closed deliberately: GoArchive aborts rather
-than guess at a result it cannot interpret. Please report them with the full message.
-
-`COMPOSITE_PK_LOOKUP` and `ROOT_PK_TYPE_LOOKUP` are different: they **wrap an underlying
-inspection or database failure** — a lost connection, a permissions problem, a query error.
-The wrapped cause is included in the message; diagnose that. They do not by themselves
-indicate a software defect.
-
-`AUTO_INCREMENT_ZERO_MODE_CHECK` is a **connection-startup failure**, before preflight.
-Every new GoArchive connection — source, destination and replication server, including
-replacement connections — adds `NO_AUTO_VALUE_ON_ZERO` to its inherited session SQL modes, so
-an explicit zero in an AUTO_INCREMENT column stays zero while omitted or NULL values are still
-allocated; other modes remain intact. The failure means GoArchive could not prove the session
-does this.
-The run stops before data processing. Check whether the server or proxy honors connection
-initialization, then restart.
-If the driver's connection-initialization statement itself is rejected, its error can appear
-before this named assertion runs. Otherwise, diagnose any wrapped query cause in the named
-error. This is not an additional preflight check and `--skip-validate-preflight` does not
-disable it.
-
-`MAX_ERROR_COUNT_CHECK` is a **connection failure** on the source or destination, at startup or
-on a connection the pool opens later. MySQL keeps at most `max_error_count` of a statement's
-warnings, and GoArchive reads them after every INSERT and every key-addressed statement; at 0
-it could read none. Every new source and destination connection reads its session value and
-sets a 0 to 1024. The failure means it could not. The binary prints it with the outer prefix
-the command adds, as for `SRC_DEST_IDENTITY_CHECK`:
-
-```
-failed to connect to databases: failed to connect to destination database: destination: MAX_ERROR_COUNT_CHECK: db2:3306: the session's max_error_count is 0, so MySQL keeps none of a statement's warnings for GoArchive to read, and this account may not raise it (Error 1227 (42000): Access denied; you need (at least one of) the SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation). Raise the server's global max_error_count (MySQL's default is 1024), or grant SESSION_VARIABLES_ADMIN to this account so GoArchive raises its own sessions to 1024
-```
-
-Either have a DBA raise the global (`SET PERSIST max_error_count = 1024`), or grant
-`SESSION_VARIABLES_ADMIN` to the account named in the configuration for that server
-([Permissions](README_PERMISSIONS.md#privilege-matrix)). Other forms of the message (the
-server refusing the probe, a result of the wrong shape, the `SET` failing for another reason)
-carry the server's error; diagnose that. A connection that dies during the check is not named:
-it is an ordinary connection failure, retried like one. Replica connections are not checked:
-they read replica status only. This is not an additional preflight check, and
-`--skip-validate-preflight` does not disable it.
-
-Runtime value-preservation errors are also separate from the preflight check count:
-
-| Identifier | Meaning | Where it is explained |
-|---|---|---|
-| `TEMPORAL_READ_CONTRACT` | A temporal representation, metadata fact, key identity set, or pre-delete proof could not be established | [Temporal identity rules](README_LIMITATIONS.md#temporal-values-and-identities) |
-| `INSERT_DIAGNOSTIC_REJECTED` | The INSERT read a forbidden condition; the message carries its code, level and a bounded preview | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
-| `INSERT_DIAGNOSTICS_UNPROVEN` | Session facts, diagnostic I/O, completeness or execution context could not be proved | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
-
-These guards are application-owned and remain active with skipped preflight.
-`validate` is structural; it is not a scan or certification of every payload.
-None of these failures grants permission to delete.
+| `TEMPORAL_READ_CONTRACT` | A temporal value, its metadata, or a key identity could not be established | [Temporal identities](README_LIMITATIONS.md#temporal-values-and-identities) |
+| `INSERT_DIAGNOSTIC_REJECTED` | The INSERT raised a forbidden condition; the message carries its code, level and a bounded preview | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
+| `INSERT_DIAGNOSTICS_UNPROVEN` | The INSERT's diagnostics could not be read completely | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
 
 ---
 
 ## Schema compatibility rules
 
-`DEST_SCHEMA_COMPATIBILITY_CHECK` is **direction-aware**, not byte-identical. The
-destination may be *looser* than the source, never *stricter*.
-
-The rationale: the copy inserts explicit values for every column and never relies
-on destination defaults or indexes — so relaxations are harmless, while extra
-constraints would reject or silently skip rows.
+`DEST_SCHEMA_COMPATIBILITY_CHECK` lets the destination be **looser** than the source, never
+**stricter**. The copy inserts an explicit value for every column and never relies on
+destination defaults or indexes, so a relaxation is harmless, while an extra constraint would
+reject rows. Every incompatible table is reported, each with its first fatal difference.
 
 ### Allowed — destination may be looser
 
 | Difference | Why it is safe |
 |------------|----------------|
-| Secondary indexes dropped (`MUL`, `UNI` → none) | Copy does not read them. **A supported write-performance optimization.** |
-| `auto_increment` dropped | Copy supplies explicit key values |
-| Column defaults dropped (`DEFAULT_GENERATED`, `ON UPDATE`) | Copy supplies explicit values |
+| Secondary indexes dropped | The copy does not read them; a supported write-performance optimization |
+| `auto_increment`, defaults or `ON UPDATE` dropped | The copy supplies every value |
 | `NOT NULL` relaxed to nullable | Strictly more permissive |
-| Source column generated, destination plain | `SELECT` materialises the value; a plain column accepts it |
-| Column `INVISIBLE` on one side, visible on the other | Visibility never reaches the copy: every read and every `INSERT` names its columns explicitly rather than using `SELECT *`, so an `INVISIBLE` column is copied, verified, and hashed like any other. Dry-run payload sampling names them too. |
-| Integer display width differs (`bigint(20)` vs `bigint`) | Cosmetic. Normalised away — MySQL 8.0.17 and later do not report it, so a schema dumped from an older server would otherwise false-fail. `tinyint(1)` vs `tinyint` is accepted too: the library reports it as a difference, and GoArchive's policy accepts it. `unsigned` and the `zerofill` attribute **are** preserved — they change the value range and rendering — but a `zerofill` column's *display width* (`int(5) zerofill` vs `int(10) zerofill`) is accepted: it changes only how the server pads the value as text; the copy and the hash read the value, not the text. |
-| Column name differs only in ASCII letter case (`email` vs `Email`), including the primary-key column | **Advisory, not fatal.** MySQL resolves column names case-insensitively, the copy names *source* columns, and the verifier reads both sides with that same list — so rows copy and verify normally. The warning names both spellings; align them if the archive should be a byte-faithful copy of the source schema. Non-ASCII letters are compared exactly. |
-| `year(4)` vs `year` | Cosmetic; normalised away by the library (dbsgomysql 1.1.3+). MySQL 8.4 drops the width at `CREATE` time, so the shape survives only in an in-place-upgraded data dictionary. |
+| Source column generated, destination plain | The read materialises the value |
+| Column `INVISIBLE` on one side only | Every read and INSERT names its columns, so the column is copied and verified |
+| Integer display width (`bigint(20)` vs `bigint`, `tinyint(1)` vs `tinyint`, a `zerofill` width) | Cosmetic: the copy and the hash read the value, not its padded text. `unsigned` and `zerofill` themselves must match |
+| `year(4)` vs `year` | Cosmetic; normalised by the library |
+| Column name differs only in ASCII letter case | **Advisory.** MySQL resolves column names case-insensitively and the copy names the source's columns, so rows copy and verify normally. Non-ASCII letters are compared exactly |
 
 ### Fatal — destination must not be stricter
 
 | Difference | Consequence |
 |------------|-------------|
-| A column present on one side only (names differing beyond ASCII letter case) | Wrong column mapping; the first such column per table is reported |
-| Column type mismatch (after width normalisation) | Value corruption or insert failure |
-| Column **order** mismatch | Policy: the destination must keep the source's column order. Columns are matched by name, so this is reported on its own rather than as a cascade of type mismatches. |
+| A column on one side only | Wrong column mapping |
+| Column type differs (beyond display width) | Value corruption or insert failure |
+| Column order differs | The destination must keep the source's order |
 | Destination `NOT NULL`, source nullable | NULL rows rejected mid-copy |
-| Primary key present on one side only | `INSERT IGNORE` crash-recovery idempotency depends on it |
-| Primary key column list differs (column, key order, or prefix length) | `INSERT IGNORE` crash-recovery idempotency depends on the destination rejecting a re-inserted row by the same key the source identified it with. ASCII letter case of the key columns is ignored; key direction (`DESC`) is ignored. |
-| Destination-only unique index | `INSERT IGNORE` would **silently skip rows** |
-| Destination column is generated | MySQL rejects explicit inserts with Error 3105, even under `INSERT IGNORE` |
+| Destination column generated, even when the source's is generated the same way | MySQL rejects an explicit value with error 3105 |
+| Destination-only unique index | Rows the source holds as distinct collide, and the copy fails |
+| Primary key differs | `DEST_KEY_IDENTITY_CHECK`'s, above |
 
-**How destination unique indexes are compared.** GoArchive compares **uniqueness
-predicates**, not index names. Two unique indexes are equivalent when they have the same set
-of key parts, where a part is `(column or expression, prefix length, column collation)`:
+**How destination unique indexes are compared.** By what they make unique, not by name: two
+unique indexes are equivalent when they have the same set of parts, each `(column or expression,
+prefix length, collation)`.
 
-- **Prefix length is part of the predicate.** `UNIQUE(email)` and `UNIQUE(email(10))` are
-  different: the second rejects two addresses sharing a 10-character prefix.
-- **Column collation is part of the predicate.** The same `UNIQUE(email)` under a
-  case-insensitive destination collation collides rows that a binary source collation keeps
-  distinct.
-- **The index name is ignored**, so renaming an equivalent index never fails.
-- **Column-name ASCII case is ignored**: MySQL resolves column names case-insensitively, so
-  `UNIQUE(email)` and `UNIQUE(Email)` enforce the same predicate. Non-ASCII letters are
-  compared exactly.
-- **Key order and `DESC` are ignored**: `UNIQUE(a,b)` and `UNIQUE(b,a)` enforce the same row
-  uniqueness.
-- **Functional unique indexes** (`UNIQUE((lower(email)))`) are accepted only when the
-  expression text matches a source functional unique exactly **and** the table has no column
-  charset or collation difference. MySQL does not expose an expression's result collation,
-  so an identical column environment is the only available proof that the expressions
-  compare values the same way.
+- **Prefix length counts:** `UNIQUE(email(10))` rejects addresses that `UNIQUE(email)` accepts.
+- **Collation counts:** a case-insensitive destination collation collides rows a binary source
+  collation keeps apart. A `utf8mb3` column copied into its `utf8mb4` twin compares as the
+  source.
+- **Ignored:** the index name, ASCII letter case of column names, part order and `DESC`.
+- **Functional unique indexes** pass only when the expression matches a source one exactly and no
+  column differs in charset or collation, since MySQL does not expose an expression's collation.
 
-**Fix:** drop the destination unique index.
+**Fix:** drop the destination unique index, or add an equivalent one to the source.
 
 ### Charset and collation
 
 | Situation | Result |
 |-----------|--------|
-| Charset differs, `verification.method: count` | **Fatal** |
-| Charset differs, verification skipped | **Fatal** |
-| Charset differs, `verification.method: sha256` and running | Warning |
-| Collation differs on a column in a destination unique index | **Fatal**, regardless of verification method |
-| Collation differs, column not in a destination unique index | Warning |
+| Charset differs on a non-key column, `verification: count` or `none` | **Fatal** |
+| Charset differs on a non-key column, `verification: sha256` | Warning |
+| Collation differs on a column of a destination unique index | **Fatal** (unless the column is a `utf8mb4` twin) |
+| Collation differs elsewhere outside the key | Warning |
+| Charset or collation differs on a key column | `DEST_KEY_IDENTITY_CHECK` |
 
-Count verification proves that primary keys arrived — not that text survived
-intact. A charset mismatch can silently transliterate or truncate values, and
-count verification cannot see it. SHA256 can, and fails before any delete.
+A charset change can transliterate or truncate text silently. Count verification proves which
+keys arrived, not their values, so it cannot see that; sha256 can, and fails the batch before
+anything is deleted.
 
 ---
 
 ## SHA256 verification
 
-With `verification.method: sha256`, each batch is verified by one SHA-256 and a row count per
-participating table, computed over that batch's primary keys on the source and on the
-destination.
+With `verification: sha256`, each batch is verified per table by a row count and one SHA-256
+over that batch's rows, read in key order on the source and on the destination.
 
 - Each row is hashed as `column=value` pairs sorted by column name.
-- Text, DECIMAL, JSON, BIT and binary values hash as the bytes a utf8mb4 session receives: the
+- Text, DECIMAL, JSON, BIT and binary values hash as the bytes a `utf8mb4` session receives: the
   same text stored as latin1 and as utf8mb4 hashes equal, and JSON key order and spacing do not
   matter (MySQL normalizes JSON).
 - `NULL` and an empty string hash differently.
-- DATE, DATETIME and TIMESTAMP hash as MySQL's text for the value, with the column's
-  fractional digits, in a UTC session.
-- Column-type differences (FLOAT vs DOUBLE, DECIMAL scale, fractional precision) are the
-  [schema compatibility check](#schema-compatibility-rules)'s job, not the hash's.
+- DATE, DATETIME and TIMESTAMP hash as MySQL's text for the value, with the column's fractional
+  digits, in a UTC session.
+- Column-type differences are the [schema compatibility check](#schema-compatibility-rules)'s
+  job, not the hash's.
 
-A mismatch stops that batch before its delete; batches already completed stay archived.
-
----
-
-## Dry-run payload validation
-
-`goarchive dry-run` runs the non-destructive preflight profile and adds checks
-that only matter for a real copy. It prints the job's WHERE clause and estimates
-row counts **filtered through the actual relation chain**, not full-table counts.
-`dry-run` embeds the `where` exactly as the run does, so a `where` the run would
-reject fails in `dry-run` first, with the same MySQL error.
-
-Samples use raw temporal projections and go through the runtime copy's
-[diagnostic collection and subdivision](README_OPERATIONS.md#insert-diagnostics-and-subdivision)
-inside one transaction that always ends in `ROLLBACK`. The rollback undoes the sample only on
-a transactional (InnoDB) destination; MyISAM, MEMORY and ARCHIVE keep the rows
-([`STORAGE_ENGINE_CHECK`](#storage_engine_check)). Complete duplicate-only diagnostics are
-accepted solely because of that rollback, and the notice says so: the sample
-cannot prove destination equality or readiness for every job row. Sample observations are
-reported separately from committed-copy totals. Payload and placeholder estimates are based
-on the configured batch, not the smaller executed INSERTs.
-
-### Placeholder check — exact
-
-`batch_size × column_count` must be below MySQL's **65,535** prepared-statement
-placeholder limit, per table.
-
-This runs even for empty tables, so a wide table is caught before it holds data.
-
-### `max_allowed_packet` check — measured
-
-The dry-run copies a `batch_size`-sized sample into a destination transaction and
-**immediately rolls it back**, which persists nothing on an InnoDB destination. If a table's row width
-exceeds the packet limit it fails fast and tells you to lower `batch_size`.
-
-> The packet check is **approximate for child tables**: child rows are sampled
-> arbitrarily rather than through full BFS discovery, which would be too expensive
-> for a dry-run. The placeholder check is exact for every table.
-
-If you skip dry-run and `batch_size` is too large, the real run fails on the first
-copy chunk. Already-processed root PKs stay checkpointed and the interrupted
-batch replays automatically after you lower `batch_size`.
+A mismatch rolls back the batch's copy and stops the run before anything is deleted; batches
+already completed stay archived.
 
 ---
 
 ## Bypassing preflight
 
-`--skip-validate-preflight` is accepted by `archive`, `purge`, and `copy-only`.
-**It is dangerous** and prints a full-width banner:
+`--skip-validate-preflight` is accepted by `archive`, `purge`, `copy-only` and `dry-run`, and
+prints a warning before the run:
 
 ```
-================================================================
-  WARNING: --skip-validate-preflight is set
-  Preflight checks will NOT run before this destructive operation.
-
-  This is unsafe. Continue only if you are recovering from an
-  incident and have manually verified schema integrity.
-================================================================
+WARNING: --skip-validate-preflight: preflight's policy checks are skipped (permissions, triggers,
+foreign-key coverage, destination compatibility, packet size). The keys are still read from
+MySQL, and the log-key and binding checks still run. A misspelled foreign_key column fails as a
+statement-caps error instead of RELATION_KEY_CHECK.
 ```
 
-Running `archive` with `verification.method: count` and skipped preflight prints
-a second banner, because that combination is the most dangerous one available:
-count verification proves PK presence, not row equality, so with schema
-compatibility unverified, archive can DELETE source rows after copying them into
-incompatible destination columns.
+Still enforced: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
+`KEY_TYPE_UNSUPPORTED`, the destination keys being readable (for the statement caps), the job's
+binding checks, and the run-time guards above. `validate` has no skip flag.
 
-`dry-run` and `validate` have **no skip flag**. `validate` runs every check; `dry-run` runs
-the non-destructive profile above. Both enforce `FK_COVERAGE_VISIBILITY_CHECK`.
-
-Use the flag only for documented recovery scenarios, after manually verifying
-schema safety.
+Use it only to recover from an incident, after verifying the schema by hand.
