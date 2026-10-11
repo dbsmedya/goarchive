@@ -1,8 +1,7 @@
 # MySQL Compatibility Notes
 
-This page records MySQL server behaviours that change how GoArchive builds its statements. Each
-entry covers a behaviour that differs from the MySQL documentation, or between MySQL versions.
-For each one, it says:
+This page records MySQL server behaviours that differ from the MySQL documentation, or between
+MySQL versions, and change what GoArchive does. For each one, it says:
 
 - what was observed, and on which servers;
 - why it matters to an archive job;
@@ -12,14 +11,14 @@ For each one, it says:
 The supported versions are listed in [Limitations → Environment](README_LIMITATIONS.md#environment);
 this page does not restate them.
 
-GoArchive binds every key value as a prepared-statement parameter, never as an inline literal. A
-key value therefore reaches MySQL as a `?`. MySQL types the `?` from its context, and for some
-types GoArchive wraps it in a `CAST` to the column's own type. The entries below are cases where
-that typing does not behave as documented.
-
 ---
 
 ## TIME key values bound as prepared parameters
+
+GoArchive binds every key value as a prepared-statement parameter, never as an inline literal, so
+a key value reaches MySQL as a `?`. MySQL types the `?` from its context, and for some types
+GoArchive wraps it in a `CAST` to the column's own type. For `TIME`, that typing does not behave
+as documented.
 
 **Affects:** jobs whose primary key or foreign key includes a `TIME` column. Every statement that
 addresses rows by key is involved: discovery of child rows, the copy read, verification, the
@@ -61,8 +60,35 @@ code is `internal/key` → `Placeholder`.
 
 **Still open.** The cause has not been identified.
 - MySQL's release notes, bug tracker and source have not been reviewed.
-- Oracle MySQL Community builds have not been tested.
-- The 8.0 line was tested at 8.0.46 only, not at the supported floor of 8.0.40.
+- The mis-conversion was probed on Percona 8.0.46, 8.4.11 and 9.7.1 only. GoArchive's suites,
+  with this binding, pass on Oracle MySQL 8.0.40, 8.0.46, 8.4.11 and 9.7.1 too.
 
 Until that work is done, GoArchive keeps the binding above on every version, including where a
 simpler form happens to work.
+
+---
+
+## Foreign-key metadata readable without `PROCESS` on MySQL 8.0.40
+
+**Affects:** `FK_COVERAGE_VISIBILITY_CHECK` and `FK_COVERAGE_CHECK`, for archive and purge jobs
+([the checks](README_VALIDATION.md#foreign-key-checks)).
+
+**Observed** (2026-10-11). An account holding only `SELECT` on one schema, without `PROCESS`, read
+`information_schema.INNODB_FOREIGN` and `INNODB_FOREIGN_COLS`:
+
+| Server | Result |
+|--------|--------|
+| Oracle MySQL 8.0.40 | Readable and **unfiltered**: every foreign key, including those in schemas the account cannot see |
+| Oracle MySQL 8.0.46, Percona 8.0.46 | Refused with error 1227 (`PROCESS` required) |
+
+`INNODB_TABLES` was refused without `PROCESS` on every server.
+
+**Why it matters.** The visibility proof is a successful read of that registry. On 8.0.40 the
+read succeeds without `PROCESS`, so the check passes; because the result is unfiltered,
+`FK_COVERAGE_CHECK` still sees a foreign key from a schema the account cannot read, and the
+guarantee holds.
+
+**What GoArchive does.** Nothing version-specific: it judges the read, not the grant. On 8.0.40
+`PROCESS` is not needed; from 8.0.46 it is ([Permissions](README_PERMISSIONS.md#privilege-matrix)).
+
+**Still open.** The versions between 8.0.40 and 8.0.46 were not probed.

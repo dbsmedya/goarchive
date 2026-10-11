@@ -51,7 +51,7 @@ The split is deliberate and it is the reason the integration is safe:
 - **The library reports facts.** It does not know what GoArchive intends to do with a
   table, and it never decides that a schema difference is fatal.
 - **GoArchive owns policy.** Whether a destination may be looser than its source, which
-  primary-key types are acceptable for a root table, whether a difference blocks a copy —
+  key types can identify rows, whether a difference blocks a copy —
   all of that stays here, in GoArchive, where the consequences are understood (the rules:
   [Schema compatibility](README_VALIDATION.md#schema-compatibility-rules)).
 - **GoArchive owns its own session.** Properties of the connection GoArchive itself
