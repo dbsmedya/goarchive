@@ -227,4 +227,31 @@ func TestMaxAllowedPacket(t *testing.T) {
 	w := healthy(t, jobspec.Archive)
 	w.src.packet, w.cfg.SkipPolicy = 16<<10, true
 	w.mustPass()
+
+	// The tracking log's INSERT binds a status beside each root key, in VALUES text: at the
+	// healthy world's 16,000-root cap of a BIGINT UNSIGNED key it sends about 324 KB, more
+	// than its key lookups (Fable M7c-1 review I1). 320,000 bytes on the destination must be
+	// refused, naming that statement.
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+		w := healthy(t, typ)
+		w.dst.packet = 320000
+		if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a tracking log insert statement on orders") {
+			t.Errorf("%s: message %q does not name the tracking log's INSERT", typ, e.Message)
+		}
+	}
+
+	// Above the driver's own 64 MiB, the client's limit decides: a VARCHAR(255) utf8mb4 key
+	// at an unlimited range budget (the 65,535-placeholder cap) needs about 67 MB, and the
+	// remedy is to shrink the caps, not to raise the server's packet.
+	w = healthy(t, jobspec.Archive)
+	w.jobYAML = withoutNotes
+	w.src.fks = w.src.fks[:1]
+	for _, s := range []*fakeServer{w.src, w.dst} {
+		setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+		setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+	}
+	w.dst.mem, w.dst.packet = 0, 1<<30
+	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
+		t.Errorf("message %q does not name the client's limit", e.Message)
+	}
 }
