@@ -83,7 +83,6 @@ grep dbsgomysql go.mod
 
 ## See also
 
-- [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
 - [Validation & Preflight](README_VALIDATION.md) — every check
 - [Permissions](README_PERMISSIONS.md) — the privilege matrix and grant recipes
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)

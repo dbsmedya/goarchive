@@ -337,10 +337,10 @@ What a rerun does with work already done:
   and copies the rest. Every run rescans the whole `where` range.
 
 Before any of this, startup checks that the job is the one registered under its name: the same
-`job_type`, root table and root key, and the same binding — the source server and schema and
-the relations (purge: also the `where`; copy-only: also the destination database). A change is
-refused with the parts that differ
-([the job registry](README_JOBS_SCHEMA.md)).
+`job_type`, root table and root key. While the job has pending work, its binding must not have
+changed either: the source server and schema and the relations (purge: also the `where`;
+copy-only: also the destination database). With no pending work, a changed binding is simply
+recorded ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
 
 ---
 

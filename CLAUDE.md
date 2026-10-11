@@ -173,7 +173,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Tracking table DDL, DBA maintenance, safe-truncate rules | `docs/README_JOBS_SCHEMA.md` |
 | Removing duplicate rows with one job (keep the minimum primary key) | `docs/README_DUPLICATE_CLEANUP.md` |
 | What the dbsgomysql integration changed, and why | `docs/README_dbsgomysql.md` |
-| Operator migration notes for 2.0 | `docs/README_UPGRADING_2_0.md` |
+| Moving from 2.x to 3.0: tracking tables, config and flag changes | `docs/README_UPGRADING_3_0.md` |
 | MySQL server behaviours that change how GoArchive binds keys (compatibility issues) | `docs/README_COMPAT.md` |
 
 ### Where behavior lives in code

@@ -123,8 +123,8 @@ configuration, replication monitoring is off.
 > [Replication gating](README_OPERATIONS.md#replication-gating).
 
 > A config carrying the old `replica:` block or `safety.lag_threshold` /
-> `safety.check_interval` fails validation with a migration message — see
-> [Upgrading to 2.1](README_UPGRADING_2_1.md).
+> `safety.check_interval` is refused — see
+> [Upgrading to 3.0](README_UPGRADING_3_0.md#configuration-changes).
 
 | Option | Description | Default |
 |--------|-------------|---------|
