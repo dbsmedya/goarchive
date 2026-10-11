@@ -81,6 +81,7 @@ account, not to the account GoArchive runs as.
 | **Source** | `PROCESS` (global) | Proving foreign-key metadata completeness (`FK_COVERAGE_VISIBILITY_CHECK`) — `archive`, `purge`, `dry-run`, `validate`; not `copy-only` |
 | **Destination** (data tables) | `SELECT`, `INSERT` | Copying rows, and reading them back to verify |
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job`, the per-job `archiver_job_log_<id>` tables, and the one-row `goarchive_meta` revision marker |
+| **Source** and **destination** (optional, global) | `SESSION_VARIABLES_ADMIN` | Only on a server whose global `max_error_count` is 0: GoArchive raises its own sessions to 1024 (`MAX_ERROR_COUNT_CHECK`) — all five commands |
 | **Each monitored replica** (optional) | `REPLICATION CLIENT` | Replication gating, on every server listed in `replication.servers`, for the account that entry names |
 
 Source `DELETE` is required for `archive`, `purge`, and `validate` — `validate`
@@ -92,6 +93,11 @@ source at all.
 Preflight proves destination `INSERT` only. Verification also reads the copied rows back, so
 the destination account needs `SELECT` too: an account without it passes preflight and fails
 at verification, after the copy and before any delete.
+
+`SESSION_VARIABLES_ADMIN` is needed only where the server's global `max_error_count` is 0,
+which keeps no warnings for GoArchive to read. It also lets the account change other
+restricted session variables, so raising the global is usually the better remedy. The grant
+recipes above do not include it.
 
 ### Why `CREATE` on the tracking schema
 
@@ -143,6 +149,13 @@ grants on separate servers.
 
 Expected: the check tests whether foreign-key metadata completeness is provable, not the
 schema's contents ([the check](README_VALIDATION.md#fk_coverage_visibility_check)).
+
+**`MAX_ERROR_COUNT_CHECK`**
+
+The server's global `max_error_count` is 0, and the account named for that server may not
+raise its own session's value. Have a DBA raise the global (MySQL's default is 1024), or
+grant the account `SESSION_VARIABLES_ADMIN`
+([the failure](README_VALIDATION.md#error-prefixes-that-are-not-checks)).
 
 **Least-privilege deployments**
 

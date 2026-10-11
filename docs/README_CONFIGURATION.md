@@ -85,6 +85,9 @@ Source and destination must be different databases
 ([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#connection-identity-check)). Every connection
 also preserves explicit AUTO_INCREMENT zero values
 ([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)),
+every source and destination connection keeps a statement's warnings, raising a session
+`max_error_count` of 0 to 1024
+([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)),
 and session SQL modes and INSERT diagnostics are covered in
 [Operations](README_OPERATIONS.md#insert-diagnostics-and-subdivision).
 
