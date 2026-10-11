@@ -11,7 +11,7 @@ import (
 
 // stream concatenates testdata fixtures: real `go test -json` output of small packages,
 // captured once with the paths rewritten (pass, fail, nested, nestedok, panic, timeout,
-// build, skip).
+// build, skip, wantonly).
 func stream(t *testing.T, names ...string) io.Reader {
 	t.Helper()
 	var b strings.Builder
@@ -46,6 +46,10 @@ func TestJudge(t *testing.T) {
 		{"a timeout fails the row", "pass", []string{"timeout"}, false, "timed out"},
 		{"a build failure fails the row", "pass", []string{"build"}, false, "package jfix/build failed"},
 		{"many packages", "refuse:A_CHECK|B_CHECK", []string{"pass", "skip", "nestedok"}, true, ""},
+		// Fable M7c-2 review F1: a code the test only wants is no citation; the run said
+		// something else. B_CHECK is cited by the error itself, before its "want".
+		{"a wanted code is no citation", "refuse:A_CHECK|B_CHECK", []string{"wantonly"}, false, "jfix/wantonly TestA cites no expected code"},
+		{"a cited code before its want", "refuse:B_CHECK", []string{"wantonly"}, false, "jfix/wantonly TestA cites no expected code"},
 		{"no events", "pass", nil, false, "no test ran"},
 		{"empty refuse", "refuse:", []string{"pass"}, false, "expectation"},
 		{"unknown expectation", "maybe", []string{"pass"}, false, "expectation"},
@@ -75,5 +79,15 @@ func TestJudgeCounts(t *testing.T) {
 	}
 	if want := []string{"jfix/nestedok TestA/one", "jfix/nestedok TestA/two"}; !reflect.DeepEqual(v.Failing, want) {
 		t.Errorf("failing = %q, want %q", v.Failing, want)
+	}
+}
+
+// TestJudgeWantIsNoCitation (Fable M7c-2 review F1): in wantonly, TestB's error cites
+// B_CHECK before its "want nil", and TestA only wants A_CHECK. Under refuse:B_CHECK
+// exactly TestA is uncited.
+func TestJudgeWantIsNoCitation(t *testing.T) {
+	v := Judge("refuse:A_CHECK|B_CHECK", stream(t, "wantonly"))
+	if len(v.Reasons) != 1 || !strings.Contains(v.Reasons[0], "TestA cites no expected code") {
+		t.Errorf("reasons = %q, want exactly TestA uncited", v.Reasons)
 	}
 }
