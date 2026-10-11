@@ -52,17 +52,90 @@ func MaxTuples(cols []Column, rangeOptimizerMaxMemSize uint64) int {
 }
 
 // StatementBytes is an upper bound on the larger of the two packets a key-addressed
-// statement of tuples tuples over cols (named names) sends (M7c F3): COM_STMT_PREPARE,
-// its text, which is the IN list plus other bytes outside it, and COM_STMT_EXECUTE, its
-// bound values, each charged partBytes plus 11 bytes of type, length and null-bitmap
-// overhead. Both must fit the server's max_allowed_packet.
-func StatementBytes(names []string, cols []Column, tuples, other int) uint64 {
+// statement of tuples tuples over cols (named names) sends (M7c F3): COM_STMT_PREPARE, its
+// text, which is the IN list plus other bytes outside it, and COM_STMT_EXECUTE, its bound
+// values, the tuples' keys and ints integer parameters (a tracking status, for example).
+// Both must fit the server's max_allowed_packet.
+func StatementBytes(names []string, cols []Column, tuples, ints, other int) uint64 {
 	text := uint64(len(In(names, cols, tuples)) + other)
-	var perTuple uint64
-	for _, c := range cols {
-		perTuple += uint64(partBytes(c)) + 11
+	return max(text, executeBytes(tuples*len(cols)+ints, uint64(tuples)*keyWireBytes(cols)+uint64(ints)*intWireBytes))
+}
+
+// InsertBytes is StatementBytes for a multi-row INSERT: rows rows in VALUES text, each
+// binding cols' values (through Placeholder) and ints integer parameters, with other bytes
+// of text before " VALUES ".
+func InsertBytes(cols []Column, rows, ints, other int) uint64 {
+	row := 2 + 3*ints // "(" and ")", then ", ?" per integer
+	for i, c := range cols {
+		if i > 0 {
+			row += 2
+		}
+		row += len(Placeholder(c))
 	}
-	return max(text, uint64(tuples)*perTuple+64)
+	text := uint64(other + len(" VALUES ") + rows*row + 2*max(rows-1, 0))
+	perRow := keyWireBytes(cols) + uint64(ints)*intWireBytes
+	return max(text, executeBytes(rows*(len(cols)+ints), uint64(rows)*perRow))
+}
+
+// intWireBytes is an int64 or uint64 parameter in COM_STMT_EXECUTE.
+const intWireBytes = 8
+
+// executeBytes is a COM_STMT_EXECUTE packet of params parameters whose values take values
+// bytes: the 4-byte packet header, 1 command, 4 statement id, 1 flags and 4 iteration
+// bytes, the null bitmap, 1 new-params flag and 2 bytes of type per parameter
+// (go-sql-driver's writeExecutePacket).
+func executeBytes(params int, values uint64) uint64 {
+	return uint64(4+1+4+1+4+1+(params+7)/8+2*params) + values
+}
+
+func keyWireBytes(cols []Column) uint64 {
+	var n uint64
+	for _, c := range cols {
+		n += wireBytes(c)
+	}
+	return n
+}
+
+// wireBytes is an upper bound on one value of c in COM_STMT_EXECUTE: what Decode holds, as
+// the driver encodes it. Integers and YEAR are 8 bytes; DECIMAL and the temporal families
+// are SQL text, strings and binaries their bytes, each with a length-encoded length. This
+// is not partBytes, the value's size in an index key image, which MaxTuples charges.
+func wireBytes(c Column) uint64 {
+	fraction := 0
+	if c.Fsp > 0 {
+		fraction = c.Fsp + 1
+	}
+	switch c.Family {
+	case FamilySigned, FamilyUnsigned, FamilyYear:
+		return intWireBytes
+	case FamilyDecimal:
+		return lengthEncodedText(c.Precision + 2) // a sign and a decimal point
+	case FamilyDate:
+		return lengthEncodedText(len("2006-01-02"))
+	case FamilyDateTime, FamilyTimestamp:
+		return lengthEncodedText(len("2006-01-02 15:04:05") + fraction)
+	case FamilyTime:
+		return lengthEncodedText(len("-838:59:59") + fraction)
+	case FamilyString:
+		return lengthEncodedText(c.Length * charsetMaxBytes(c.Charset))
+	case FamilyBinary:
+		return lengthEncodedText(c.Length)
+	default:
+		return lengthEncodedText(partBytes(c) + 64)
+	}
+}
+
+// lengthEncodedText is n bytes behind their length-encoded length.
+func lengthEncodedText(n int) uint64 {
+	switch {
+	case n < 251:
+		return uint64(1 + n)
+	case n < 1<<16:
+		return uint64(3 + n)
+	case n < 1<<24:
+		return uint64(4 + n)
+	}
+	return uint64(9 + n)
 }
 
 // partBytes is an upper bound on the bytes one key part of c occupies in an index key image:
