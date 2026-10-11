@@ -37,7 +37,7 @@ func schRun(t *testing.T, src, dst *sql.DB, spec *jobspec.Spec, edit func(*Confi
 	cfg := Config{
 		Source: src, SourceDatabase: schemaOf(t, src),
 		Destination: dst, DestinationDatabase: schemaOf(t, dst), JobSchema: schemaOf(t, dst),
-		Spec: spec, Verification: jobspec.VerifyCount,
+		Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing,
 		Logger: &logger.Logger{SugaredLogger: zap.New(core).Sugar()},
 	}
 	if edit != nil {

@@ -356,7 +356,8 @@ func TestMySQLInspectionFailureIsNotARefusal(t *testing.T) {
 	spec := job(t, jobspec.Archive, orderJob)
 	run := func(s, d *sql.DB) (*Result, error) {
 		return Run(context.Background(), Config{Source: s, SourceDatabase: srcName,
-			Destination: d, DestinationDatabase: dstName, JobSchema: dstName, Spec: spec, Verification: jobspec.VerifyCount})
+			Destination: d, DestinationDatabase: dstName, JobSchema: dstName, Spec: spec, Verification: jobspec.VerifyCount,
+			Processing: defaultProcessing})
 	}
 	closed := func(prefix, schema string) *sql.DB {
 		db := openServer(t, prefix, schema)

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
@@ -86,6 +87,11 @@ type Config struct {
 	// SkipPolicy skips every policy check (--skip-validate-preflight). The key
 	// definitions are still read, because the SQL is built from them (spec §8.3).
 	SkipPolicy bool
+	// Processing is the job's effective processing block (Spec.EffectiveProcessing). The
+	// engine sends at most BatchSize keys in a statement, BatchDeleteSize in the source's
+	// deletes, so MAX_ALLOWED_PACKET_CHECK bounds each statement there (M7c-F4). Both
+	// must be at least 1.
+	Processing config.ProcessingConfig
 
 	Logger *logger.Logger
 }
@@ -115,6 +121,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 func run(ctx context.Context, cfg Config, src, dst server) (*Result, error) {
 	if cfg.Spec == nil {
 		return nil, errors.New("preflight: a job is required")
+	}
+	if cfg.Processing.BatchSize < 1 || cfg.Processing.BatchDeleteSize < 1 {
+		return nil, fmt.Errorf("preflight: processing batch_size and batch_delete_size must be at least 1, got %d and %d",
+			cfg.Processing.BatchSize, cfg.Processing.BatchDeleteSize)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = logger.NewDefault()

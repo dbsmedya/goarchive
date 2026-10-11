@@ -119,7 +119,7 @@ func acctRun(ctx context.Context, t *testing.T, src, dst *sql.DB, srcSchema, dst
 	_, err := Run(ctx, Config{
 		Source: src, SourceDatabase: srcSchema,
 		Destination: dst, DestinationDatabase: dstSchema, JobSchema: jobSchema,
-		Spec: spec, Verification: jobspec.VerifyCount,
+		Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing,
 	})
 	return err
 }
@@ -512,7 +512,7 @@ func acctStart(t *testing.T, src, dst *sql.DB, srcSchema, dstSchema string) <-ch
 		_, err := Run(context.Background(), Config{
 			Source: src, SourceDatabase: srcSchema,
 			Destination: dst, DestinationDatabase: dstSchema, JobSchema: dstSchema,
-			Spec: spec, Verification: jobspec.VerifyCount,
+			Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing,
 		})
 		done <- err
 	}()
