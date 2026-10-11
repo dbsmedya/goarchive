@@ -17,115 +17,61 @@ split, and the version carries no edition suffix.
 
 The current version is the `Makefile`'s `RELEASE_VERSION` (see *Versioning* below); `README.md` also states which release is stable.
 
-**Preflight validation comes from `github.com/dbsmedya/dbsgomysql`**, not from hand-rolled
-probes. GoArchive **must not query `information_schema` directly** — `make consumer-policy`
-fails the build if it does. The library owns fact acquisition (schema capture, diffing,
-permission and FK-visibility proofs) and verifies those facts against MySQL 8.0, 8.4 and 9.7
-on every release; goarchive owns the *policy* applied to them. The dependency is always a
-released tag — no `replace`, no pseudo-versions, no committed `go.work`. See
-`docs/README_dbsgomysql.md`, and `docs/README_UPGRADING_2_0.md` for what changed for
-operators.
+**dbsgomysql** (`github.com/dbsmedya/dbsgomysql`, see `docs/README_dbsgomysql.md`):
 
-**Library gaps are fixed in the library.** When goarchive would need a workaround because the
-library's facts are weaker or missing, the fix is a dbsgomysql release and a pin bump, never
-compensating logic here. When the library is stricter than goarchive's pre-2.0 behaviour, adopt
-it and document the change: pre-2.0 behaviour is a reference point, not a quality bar. A
-library bump is judged by goarchive's baselines alone: an unchanged integration inventory is a
-pass, and library changes the suite did not observe are not
-coverage gaps, because the library verifies its own facts. The exception is a library change
-that moves goarchive's own operator-visible acceptance; that gets a goarchive test.
+- The library owns fact acquisition (schema capture, diffing, permission and FK-visibility
+  proofs) and verifies it on MySQL 8.0, 8.4 and 9.7; goarchive owns the *policy* applied to the
+  facts. GoArchive **must not query `information_schema` directly**: `make consumer-policy`
+  fails the build if it does.
+- The dependency is always a released tag: no `replace`, no pseudo-versions, no committed
+  `go.work`.
+- **Library gaps are fixed in the library** (a dbsgomysql release and a pin bump), never by
+  compensating logic here. Where the library is stricter than goarchive's pre-2.0 behaviour,
+  adopt it and document the change.
+- A library bump is judged by goarchive's baselines alone: an unchanged integration inventory
+  passes. Only a change that moves goarchive's operator-visible acceptance needs a goarchive test.
 
 ### Versioning (read before bumping the version)
 
 From 3.0 the version is SemVer with no edition suffix (`3.0.0`); a prerelease adds `-alpha.N`,
-`-beta.N` or `-RC.N` (2.x versions carry `-community`). It is repeated at four sites, and a
-bump MUST update **all** of them — a missed one ships mislabeled binaries:
+`-beta.N` or `-RC.N` (2.x versions carry `-community`). A bump MUST update all four sites:
 
 | Location | What it controls |
 |----------|------------------|
-| `Makefile` → `RELEASE_VERSION` | Fallback version stamped into binaries when HEAD has no exact-match git tag. **The one most often missed.** |
-| `cmd/goarchive/cmd/root.go` → `Version` | Default `Version` constant (overridden by `-ldflags` at build time) |
+| `Makefile` → `RELEASE_VERSION` | The version stamped into an untagged build. **The one most often missed.** |
+| `cmd/goarchive/cmd/root.go` → `Version` | The default constant, overridden by `-ldflags` at build time |
 | `README.md` (the **Version** line) | User-facing docs |
-| `README.md` (the **Stable release** line) | User-facing docs. Must equal `RELEASE_VERSION` when that is a stable version; not compared during a `-RC`/`-alpha`/`-beta` prerelease series, when it keeps naming the previous stable release. |
+| `README.md` (the **Stable release** line) | Equals `RELEASE_VERSION` for a stable version; during a prerelease series it keeps naming the previous stable release and is not compared |
 
-`TestVersionSitesMatchReleaseVersion` (`tests/harness/version_drift_test.go`) is the guard: it
-fails `make check` when a site differs from `RELEASE_VERSION`, or when the release version
-appears in any other tracked file or on any other `README.md` line. Cite a release elsewhere by
-its bare number; an exception needs an allow-list entry in that test, approved by the operator.
+`TestVersionSitesMatchReleaseVersion` (`tests/harness/version_drift_test.go`) fails `make check`
+when a site differs from `RELEASE_VERSION`, or when the release version appears in any other
+tracked file. Cite a release elsewhere by its bare number; an exception needs an allow-list
+entry in that test, approved by the operator. `cmd/goarchive/cmd/version_test.go`'s `1.2.3` is a
+fixture, not the project version.
 
-No workflow parses the version — the workflows trigger on the `v*` glob and extract it with a
-prefix strip, and CI injects the literal `ci-test`; the drift test is the one reader. The
-only semver consumer is `docker/metadata-action` (`.github/workflows/docker.yml`); every 3.0
-version is valid SemVer, and a prerelease's `-` is also what makes `release.yml` mark the
-GitHub release a prerelease automatically (`prerelease: contains(VERSION, '-')`), while a
-final `3.0.0` is published as a release.
+**Releases are automatic and irreversible:** `release.yml` publishes on any pushed `v*` tag, and
+no tests run on a tag. The gate is the PR that contains the bump, and nothing lands after it
+passes. **Agents never create tags or releases; the operator does.** The release procedure
+(tagging, version resolution, artifact checks, release notes) is `.ayder/RELEASING.md`.
 
-Do **not** change: `cmd/goarchive/cmd/version_test.go` (uses `1.2.3` as a test
-fixture, not the project version), or historical release notes under `.ayder/`.
+### Release lines
 
-How the build resolves the version (`Makefile`):
-`VERSION := git describe --tags --exact-match || RELEASE_VERSION`. So a properly
-**tagged** release commit takes its version from the git tag; an untagged build
-falls back to `RELEASE_VERSION`. For an actual release, also create the matching
-tag: `make tag V=<version>` (this creates a `v`-prefixed tag, so a tagged build
-reports `v<version>` while the `RELEASE_VERSION` fallback reports `<version>` —
-keep `RELEASE_VERSION` in sync regardless).
-
-After bumping, verify: `go build -o /tmp/gv ./cmd/goarchive && /tmp/gv --version`
-should print the new version, and `make github-release` should stamp every
-`bin/goarchive-<version>-*` artifact with it.
-
-**Releases are automatic and irreversible.** `release.yml` fires on any pushed `v*` tag with
-`draft: false` — the tag push *is* the publication, and no tests run on a tag (`ci.yml`
-triggers on branches and PRs only). The gate must therefore be the PR containing the bump
-commit, and nothing may land after it passes. Agents never create tags or releases; the
-operator does.
-
-Release notes are written to `.ayder/releases/v<version>.md` (gitignored); the operator pastes
-them into the GitHub release body after tagging. Write them for a stranger and keep them
-short: what shipped, compatibility, how it was verified. Verify a release by its `release.yml`
-run and its assets, not by the release appearing in the list. A PR body closes an issue only
-with `Closes #N`; a bare `(#N)` leaves it open.
-
-### Release lines: where work goes
-
-The roadmaps own placement and when `release/2.2` is cut:
-`.ayder/roadmaps/roadmap_v2.x-community.md` (the 2.x stability line) and
-`.ayder/roadmaps/roadmap_v3.md` (the 3.0 train). Place work on a line before specifying it.
-
-- **2.x is fixes only:** no features, refactors, tracking-schema changes or config breaks.
-  Features go to 3.0.
+- **2.x is fixes only** (`../goarchive`): no features, refactors, tracking-schema changes or
+  config breaks. Features go to 3.0. Placement is decided in the roadmaps,
+  `../goarchive/.ayder/roadmaps/roadmap_v2.x-community.md` and `roadmap_v3.md` (numbered design
+  decisions in its §2; cite them rather than restating them).
 - **Port the test, not the patch.** A fix lands as a `test` commit, then a `fix` commit, never
-  squashed. Moving a fix between lines cherry-picks the test and re-implements the fix where
-  the code differs. Never merge between lines.
-- Numbered design decisions live in `roadmap_v3.md` §2; cite them rather than restating them.
+  squashed. Moving a fix between lines cherry-picks the test and re-implements the fix. Never
+  merge between lines.
 
 ### The 3.0 line (this checkout)
 
-This checkout is branch `v3`, the 3.0 innovation line; `../goarchive` is the 2.x line and is
-never modified from here. Until 3.0-alpha (rulings R33, R34 in
-`.ayder/superpowers_20261007/decisions/2026-10-07-3.0-core-brainstorm-rulings.md`):
-
-- Work happens on `v3-dev/<milestone>` branches merged locally into `v3`, after the operator's
-  confirmed verdict. Nothing is pushed and no GitHub PR is opened.
-- `make gate` is not required between merges, and `make deadcode` may be red while new packages
-  are not yet wired. Every merge keeps `go build ./...` and `go vet ./...` passing, and every
-  task runs its own tests.
-- The design is `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`, and the plans
-  are in `.ayder/superpowers_20261007/plans/`. The approved spec is authoritative.
-- The roadmaps named in *Release lines* above live in `../goarchive/.ayder/roadmaps/`. This
-  checkout has no copy.
-- The test containers (db1/db2/db3) are dedicated to this checkout since 2026-10-10 (R55): the
-  same compose project and volumes as `../goarchive`'s, and M7 may run `make test-up`,
-  `test-reset` and `e2e` from here. Run nothing else on the estate while they run, and ask the
-  operator before a reset destroys a schema that is not the suite's own.
-- **From M6 the commands run on the 3.0 packages** (R45 lifted): `archive`, `purge` and
-  `copy-only` run `internal/engine`, `dry-run` runs `engine.Explain`, `validate` runs
-  `internal/preflight`, and `plan` and `list-jobs` read `internal/jobspec`. `--skip-verify` and
-  `--force` are gone (R42, R50). Still never run a v3 build against data that matters before
-  3.0-alpha. The E2E suite runs on the 3.0 binary since M7b.
-- The 3.0-alpha release PR is the first GitHub PR; it re-measures the baselines and must pass
-  the full gate. From then on the rules above this section apply unchanged.
+- This checkout is branch `v3`, the 3.0 line. `../goarchive` is the 2.x line: never modify it
+  from here.
+- The approved design is `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`.
+- The test containers db1/db2/db3 are dedicated to this checkout (R55). Run nothing else on
+  them while `make test-reset`, `e2e` or the gate runs, and ask the operator before a reset
+  drops a schema that is not the suite's own.
 
 ## Build & guards
 
@@ -280,68 +226,21 @@ Two distinct trees. Putting a file in the wrong one is a mistake — `docs/` shi
 start, **Basic Usage**, **Architecture**, and project status. Reference material belongs in
 `docs/`.
 
-### RULE: internal development documentation goes under `.ayder/superpowers_<YYYYMMDD>/`
+### Internal documents go under `.ayder/`
 
-Every internal artifact — designs, specs, implementation plans,
-architectural decisions — **MUST** be written to:
+Specs, plans, decision records and PR evidence go under
+`.ayder/superpowers_<YYYYMMDD>/{specs,plans,decisions,pr}/`, dated by the day the work started;
+reviews under `.ayder/reviews/`. Name files `YYYY-MM-DD-<topic>.md`, designs `-design.md`.
+Never put an internal document in `docs/`.
 
-```
-.ayder/superpowers_<YYYYMMDD>/
-├── plans/       # implementation plans, one per PR
-├── specs/       # designs and specifications
-├── decisions/   # architectural decision records; why an approach was chosen/rejected
-└── pr/          # PR bodies and their gate evidence, one per PR of this effort
-```
+### Search the docs with RAG first, grep second
 
-- `<YYYYMMDD>` is the date the work started, no separators.
-- Create the dated directory when a **new body of work** begins and keep that effort's
-  artifacts inside it. Do not append to a previous date's directory for new work.
-- **Completed efforts move to `.ayder/archived/superpowers_<YYYYMMDD>/`.** `archived/` is not
-  RAG-indexed, so a superseded spec cannot compete with a current one in search results. Read
-  an archived artifact by path when a current document cites it. Only in-flight efforts stay
-  at `.ayder/superpowers_<YYYYMMDD>/`.
-- File naming: `YYYY-MM-DD-<topic>.md`, designs suffixed `-design.md`.
-- Reviews live under `.ayder/reviews/`. Never create
-  `docs/superpowers/` for internal artifacts.
-- `docs/` is exclusively published user-facing documentation. Never place a plan, spec,
-  decision record, review, or session note there.
-
-### RULE: search the docs with RAG first, grep second
-
-Query `mcp__dbs-vector__search_md_goarchive_search` before `grep`. Grep finds *which files
-contain a token*; the failure mode here is *two documents that agree in tokens and disagree in
-meaning*. Use grep for a literal identifier, an exhaustive count, or a file you can name — but
-a string match is not a scope analysis.
-
-Its main use is consistency. Before changing any fact stated in more than one document (a
-count, a command, a version, a default, a rule), search for every statement of it.
-
-> The engine name has been renamed several times. If that tool 404s, call
-> `mcp__dbs-vector__list_engines` for the current `mcp_tool` / `read_tool` names rather than
-> falling back to grep.
-
-- **Indexed and watched:** every markdown file in the repository, re-indexed within seconds of
-  a change. That includes `CLAUDE.md`, `README.md` and `INSTALL.md` (measured 2026-09-23).
-  `CLAUDE.md` is already in your context, so trust that copy over a search hit from it.
-- **Not indexed:** `.ayder/archived/` (excluded by the engine's configuration), source code.
-- **Never set `min_similarity`.** 0.23 admits pure noise; ≥0.45 cuts correct hits. The safe
-  window is 0.06 wide. Cap context with `limit`; judge relevance by reading the chunk.
-- **`source_filter`**: full path, trailing fragment (`specs/api.md`), or directory (`specs`) —
-  never a leading fragment (`phase-030` fails). A no-match or unmatched filter returns a
-  diagnostic, never proof of absence.
-- **Split content:** pass a result's `Chunk cursor` to `read_md_goarchive_search` (`direction`,
-  `count` ≤ 3) — exact text read, not a second search.
-
-Model swaps: `.ayder/dbs-vector/gemma-model-performance.md`.
-
-### RULE: Go symbols through the language server, not grep
-
-For callers, references and reachability of a Go symbol, use gopls (the `LSP` tool when the
-session offers it) or the code-review graph. Grep counts comments as uses: in this
-comment-heavy codebase it once reported about 40 hits for a symbol with zero code references.
-Grep stays right for strings, SQL text, non-Go files and exhaustive token counts. gopls cannot
-see `../dbsgomysql` (outside this module, and a `go.work` is banned) and silently under-reports
-there, so use grep for the library and say which tool proved the claim.
+Query `mcp__dbs-vector__search_md_goarchive_3_search` before `grep` (if it 404s,
+`mcp__dbs-vector__list_engines` names the current tool). Grep finds which files contain a token;
+the failure here is two documents that agree in tokens and disagree in meaning. Before changing
+a fact stated in more than one document (a count, a command, a version, a default, a rule),
+search for every statement of it. Never set `min_similarity`, and an empty result is not proof
+of absence.
 
 ## Running tests
 
@@ -350,53 +249,3 @@ there, so use grep for the library and say which tool proved the claim.
 - **Agents follow [`tests/AGENTS.md`](tests/AGENTS.md)** to run tests and the gate. It turns
   `tests/README.md` into steps, cites its sections, and defines nothing of its own. It is the
   gate instructions file and the owner of the measured baseline (the integration inventory).
-
-## Source of truth
-
-| Question | Source of truth |
-|----------|-----------------|
-| What does the code do today? | `docs/` (see the table above) |
-| What is already implemented? | `docs/` and `git log` — **not** `.ayder/project-documentation/`, which is frozen at 2026-02-06 and still claims the project is "95% complete" |
-| What changed, and when? | `git log`, GitHub PRs, `.ayder/releases/` (one note per version) |
-| What work is in flight? | `.ayder/superpowers_<YYYYMMDD>/{plans,specs,decisions}` |
-| How do I run the tests? | `tests/README.md` (the source of truth); agents follow `tests/AGENTS.md` |
-| **Where was this decided, and why?** | **RAG first** — `mcp__dbs-vector__search_md_goarchive_search` over the repository's markdown (not `.ayder/archived/`). See the rule above before trusting a score or an empty result. Decisions of completed efforts live in `.ayder/archived/`; read them by the path a current document cites. |
-
-<!-- code-review-graph MCP tools -->
-## MCP Tools: code-review-graph
-
-**IMPORTANT: This project has a knowledge graph. ALWAYS use the
-code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
-the codebase.** The graph is faster, cheaper (fewer tokens), and gives
-you structural context (callers, dependents, test coverage) that file
-scanning cannot.
-
-### When to use graph tools FIRST
-
-- **Exploring code**: `semantic_search_nodes_tool` or `query_graph_tool` instead of Grep
-- **Understanding impact**: `get_impact_radius_tool` instead of manually tracing imports
-- **Code review**: `detect_changes_tool` + `get_review_context_tool` instead of reading entire files
-- **Finding relationships**: `query_graph_tool` with callers_of/callees_of/imports_of/tests_for
-- **Architecture questions**: `get_architecture_overview_tool` + `list_communities_tool`
-
-Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
-
-### Key Tools
-
-| Tool | Use when |
-| ------ | ---------- |
-| `detect_changes_tool` | Reviewing code changes — gives risk-scored analysis |
-| `get_review_context_tool` | Need source snippets for review — token-efficient |
-| `get_impact_radius_tool` | Understanding blast radius of a change |
-| `get_affected_flows_tool` | Finding which execution paths are impacted |
-| `query_graph_tool` | Tracing callers, callees, imports, tests, dependencies |
-| `semantic_search_nodes_tool` | Finding functions/classes by name or keyword |
-| `get_architecture_overview_tool` | Understanding high-level codebase structure |
-| `refactor_tool` | Planning renames, finding dead code |
-
-### Workflow
-
-1. The graph auto-updates on file changes (via hooks).
-2. Use `detect_changes_tool` for code review.
-3. Use `get_affected_flows_tool` to understand impact.
-4. Use `query_graph_tool` pattern="tests_for" to check coverage.
