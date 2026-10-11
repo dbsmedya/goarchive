@@ -1,6 +1,7 @@
 package preflight
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -377,5 +378,52 @@ func TestMaxAllowedPacketBatchBound(t *testing.T) {
 		if _, err := w.run(); err == nil || !strings.Contains(err.Error(), "batch") {
 			t.Errorf("run() with %+v = %v, want a configuration error naming the batch size", p, err)
 		}
+	}
+}
+
+// TestMaxAllowedPacketContinuation (Codex M7c-2 review B1): the root fetch after the first
+// batch, and recovery's later log pages, bind every prefix of the last key (key.After):
+// N(N+1)/2 values for N parts, at any batch size. The batch-size bound of the membership
+// statements (M7c-F4) does not cover them. Pair: a root key of 16 VARCHAR(192) latin1
+// columns (each read back as up to 768 utf8mb4 bytes) at batch sizes of 1 — refused naming
+// the root fetch on a 64 KiB source (its continuation binds 136 values, about 105 KB) and
+// naming the log page on a 64 KiB destination; both pass at 1 MiB. Lowering a batch size
+// cannot help, so the remedy offers none.
+func TestMaxAllowedPacketContinuation(t *testing.T) {
+	names := make([]string, 16)
+	cols := make([]validations.ColumnSpec, 16)
+	for i := range names {
+		names[i] = fmt.Sprintf("c%d", i+1)
+		cols[i] = col(names[i], "varchar(192)", "latin1 latin1_bin")
+	}
+	setup := func(typ jobspec.Type) *world {
+		w := healthy(t, typ)
+		w.jobYAML = "\n    root_table: wide\n    primary_key: [" + strings.Join(names, ", ") + "]\n    where: \"1=1\"\n"
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			s.specs["wide"] = table("wide", cols, names)
+		}
+		w.src.fks = nil
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: 1, BatchDeleteSize: 1}
+		return w
+	}
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+		w := setup(typ)
+		w.src.packet = 64 << 10
+		e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+		if !strings.Contains(e.Message, "root fetch") || strings.Contains(e.Message, "lower batch") {
+			t.Errorf("%s, 64 KiB source: message %q must name the root fetch and offer no batch size", typ, e.Message)
+		}
+		w.src.packet = 1 << 20
+		w.mustPass()
+	}
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
+		w := setup(typ)
+		w.dst.packet = 64 << 10
+		e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+		if !strings.Contains(e.Message, "tracking log page") || strings.Contains(e.Message, "lower batch") {
+			t.Errorf("%s, 64 KiB destination: message %q must name the log page and offer no batch size", typ, e.Message)
+		}
+		w.dst.packet = 1 << 20
+		w.mustPass()
 	}
 }

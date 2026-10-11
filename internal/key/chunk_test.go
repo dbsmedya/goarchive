@@ -219,3 +219,32 @@ func TestStatementBytesBoundsTheWire(t *testing.T) {
 		}
 	}
 }
+
+// TestAfterBytesBoundsTheWire (Codex M7c-2 review B1): a continuation after the last key
+// (key.After, the root fetch and the log's pages) binds every prefix of that key, N(N+1)/2
+// values for N parts, whatever the batch size. AfterBytes bounds its prepared text and the
+// execute packet the driver sends, for each family's widest value as 1, 2 and 16 parts,
+// with 0, 1 and 2 integer parameters beside it (the fetch's LIMIT, the log's status).
+func TestAfterBytesBoundsTheWire(t *testing.T) {
+	for _, w := range widestKeys {
+		for _, parts := range []int{1, 2, 16} {
+			d := Def{Table: "t", Columns: make([]Column, parts)}
+			last := make(Key, parts)
+			for i := range parts {
+				d.Columns[i] = w.col
+				d.Columns[i].Name = fmt.Sprintf("c%d", i+1)
+				last[i] = w.val
+			}
+			for _, ints := range []int{0, 1, 2} {
+				args := AfterArgs(last)
+				for range ints {
+					args = append(args, int64(4))
+				}
+				text, exec := len(After(d)), driverExecuteBytes(args)
+				if got := AfterBytes(d, ints, 0); got < uint64(max(text, exec)) {
+					t.Errorf("%s, %d parts, %d ints: AfterBytes = %d, below text %d / execute %d", w.name, parts, ints, got, text, exec)
+				}
+			}
+		}
+	}
+}
