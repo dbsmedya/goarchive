@@ -479,7 +479,11 @@ func TestMySQLForeignKeyVisibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	registryWithoutProcess := probe.Visibility == validations.VisibilityComplete
-	t.Logf("the InnoDB foreign-key registry without PROCESS: complete = %v (downgrade %v)", registryWithoutProcess, probe.DowngradeReason)
+	// A subtest of its own, so the record never sits in a failing parent's output, where the
+	// matrix judge reads a test's own lines as its assertions (Codex M7c-2 review B3).
+	t.Run("which side this server is", func(t *testing.T) {
+		t.Logf("the InnoDB foreign-key registry without PROCESS: complete = %v (downgrade %v)", registryWithoutProcess, probe.DowngradeReason)
+	})
 	invisible := func(t *testing.T, err error) {
 		t.Helper()
 		e := refusedWith(t, err, "FK_COVERAGE_VISIBILITY_CHECK")
