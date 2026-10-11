@@ -236,14 +236,15 @@ FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 | `DELETE … WHERE ga_status = 2` (archive, purge) | ✅ | Audit history only: there is no checkpoint, and completed roots are gone from the source |
 | `DELETE … WHERE ga_status = 2` (copy-only) | ⚠️ | Those roots are no longer skipped by `resume: true`; a rerun re-copies them and fails on the duplicates unless their destination rows are removed too |
 | `DELETE … WHERE ga_status IN (1, 4)` | ⚠️ | Abandons recovery: [Abandoning logged roots](#abandoning-logged-roots) |
-| `DROP TABLE archiver_job_log_<id>` and `DELETE` its job row | ✅ | [Retiring the job](#retiring-a-job-completely) |
+| `DROP TABLE archiver_job_log_<id>` and `DELETE` its job row | ✅ only without pending work | [Retiring the job](#retiring-a-job-completely); with `copied` or `deleting` roots it is abandonment |
 | `TRUNCATE archiver_job` | ❌ | Resets `AUTO_INCREMENT`: new jobs take the ids of old logs, and a job whose old log holds rows stays unregistered until that log is dropped. Drop every log table in the same window, or use `DELETE` |
 | `DROP TABLE archiver_job` alone | ❌ | A labelled schema without `archiver_job` is refused: the logs would meet new jobs reusing their ids |
 | `DROP TABLE goarchive_meta` alone | ❌ | A populated `archiver_job` without a label is refused until the label row is restored |
 | Anything while `job_status = 1` with a fresh heartbeat | ❌ | The job is live |
 
-To clear all tracking state, drop `goarchive_meta`, `archiver_job` and every
-`archiver_job_log_<id>` together. Prune large logs in chunks
+To clear all tracking state, first confirm no log holds a `copied` or `deleting` root (otherwise
+that is [abandonment](#abandoning-logged-roots), for every such job), then drop `goarchive_meta`,
+`archiver_job` and every `archiver_job_log_<id>` together. Prune large logs in chunks
 (`DELETE … WHERE ga_status = 2 LIMIT 50000`, repeated), and export them first if the record has
 compliance value. `TRUNCATE` needs `DROP`, which GoArchive's account does not hold: run these as
 a DBA.
@@ -252,23 +253,30 @@ a DBA.
 
 ## Abandoning logged roots
 
-When the [binding check](#startup-checks) refuses a run and neither restoring the config nor a
-re-bind applies, a DBA can abandon the pending roots by deleting their log rows. The next run
-then rebinds the job to the current config. Confirm the job is not running first.
+Pending roots are interrupted work: an archive root at `copied` has its whole tree in the
+destination, and some of its source rows — children first — may already be deleted; a purge root
+at `deleting` may be partly deleted. Only the log can finish them: recovery rediscovers each
+tree by key, whatever the `where`. **Prefer finishing them:** restore the original config or
+source and run once, or [re-bind after a failover](#re-binding-a-job-after-a-failover).
+
+Abandoning means deleting their log rows, so the next run rebinds to the current config and never
+finishes them. Do it only when the original config or source is gone, with backups of both
+servers, and resolve what is left by hand first:
+
+| Job type | What is left | Resolve before deleting the log rows |
+|----------|--------------|--------------------------------------|
+| archive (`ga_status = 1`) | The complete trees in the destination; the remains of each tree in the source | **Keep the destination trees**: they may hold the only copies of children already deleted from the source. Delete each root's remaining source rows by hand, children first, after confirming the destination holds them; or exclude those roots from every later `where`, since a fetch of one fails on the duplicate |
+| purge (`ga_status = 4`) | The remains of each tree in the source | Delete them by hand, children first, or accept that they stay; the new config deletes them only if its `where` selects them |
+| copy-only (`ga_status = 2`) | The roots' copies in the destination | A rerun copies them again: into the same destination it fails on the duplicates. Point the job at an empty destination, or exclude the copied roots from its `where`; a new job name alone changes nothing |
+
+Then, with the job not running:
 
 ```sql
+SELECT ga_status, COUNT(*) FROM goarchive.archiver_job_log_42 GROUP BY ga_status;
 DELETE FROM goarchive.archiver_job_log_42 WHERE ga_status = 1;   -- archive: copied
 DELETE FROM goarchive.archiver_job_log_42 WHERE ga_status = 4;   -- purge: deleting
 DELETE FROM goarchive.archiver_job_log_42 WHERE ga_status = 2;   -- copy-only: completed
 ```
-
-What is left behind, and must be resolved by hand:
-
-| Job type | Consequence |
-|----------|-------------|
-| archive | The roots' trees are in the destination while some of their source rows may remain. If the new config fetches those roots again, their copy fails on duplicate keys: delete the remaining source rows of those trees, or their destination copies, first |
-| purge | Some of the roots' source rows may remain; the new config purges them only if its `where` selects them |
-| copy-only | Every root copied before is copied again: into a new destination database that is right; into the same one, remove the old copies first, or use a new job name instead |
 
 ---
 
@@ -294,7 +302,8 @@ deletes or skips the wrong rows.
 ## Retiring a job completely
 
 To remove a job and all its state — a name you no longer use, or one you want to give another
-type, root table or root key:
+type, root table or root key. A job with pending work cannot simply be retired: dropping its log
+drops the only record of its interrupted trees.
 
 ```sql
 -- 1. Confirm it is not running.
@@ -302,16 +311,20 @@ SELECT job_name, job_status,
        TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) AS heartbeat_age_sec
 FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 
--- 2. Drop its log table (substitute the id).
+-- 2. Confirm it has no pending work: this must return 0 for archive and purge.
+--    Otherwise finish the job first, or treat this as abandonment (above).
+SELECT COUNT(*) FROM goarchive.archiver_job_log_42 WHERE ga_status IN (1, 4);
+
+-- 3. Drop its log table (substitute the id).
 DROP TABLE IF EXISTS goarchive.archiver_job_log_42;
 
--- 3. Remove the job row: DELETE, never TRUNCATE.
+-- 4. Remove the job row: DELETE, never TRUNCATE.
 DELETE FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 ```
 
-A job created again under the name starts with an empty log. Archive and purge lose nothing but
-the record. A copy-only job loses its `resume` skips, so its rerun re-copies every root, and
-fails on duplicates in a destination that still holds them.
+A job created again under the name starts with an empty log. Without pending work, archive and
+purge lose only the record. A copy-only job loses its `resume` skips: its rerun copies every root
+again and fails on duplicates in a destination that still holds them.
 
 ---
 
@@ -376,7 +389,8 @@ matches the refusal:
   than the data it describes misleads recovery and copy-only `resume`.
 - Restoring the destination data without its tracking tables leaves jobs unregistered: archive
   and purge start afresh; copy-only re-copies everything, and fails on the duplicates.
-- Tracking writes are small: a heartbeat `UPDATE` every 15 seconds and one multi-row log
-  statement per batch, negligible on a replicated destination next to the archived rows.
+- Tracking writes per batch: the log `INSERT` of its roots and, for archive and purge, their
+  status `UPDATE` after the deletes, each split into chunks when the batch or the key is large;
+  plus a heartbeat `UPDATE` every 15 seconds.
 - A separate `job_schema` keeps tracking state out of archive-data dumps and is granted on its
   own ([`job_schema`](README_CONFIGURATION.md#job_schema-destination-only)).

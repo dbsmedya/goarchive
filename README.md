@@ -354,8 +354,9 @@ How to run every test layer: [tests/README.md](tests/README.md).
   `DROP PARTITION` on its own destroys the rows rather than archiving them, and
   `EXCHANGE PARTITION` fires no triggers and resets `AUTO_INCREMENT` on the exchanged table.
 
-  It never competes with GoArchive: MySQL forbids foreign keys on partitioned InnoDB tables
-  **in both directions**, so a partitioned table has no child subgraph to archive.
+  It suits a table with no child rows to carry along. Exchanging a parent's partition does not
+  move its children; MySQL forbids declared foreign keys on partitioned InnoDB tables, but a
+  relation kept by the application, which GoArchive archives, can still give one a child tree.
 
 ## Contributing
 

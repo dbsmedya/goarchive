@@ -323,8 +323,9 @@ GoArchive cannot prove it saw **every** foreign key pointing into the job, inclu
 schemas the account cannot read. Without that proof an external `ON DELETE CASCADE` or `SET NULL`
 could change rows that were never copied.
 
-The proof is a successful read of InnoDB's foreign-key registry, which needs `PROCESS`; the state
-is then `complete`, the only one that passes. If that read fails, discovery falls back to a
+The proof is a successful read of InnoDB's foreign-key registry, which normally needs `PROCESS`
+([the version exception](README_COMPAT.md#foreign-key-metadata-readable-without-process-on-mysql-8040));
+the state is then `complete`, the only one that passes. If that read fails, discovery falls back to a
 view filtered by the account's privileges and the state is `unconfirmed`; `unknown` means no
 proof was populated. The message says which stage failed: a query-stage failure can be
 privileges, connectivity or server state, so read the logged MySQL cause first; a read-stage
@@ -347,11 +348,10 @@ Three states fail, and the message names the state:
 | State | Meaning | Fix |
 |---|---|---|
 | absent | no grant exists at any scope | grant the privilege |
-| unconfirmed | a grant may exist but cannot be proven: held through a role, a global grant while `@@global.partial_revokes` is enabled, or a privilege granted nowhere seen by an account that cannot read the `mysql` schema | grant it **directly** to the account, at schema or table scope |
+| unconfirmed | a grant may exist but cannot be proven ([why](README_PERMISSIONS.md#the-provable-grant-rule)) | grant it **directly** to the account, at schema or table scope |
 | unknown | the privilege fact was not populated | report it: an inspection problem, not a configuration one |
 
-A least-privileged account therefore sees `unconfirmed`, not `absent`, for a privilege it was
-never granted. Table-scoped checks name `TABLE(state)`, e.g. `orders(unconfirmed)`;
+Table-scoped checks name `TABLE(state)`, e.g. `orders(unconfirmed)`;
 `JOB_SCHEMA_PERMISSION_CHECK` names `PRIVILEGE(state)`, e.g. `CREATE(unconfirmed)`, because it
 tests four privileges on one schema. Each fix is a
 [grant recipe](README_PERMISSIONS.md#grant-recipes).
@@ -552,8 +552,8 @@ already completed stay archived.
 
 ## Bypassing preflight
 
-`--skip-validate-preflight` is accepted by `archive`, `purge`, `copy-only` and `dry-run`, and
-prints a warning before the run:
+`--skip-validate-preflight` is accepted by `archive`, `purge`, `copy-only` and `dry-run`. A run
+prints a warning before it starts:
 
 ```
 WARNING: --skip-validate-preflight: preflight's policy checks are skipped (permissions, triggers,
@@ -562,8 +562,11 @@ MySQL, and the log-key and binding checks still run. A misspelled foreign_key co
 statement-caps error instead of RELATION_KEY_CHECK.
 ```
 
-Still enforced: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
+Still enforced on a run: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
 `KEY_TYPE_UNSUPPORTED`, the destination keys being readable (for the statement caps), the job's
-binding checks, and the run-time guards above. `validate` has no skip flag.
+[startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. `dry-run`
+prints no warning and never reads the tracking tables, so it does not test the job's
+registration or binding: a dry-run that passes does not promise the run will start. `validate`
+has no skip flag.
 
 Use it only to recover from an incident, after verifying the schema by hand.

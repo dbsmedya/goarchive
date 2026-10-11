@@ -32,7 +32,8 @@ GoArchive reads **exactly one** YAML file, `--config`/`-c` (default `archiver.ya
 working directory). There is no merging, no directory scan and no fallback chain. Values the
 file leaves out take the defaults below.
 
-The file is read strictly, and every error names its key and line:
+The file is read strictly. Every error names its key, and a YAML or unknown-key error also its
+line:
 
 - **Unknown keys are refused.** Key names are exact and lowercase.
 - **One YAML document per file:** a second document after `---` is refused.
@@ -149,8 +150,9 @@ typo.
 ## `jobs:`
 
 A map of job name → job. At least one job is required. **Job names** are kept as written and
-must be printable ASCII without spaces, at most 255 characters; two names that differ only in
-letter case are refused. The name on the command line must match exactly.
+must be printable ASCII without spaces, not starting with `-` (the command line would read it as a
+flag), at most 255 characters; two names that differ only in letter case are refused. The name on
+the command line must match exactly.
 
 | Option | Description | Required |
 |--------|-------------|----------|

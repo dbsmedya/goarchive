@@ -152,12 +152,12 @@ through the real CLI.
 > isolates to the interrupt. Keep them in step, as with 03 and 05.
 >
 > **09's `delete_sleep_seconds: 1.0` is the test, not tuning.** The kill has to land
-> between batch 1's destination commit, which logs its roots `copied`, and its
+> between a batch's destination commit, which logs its roots `copied`, and its
 > completion, and the only part of that interval with any duration is the throttle
-> between delete statements. The engine logs nothing in between, so the harness
-> polls the log table for the 100 `copied` roots — one `mysqlsh` call per read — and
-> the window must be wide. Its slice is smaller (499 rows) because that throttle
-> costs 4 s per batch.
+> between delete statements; a wide throttle keeps the window open. Its slice is smaller
+> (499 rows) because that throttle costs 4 s per batch. How the harness times the kill:
+> `e2e/resume/README.md`; how it accounts for the batch the kill lands in: the comments on
+> `assert_interrupt_preconditions` in `e2e/lib/interrupt.sh`.
 
 #### The pacing floor — the one timing number that is not machine-dependent
 
@@ -445,9 +445,11 @@ compiled, and `go test` prints `ok` with no test run.
 
 The tests read the estate from `TEST_SOURCE_*`, `TEST_DEST_*` and `TEST_REPLICA_*`
 ([Environment Variables](#environment-variables)); without them they fail with
-`integration environment not loaded: set -a; source tests/.env; set +a`. Each test creates its
-own scratch schemas on the source and destination (`ga3m5_<name>_<pid>`) and drops them when it
-ends, so tests do not share state; a killed run can leave a scratch schema behind.
+`integration environment not loaded: set -a; source tests/.env; set +a`. Most tests build their
+fixtures in scratch schemas on the source and destination (`ga3m5_<name>_<pid>`) and drop them
+when they end, so those tests do not share state; a killed run can leave one behind. Some read
+the seeded Sakila estate instead (for example `internal/key`'s key facts on `film_actor` and
+`payment`), so run `--setup` first.
 
 #### Interrupted runs
 
@@ -756,8 +758,8 @@ The short version:
    `min_duration`, `expected_rows`, and `orphan_checks` when `tables` names more
    than one table. **Those last four fail closed**: omit one and the test is
    refused rather than run.
-3. Add `NN` to the ordered dispatch list in `scripts/run-tests.sh` → `main`
-   (`run_e2e_suite "3 4 5 6 7 8 9 NN" "working"`, or `"1 2 10 11 12 NN" "validation demos"`).
+3. Add `NN` to the matching `run_e2e_suite` list in `scripts/run-tests.sh` → `main`: the
+   working suite's or the validation demos'.
 4. Update the catalogue in this file and the category's `README.md`.
 5. Verify: `./scripts/run-tests.sh --sakila -t NN`.
 

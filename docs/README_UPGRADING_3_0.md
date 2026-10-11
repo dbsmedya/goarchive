@@ -68,7 +68,7 @@ nothing is migrated.
 
 ## Configuration changes
 
-The file is read strictly, and every error names its key and line.
+The file is read strictly, and every error names its key.
 
 - **Every job needs `job_type`:** `archive`, `purge` or `copy-only`. A job runs only under that
   command.
@@ -91,9 +91,9 @@ The file is read strictly, and every error names its key and line.
 - **Unknown keys are refused.** Key names are exact and lowercase: 2.x accepted `Root_Table`;
   3.0 refuses it. A helper key such as `x-defaults:` is refused too, so a YAML anchor shared by
   merge keys must live under a known key, for example a real job.
-- **Job names keep their case and must be printable ASCII**, at most 255 characters. The name on
-  the command line must match the file exactly, and two names that differ only in case are
-  refused.
+- **Job names keep their case**, so the name on the command line must match the file exactly,
+  and two names that differ only in case are refused; names must be printable ASCII
+  ([the rule](README_CONFIGURATION.md#jobs)).
 - **A table may appear once in a job.**
 - **One YAML document per file:** a second document after `---` is refused rather than ignored.
 - **The 2.0 lag keys are refused** (they were removed in 2.1):

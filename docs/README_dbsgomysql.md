@@ -21,7 +21,8 @@ with archiving:
 - A privilege held through an active role, or granted globally while
   `@@global.partial_revokes` is enabled, is not provable for a specific object from
   `information_schema` alone.
-- InnoDB's own foreign-key registry is complete but requires `PROCESS`;
+- InnoDB's own foreign-key registry is complete but normally requires `PROCESS` (one MySQL
+  version differs: [compatibility notes](README_COMPAT.md));
   `information_schema` is always readable but only shows constraints on tables the account
   is already privileged for — so a fallback silently answers a weaker question.
 - Integer display widths (`bigint(20)`) are cosmetic and not reported by MySQL 8.0.17 and

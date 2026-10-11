@@ -277,7 +277,7 @@ replication hold: server replica1.internal:3306 unhealthy (channel <default>: la
 
 Healthy servers stay silent. A recovered server logs one `INFO` line, and the last one to recover
 logs another with the total hold. If the reason changes while a server is still down, the held
-time keeps accumulating. A hold longer than 8 hours fails the next delete chunk
+time keeps accumulating. A hold can outlast the source session's idle timeout
 ([the limit](README_LIMITATIONS.md#the-job-lock-and-long-replication-holds)).
 
 ### `cache_ttl` and the bounded detection delay

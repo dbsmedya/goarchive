@@ -28,7 +28,7 @@ each privilege is granted directly at schema scope
 
 ```sql
 GRANT SELECT, DELETE ON `<source_schema>`.* TO '<user>'@'<host>';  -- DELETE: archive and purge jobs
-GRANT PROCESS ON *.* TO '<user>'@'<host>';                         -- archive and purge jobs
+GRANT PROCESS ON *.* TO '<user>'@'<host>';                         -- archive and purge jobs (see the version note below)
 ```
 
 `PROCESS` is server-wide by definition; MySQL has no narrower scope for it.
@@ -79,15 +79,17 @@ preflight.
 |--------|-----------|:---:|:---:|:---:|----------|
 | **Source** | `SELECT` | ✅ | ✅ | ✅ | Reading rows |
 | **Source** | `DELETE` | ✅ | ✅ | — | Deleting archived rows |
-| **Source** | `PROCESS` (global) | ✅ | ✅ | — | Proving foreign-key metadata complete (`FK_COVERAGE_VISIBILITY_CHECK`) |
-| **Destination** (data) | `SELECT`, `INSERT` | ✅ | — | ✅ | Copying rows, and reading them back to verify |
+| **Source** | `PROCESS` (global) | ✅ | ✅ | — | Proving foreign-key metadata complete (`FK_COVERAGE_VISIBILITY_CHECK`); not needed on MySQL 8.0.40 (below) |
+| **Destination** (data) | `INSERT` | ✅ | — | ✅ | Copying rows |
+| **Destination** (data) | `SELECT` | ✅ | — | ✅ | Reading copies back under `verification: sha256` or `count` |
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | ✅ | ✅ | ✅ | The registry, the per-job logs, the label |
 | **Source** and **destination** (optional, global) | `SESSION_VARIABLES_ADMIN` | ✅ | ✅ | ✅ | Only on a server whose global `max_error_count` is 0 ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 | **Each monitored replica** (optional) | `REPLICATION CLIENT` | ✅ | ✅ | — | Replication gating |
 
-- **Destination `SELECT`.** Preflight proves `INSERT` only; verification reads the copied rows
-  back, so an account without `SELECT` passes preflight and fails at verification, before any
-  delete.
+- **Destination `SELECT`.** Preflight proves `INSERT` only, and `validate` and `dry-run` never read
+  copies. A run that verifies (`sha256` or `count`) reads them back, so an account without
+  `SELECT` fails there, before any delete; under `verification: none` nothing reads them. The
+  recipes grant it, for the default `sha256`.
 - **`PROCESS` and the MySQL version.** The proof reads InnoDB's foreign-key registry. MySQL
   8.0.46 and later refuse that read without `PROCESS`; MySQL 8.0.40 serves it unfiltered without
   `PROCESS`, so the check passes there without the grant and still sees every foreign key
@@ -108,7 +110,8 @@ time the job runs. A grant without it fails at startup with `JOB_SCHEMA_PERMISSI
 A permission check passes only when the privilege is **established for the specific object**.
 A privilege held only through a role, or a global grant while `@@global.partial_revokes` is
 enabled, cannot be proven — MySQL does not show the account a role's grant rows — and fails
-closed as `unconfirmed`. Grant `SELECT`, `DELETE`, `INSERT` and the tracking-schema privileges
+closed as `unconfirmed`. So does a privilege granted nowhere, to an account that cannot read the
+`mysql` schema: only such a read can tell `absent` from `unconfirmed`. Grant `SELECT`, `DELETE`, `INSERT` and the tracking-schema privileges
 **directly** to the account GoArchive connects as, at schema or table scope. How each check
 reports what it saw: [Permission checks](README_VALIDATION.md#permission-checks).
 
@@ -122,9 +125,7 @@ successful read of the registry, and a role-held `PROCESS` produces the same rea
 **A check lists tables you believe are granted.** Check that the grant targets the account
 `CURRENT_USER()` resolves to (not the one you connected as, with proxying or host patterns); that
 it is granted **directly**, not through a role; and that it is on the right schema and server:
-source `DELETE` and destination `INSERT` are separate grants on separate servers. An account that
-cannot read the `mysql` schema sees a privilege it was never granted as `unconfirmed`, not
-`absent`.
+source `DELETE` and destination `INSERT` are separate grants on separate servers.
 
 **`FK_COVERAGE_VISIBILITY_CHECK` on a schema with no cross-schema foreign keys.** Expected: the
 check proves that discovery was complete, whatever the schema holds

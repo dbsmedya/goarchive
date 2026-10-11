@@ -85,8 +85,10 @@ cannot exempt itself.
 
 ## Integration tests
 
-Real MySQL: a source, a destination in `+03:00` and a live replica. Each test creates and drops its
-own schemas. By package:
+Real MySQL: a source, a destination in `+03:00` and a live replica. Most tests build their fixtures
+in scratch schemas they create and drop; some read the seeded Sakila estate, so the estate is set
+up first ([tests/README.md → Integration tests](../tests/README.md#integration-tests)). By
+package:
 
 | Package | Proves |
 |---------|--------|

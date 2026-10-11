@@ -181,9 +181,11 @@ root table, is refused; jobs with different names and root tables can run togeth
 
 #### The job lock and long replication holds
 
-The job's advisory lock lives on a dedicated connection, and losing it stops the job. Every
-session's `wait_timeout` is raised to at least 8 hours, so a replication-lag hold longer than
-that fails the next delete chunk (error 4031); the next start's recovery finishes the batch.
+The job's advisory lock lives on a dedicated connection, and losing it stops the job. During a
+replication-lag hold the batch's source session sits idle; once the hold outlasts that session's
+`wait_timeout` — the server's global, or 8 hours if that is lower
+([Session settings](README_CONFIGURATION.md#session-settings)) — the server closes it, and the
+next delete chunk fails with error 4031. The next start's recovery finishes the batch.
 
 #### Partial deletes after an interruption
 

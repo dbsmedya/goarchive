@@ -115,31 +115,15 @@ CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Laye
 SQL identifier quoting and validation now live in the **library**
 (`github.com/dbsmedya/dbsgomysql/pkg/sqlutil`); there is no `internal/sqlutil/`.
 
-### Processing Flow
+### Run flow and tracking: where to read
 
-`internal/engine` (spec §7, `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`):
+The run's steps are `docs/README_OPERATIONS.md` → *What a run does* (code: `internal/engine`,
+`Run` in `engine.go`, `(*run).loop` and `batch` in `run.go`; spec §7). The tracking tables, their
+statuses and the startup checks are `docs/README_JOBS_SCHEMA.md` (code: `internal/tracking`).
 
-1. **Startup**: the command loads the file (`jobspec.Load`) and picks the job
-   (`Document.Job`) before any connection, then preflight (`internal/preflight`) → tracking schema → advisory locks → job registry,
-   log-key and binding checks (`internal/tracking`) → recovery of logged roots
-2. **Batch loop**: fetch root keys after the last batch's → discover children parent-first →
-   per job type, a destination transaction (copy → verify → log) and/or source delete chunks,
-   each its own transaction with an exact row count
-3. **Safety**: `GET_LOCK()` advisory locks, the replication lag gate before every delete chunk,
-   the sentinel pause and a graceful stop at batch boundaries
-
-### Key Data Structures
-
-- **archiver_job**: the job registry, with the job binding (source identity, destination
-  database, config fingerprint) and `root_key_columns`; integer `id` PK, `job_name` UNIQUE. Lives
-  in `destination.job_schema` (default = destination database). There is no persisted cursor.
-- **archiver_job_log_<id>**: per-job log whose key columns `k1…kN` mirror the root key's types,
-  with `ga_status` TINYINT (1=copied, 2=completed, 4=deleting) for crash recovery.
-- **goarchive_meta**: one-row tracking-schema marker. The binary recognises exactly one label
-  (`SchemaLabel`, `internal/tracking/tracking.go`) and refuses every other revision, 2.x
-  included, and every populated marker-less schema — no inference, no migration. A release that changes
-  the tracking tables' layout **or a column's meaning** bumps the label and adds a procedure row
-  to `docs/README_JOBS_SCHEMA.md` → *Tracking-schema upgrade procedures*.
+**Tracking-schema label rule (for changes here):** a release that changes the tracking tables'
+layout **or a column's meaning** bumps `SchemaLabel` (`internal/tracking/tracking.go`) and adds a
+procedure row to `docs/README_JOBS_SCHEMA.md` → *Tracking-schema upgrade procedures*.
 
 ## Triage rules
 
@@ -151,12 +135,11 @@ SQL identifier quoting and validation now live in the **library**
 - **Rarity is not severity.** A real defect found late, or found by a new model, is fixed
   promptly. The mistake test decides *whether* it is a weakness; rarity never decides that in
   either direction.
-- **Design within the operator contracts:** no DDL on participating tables during a run, cold
-  data only, and eligibility monotonic in PK order (`roadmap_v3.md` decision 17). The
-  during-a-run contract is published in `docs/README_LIMITATIONS.md` → *No DDL and no
-  concurrent writes during a run*; the eligibility part is scheduled as 2.x roadmap 2.2.4
-  item 7. Contract violations are documented, not detected: add no mid-run drift probe or DML
-  tolerance without the operator's direction.
+- **Design within the operator contracts:** the run contract is published in
+  `docs/README_LIMITATIONS.md` → *No DDL and no concurrent writes during a run (contract)*
+  (spec §3, which replaces 2.x's monotonic-eligibility rule). Contract violations are
+  documented, not detected: add no mid-run drift probe or DML tolerance without the operator's
+  direction.
 
 ## Behavior — `docs/` owns it, this file does not
 
