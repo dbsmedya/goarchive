@@ -362,6 +362,14 @@ func TestMaxAllowedPacketBatchBound(t *testing.T) {
 	w.src.packet = 2 << 20
 	w.mustPass()
 
+	// Fable M7c-2 review F3: copy-only never deletes, so batch_delete_size bounds none of
+	// its statements. The archive refused above with batch_delete_size 16000 passes as a
+	// copy-only job.
+	w = setup(10, 16000)
+	w.jobType = jobspec.CopyOnly
+	w.src.packet = 2 << 20
+	w.mustPass()
+
 	// A size below 1 is a configuration error, never a bound of 0.
 	for _, p := range []config.ProcessingConfig{{BatchSize: 0, BatchDeleteSize: 500}, {BatchSize: 1000, BatchDeleteSize: 0}} {
 		w := healthy(t, jobspec.Archive)
