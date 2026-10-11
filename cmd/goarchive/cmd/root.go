@@ -28,11 +28,9 @@ var rootCmd = &cobra.Command{
 	Short: "MySQL Batch Archiver & Purger",
 	Long: `A CLI tool for safely archiving MySQL relational data across servers
 with automatic dependency resolution and crash recovery.
-
-Community edition — recommended for single-operator workstation archival of
-cold data. Use with caution on very large or deeply nested schemas; see README
-for known limits. Enterprise edition (with metrics, parallelism, and load-
-tested scaling) is planned separately.
+Recommended for archival of cold data. Use with caution on
+very large or deeply nested schemas;
+see README and LIMITATIONS for known limits
 
 Features:
   - Parent/child trees from the job's declared relations, with composite and
