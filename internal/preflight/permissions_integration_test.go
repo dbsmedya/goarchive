@@ -364,13 +364,30 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 	})
 }
 
+// backtickQuoted returns server text (SHOW CREATE TABLE, CURRENT_ROLE()) with identifiers
+// quoted as the default sql_mode quotes them: under ANSI_QUOTES MySQL writes "name", which
+// the environment matrix's sql_mode_ansi_quotes row sets globally (M7-8). goarchive's own
+// SQL runs under it unchanged; only these assertions compare the server's text.
+func backtickQuoted(t *testing.T, db *sql.DB, s string) string {
+	t.Helper()
+	var mode string
+	if err := db.QueryRowContext(context.Background(), "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mode, "ANSI_QUOTES") {
+		return s
+	}
+	return strings.ReplaceAll(s, `"`, "`")
+}
+
 // acctRoleActive asserts the account behind db has role active and that the role's
 // grant is effective: it can count orders.
 func acctRoleActive(t *testing.T, db *sql.DB, role string) {
 	t.Helper()
 	var active string
 	var n int
-	if err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&active); err != nil || active != strings.ReplaceAll(role, "'", "`") {
+	err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&active)
+	if active = backtickQuoted(t, db, active); err != nil || active != strings.ReplaceAll(role, "'", "`") {
 		t.Fatalf("CURRENT_ROLE() = %q, %v; want %s active", active, err, role)
 	}
 	if err := db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&n); err != nil {

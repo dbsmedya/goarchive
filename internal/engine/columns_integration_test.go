@@ -18,7 +18,23 @@ func showCreate(t *testing.T, db *sql.DB, table string) string {
 	if err := db.QueryRowContext(context.Background(), "SHOW CREATE TABLE `"+table+"`").Scan(&name, &ddl); err != nil {
 		t.Fatal(err)
 	}
-	return ddl
+	return backtickQuoted(t, db, ddl)
+}
+
+// backtickQuoted returns server text (SHOW CREATE TABLE, CURRENT_ROLE()) with identifiers
+// quoted as the default sql_mode quotes them: under ANSI_QUOTES MySQL writes "name", which
+// the environment matrix's sql_mode_ansi_quotes row sets globally (M7-8). goarchive's own
+// SQL runs under it unchanged; only these assertions compare the server's text.
+func backtickQuoted(t *testing.T, db *sql.DB, s string) string {
+	t.Helper()
+	var mode string
+	if err := db.QueryRowContext(context.Background(), "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mode, "ANSI_QUOTES") {
+		return s
+	}
+	return strings.ReplaceAll(s, `"`, "`")
 }
 
 // createGIPK creates t (data VARCHAR(50)) with a generated invisible primary key: the

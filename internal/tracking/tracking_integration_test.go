@@ -26,6 +26,22 @@ import (
 // UTC. Each test creates and drops its own ga3m4_<name>_<pid> schema, which serves as both
 // the job_schema and the schema of the root table whose key the log mirrors.
 
+// backtickQuoted returns server text (SHOW CREATE TABLE, CURRENT_ROLE()) with identifiers
+// quoted as the default sql_mode quotes them: under ANSI_QUOTES MySQL writes "name", which
+// the environment matrix's sql_mode_ansi_quotes row sets globally (M7-8). goarchive's own
+// SQL runs under it unchanged; only these assertions compare the server's text.
+func backtickQuoted(t *testing.T, db *sql.DB, s string) string {
+	t.Helper()
+	var mode string
+	if err := db.QueryRowContext(context.Background(), "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mode, "ANSI_QUOTES") {
+		return s
+	}
+	return strings.ReplaceAll(s, `"`, "`")
+}
+
 func openDest(t *testing.T, schema string) *sql.DB {
 	t.Helper()
 	return openAs(t, schema, os.Getenv("TEST_DEST_USER"), os.Getenv("TEST_DEST_PASSWORD"))
@@ -267,6 +283,7 @@ func TestMySQLTypedLog(t *testing.T) {
 	if err := db.QueryRow(fmt.Sprintf("SHOW CREATE TABLE archiver_job_log_%d", j.ID)).Scan(&ignored, &ddl); err != nil {
 		t.Fatal(err)
 	}
+	ddl = backtickQuoted(t, db, ddl)
 	for _, want := range []string{
 		"`k1` varchar(8) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT 'region'",
 		"`k2` datetime(3) NOT NULL COMMENT 'placed'",
