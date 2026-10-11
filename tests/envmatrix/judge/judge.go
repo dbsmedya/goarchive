@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 )
 
@@ -31,8 +30,9 @@ type event struct {
 type testID struct{ pkg, test string }
 
 // Judge reads a `go test -json` stream and decides whether it meets expect: "pass" (no
-// test fails) or "refuse:CODE[|CODE…]" (every failing leaf test's own output contains one
-// of the codes). Under either, a panic, a timeout, a build failure or a package that
+// test fails) or "refuse:CODE[|CODE…]" (every failing leaf test's own output cites one of
+// the codes: the M7-8 rule that a run is exact, or refused at startup or failed closed by
+// name before any change). Under either, a panic, a timeout, a build failure or a package that
 // fails with no failing test fails the row (M7c-2 P2).
 func Judge(expect string, events io.Reader) Verdict {
 	var v Verdict
@@ -148,10 +148,26 @@ func parseExpect(expect string) ([]string, error) {
 	return codes, nil
 }
 
+// cites reports whether out cites one of codes: an occurrence counts only when no "want"
+// precedes it on its line, so a test that merely expected the code ("Run() = <nil>, want
+// CODE") does not cite it (Fable M7c-2 review F1).
 func cites(out *strings.Builder, codes []string) bool {
 	if out == nil {
 		return false
 	}
-	text := out.String()
-	return slices.ContainsFunc(codes, func(c string) bool { return strings.Contains(text, c) })
+	for line := range strings.Lines(out.String()) {
+		for _, c := range codes {
+			for i := strings.Index(line, c); i >= 0; {
+				if !strings.Contains(line[:i], "want") {
+					return true
+				}
+				next := strings.Index(line[i+1:], c)
+				if next < 0 {
+					break
+				}
+				i += 1 + next
+			}
+		}
+	}
+	return false
 }
