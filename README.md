@@ -87,8 +87,6 @@ Testing, backups and the other cautions before production: [Limitations](docs/RE
 
 📖 Every document, and where to start: [docs/README.md](docs/README.md).
 
-<a id="whats-included-in-community"></a>
-
 ## Features
 
 Complete end-to-end archive, purge, and copy-only workflows:
@@ -102,7 +100,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
 - **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
-- **Dry-run mode** - Preview the execution plan and filtered row counts; never deletes from the source ([Dry-run payload validation](docs/README_VALIDATION.md#dry-run-payload-validation))
+- **Dry-run mode** - Runs preflight, reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
 

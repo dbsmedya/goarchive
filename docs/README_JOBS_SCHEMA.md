@@ -117,8 +117,7 @@ job "archive_old_orders" exists for root table "orders", expected "invoices": a 
 A `copied` marker written for one table could otherwise authorise a delete-only
 replay against another (issue #14). The comparison is exact, including letter
 case, like `PK_COLUMN_CASE_CHECK`. To use a job name with another command or root table,
-[retire the job](#retiring-a-job-completely) or use a new name. The source server and schema
-are not bound ([Limitations](README_LIMITATIONS.md#a-job-name-is-not-bound-to-its-source)).
+[retire the job](#retiring-a-job-completely) or use a new name.
 
 A heartbeat older than 60 seconds is considered stale; the queries below use that threshold.
 The other timing constants are in

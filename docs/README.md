@@ -13,6 +13,7 @@ Detailed specifications for GoArchive. Start at the
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
 | [Testing](README_TESTING.md) | What each test layer proves |
+| [Upgrading to 3.0](README_UPGRADING_3_0.md) | What changed from 2.x: keys, checkpoints, job binding, removed flags |
 | [Upgrading to 2.2](README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
 | [Upgrading to 2.1](README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
 | [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
