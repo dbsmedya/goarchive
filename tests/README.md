@@ -505,8 +505,10 @@ server version. The rows are in [`envmatrix/rows.tsv`](envmatrix/rows.tsv), and 
 its expected outcome. Under every row a run must be exact, or refused at startup with a named
 error, or fail closed by name before it changes anything (as under `max_error_count = 0`,
 where the INSERT and the range checks refuse the statement they cannot prove). A row expected to `pass` has no failing test. A row expected to `refuse:CODE|…` passes
-only if every failing test's own output cites one of those codes. A panic, a timeout or a build
-failure fails any row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
+only if every failing test's own output cites one of those codes, a failing parent's own lines
+included. A panic, a timeout, a build failure, a test or package that started and never
+finished, or a `go test` exit status that disagrees with its output (a killed run) fails any
+row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
 
 | Kind | What the runner does |
 |---|---|
