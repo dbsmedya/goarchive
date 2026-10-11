@@ -213,6 +213,46 @@ func TestMySQLSchemaLabel(t *testing.T) {
 	}
 }
 
+// TestMySQLDestinationServerUUIDColumn (pre-alpha minors item 3): archiver_job carries
+// destination_server_uuid, reserved for GH #14's destination binding so the 3.0 label needs
+// no bump when that lands. alpha.0 neither writes nor compares it: a registered job holds
+// its default, the empty string.
+func TestMySQLDestinationServerUUIDColumn(t *testing.T) {
+	schema, db := scratch(t, "dstuuid")
+	mustOpen(t, db, schema)
+	spec, err := validations.NewInspector(db, schema).TableSpec(context.Background(), validations.Ref(schema, "archiver_job"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var col *validations.ColumnSpec
+	var after string
+	for i := range spec.Columns {
+		if spec.Columns[i].Name == "destination_server_uuid" {
+			col = &spec.Columns[i]
+			if i > 0 {
+				after = spec.Columns[i-1].Name
+			}
+		}
+	}
+	if col == nil {
+		t.Fatal("archiver_job has no destination_server_uuid column")
+	}
+	if col.Type != "varchar(64)" || col.Charset != "ascii" || col.Collation != "ascii_bin" || col.Nullable ||
+		col.Default == nil || *col.Default != "" || after != "destination_database" {
+		t.Errorf("destination_server_uuid = %s %s %s nullable=%v default=%v after %q; want varchar(64) ascii ascii_bin NOT NULL DEFAULT '' after destination_database",
+			col.Type, col.Charset, col.Collation, col.Nullable, col.Default, after)
+	}
+	exec(t, db, "INSERT INTO archiver_job (job_name, root_table, job_type, source_server_uuid, source_database, "+
+		"destination_database, config_fingerprint, root_key_columns) VALUES ('j','t','archive','u','s','d','{}','[]')")
+	var got string
+	if err := db.QueryRow("SELECT destination_server_uuid FROM archiver_job WHERE job_name = 'j'").Scan(&got); err != nil || got != "" {
+		t.Errorf("a row inserted without it holds %q, %v; want ''", got, err)
+	}
+	if _, err := Open(context.Background(), db, schema); err != nil {
+		t.Errorf("Open() on its own schema = %v", err)
+	}
+}
+
 // TestMySQLRefusesOtherSchemas is R37: a 2.2 label, a marker-less 2.x archiver_job with or
 // without rows, an unknown label, and a 3.0 label whose archiver_job was dropped are each
 // refused before anything is written.
@@ -221,6 +261,11 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		"root_table VARCHAR(255) NOT NULL, job_type VARCHAR(32) NOT NULL DEFAULT 'archive', last_processed_root_pk_id VARCHAR(255), " +
 		"job_status TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_job_name (job_name)) ENGINE=InnoDB"
 	const meta = "CREATE TABLE goarchive_meta (id TINYINT NOT NULL PRIMARY KEY, schema_version VARCHAR(16) NOT NULL) ENGINE=InnoDB"
+	// A 3.0 archiver_job as built before destination_server_uuid (pre-alpha minors item 3).
+	const job30pre = "CREATE TABLE archiver_job (id BIGINT AUTO_INCREMENT PRIMARY KEY, job_name VARCHAR(255) NOT NULL, " +
+		"root_table VARCHAR(64) NOT NULL, job_type VARCHAR(16) NOT NULL, job_status TINYINT NOT NULL DEFAULT 0, " +
+		"source_server_uuid VARCHAR(64) NOT NULL, source_database VARCHAR(64) NOT NULL, destination_database VARCHAR(64) NOT NULL, " +
+		"config_fingerprint TEXT NOT NULL, root_key_columns TEXT NOT NULL, UNIQUE KEY uk_job_name (job_name)) ENGINE=InnoDB"
 	for _, tc := range []struct {
 		name  string
 		setup []string
@@ -235,6 +280,9 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		// The DBA's shortcut: relabel a 2.x schema instead of finishing and dropping it.
 		{"label30on2x", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"},
 			`hold a 2.x archiver_job table under schema_version "3.0"`},
+		// A schema a pre-alpha v3 build created: labelled 3.0, no destination_server_uuid.
+		{"label30pre", []string{job30pre, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"},
+			`under schema_version "3.0"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema, db := scratch(t, tc.name)
