@@ -11,7 +11,7 @@ import (
 
 // stream concatenates testdata fixtures: real `go test -json` output of small packages,
 // captured once with the paths rewritten (pass, fail, nested, nestedok, panic, timeout,
-// build, skip, wantonly).
+// build, skip, wantonly, interrupted, parent, parent-go126).
 func stream(t *testing.T, names ...string) io.Reader {
 	t.Helper()
 	var b strings.Builder
@@ -50,6 +50,17 @@ func TestJudge(t *testing.T) {
 		// something else. B_CHECK is cited by the error itself, before its "want".
 		{"a wanted code is no citation", "refuse:A_CHECK|B_CHECK", []string{"wantonly"}, false, "jfix/wantonly TestA cites no expected code"},
 		{"a cited code before its want", "refuse:B_CHECK", []string{"wantonly"}, false, "jfix/wantonly TestA cites no expected code"},
+		// Codex M7c-2 review B2: a stream cut off after a passing test (the process group
+		// killed) has started a test and a package that never finished.
+		{"an interrupted stream", "pass", []string{"interrupted"}, false, "jfix/interrupted TestLast started but did not finish"},
+		{"an interrupted package", "pass", []string{"interrupted"}, false, "package jfix/interrupted started but did not finish"},
+		// Codex M7c-2 review B3: a parent's own assertion fails beside a child's named
+		// refusal; the parent's line must cite a code too. Captured with go1.27 and with
+		// go1.26.8, which marks no OutputType.
+		{"a parent's own assertion", "refuse:MAX_ALLOWED_PACKET_CHECK", []string{"parent"}, false, "jfix/parent TestParent cites no expected code"},
+		{"a parent's own assertion, go1.26", "refuse:MAX_ALLOWED_PACKET_CHECK", []string{"parent-go126"}, false, "jfix/parent TestParent cites no expected code"},
+		{"a parent's own assertion under pass", "pass", []string{"parent-go126"}, false, "jfix/parent TestParent failed"},
+		{"a parent's log is no assertion", "refuse:JOB_SCHEMA_PERMISSION_CHECK|SOURCE_SELECT_PERMISSION_CHECK", []string{"nested"}, false, "jfix/nested TestA/two cites no expected code"},
 		{"no events", "pass", nil, false, "no test ran"},
 		{"empty refuse", "refuse:", []string{"pass"}, false, "expectation"},
 		{"unknown expectation", "maybe", []string{"pass"}, false, "expectation"},
@@ -89,5 +100,35 @@ func TestJudgeWantIsNoCitation(t *testing.T) {
 	v := Judge("refuse:A_CHECK|B_CHECK", stream(t, "wantonly"))
 	if len(v.Reasons) != 1 || !strings.Contains(v.Reasons[0], "TestA cites no expected code") {
 		t.Errorf("reasons = %q, want exactly TestA uncited", v.Reasons)
+	}
+}
+
+// TestJudgeExit (Codex M7c-2 review B2): the runner hands the judge go test's exit status,
+// which must agree with the stream: 0 with no failure, 1 with one, and anything else (a
+// signal, a crash) fails the row whatever the stream says.
+func TestJudgeExit(t *testing.T) {
+	for _, c := range []struct {
+		name, expect, fixture string
+		exit                  int
+		ok                    bool
+		reason                string
+	}{
+		{"clean pass, exit 0", "pass", "pass", 0, true, ""},
+		{"clean pass, exit 1", "pass", "pass", 1, false, "go test exited 1 with no failure in its stream"},
+		{"named refusals, exit 1", "refuse:A_CHECK|B_CHECK", "nestedok", 1, true, ""},
+		{"named refusals, exit 0", "refuse:A_CHECK|B_CHECK", "nestedok", 0, false, "go test exited 0 though its stream failed"},
+		{"killed", "pass", "pass", 143, false, "go test exited 143"},
+		{"not reported", "pass", "pass", -1, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := Judge(c.expect, stream(t, c.fixture))
+			v.Exit(c.exit)
+			if v.OK != c.ok {
+				t.Fatalf("OK = %v, want %v; reasons %q", v.OK, c.ok, v.Reasons)
+			}
+			if !c.ok && !strings.Contains(strings.Join(v.Reasons, "\n"), c.reason) {
+				t.Errorf("reasons %q lack %q", v.Reasons, c.reason)
+			}
+		})
 	}
 }
