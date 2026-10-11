@@ -1,11 +1,13 @@
 package preflight
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
@@ -204,10 +206,17 @@ func TestStatementCaps(t *testing.T) {
 // same world with 16 KiB on one server is refused, naming that server. Purge is checked on
 // the destination too, where its tracking log statements run. It is a policy check.
 func TestMaxAllowedPacket(t *testing.T) {
-	healthy(t, jobspec.Archive).mustPass()
+	// These cases describe statements at their caps (M7c-1): batch sizes above every cap
+	// keep the bound there (M7c-F4, TestMaxAllowedPacketBatchBound).
+	atCaps := func(t *testing.T, typ jobspec.Type) *world {
+		w := healthy(t, typ)
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: 1 << 20, BatchDeleteSize: 1 << 20}
+		return w
+	}
+	atCaps(t, jobspec.Archive).mustPass()
 	for _, side := range []string{"source", "destination"} {
 		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
-			w := healthy(t, typ)
+			w := atCaps(t, typ)
 			if side == "source" {
 				w.src.packet = 16 << 10
 			} else {
@@ -224,7 +233,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 			}
 		}
 	}
-	w := healthy(t, jobspec.Archive)
+	w := atCaps(t, jobspec.Archive)
 	w.src.packet, w.cfg.SkipPolicy = 16<<10, true
 	w.mustPass()
 
@@ -233,7 +242,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 	// than its key lookups (Fable M7c-1 review I1). 320,000 bytes on the destination must be
 	// refused, naming that statement.
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
-		w := healthy(t, typ)
+		w := atCaps(t, typ)
 		w.dst.packet = 320000
 		if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a tracking log insert statement on orders") {
 			t.Errorf("%s: message %q does not name the tracking log's INSERT", typ, e.Message)
@@ -243,7 +252,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 	// Above the driver's own 64 MiB, the client's limit decides: a VARCHAR(255) utf8mb4 key
 	// at an unlimited range budget (the 65,535-placeholder cap) needs about 67 MB, and the
 	// remedy is to shrink the caps, not to raise the server's packet.
-	w = healthy(t, jobspec.Archive)
+	w = atCaps(t, jobspec.Archive)
 	w.jobYAML = withoutNotes
 	w.src.fks = w.src.fks[:1]
 	for _, s := range []*fakeServer{w.src, w.dst} {
@@ -253,12 +262,16 @@ func TestMaxAllowedPacket(t *testing.T) {
 	w.dst.mem, w.dst.packet = 0, 1<<30
 	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
 		t.Errorf("message %q does not name the client's limit", e.Message)
+	} else if !strings.Contains(e.Message, "set range_optimizer_max_mem_size on the destination") || !strings.Contains(e.Message, "batch_size") {
+		// Fable M7c-1 review M4(b): at an unlimited range budget there is nothing to lower;
+		// the DBA must set a limit, or the job must send fewer keys.
+		t.Errorf("message %q: at range_optimizer_max_mem_size = 0 the remedy must be to set a limit or lower batch_size", e.Message)
 	}
 
 	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
 	// four bytes a character, so a purge's log INSERT at 8,272 roots needs about 8.5 MB, not
 	// the 2.2 MB its stored bytes suggest. 4 MiB on the destination is refused; 16 MiB passes.
-	latin1 := healthy(t, jobspec.Purge)
+	latin1 := atCaps(t, jobspec.Purge)
 	latin1.jobYAML = withoutNotes
 	latin1.src.fks = latin1.src.fks[:1]
 	for _, s := range []*fakeServer{latin1.src, latin1.dst} {
@@ -289,7 +302,7 @@ func TestMaxAllowedPacket(t *testing.T) {
 		{"DECIMAL(65,0) over DECIMAL(10,0)", "decimal(65,0)", "decimal(10,0)", "", 768 << 10, 2 << 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := healthy(t, jobspec.Archive)
+			w := atCaps(t, jobspec.Archive)
 			w.jobYAML = withoutNotes
 			w.src.fks = w.src.fks[:1]
 			for _, s := range []*fakeServer{w.src, w.dst} {
@@ -303,5 +316,114 @@ func TestMaxAllowedPacket(t *testing.T) {
 			w.src.packet = tc.passes
 			w.mustPass()
 		})
+	}
+}
+
+// TestMaxAllowedPacketBatchBound (M7c-2, M7c-F4): the engine never sends more keys in one
+// statement than batch_size, or batch_delete_size for the source's deletes (engine
+// run.go byKeyChunk, discoveryChunk, deleteChunk; the tracking log sees one batch of
+// roots), so the check bounds each statement there, not at its cap.
+// Pair: a 2 MiB destination with a VARCHAR(255) utf8mb4 key passes at batch_size 1000
+// (about 1 MB a statement) and is refused at 16000 (the cap), offering batch_size. A
+// batch_delete_size above batch_size is the source's by-key bound, and is named.
+func TestMaxAllowedPacketBatchBound(t *testing.T) {
+	setup := func(batch, deletes int) *world {
+		w := healthy(t, jobspec.Archive)
+		w.jobYAML = withoutNotes
+		w.src.fks = w.src.fks[:1]
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+			setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+		}
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: batch, BatchDeleteSize: deletes}
+		return w
+	}
+
+	w := setup(1000, 500)
+	w.dst.packet = 2 << 20
+	w.mustPass()
+
+	w = setup(16000, 500)
+	w.dst.packet = 2 << 20
+	e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+	for _, want := range []string{"destination max_allowed_packet is 2097152 bytes", "Raise max_allowed_packet on the destination", "lower batch_size to at most"} {
+		if !strings.Contains(e.Message, want) {
+			t.Errorf("batch_size 16000: message %q lacks %q", e.Message, want)
+		}
+	}
+
+	// Deletes: batch_delete_size bounds the source's by-key statements when it is larger.
+	w = setup(10, 16000)
+	w.src.packet = 2 << 20
+	e = w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+	if !strings.Contains(e.Message, "lower batch_delete_size to at most") || strings.Contains(e.Message, "lower batch_size") {
+		t.Errorf("batch_delete_size 16000: message %q must offer batch_delete_size only (batch_size 10 fits)", e.Message)
+	}
+	w = setup(10, 1000)
+	w.src.packet = 2 << 20
+	w.mustPass()
+
+	// Fable M7c-2 review F3: copy-only never deletes, so batch_delete_size bounds none of
+	// its statements. The archive refused above with batch_delete_size 16000 passes as a
+	// copy-only job.
+	w = setup(10, 16000)
+	w.jobType = jobspec.CopyOnly
+	w.src.packet = 2 << 20
+	w.mustPass()
+
+	// A size below 1 is a configuration error, never a bound of 0.
+	for _, p := range []config.ProcessingConfig{{BatchSize: 0, BatchDeleteSize: 500}, {BatchSize: 1000, BatchDeleteSize: 0}} {
+		w := healthy(t, jobspec.Archive)
+		w.cfg.Processing = p
+		if _, err := w.run(); err == nil || !strings.Contains(err.Error(), "batch") {
+			t.Errorf("run() with %+v = %v, want a configuration error naming the batch size", p, err)
+		}
+	}
+}
+
+// TestMaxAllowedPacketContinuation (Codex M7c-2 review B1): the root fetch after the first
+// batch, and recovery's later log pages, bind every prefix of the last key (key.After):
+// N(N+1)/2 values for N parts, at any batch size. The batch-size bound of the membership
+// statements (M7c-F4) does not cover them. Pair: a root key of 16 VARCHAR(192) latin1
+// columns (each read back as up to 768 utf8mb4 bytes) at batch sizes of 1 — refused naming
+// the root fetch on a 64 KiB source (its continuation binds 136 values, about 105 KB) and
+// naming the log page on a 64 KiB destination; both pass at 1 MiB. Lowering a batch size
+// cannot help, so the remedy offers none.
+func TestMaxAllowedPacketContinuation(t *testing.T) {
+	names := make([]string, 16)
+	cols := make([]validations.ColumnSpec, 16)
+	for i := range names {
+		names[i] = fmt.Sprintf("c%d", i+1)
+		cols[i] = col(names[i], "varchar(192)", "latin1 latin1_bin")
+	}
+	setup := func(typ jobspec.Type) *world {
+		w := healthy(t, typ)
+		w.jobYAML = "\n    root_table: wide\n    primary_key: [" + strings.Join(names, ", ") + "]\n    where: \"1=1\"\n"
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			s.specs["wide"] = table("wide", cols, names)
+		}
+		w.src.fks = nil
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: 1, BatchDeleteSize: 1}
+		return w
+	}
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+		w := setup(typ)
+		w.src.packet = 64 << 10
+		e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+		if !strings.Contains(e.Message, "root fetch") || strings.Contains(e.Message, "lower batch") {
+			t.Errorf("%s, 64 KiB source: message %q must name the root fetch and offer no batch size", typ, e.Message)
+		}
+		w.src.packet = 1 << 20
+		w.mustPass()
+	}
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
+		w := setup(typ)
+		w.dst.packet = 64 << 10
+		e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+		if !strings.Contains(e.Message, "tracking log page") || strings.Contains(e.Message, "lower batch") {
+			t.Errorf("%s, 64 KiB destination: message %q must name the log page and offer no batch size", typ, e.Message)
+		}
+		w.dst.packet = 1 << 20
+		w.mustPass()
 	}
 }

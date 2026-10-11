@@ -1,0 +1,3 @@
+# Init row lower_case_table_names_1: settable only when the data directory is created.
+[mysqld]
+lower_case_table_names = 1

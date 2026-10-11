@@ -1,0 +1,14 @@
+{"Time":"2026-10-11T16:09:40.543489+03:00","Action":"start","Package":"jfix/wantonly"}
+{"Time":"2026-10-11T16:09:40.962448+03:00","Action":"run","Package":"jfix/wantonly","Test":"TestA"}
+{"Time":"2026-10-11T16:09:40.96252+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.962581+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestA","Output":"    p_test.go:5: Run() = \u003cnil\u003e, want A_CHECK\n","OutputType":"error"}
+{"Time":"2026-10-11T16:09:40.962601+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.962618+03:00","Action":"fail","Package":"jfix/wantonly","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T16:09:40.962629+03:00","Action":"run","Package":"jfix/wantonly","Test":"TestB"}
+{"Time":"2026-10-11T16:09:40.962637+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.962644+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestB","Output":"    p_test.go:6: Run() = engine: batch 1: B_CHECK: refused, want nil\n","OutputType":"error"}
+{"Time":"2026-10-11T16:09:40.962655+03:00","Action":"output","Package":"jfix/wantonly","Test":"TestB","Output":"--- FAIL: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.962662+03:00","Action":"fail","Package":"jfix/wantonly","Test":"TestB","Elapsed":0}
+{"Time":"2026-10-11T16:09:40.962668+03:00","Action":"output","Package":"jfix/wantonly","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.963128+03:00","Action":"output","Package":"jfix/wantonly","Output":"FAIL\tjfix/wantonly\t0.419s\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:09:40.963151+03:00","Action":"fail","Package":"jfix/wantonly","Elapsed":0.42}

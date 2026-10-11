@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
@@ -262,7 +263,10 @@ func healthy(t *testing.T, typ jobspec.Type) *world {
 	}
 	w.cfg = Config{SourceDatabase: "src", DestinationDatabase: "dst", JobSchema: "dst",
 		Verification: jobspec.VerifyCount,
-		Logger:       &logger.Logger{SugaredLogger: zap.New(core).Sugar()}}
+		// The configuration defaults (internal/config): the run's statements carry at
+		// most this many keys (M7c-F4).
+		Processing: config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500},
+		Logger:     &logger.Logger{SugaredLogger: zap.New(core).Sugar()}}
 	return w
 }
 

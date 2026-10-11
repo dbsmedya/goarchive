@@ -199,6 +199,21 @@ func TestInMatchesExactlyPerFamily(t *testing.T) {
 	}
 }
 
+// skipPastPacket skips the test when the server's max_allowed_packet cannot carry a
+// statement of need bytes (key.StatementBytes, the bound MAX_ALLOWED_PACKET_CHECK uses).
+// These tests send their statements straight to MySQL, past preflight, so under the
+// environment matrix's max_allowed_packet_64k row their premise cannot hold (M7c-2).
+func skipPastPacket(t *testing.T, c *sql.Conn, need uint64) {
+	t.Helper()
+	var packet uint64
+	if err := c.QueryRowContext(context.Background(), "SELECT @@SESSION.max_allowed_packet").Scan(&packet); err != nil {
+		t.Fatal(err)
+	}
+	if need > packet {
+		t.Skipf("the test's statement needs about %d bytes and max_allowed_packet is %d (the environment matrix row max_allowed_packet_64k): preflight would refuse such a run", need, packet)
+	}
+}
+
 // rangeFixture is a 10,000-row composite-key table on c under a 1 MiB range budget. run
 // reads n of its keys in one IN list and returns CheckRangeWarning's verdict; capped is
 // MaxTuples for that budget.
@@ -221,6 +236,7 @@ func rangeFixture(t *testing.T, c *sql.Conn) (run func(n int) error, capped int)
 	}
 	run = func(n int) error {
 		keys := keysOf(n)
+		skipPastPacket(t, c, StatementBytes(d.Names(), d.Columns, n, 0, 64))
 		rows, err := c.QueryContext(ctx, "SELECT a, b FROM ga3_cap WHERE "+In(d.Names(), d.Columns, n), Args(keys)...)
 		if err != nil {
 			t.Fatal(err)

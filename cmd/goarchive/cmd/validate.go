@@ -89,6 +89,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,
 			JobSchema: doc.Shared.Destination.EffectiveJobSchema(),
 			Spec:      spec, Verification: verification, ForceTriggers: o.forceTriggers, Logger: log,
+			Processing: spec.EffectiveProcessing(doc.Shared.Processing),
 		})
 		syncLogger(log)
 		if err != nil {

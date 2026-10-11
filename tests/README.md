@@ -497,6 +497,45 @@ These test recovery from known states. Binary E2E08/09 exercise actual process
 signals; Test13 exercises a live replication hold and release on one invocation.
 Run them serially with other estate consumers.
 
+### Environment matrix
+
+The environment matrix runs the integration suites again under **one changed MySQL
+environment at a time**: a global variable, a setting fixed at initialization, or another
+server version. The rows are in [`envmatrix/rows.tsv`](envmatrix/rows.tsv), and each one states
+its expected outcome. Under every row a run must be exact, or refused at startup with a named
+error, or fail closed by name before it changes anything (as under `max_error_count = 0`,
+where the INSERT and the range checks refuse the statement they cannot prove). A row expected to `pass` has no failing test. A row expected to `refuse:CODE|…` passes
+only if every failing test's own output cites one of those codes, a failing parent's own lines
+included. A panic, a timeout, a build failure, a test or package that started and never
+finished, or a `go test` exit status that disagrees with its output (a killed run) fails any
+row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
+
+| Kind | What the runner does |
+|---|---|
+| `dynamic` | Takes a snapshot of the globals on a long-lived source/destination pair of `MX_IMAGE`, applies the row's `SET GLOBAL` to both servers, runs the suites, then restores the snapshot and compares it |
+| `init` | Starts a fresh pair with an extra `my.cnf` (for example `lower_case_table_names = 1`) |
+| `version` | Starts a fresh, unchanged pair of another image (Percona and Oracle, 8.0.40 to 9.7) |
+
+```bash
+make env-matrix                                   # every row
+make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
+```
+
+- **Needs:** Docker, the local images that `rows.tsv` names, and `tests/.env`.
+- **Servers:** the throwaway pairs (`ga-mx<i>-src`/`-dst`, ports 3375–3396) are removed with
+  their volumes when the run ends.
+- **The estate:** the suites still reach db3 as the replica, so
+  `TestMySQLLiveReplicationGate`, which stops db3's applier, is skipped here. Run it on the
+  estate alone.
+- **Results:** `tests/results/envmatrix/<tag>/` (`latest` links to the newest run): per row
+  `verdict.txt`, `go-test.json` and the variable snapshots, plus `SUMMARY.txt`. The command
+  exits 1 if any row is not OK.
+- **Time:** three pairs work through the rows in parallel (`MX_PAIRS`). A dynamic row takes
+  about 50 s, and a fresh pair adds about 30 s to start.
+- **Running alone:** do not run the estate suite or lint beside it.
+- **Server variables:** the runner and tests may `SET GLOBAL` on these throwaway servers;
+  goarchive itself never does.
+
 ### Sakila E2E tests
 
 ```bash

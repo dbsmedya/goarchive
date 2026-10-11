@@ -272,7 +272,8 @@ func TestMySQLConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := preflight.Run(context.Background(), preflight.Config{Source: e.src, SourceDatabase: e.srcSchema, Destination: e.dst,
-		DestinationDatabase: e.dstSchema, JobSchema: e.dstSchema, Spec: cfg.Spec, Verification: cfg.Verification})
+		DestinationDatabase: e.dstSchema, JobSchema: e.dstSchema, Spec: cfg.Spec, Verification: cfg.Verification,
+		Processing: cfg.Processing})
 	if err != nil {
 		t.Fatal(err)
 	}

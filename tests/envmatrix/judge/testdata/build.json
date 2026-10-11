@@ -1,0 +1,6 @@
+{"ImportPath":"jfix/build [jfix/build.test]","Action":"build-output","Output":"# jfix/build [jfix/build.test]\n"}
+{"ImportPath":"jfix/build [jfix/build.test]","Action":"build-output","Output":"build/p_test.go:5:28: undefined: undefinedThing\n"}
+{"ImportPath":"jfix/build [jfix/build.test]","Action":"build-fail"}
+{"Time":"2026-10-11T14:02:51.173538+03:00","Action":"start","Package":"jfix/build"}
+{"Time":"2026-10-11T14:02:51.173608+03:00","Action":"output","Package":"jfix/build","Output":"FAIL\tjfix/build [build failed]\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.173619+03:00","Action":"fail","Package":"jfix/build","Elapsed":0,"FailedBuild":"jfix/build [jfix/build.test]"}

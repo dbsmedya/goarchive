@@ -1,0 +1,38 @@
+# The environment matrix (M7-8, M7c-2): one row per line, tab-separated.
+#   name    the row; results go to tests/results/envmatrix/<tag>/<name>/
+#   kind    dynamic: SET GLOBAL on a long-lived pair of MX_IMAGE, restored after the row
+#           init:    a fresh pair of MX_IMAGE with an extra cnf (settable only at initialization)
+#           version: a fresh, unmutated pair of another image
+#   setup   dynamic: the SQL, run on both servers ("-" for none); init: the cnf, relative to
+#           this directory; version: the image
+#   expect  pass, or refuse:CODE[|CODE...] (tests/envmatrix/judge): every failing test must
+#           cite one of the codes, the M7-8 rule that a run is exact or refused by name
+baseline	dynamic	-	pass
+autocommit_off	dynamic	SET GLOBAL autocommit = 0	pass
+charset_server_latin1	dynamic	SET GLOBAL character_set_server = latin1; SET GLOBAL collation_server = latin1_swedish_ci	pass
+collation_server_utf8mb4_general_ci	dynamic	SET GLOBAL collation_server = utf8mb4_general_ci	pass
+default_engine_myisam	dynamic	SET GLOBAL default_storage_engine = MyISAM	pass
+explicit_defaults_ts_off	dynamic	SET GLOBAL explicit_defaults_for_timestamp = OFF	pass
+gipk_on	dynamic	SET GLOBAL sql_generate_invisible_primary_key = ON	pass
+isolation_read_uncommitted	dynamic	SET GLOBAL transaction_isolation = 'READ-UNCOMMITTED'	pass
+isolation_serializable	dynamic	SET GLOBAL transaction_isolation = 'SERIALIZABLE'	pass
+max_allowed_packet_64k	dynamic	SET GLOBAL max_allowed_packet = 65536	refuse:MAX_ALLOWED_PACKET_CHECK
+max_error_count_0	dynamic	SET GLOBAL max_error_count = 0	refuse:INSERT_DIAGNOSTICS_UNPROVEN|raise max_error_count
+partial_revokes_on	dynamic	SET GLOBAL partial_revokes = ON	refuse:JOB_SCHEMA_PERMISSION_CHECK|SOURCE_SELECT_PERMISSION_CHECK|SOURCE_DELETE_PERMISSION_CHECK|FK_COVERAGE_VISIBILITY_CHECK
+sql_mode_allow_invalid_dates	dynamic	SET GLOBAL sql_mode = 'ALLOW_INVALID_DATES'	pass
+sql_mode_ansi_quotes	dynamic	SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ANSI_QUOTES'	pass
+sql_mode_empty	dynamic	SET GLOBAL sql_mode = ''	pass
+sql_mode_no_backslash_escapes	dynamic	SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,NO_BACKSLASH_ESCAPES'	pass
+sql_mode_pad_char	dynamic	SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,PAD_CHAR_TO_FULL_LENGTH'	pass
+sql_notes_0	dynamic	SET GLOBAL sql_notes = 0	pass
+sql_require_primary_key_on	dynamic	SET GLOBAL sql_require_primary_key = ON	pass
+time_zone_minus7	dynamic	SET GLOBAL time_zone = '-07:00'	pass
+wait_timeout_10	dynamic	SET GLOBAL wait_timeout = 10; SET GLOBAL interactive_timeout = 10	pass
+wait_timeout_high	dynamic	SET GLOBAL wait_timeout = 100000	pass
+lower_case_table_names_1	init	cnf/init/lower_case_table_names_1.cnf	pass
+v80_percona	version	percona/percona-server:8.0	pass
+v97_percona	version	percona/percona-server:9.7	pass
+v8040_oracle	version	mysql:8.0.40	pass
+v8046_oracle	version	mysql:8.0.46	pass
+v84_oracle	version	mysql:8.4	pass
+v97_oracle	version	mysql:9.7	pass

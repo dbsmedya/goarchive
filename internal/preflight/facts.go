@@ -163,6 +163,7 @@ type facts struct {
 	keys    map[string]key.Def // source keys, by job table
 	dstKeys map[string]key.Def // destination keys, set by checkDestinationKeys
 	caps    []Cap
+	srcMem  uint64 // the source's range_optimizer_max_mem_size, read by reportStatementCaps
 	dstMem  uint64 // the destination's range_optimizer_max_mem_size, read by reportStatementCaps
 }
 

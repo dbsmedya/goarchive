@@ -197,7 +197,7 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		Source: cfg.Source, SourceDatabase: src.Schema,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
-		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Logger: cfg.Logger,
+		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Processing: cfg.Processing, Logger: cfg.Logger,
 	})
 	if err != nil {
 		return src, dst, nil, err

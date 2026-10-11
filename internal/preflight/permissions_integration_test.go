@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -119,7 +120,7 @@ func acctRun(ctx context.Context, t *testing.T, src, dst *sql.DB, srcSchema, dst
 	_, err := Run(ctx, Config{
 		Source: src, SourceDatabase: srcSchema,
 		Destination: dst, DestinationDatabase: dstSchema, JobSchema: jobSchema,
-		Spec: spec, Verification: jobspec.VerifyCount,
+		Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing,
 	})
 	return err
 }
@@ -339,8 +340,11 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "psd")
 	ctx := context.Background()
 	var partial int
-	if err := src.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&partial); err != nil || partial != 0 {
-		t.Fatalf("@@global.partial_revokes = %d, %v; this test needs it OFF", partial, err)
+	if err := src.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&partial); err != nil {
+		t.Fatal(err)
+	}
+	if partial != 0 {
+		t.Skipf("@@global.partial_revokes = %d: this pair needs it OFF; the environment matrix row partial_revokes_on is TestMySQLPartialRevokes's", partial)
 	}
 	base := []string{"GRANT SELECT, PROCESS ON *.* TO {{A}}"}
 
@@ -364,13 +368,30 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 	})
 }
 
+// backtickQuoted returns server text (SHOW CREATE TABLE, CURRENT_ROLE()) with identifiers
+// quoted as the default sql_mode quotes them: under ANSI_QUOTES MySQL writes "name", which
+// the environment matrix's sql_mode_ansi_quotes row sets globally (M7-8). goarchive's own
+// SQL runs under it unchanged; only these assertions compare the server's text.
+func backtickQuoted(t *testing.T, db *sql.DB, s string) string {
+	t.Helper()
+	var mode string
+	if err := db.QueryRowContext(context.Background(), "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(mode, "ANSI_QUOTES") {
+		return s
+	}
+	return strings.ReplaceAll(s, `"`, "`")
+}
+
 // acctRoleActive asserts the account behind db has role active and that the role's
 // grant is effective: it can count orders.
 func acctRoleActive(t *testing.T, db *sql.DB, role string) {
 	t.Helper()
 	var active string
 	var n int
-	if err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&active); err != nil || active != strings.ReplaceAll(role, "'", "`") {
+	err := db.QueryRow("SELECT CURRENT_ROLE()").Scan(&active)
+	if active = backtickQuoted(t, db, active); err != nil || active != strings.ReplaceAll(role, "'", "`") {
 		t.Fatalf("CURRENT_ROLE() = %q, %v; want %s active", active, err, role)
 	}
 	if err := db.QueryRow("SELECT COUNT(*) FROM orders").Scan(&n); err != nil {
@@ -442,12 +463,27 @@ func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 // ON DELETE CASCADE child of orders in another schema plus no PROCESS → archive reports
 // FK_COVERAGE_VISIBILITY_CHECK; with PROCESS → archive and copy-only report
 // FK_COVERAGE_CHECK naming the external child.
+// M7c-2 (probe PR-9): MySQL 8.0.40 lets an account without PROCESS read the InnoDB
+// registry, unfiltered (8.0.46 and later refuse it with 1227). The library then proves
+// visibility for that account too, and goarchive's outcome is the PROCESS one: every type
+// passes, and the external child is refused by name with FK_COVERAGE_CHECK. The test asks
+// the library which the server does, and expects that side.
 func TestMySQLForeignKeyVisibility(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "pvis")
 	ctx := context.Background()
 	base := []string{"GRANT SELECT, DELETE ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
 	noProcess := acctCreate(t, "TEST_SOURCE", src, "visnoproc", srcSchema, base...)
 	process := acctCreate(t, "TEST_SOURCE", src, "visproc", srcSchema, append(base, "GRANT PROCESS ON *.* TO {{A}}")...)
+	probe, err := validations.NewInspector(noProcess, srcSchema).ForeignKeys(ctx, validations.IncomingTo("orders"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryWithoutProcess := probe.Visibility == validations.VisibilityComplete
+	// A subtest of its own, so the record never sits in a failing parent's output, where the
+	// matrix judge reads a test's own lines as its assertions (Codex M7c-2 review B3).
+	t.Run("which side this server is", func(t *testing.T) {
+		t.Logf("the InnoDB foreign-key registry without PROCESS: complete = %v (downgrade %v)", registryWithoutProcess, probe.DowngradeReason)
+	})
 	invisible := func(t *testing.T, err error) {
 		t.Helper()
 		e := refusedWith(t, err, "FK_COVERAGE_VISIBILITY_CHECK")
@@ -456,6 +492,14 @@ func TestMySQLForeignKeyVisibility(t *testing.T) {
 	}
 
 	t.Run("no PROCESS is refused except for copy-only", func(t *testing.T) {
+		if registryWithoutProcess {
+			for _, typ := range acctTypes {
+				if err := acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+					t.Errorf("%s: Run() = %v, want success: this server proves visibility without PROCESS", typ, err)
+				}
+			}
+			return
+		}
 		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge} {
 			invisible(t, acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)))
 		}
@@ -488,7 +532,12 @@ func TestMySQLForeignKeyVisibility(t *testing.T) {
 		"CONSTRAINT fk_audit_order FOREIGN KEY (order_id) REFERENCES `"+srcSchema+"`.orders (id) ON DELETE CASCADE) ENGINE=InnoDB")
 	external := schemaOf(t, ext) + ".audit (ON DELETE CASCADE)"
 	t.Run("an external child and no PROCESS report visibility", func(t *testing.T) {
-		invisible(t, acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob)))
+		err := acctRun(ctx, t, noProcess, dst, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob))
+		if registryWithoutProcess {
+			acctMessage(t, refusedWith(t, err, "FK_COVERAGE_CHECK"), "orders is referenced by: ["+external+"]")
+			return
+		}
+		invisible(t, err)
 	})
 	t.Run("an external child with PROCESS reports coverage", func(t *testing.T) {
 		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
@@ -512,7 +561,7 @@ func acctStart(t *testing.T, src, dst *sql.DB, srcSchema, dstSchema string) <-ch
 		_, err := Run(context.Background(), Config{
 			Source: src, SourceDatabase: srcSchema,
 			Destination: dst, DestinationDatabase: dstSchema, JobSchema: dstSchema,
-			Spec: spec, Verification: jobspec.VerifyCount,
+			Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing,
 		})
 		done <- err
 	}()

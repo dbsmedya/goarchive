@@ -42,6 +42,7 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 	if err != nil {
 		return inspectionError("statement_caps", err)
 	}
+	f.srcMem = srcMem
 	specs, err := f.sourceSpecs(ctx)
 	if err != nil {
 		return inspectionError("statement_caps", err)

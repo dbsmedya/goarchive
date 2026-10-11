@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,8 +32,8 @@ func TestMySQLFailedFirstHeartbeat(t *testing.T) {
 			cancel() // the heartbeat that follows fails on the cancelled context
 		}
 	}
-	if _, err := Run(ctx, cfg); err == nil {
-		t.Fatal("Run() passed a failed first heartbeat")
+	if _, err := Run(ctx, cfg); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() = %v, want the run stopped by its failed first heartbeat (context.Canceled)", err)
 	}
 	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobFailed) {
 		t.Errorf("job_status = %d, want failed (%d)", got, tracking.JobFailed)

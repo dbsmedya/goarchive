@@ -210,6 +210,11 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 	return db, nil
 }
 
+// waitTimeoutExpression is the session wait_timeout BuildDSN pins: the server's global, or
+// 8 h (MySQL's default) when the global is lower. MySQL accepts the expression for this
+// variable only in the CAST form; GREATEST or IF alone fail with 1232 (M7c-2 probe PR-8).
+const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
+
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
 	// Start from NewConfig() so the driver's safe defaults are preserved.
@@ -236,11 +241,17 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// M7c F1: tracking writes outside an explicit transaction rely on each statement
 	// committing on its own. A server whose global autocommit is 0 would leave them open,
 	// holding their locks, so the session pins it.
+	// M7c-2 P4: the job lock lives on an idle dedicated session that the keep-alive checks
+	// only every 30 s, and a source session stays pinned, idle, through a lag wait. A
+	// server wait_timeout shorter than that closes the session: GET_LOCK is released while
+	// the run goes on deleting, or the next delete chunk fails with 4031. The session keeps
+	// at least 8 h (waitTimeoutExpression), never less than the server's own value.
 	dsnCfg.Params = map[string]string{
-		"sql_notes":  "1",
-		"time_zone":  "'+00:00'",
-		"sql_mode":   autoZeroModeExpression,
-		"autocommit": "1",
+		"sql_notes":    "1",
+		"time_zone":    "'+00:00'",
+		"sql_mode":     autoZeroModeExpression,
+		"autocommit":   "1",
+		"wait_timeout": waitTimeoutExpression,
 	}
 
 	switch cfg.TLS {

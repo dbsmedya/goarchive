@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
@@ -126,12 +127,16 @@ func runOn(t *testing.T, src, dst *sql.DB, spec *jobspec.Spec) (*Result, error) 
 	return runVerified(t, src, dst, spec, "count")
 }
 
+// defaultProcessing is the configuration's default processing block, which preflight
+// needs to bound statements by batch size (M7c-F4).
+var defaultProcessing = config.DefaultConfig().Processing
+
 func runVerified(t *testing.T, src, dst *sql.DB, spec *jobspec.Spec, method string) (*Result, error) {
 	t.Helper()
 	return Run(context.Background(), Config{
 		Source: src, SourceDatabase: schemaOf(t, src),
 		Destination: dst, DestinationDatabase: schemaOf(t, dst), JobSchema: schemaOf(t, dst),
-		Spec: spec, Verification: jobspec.Verification(method),
+		Spec: spec, Verification: jobspec.Verification(method), Processing: defaultProcessing,
 	})
 }
 

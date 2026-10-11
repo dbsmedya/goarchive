@@ -5,7 +5,9 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -44,9 +46,14 @@ func texts(t *testing.T, db *sql.DB, q string) []string {
 	return out
 }
 
+// strictMode is a strict session sql_mode, the server default's date and strictness flags.
+const strictMode = "'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'"
+
 // TestMySQLInvalidTemporalPayload (M7-3, G22): a DATE payload the source holds under
-// ALLOW_INVALID_DATES, copied as SQL text into a destination whose session is strict (the
-// server default). Archive and copy-only, under count and none.
+// ALLOW_INVALID_DATES, copied as SQL text into a destination whose session is strict:
+// pinned here, so the test holds on a server whose global mode is not (the environment
+// matrix's sql_mode rows; G24, TestMySQLRawTemporalRoundTrip, covers a non-strict
+// destination). Archive and copy-only, under count and none.
 // Pair: d = '2020-02-31' → the INSERT fails with MySQL 1292, the source keeps the row, the
 // destination is empty and nothing is logged; d = '2020-02-29', the one change → copied as
 // that text (archive also deletes the source row).
@@ -61,11 +68,12 @@ func TestMySQLInvalidTemporalPayload(t *testing.T) {
 					if got := texts(t, e.src, "SELECT CAST(d AS CHAR) FROM r"); len(got) != 1 || got[0] != d {
 						t.Fatalf("source d = %v, want %s", got, d)
 					}
-					if mode := texts(t, e.dst, "SELECT @@SESSION.sql_mode"); !strings.Contains(mode[0], "STRICT_TRANS_TABLES") {
-						t.Fatalf("destination sql_mode = %q, want a strict session", mode[0])
-					}
 					cfg := e.config(t, job(t, typ, "\n    root_table: r\n    primary_key: id\n    where: \"1=1\"\n"))
 					cfg.Verification = v
+					cfg.Destination = openServer(t, "TEST_DEST", e.dstSchema, map[string]string{"sql_mode": strictMode})
+					if mode := texts(t, cfg.Destination, "SELECT @@SESSION.sql_mode"); !strings.Contains(mode[0], "STRICT_TRANS_TABLES") {
+						t.Fatalf("destination sql_mode = %q, want a strict session", mode[0])
+					}
 					_, err := e.run(t, cfg)
 					if d == "2020-02-31" {
 						var me *mysql.MySQLError
@@ -93,6 +101,73 @@ func TestMySQLInvalidTemporalPayload(t *testing.T) {
 		}
 	}
 }
+
+// TestMySQLRawTemporalRoundTrip (M7c-2, G24): a destination whose session is not strict,
+// as a server whose global sql_mode is (the production DSN only appends
+// NO_AUTO_VALUE_ON_ZERO to it; M7c-2 probe PR-1). The source holds dates MySQL keeps only
+// under ALLOW_INVALID_DATES: 2020-02-31, 2020-00-15, 0000-00-00, beside NULL and a
+// microsecond DATETIME. Archive and copy-only, under sha256, count and none.
+// Pair (R56; outcomes measured, probe PR-2): destination session ALLOW_INVALID_DATES →
+// every value lands byte for byte, with no conversion; destination session ”, the one
+// change → MySQL turns 2020-02-31 into 0000-00-00 with warning 1264 on d and dt: under
+// sha256 and count INSERT_DIAGNOSTIC_REJECTED, nothing copied, logged or deleted; under
+// none the conversion is accepted and counted in Report.Conversions.
+func TestMySQLRawTemporalRoundTrip(t *testing.T) {
+	const rows = "SELECT CONCAT(id, '|', IFNULL(HEX(d), 'N'), '|', IFNULL(CAST(dt AS CHAR), 'N')) FROM r ORDER BY id"
+	for _, mode := range []string{"'ALLOW_INVALID_DATES'", "''"} {
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+			for _, v := range []jobspec.Verification{jobspec.VerifySHA256, jobspec.VerifyCount, jobspec.VerifyNone} {
+				t.Run(mode+"/"+string(typ)+"/"+string(v), func(t *testing.T) {
+					e := newEnv(t, "traw")
+					e.both(t, "CREATE TABLE r (id BIGINT NOT NULL PRIMARY KEY, d DATE, dt DATETIME(6)) ENGINE=InnoDB")
+					execAll(t, invalidDates(t, e), "INSERT INTO r VALUES "+
+						"(1, '2020-02-31', '2020-02-31 10:00:00'), (2, '2020-00-15', NULL), "+
+						"(3, '0000-00-00', '0000-00-00 00:00:00'), (4, NULL, '2020-02-29 12:00:00.123456')")
+					source := texts(t, e.src, rows)
+					cfg := e.config(t, job(t, typ, "\n    root_table: r\n    primary_key: id\n    where: \"1=1\"\n"))
+					cfg.Verification = v
+					cfg.Destination = openServer(t, "TEST_DEST", e.dstSchema, map[string]string{"sql_mode": mode})
+					rep, err := e.run(t, cfg)
+
+					converted := mode == "''"
+					if converted && v != jobspec.VerifyNone {
+						de := wantErr[*insertDiagnosticError](t, err)
+						if de.Identifier != "INSERT_DIAGNOSTIC_REJECTED" || de.Table != "r" || de.Count != 2 || len(de.Preview) == 0 || de.Preview[0].Code != 1264 {
+							t.Errorf("refusal = %+v, want INSERT_DIAGNOSTIC_REJECTED on r for two 1264 warnings", de)
+						}
+						untouched(t, e, "r", 4)
+						return
+					}
+					if err != nil {
+						t.Fatalf("Run: %v", err)
+					}
+					want := source
+					if converted {
+						want = append([]string{"1|" + hexOf("0000-00-00") + "|0000-00-00 00:00:00.000000"}, source[1:]...)
+						if got := rep.Conversions["r"]; len(got) != 1 || got[1264] != 2 {
+							t.Errorf("Report.Conversions[r] = %v, want {1264: 2}", got)
+						}
+					} else if len(rep.Conversions) != 0 {
+						t.Errorf("Report.Conversions = %v, want none", rep.Conversions)
+					}
+					if got := texts(t, e.dst, rows); !slices.Equal(got, want) {
+						t.Errorf("destination rows = %q, want %q", got, want)
+					}
+					left := int64(4)
+					if typ == jobspec.Archive {
+						left = 0
+					}
+					if got := count(t, e.src, "SELECT COUNT(*) FROM r"); got != left {
+						t.Errorf("source r = %d rows, want %d", got, left)
+					}
+				})
+			}
+		}
+	}
+}
+
+// hexOf is MySQL's HEX() of a string.
+func hexOf(s string) string { return strings.ToUpper(hex.EncodeToString([]byte(s))) }
 
 // TestMySQLInvalidTemporalKey (M7-3, G23): the 2.x collision fixture. Root 1's child
 // vp_keys is keyed by DATE d, a grandchild vp_leaves references d, and root 2's child holds
