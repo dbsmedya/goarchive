@@ -131,8 +131,10 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1412 FAIL=0 SKIP=17`, measured by the integration runner on
-  2026-10-02 (gate run `20261002T225328Z-2783`, the empty-`where` refusal and version-drift
-  tests). Sixteen skips
-  need disposable matrix profiles; the existing `TestExecute_CheckpointCallbackError` skip
-  remains. Re-measure after adding or removing tagged tests.
+- **Integration inventory:** to be re-measured by the gate's integration stage on the 3.0-alpha
+  release PR. The last measurement, `go test -json -tags=integration ./internal/... ./cmd/...`
+  on the estate at `cb319de` with `TestMySQLLiveReplicationGate` run on its own: `PASS=1126
+  FAIL=0 SKIP=4`, counted at every level. Re-measure after adding or removing tagged tests.
+- **Gate duration:** the whole gate must finish inside one 600-second Bash call. A trial on
+  2026-10-10 took 371 s; record each new measurement here, since the margin shrinks as tests are
+  added.

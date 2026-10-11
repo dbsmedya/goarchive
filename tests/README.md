@@ -8,8 +8,8 @@ integration, and Sakila end-to-end (E2E) tests.
 | Test Type | Description | Command |
 |-----------|-------------|---------|
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
-| **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts; `sqlmock` covers GoArchive's own SQL — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
-| **Integration** | Real-DB tests behind the `integration` build tag; reseed first | `./scripts/run-tests.sh --setup --integration-only` |
+| **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
+| **Integration** | Real-DB tests behind the `integration` build tag | `make test-integration`, or `./scripts/run-tests.sh --setup --integration-only` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–16) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12) | `make e2e-examples` |
 
@@ -31,7 +31,7 @@ results remain available beside the runner summary.
 | File in the run directory | What it records |
 |---|---|
 | `run.tsv` | Run ID, source revision, tracked-tree state, start/end and outcome/exit information |
-| `summary.tsv` | All eleven stages, their status, command/capture exits and current log paths |
+| `summary.tsv` | All ten stages, their status, command/capture exits and current log paths |
 | `summary.txt` | The same stage verdicts in a readable form |
 | `<stage>.log` | Output from a stage that actually started in this invocation |
 | `complete` | Success marker with run ID, revision and `GATE COMPLETE - every stage above exited 0` |
@@ -51,25 +51,27 @@ exit. A console line or an older stage log alone does not certify the checkout.
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
 destroys the estate; run it before integration and that fails for reasons
-unrelated to your change. Integration needs `--setup`, or stale heartbeat state fabricates
-failures. `make gate` encodes both so nobody has to remember them.
+unrelated to your change. Integration runs after `--setup` reseeds the estate. `make gate`
+encodes both so nobody has to remember them.
 
 It fails fast on a dead estate rather than letting every step die with
 `Can't connect to MySQL server`, which reads exactly like a product failure. Note the harness's
 own `selftest_get_row_count_fails_loud` cannot catch that case — it probes an always-refused
 port on purpose, so it passes while the real databases are down.
 
-Credentials first, as always: `set -a; source tests/.env; set +a`.
+Credentials first, as always: `set -a; source tests/.env; set +a`. A fresh clone has no
+`tests/.env` (copy `tests/dot.env`) and no `tests/sakila-db/`, which setup downloads itself.
 
-> **Integration + E2E need a freshly-reseeded destination — the #1 source of
-> false failures.** The real-DB tests archive Sakila into `sakila_archive` and
-> several rely on it starting empty; a prior run leaves rows behind and aborts
-> with `destination already contains a row … Duplicate entry` (leftover state,
-> **not** a regression). The `--setup` flag reseeds source + destination first.
-> The real-DB tests also DELETE from source, so they are run-once against a fresh
-> `--setup`. To run integration tests via `go test` directly:
-> `./scripts/run-tests.sh --setup` once, then
-> `INTEGRATION_FORCE=true go test -tags=integration ./internal/archiver/... -count=1`.
+**Run the gate and `make e2e` from the main checkout, not a worktree.** `make test-reset`
+recreates db1–db3 with their `my.cnf` bind-mounted from the checkout it runs in, so a worktree
+that is later removed leaves the containers pointing at files that no longer exist.
+
+> **E2E needs a freshly reseeded estate — the #1 source of false failures.** The E2E
+> tests archive Sakila into `sakila_archive`, which must start empty: every copy is a strict
+> INSERT, so a prior run's rows fail the next one with `Duplicate entry` (leftover state,
+> **not** a regression). They also DELETE from the source. `make e2e` reseeds first. The
+> integration tests create and drop their own schemas; a few read the seeded Sakila estate, so
+> run `./scripts/run-tests.sh --setup` once before running them with `go test` directly.
 
 ## Sakila E2E Test Suite
 
@@ -382,14 +384,11 @@ server (3307); the source (3305) and replica (3308) stay in UTC. This is a regre
 [#16](https://github.com/dbsmedya/goarchive/issues/16): GoArchive pins every session it opens to
 `time_zone='+00:00'`, and if that pin is ever lost, every `TIMESTAMP` copied by the suite lands
 three hours off while SHA256 verification still matches. Sakila carries 15 `TIMESTAMP` columns,
-so the whole E2E matrix crosses the boundary, and
-`internal/archiver/timezone_integration_test.go` asserts the stored instants directly with
-`UNIX_TIMESTAMP()` — and refuses to pass on a UTC destination.
-
-That test also flips the **source** (3305) to `Europe/Berlin` for one subtest — the DST
-fall-back hour renders two instants as the same wall-clock, which a zone-blind copy collapses
-into one — and restores the previous value in its cleanup. The named-zone tables are loaded on
-every container by the Percona entrypoint.
+so the whole E2E matrix crosses the boundary. `TestMySQLTimestampFold` (`internal/engine`)
+archives the two instants of Berlin's DST fall-back hour, which a zone-blind copy would collapse
+into one, across that boundary, and shows that a pool whose sessions run in Berlin time is
+refused before anything is read. The named-zone tables are loaded on every container by the
+Percona entrypoint.
 
 ### 2. Build the binary
 
@@ -427,7 +426,7 @@ go tool cover -func=/tmp/goarchive-short.cover
 go tool cover -html=/tmp/goarchive-short.cover -o /tmp/goarchive-short.html
 ```
 
-For focused archiver work, replace `./...` with `./internal/archiver`. Keep generated
+For focused work, replace `./...` with one package, e.g. `./internal/engine`. Keep generated
 profiles and HTML outside the repository. A review may record the measured command and
 result, but documentation must not present a percentage as current unless that same change
 generated it.
@@ -444,58 +443,20 @@ destination starts empty (see the Overview note):
 A direct `go test` needs `-tags=integration`; without it the integration tests are not
 compiled, and `go test` prints `ok` with no test run.
 
-#### The integration config file
+The tests read the estate from `TEST_SOURCE_*`, `TEST_DEST_*` and `TEST_REPLICA_*`
+([Environment Variables](#environment-variables)); without them they fail with
+`integration environment not loaded: set -a; source tests/.env; set +a`. Each test creates its
+own scratch schemas on the source and destination (`ga3m5_<name>_<pid>`) and drops them when it
+ends, so tests do not share state; a killed run can leave a scratch schema behind.
 
-The tests built on `SetupIntegrationTest` — among them the eight
-`TestOrchestrator_*_Integration` tests that `make test-integration` runs (what each covers:
-[Testing Reference](../docs/README_TESTING.md#orchestrator-integration-tests)) — read
-`internal/archiver/integration_test.yaml`. It is tracked, so a clone already has it:
+#### Interrupted runs
 
-| Key | Template value |
-|---|---|
-| `databases[source]` | `127.0.0.1:3305`, user `root`, database `goarchive_test` (created if absent) |
-| `databases[destination]` | `127.0.0.1:3307`, user `root`, database `goarchive_test` (created if absent) |
-| `password` | `${MYSQL_ROOT_PASSWORD}`, expanded from the environment, so source `tests/.env` first |
-| `force` | `false`; `true`, or `INTEGRATION_FORCE=true`, drops and recreates both databases |
-| `fixture_path` | `testdata/customer_orders.sql`; a relative path resolves from the test process's working directory (`internal/archiver` under `go test`), not from the config file |
-
-To test against other servers, copy the file, edit the copy, and point `INTEGRATION_CONFIG` at
-it. For a copy kept outside `internal/archiver`, give `fixture_path` an absolute path:
-
-```bash
-cp internal/archiver/integration_test.yaml /path/to/my-config.yaml   # edit hosts and credentials
-set -a; source tests/.env; set +a
-INTEGRATION_CONFIG=/path/to/my-config.yaml INTEGRATION_FORCE=true \
-  go test -v -count=1 -tags=integration -run 'TestOrchestrator_.*_Integration' ./internal/archiver/...
-```
-
-#### Value-preservation profile tests
-
-Profile-only tests deliberately skip on the ordinary estate. Disposable MySQL 8.0/8.4/9.7
-profiles cover raw/empty SQL modes, capacities 0/1, limited users and notes initialized globally
-to zero before production connections. The notes test requires two held physical sessions and a
-replacement, all global0/session1; setting session notes on a reused production pool is not
-valid evidence. Every matrix cell routes both `INTEGRATION_CONFIG` and `TEST_*`, requires its
-named PASS lines and refuses SKIPs. The CLI witness among them is an E2E test:
-[e2e/README.md](e2e/README.md#focused-value-preservation-cli-witnesses).
-
-### Deterministic interrupted-state tests
-
-The archive and copy-only Go crash-recovery tests seed exact durable tracking
-states below an existing checkpoint, then assert recovery or the appropriate
-refusal through the real orchestrator. They use no timer to choose a crash point.
-They also verify cleanup between invocations. After integration setup, run:
-
-```bash
-set -a; source tests/.env; set +a
-go test -v -tags integration ./internal/archiver \
-  -run '^Test(CopyOnly_CrashRecovery|Orchestrator_CrashRecovery|RecoveryFixtureCleanup)_Integration$' \
-  -count=20
-```
-
-These test recovery from known states. Binary E2E08/09 exercise actual process
-signals; Test13 exercises a live replication hold and release on one invocation.
-Run them serially with other estate consumers.
+`TestMySQLKillRecovery` (`internal/engine`) kills a helper process (`TestEngineHelperProcess`)
+at each crash point of each job type, then restarts the job: archive and purge must finish the
+logged roots by delete-only replay and end equal to an uninterrupted run; copy-only must refuse
+the duplicate with `resume: false` and finish with `resume: true`. The crash points are named
+seams in the engine, not timers. Binary E2E 08 and 09 send real signals to the CLI; test 13
+holds and releases a live replication gate in one invocation.
 
 ### Environment matrix
 
@@ -576,23 +537,19 @@ CFG=tests/configs/test03_payment_batch.yaml
 # 1. List jobs defined in the config
 ./bin/goarchive list-jobs --config "$CFG"
 
-# 2. Plan: shows tables, copy order (parents first), delete order (children
-#    first), and estimated row counts
+# 2. Plan: the relation tree, copy order (parents first) and delete order
+#    (children first); connects to nothing
 ./bin/goarchive plan --job archive-payment-rows --config "$CFG"
 
-# 3. Validate (fails fast on a bad config): connectivity, table existence,
-#    single-column/integer PK, FK index + coverage, cycle detection, triggers.
+# 3. Validate: connects and runs the job's preflight.
 #    Add --force-triggers when the schema has DELETE triggers (Sakila does).
 ./bin/goarchive validate --config "$CFG" --force-triggers
 
-# 4. Dry-run: discovers affected rows and reports what would be copied/deleted;
-#    changes nothing.
+# 4. Dry-run: preflight, then MySQL's plans for the first batch; changes nothing.
 ./bin/goarchive dry-run --job archive-payment-rows --config "$CFG"
 
-# 5. Archive: copy → verify → delete. Logs progress to archiver_job and the
-#    per-job archiver_job_log_<id> table.
-#    Do NOT add --skip-verify: it disables the verify stage, so the source rows
-#    are deleted whether or not the copy landed.
+# 5. Archive: copy → verify → delete; each batch's roots are logged in the
+#    job's archiver_job_log_<id> table.
 ./bin/goarchive archive --job archive-payment-rows --config "$CFG"
 
 # Confirm the destination received the rows
@@ -614,56 +571,9 @@ category (`FK_COVERAGE_CHECK`).
 
 ## Preflight Checks
 
-`validate` (and the startup preflight of `archive`/`purge`/`copy-only`) runs a
-fail-fast battery before any data moves:
-
-| Check | Category tag | Severity | Detects |
-|-------|--------------|----------|---------|
-| Table existence | `TABLE_EXISTENCE_CHECK` | Error | A graph table missing from the source |
-| Storage engine | `STORAGE_ENGINE_CHECK` | Error | Non-InnoDB table (no transactional copy) |
-| Single-column PK | `COMPOSITE_PK_CHECK` | Error | A composite (multi-column) PRIMARY KEY |
-| Root PK type | `ROOT_PK_TYPE_UNSUPPORTED` | Error | Non-integer root primary key |
-| FK index | `FK_INDEX_CHECK` | Error | An FK column without an index (slow deletes) |
-| FK coverage | `FK_COVERAGE_CHECK` | Error | A table **outside** the graph with an FK **into** the graph |
-| Internal FK coverage | `INTERNAL_FK_COVERAGE` | Error | An FK **between two in-graph tables** not represented as a relation edge |
-| DELETE triggers | `DELETE_TRIGGER_CHECK` | Error* | DELETE triggers on source tables (`--force-triggers` to proceed) |
-| CASCADE rules | — | Warning | `ON DELETE CASCADE` FKs (may delete more than expected) |
-
-\* fatal unless `--force-triggers` is passed.
-
-### `INTERNAL_FK_COVERAGE` — the relation-completeness check
-
-This is the check that most often blocks a multi-table config. It requires that
-**every FK constraint between two tables that are both in the graph** is
-represented as a parent→child relation edge. Missing an edge would cause a
-delete-phase FK violation, so it is caught at validation time.
-
-```
-INTERNAL_FK_COVERAGE: Internal FK relationships not matching configuration:
-  - payment.customer_id -> customer.customer_id (constraint: fk_payment_customer) [no graph edge]
-```
-
-It is what makes the `customer → rental → payment` diamond unrepresentable (see
-the suite note above): `payment` has two in-graph parents, so one edge is always
-left uncovered. **Test 11 asserts exactly this**, and the output above is the
-output it produces.
-
-### `FK_COVERAGE_CHECK` vs `FK_INDEX_CHECK`
-
-| Check | Purpose | Fails when |
-|-------|---------|-----------|
-| `FK_COVERAGE_CHECK` | Don't leave dangling references into the archived set | An out-of-graph table has an FK pointing at an in-graph table (its rows would block/orphan the parent delete) |
-| `FK_INDEX_CHECK` | Keep deletes efficient | An **in-graph** FK column is not indexed |
-
-> **History:** `FK_COVERAGE_CHECK` was previously **shadowed** by a false-positive
-> `FK_INDEX_CHECK` — the index check ran first and flagged out-of-graph
-> referencing tables as "unindexed" (it never computes index status for tables
-> outside the graph), aborting before coverage was reached. Fixed in the
-> `harden/data-safety-p0-p1` branch: `ValidateForeignKeyIndexes` now only checks
-> in-graph children, so a genuinely-uncovered config correctly surfaces
-> `FK_COVERAGE_CHECK` (test 02 demonstrates this). Because the Sakila schema has
-> every FK column indexed, there is no E2E `FK_INDEX_CHECK` demo — that check is
-> covered by unit tests only.
+Every check, what it means and how to fix it: [Validation & Preflight](../docs/README_VALIDATION.md).
+The demos above pin four of them through the CLI; the rest are pinned by the `internal/preflight`
+integration tests on real facts.
 
 ## Test Output
 
@@ -678,9 +588,10 @@ Each Sakila test prints a header and a verdict; per-test logs are written to
   **interrupt preconditions**, checked between the two runs, and the
   **tracking-table settlement** at the end:
 
-  - **The verify stage must have run, naming its method** — the log must carry
-    `Starting verification (method=<method>)`, and the console echoes
-    `confirmed: verification ran with method=count`.
+  - **Verification must have covered every copied row, by the declared method** — the run
+    report's `verified (<method>):` line must list the same tables and rows as its `copied:`
+    line, and the console echoes `confirmed: every copied row was verified by <method> (…)`.
+    Under `none`, and for purge, there must be no `verified` line.
   - **The post-condition must hold**, per command. Rows are counted on **both** source
     and destination, before and after:
 
@@ -729,21 +640,21 @@ Results on stdout, diagnostics on stderr. Exit 0 = ran, 1 = query failed, 2 = en
 not loaded. So an empty stdout always means genuinely zero rows:
 
 ```bash
-rows=$(tests/scripts/mysql-query.sh 3307 "SELECT job_name FROM goarchive_test.archiver_job;") || exit 1
+rows=$(tests/scripts/mysql-query.sh 3307 "SELECT job_name FROM sakila_archive.archiver_job;") || exit 1
 [ -z "$rows" ] && echo "clean"
 ```
 
 **Prefer the wrapper over raw `mysqlsh`.** It passes `--no-defaults`, without which `mysqlsh`
 reads `~/.my.cnf` and can connect as whoever that file names when you forget the password —
-succeeding locally and failing in CI. Integration residue lives in **`goarchive_test`**;
-`sakila_archive` is the E2E destination.
+succeeding locally and failing in CI. `sakila_archive` is the E2E destination and holds the
+E2E jobs' tracking tables; integration tests use scratch schemas named `ga3m5_*`.
 
 ## Test result counts
 
 Every Go layer the runner executes reports:
 
 ```
-[INFO] integration: PASS=1077 FAIL=0 SKIP=1 (go test exit 0)
+[INFO] integration: PASS=<n> FAIL=0 SKIP=<n> (go test exit 0)
 ```
 
 and **fails when nothing ran**. `go test` prints `ok` and exits 0 for a `-run` pattern that
@@ -752,8 +663,8 @@ only counts failures passes all three. The runner counts passes instead, which r
 so `-v` is always on internally; the full log prints only with `--verbose` or on failure.
 
 Skips are reported by name rather than swallowed. `MIN_PASS=<n>` requires at least n passing
-tests — inclusive, so `MIN_PASS=1077` accepts exactly 1077. It defaults to 1, which only
-catches a run that did nothing.
+tests, inclusive. It defaults to 1, which only catches a run that did nothing. The measured
+baseline is in [`AGENTS.md`](AGENTS.md).
 
 ## Environment Variables
 
@@ -795,8 +706,12 @@ cd tests && ./scripts/check-servers.sh && docker compose up -d
 
 **"table doesn't exist"** — Sakila not loaded; run `./scripts/run-tests.sh --setup`.
 
-**`destination already contains a row … Duplicate entry`** — leftover state, not a
-regression. Reseed: `./scripts/run-tests.sh --setup`.
+**`Duplicate entry` on an E2E copy** — leftover state, not a regression. Reseed:
+`make e2e`, or `./scripts/run-tests.sh --setup`.
+
+**`tracking tables in schema "sakila_archive" … this GoArchive requires tracking-schema label
+"3.0"`** — the destination holds tracking tables from another release. `make test-reset`
+rebuilds the estate (it drops `sakila_archive`).
 
 **Clean slate:**
 ```bash
@@ -852,11 +767,9 @@ columns are not contiguous, which is why `payment_id <= 2000` yields 1999 and
 
 ### Integration tests that do not leak state
 
-New orchestrator integration tests should clean `archiver_job` and the per-job
-`archiver_job_log_<id>` table for their job names before and after execution, so
-heartbeat and lock state cannot leak between tests. Use
-`testsupport.CleanupArchiverState`, which resolves the job id and drops the
-per-job table.
+Create the test's own schemas with its package's scratch helper (`internal/engine`: `scratch`),
+which drops them when the test ends, and give each job a name of its own. Read MySQL facts
+through dbsgomysql, not raw `SHOW` queries.
 
 Destructive CLI tests that intentionally use broken-schema fixtures must pass
 `--skip-validate-preflight`, since `archive`, `purge`, and `copy-only` run
