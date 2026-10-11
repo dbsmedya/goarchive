@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -45,68 +46,10 @@ func TestGetConfigFile(t *testing.T) {
 }
 
 func TestGetCLIOverrides(t *testing.T) {
-	// Save original values and restore after test
-	originalLogLevel := logLevel
-	originalLogFormat := logFormat
-	originalSkipVerify := skipVerify
-	defer func() {
-		logLevel = originalLogLevel
-		logFormat = originalLogFormat
-		skipVerify = originalSkipVerify
-	}()
-
-	tests := []struct {
-		name       string
-		logLevel   string
-		logFormat  string
-		skipVerify bool
-		want       CLIOverrides
-	}{
-		{
-			name:       "empty overrides",
-			logLevel:   "",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-		{
-			name:       "all overrides set",
-			logLevel:   "debug",
-			logFormat:  "text",
-			skipVerify: true,
-			want: CLIOverrides{
-				LogLevel:   "debug",
-				LogFormat:  "text",
-				SkipVerify: true,
-			},
-		},
-		{
-			name:       "partial overrides",
-			logLevel:   "warn",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "warn",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logLevel = tt.logLevel
-			logFormat = tt.logFormat
-			skipVerify = tt.skipVerify
-
-			got := GetCLIOverrides()
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	originalLogLevel, originalLogFormat := logLevel, logFormat
+	defer func() { logLevel, logFormat = originalLogLevel, originalLogFormat }()
+	logLevel, logFormat = "debug", "text"
+	assert.Equal(t, CLIOverrides{LogLevel: "debug", LogFormat: "text"}, GetCLIOverrides())
 }
 
 func TestRootCommandStructure(t *testing.T) {
@@ -115,6 +58,25 @@ func TestRootCommandStructure(t *testing.T) {
 	assert.NotEmpty(t, rootCmd.Short)
 	assert.NotEmpty(t, rootCmd.Long)
 	assert.Equal(t, Version, rootCmd.Version)
+}
+
+// TestRootHelpDescription pins the paragraph goarchive --help prints before its features
+// (pre-alpha minors, item 2): 3.0 has no edition split, and the limits live in the README and
+// LIMITATIONS.
+func TestRootHelpDescription(t *testing.T) {
+	const want = "A CLI tool for safely archiving MySQL relational data across servers\n" +
+		"with automatic dependency resolution and crash recovery.\n" +
+		"Recommended for archival of cold data. Use with caution on\n" +
+		"very large or deeply nested schemas;\n" +
+		"see README and LIMITATIONS for known limits\n\nFeatures:\n"
+	if !strings.HasPrefix(rootCmd.Long, want) {
+		t.Errorf("rootCmd.Long begins\n%s\nwant\n%s", rootCmd.Long[:min(len(rootCmd.Long), len(want))], want)
+	}
+	for _, gone := range []string{"Community edition", "Enterprise", "single-operator workstation"} {
+		if strings.Contains(rootCmd.Long, gone) {
+			t.Errorf("rootCmd.Long still says %q", gone)
+		}
+	}
 }
 
 func TestRootCommandPersistentFlags(t *testing.T) {
@@ -140,10 +102,8 @@ func TestRootCommandPersistentFlags(t *testing.T) {
 		assert.Nil(t, flags.Lookup(removed), "flag --%s should not be registered", removed)
 	}
 
-	// Test skip-verify flag
-	skipVerifyFlag, err := flags.GetBool("skip-verify")
-	assert.NoError(t, err)
-	assert.Equal(t, false, skipVerifyFlag)
+	// --skip-verify is gone: --verification=none replaces it (R42, M6-1).
+	assert.Nil(t, flags.Lookup("skip-verify"))
 }
 
 func TestRootCommandSubcommands(t *testing.T) {
@@ -155,6 +115,7 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	expectedCommands := []string{
 		"archive",
+		"copy-only",
 		"dry-run",
 		"list-jobs",
 		"plan",
@@ -165,13 +126,5 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	for _, expected := range expectedCommands {
 		assert.Contains(t, commandNames, expected, "Expected command %s not found", expected)
-	}
-}
-
-func TestRootCommandConversionHelp(t *testing.T) {
-	want := "Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)"
-	flag := rootCmd.PersistentFlags().Lookup("skip-verify")
-	if flag == nil || flag.Usage != want {
-		t.Fatalf("skip-verify help=%v want=%s", flag, want)
 	}
 }

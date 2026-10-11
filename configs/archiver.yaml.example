@@ -30,7 +30,6 @@ destination:
 
 # Replication gating (optional). While any monitored replica is lagging, stopped
 # or unreachable, the job is HELD and the same run resumes once all recover.
-# Replaces the 2.0 'replica:' block - see docs/README_UPGRADING_2_1.md.
 #
 # Applies to 'archive' and 'purge'. 'copy-only' does NOT gate on replication -
 # it never deletes from source.
@@ -45,23 +44,30 @@ replication:
       user: monitor                  # needs REPLICATION CLIENT
       password: change_me
       tls: preferred                 # disable, preferred, skip-verify, required
-      type: async                    # only 'async' is supported in 2.1
+      type: async                    # only 'async' is supported
       # Which replication channels to gate on. Omitted or [] gates on EVERY
       # channel the server reports. MySQL's default channel is named "" - an
       # empty name, not an absence - so [""] selects the default channel only.
       channels: []
 
-# Archive jobs configuration
+# Jobs. Each job's job_type (archive, purge or copy-only) must match the command
+# that runs it: `goarchive archive --job archive_old_orders`.
 jobs:
   archive_old_orders:
+    job_type: archive
     root_table: orders
+    # primary_key documents each table's key; it must name exactly the table's
+    # PRIMARY KEY columns as MySQL reports them. A composite key is a list:
+    #   primary_key: [order_id, line_no]
     primary_key: id
     # Archive orders older than 2 years
     where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
     # where is REQUIRED. To intentionally process the entire table, state it
     # explicitly:  where: "1=1"
 
-    # Related tables (children discovered via BFS)
+    # Related tables, walked parent-first. foreign_key is the child's column (or
+    # a list); `references` names the parent's key columns, paired by position,
+    # and may be omitted only when the parent key has one column.
     relations:
       - table: order_items
         primary_key: id
@@ -90,24 +96,39 @@ jobs:
     #   output: /var/log/goarchive/archive_old_orders.log
     #   file_only: true        # don't tee this job's logs to stdout
 
+  # A copy-only job copies the same tree and never deletes from the source.
+  # resume: true skips roots this job copied in an earlier run (each run rescans
+  # the whole where range); the default false fails on an already-copied root.
+  copy_old_orders:
+    job_type: copy-only
+    root_table: orders
+    primary_key: id
+    where: "created_at < DATE_SUB(NOW(), INTERVAL 2 YEAR)"
+    resume: true
+    verification: count        # a job's value wins over the global one
+    relations:
+      - table: order_items
+        primary_key: id
+        foreign_key: order_id
+        dependency_type: "1-N"
+
 # Processing settings (config-file only — there are no CLI overrides for these;
 # each job may override any field in its own processing: block, and explicitly
 # set fields win even when zero, e.g. sleep_seconds: 0 disables a global sleep)
 processing:
-  batch_size: 1000           # Root IDs per batch
+  batch_size: 1000           # Root keys per batch
   batch_delete_size: 500     # Rows per DELETE statement
   sleep_seconds: 1           # Pause between batches
 
 # Safety settings
-# NOTE: lag_threshold and check_interval were removed in 2.1 - they now live in
-# the 'replication:' block above. A config still carrying them is REJECTED.
 safety:
   disable_foreign_key_checks: false
 
-# Verification settings
-verification:
-  method: count              # count or sha256
-  skip_verification: false
+# Verification before any source row is deleted (archive and copy-only):
+#   sha256 (default) compares a hash of every copied row on both servers;
+#   count compares row counts by key: it proves which keys landed, not their values;
+#   none skips it. --verification=<sha256|count|none> overrides the file.
+verification: sha256
 
 # Logging settings
 logging:

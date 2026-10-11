@@ -12,7 +12,7 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 const (
@@ -84,13 +84,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 	}
 
 	// Connect to source database
-	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
+	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source, true)
 	if err != nil {
 		return fmt.Errorf("failed to connect to source database: %w", err)
 	}
 
 	// Connect to destination database
-	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination)
+	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination, true)
 	if err != nil {
 		_ = m.Source.Close() // Ignore error during cleanup of failed connection
 		m.Source = nil
@@ -116,7 +116,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 		for _, s := range m.config.Replication.Servers {
 			addr := s.Addr()
 
-			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s))
+			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s), false)
 			if replicaErr != nil {
 				// Ignore errors during cleanup of a failed connection set.
 				for _, opened := range m.Replicas {
@@ -137,8 +137,9 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return nil
 }
 
-// connectWithRetry attempts to connect with exponential backoff.
-func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig) (*sql.DB, error) {
+// connectWithRetry attempts to connect with exponential backoff. readsWarnings is true for
+// the source and destination pools, whose statements read warnings (warningsConnector).
+func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
 	var db *sql.DB
 	var err error
 
@@ -146,7 +147,7 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 	backoff := time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		db, err = m.connect(cfg)
+		db, err = m.connect(cfg, readsWarnings)
 		if err == nil {
 			// Verify connection
 			if pingErr := db.PingContext(ctx); pingErr == nil {
@@ -162,6 +163,12 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 				return db, nil
 			} else {
 				_ = db.Close()
+				// The first connection ran the max_error_count check: a property of the
+				// server and the account, not a transient, so no retry.
+				var mec *MaxErrorCountError
+				if errors.As(pingErr, &mec) {
+					return nil, fmt.Errorf("%s: %w", name, pingErr)
+				}
 				err = pingErr
 			}
 		}
@@ -179,14 +186,13 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
 }
 
-// connect creates a database connection.
-func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
-	dsn := BuildDSN(cfg)
-
-	db, err := sql.Open("mysql", dsn)
+// connect creates a database connection pool.
+func (m *Manager) connect(cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
+	connector, err := poolConnector(cfg, readsWarnings)
 	if err != nil {
 		return nil, err
 	}
+	db := sql.OpenDB(connector)
 
 	// Configure connection pool
 	maxOpen := cfg.MaxConnections
@@ -209,6 +215,11 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 
 	return db, nil
 }
+
+// waitTimeoutExpression is the session wait_timeout BuildDSN pins: the server's global, or
+// 8 h (MySQL's default) when the global is lower. MySQL accepts the expression for this
+// variable only in the CAST form; GREATEST or IF alone fail with 1232 (M7c-2 probe PR-8).
+const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
 
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
@@ -233,10 +244,20 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// rejects it. Offset form: needs no time-zone tables.
 	// Issue #108: preserve explicit AUTO_INCREMENT zero without replacing
 	// inherited strict/date modes. The driver initializes every new session.
+	// M7c F1: tracking writes outside an explicit transaction rely on each statement
+	// committing on its own. A server whose global autocommit is 0 would leave them open,
+	// holding their locks, so the session pins it.
+	// M7c-2 P4: the job lock lives on an idle dedicated session that the keep-alive checks
+	// only every 30 s, and a source session stays pinned, idle, through a lag wait. A
+	// server wait_timeout shorter than that closes the session: GET_LOCK is released while
+	// the run goes on deleting, or the next delete chunk fails with 4031. The session keeps
+	// at least 8 h (waitTimeoutExpression), never less than the server's own value.
 	dsnCfg.Params = map[string]string{
-		"sql_notes": "1",
-		"time_zone": "'+00:00'",
-		"sql_mode":  autoZeroModeExpression,
+		"sql_notes":    "1",
+		"time_zone":    "'+00:00'",
+		"sql_mode":     autoZeroModeExpression,
+		"autocommit":   "1",
+		"wait_timeout": waitTimeoutExpression,
 	}
 
 	switch cfg.TLS {
@@ -294,32 +315,6 @@ func (m *Manager) Close() error {
 
 func (m *Manager) closeExistingConnections() error {
 	return m.Close()
-}
-
-// Ping verifies all connections are alive.
-func (m *Manager) Ping(ctx context.Context) error {
-	if m.Source != nil {
-		if err := m.Source.PingContext(ctx); err != nil {
-			return fmt.Errorf("source ping failed: %w", err)
-		}
-	}
-
-	if m.Destination != nil {
-		if err := m.Destination.PingContext(ctx); err != nil {
-			return fmt.Errorf("destination ping failed: %w", err)
-		}
-	}
-
-	for i, replica := range m.Replicas {
-		if replica == nil {
-			continue
-		}
-		if err := replica.PingContext(ctx); err != nil {
-			return fmt.Errorf("replica %s ping failed: %w", m.replicaAddr(i), err)
-		}
-	}
-
-	return nil
 }
 
 // replicaAddr names fleet member i for logs and errors. Replicas is

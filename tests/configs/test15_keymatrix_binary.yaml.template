@@ -1,0 +1,52 @@
+# Test 15: key matrix -- purge on a BINARY(16) root whose bytes are not UTF-8
+#
+# km_blob is keyed by the first 16 bytes of SHA-256(n) (tests/fixtures/
+# keymatrix.sql), most of which are not valid UTF-8, with two references per
+# blob. A key that passed through text anywhere -- the root fetch, the log,
+# the delete binding -- would change, match nothing and fail the exact row count
+# of a delete statement (spec §7.1a), or be logged as another key.
+#
+# old = 1 selects 120 blobs: 2 full batches of 50 and a last one of 20. Deletes
+# run children first, batch_delete_size 50: a full batch is refs 100
+# (2 statements) and blobs 50 (1), 3 statements and 2 gaps; the last batch is
+# refs 40 and blobs 20, 2 statements and 1 gap.
+#
+# NO safety block and NO verification: purge copies nothing (spec §5).
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test15_keymatrix_binary.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  purge-km-blobs:
+    job_type: purge
+    root_table: km_blob
+    primary_key: k
+    where: "old = 1"
+    processing:
+      batch_size: 50
+      batch_delete_size: 50
+      sleep_seconds: 0.2
+      delete_sleep_seconds: 0.1
+    relations:
+      - table: km_blob_ref
+        primary_key: id
+        foreign_key: k

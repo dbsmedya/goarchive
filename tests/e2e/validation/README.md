@@ -11,11 +11,13 @@ touch data.
 
 | Test | Error category | What is wrong with the config |
 |---|---|---|
-| 01 | `COMPOSITE_PK_CHECK` | includes `film_actor` / `film_category`, which have composite primary keys; goarchive supports single-column root PKs only |
 | 02 | `FK_COVERAGE_CHECK` | archives `film` while `inventory`, `film_actor` and `film_category` still reference it, so the delete would violate their foreign keys |
 | 10 | `TABLE_EXISTENCE_CHECK` | `root_table` is the view `customer_list`; only base tables can be archived — the **non-base-table policy** |
-| 11 | `INTERNAL_FK_COVERAGE` | the `customer → rental → payment` GDPR diamond — `payment` has two in-graph parents, so one FK edge is always undeclared |
-| 12 | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are the same server and schema (`127.0.0.1:3305/sakila`); refused at connection time, before preflight — an archive into itself would delete the only copy (issue #13); the root `payment` carries an INSERT trigger, so a guard-less binary is refused by `DEST_INSERT_TRIGGER_CHECK` instead — the demo therefore also pins that the guard runs before preflight |
+| 11 | `INTERNAL_FK_COVERAGE` | the `customer → rental → payment` GDPR diamond — `payment` has two parents in the job, so one foreign key is never a relation |
+| 12 | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are the same server and schema (`127.0.0.1:3305/sakila`); refused at connection time, before preflight — an archive into itself would delete the only copy (issue #13); the root `payment` carries an INSERT trigger, so a binary that checked identity after preflight would be refused by the destination trigger check instead — the demo therefore also pins that the guard runs before preflight |
+
+Test 01 was a demo in 2.x (`COMPOSITE_PK_CHECK`). 3.0 archives composite keys, so it
+is a working archive now (`../archive/01-film-tree.test.sh`).
 
 `mode="example"` selects this arm of the engine. The only other variable that
 matters is `expected_error`, a **substring** of the failure output.
@@ -28,14 +30,14 @@ has two: a name that is absent, and a name that is present but is not a base tab
 Test 10 therefore asserts `TABLE_EXISTENCE_CHECK: Only base tables`.
 
 This is measured, not cautious. Mutating test 10 to the bare category *and* typo-ing
-its `root_table` leaves the test **passing** — goarchive says *"Tables not found in
-source database"*, the substring matches, and a test whose whole subject is views
-proves nothing about views.
+its `root_table` leaves the test **passing** — goarchive says the table is not
+found, the substring matches, and a test whose whole subject is views proves
+nothing about views.
 
 > So the older claim here — that matching on the category means "a config that fails
 > for a different reason still fails the test" — **is not true in general**, and this
 > paragraph replaces it. It holds only where the category maps to a single cause,
-> which is the case for 01, 02, 11 and 12 and not for 10.
+> which is the case for 02, 11 and 12 and not for 10.
 
 When a category can fire for more than one reason, extend the substring just far
 enough to separate them, and say in the test file why.

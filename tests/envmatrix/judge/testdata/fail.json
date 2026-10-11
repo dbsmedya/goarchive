@@ -1,0 +1,18 @@
+{"Time":"2026-10-11T14:02:49.330402+03:00","Action":"start","Package":"jfix/fail"}
+{"Time":"2026-10-11T14:02:49.649639+03:00","Action":"run","Package":"jfix/fail","Test":"TestA"}
+{"Time":"2026-10-11T14:02:49.649722+03:00","Action":"output","Package":"jfix/fail","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649771+03:00","Action":"output","Package":"jfix/fail","Test":"TestA","Output":"    p_test.go:5: Run() = MAX_ALLOWED_PACKET_CHECK: too big, want nil\n","OutputType":"error"}
+{"Time":"2026-10-11T14:02:49.649817+03:00","Action":"output","Package":"jfix/fail","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649829+03:00","Action":"fail","Package":"jfix/fail","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T14:02:49.649843+03:00","Action":"run","Package":"jfix/fail","Test":"TestB"}
+{"Time":"2026-10-11T14:02:49.64985+03:00","Action":"output","Package":"jfix/fail","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649858+03:00","Action":"output","Package":"jfix/fail","Test":"TestB","Output":"    p_test.go:6: rows left = 3, want 0\n","OutputType":"error"}
+{"Time":"2026-10-11T14:02:49.649869+03:00","Action":"output","Package":"jfix/fail","Test":"TestB","Output":"--- FAIL: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649875+03:00","Action":"fail","Package":"jfix/fail","Test":"TestB","Elapsed":0}
+{"Time":"2026-10-11T14:02:49.649881+03:00","Action":"run","Package":"jfix/fail","Test":"TestC"}
+{"Time":"2026-10-11T14:02:49.649886+03:00","Action":"output","Package":"jfix/fail","Test":"TestC","Output":"=== RUN   TestC\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649892+03:00","Action":"output","Package":"jfix/fail","Test":"TestC","Output":"--- PASS: TestC (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.649898+03:00","Action":"pass","Package":"jfix/fail","Test":"TestC","Elapsed":0}
+{"Time":"2026-10-11T14:02:49.649903+03:00","Action":"output","Package":"jfix/fail","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.650474+03:00","Action":"output","Package":"jfix/fail","Output":"FAIL\tjfix/fail\t0.320s\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.6505+03:00","Action":"fail","Package":"jfix/fail","Elapsed":0.32}

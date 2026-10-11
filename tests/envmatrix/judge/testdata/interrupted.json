@@ -1,0 +1,7 @@
+{"Time":"2026-10-11T16:44:53.835798+03:00","Action":"start","Package":"jfix/interrupted"}
+{"Time":"2026-10-11T16:44:54.157579+03:00","Action":"run","Package":"jfix/interrupted","Test":"TestFirst"}
+{"Time":"2026-10-11T16:44:54.157638+03:00","Action":"output","Package":"jfix/interrupted","Test":"TestFirst","Output":"=== RUN   TestFirst\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:54.157714+03:00","Action":"output","Package":"jfix/interrupted","Test":"TestFirst","Output":"--- PASS: TestFirst (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:54.157731+03:00","Action":"pass","Package":"jfix/interrupted","Test":"TestFirst","Elapsed":0}
+{"Time":"2026-10-11T16:44:54.157766+03:00","Action":"run","Package":"jfix/interrupted","Test":"TestLast"}
+{"Time":"2026-10-11T16:44:54.157774+03:00","Action":"output","Package":"jfix/interrupted","Test":"TestLast","Output":"=== RUN   TestLast\n","OutputType":"frame"}

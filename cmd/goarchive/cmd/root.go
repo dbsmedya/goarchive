@@ -4,23 +4,23 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/spf13/cobra"
 )
 
 // Version information (set via ldflags at build time)
 var (
-	Version = "2.2.4-community"
+	Version = "3.0.0-alpha.0"
 	Commit  = "unknown"
 )
 
 // CLI flags that override config file values
 var (
-	cfgFile    string
-	logLevel   string
-	logFormat  string
-	skipVerify bool
+	cfgFile   string
+	logLevel  string
+	logFormat string
 )
 
 var rootCmd = &cobra.Command{
@@ -28,18 +28,18 @@ var rootCmd = &cobra.Command{
 	Short: "MySQL Batch Archiver & Purger",
 	Long: `A CLI tool for safely archiving MySQL relational data across servers
 with automatic dependency resolution and crash recovery.
-
-Community edition — recommended for single-operator workstation archival of
-cold data. Use with caution on very large or deeply nested schemas; see README
-for known limits. Enterprise edition (with metrics, parallelism, and load-
-tested scaling) is planned separately.
+Recommended for archival of cold data. Use with caution on
+very large or deeply nested schemas;
+see README and LIMITATIONS for known limits
 
 Features:
-  - Automatic table dependency resolution using Kahn's algorithm
-  - Transactional batch processing with configurable sizes
-  - Crash recovery via checkpoint logging
-  - Replication lag monitoring
-  - Data verification (count and SHA256)`,
+  - Parent/child trees from the job's declared relations, with composite and
+    non-integer keys
+  - Key-ordered batches: copy, verification and the log write in one destination
+    transaction; deletes in chunks committed only on an exact row count
+  - Crash recovery by replaying the job's log
+  - Replication lag gate before every delete
+  - Verification by SHA256 (default) or count`,
 	Version: Version,
 	// Errors from RunE are already reported with command-specific context;
 	// Cobra's usage block would only add noise after the error.
@@ -63,19 +63,12 @@ func init() {
 		"Override log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "",
 		"Override log format (json, text)")
-
-	// Safety overrides
-	rootCmd.PersistentFlags().BoolVar(&skipVerify, "skip-verify", false,
-		"Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)")
 }
 
 // effectiveJobLogging resolves the logging config for a job run with
 // precedence: CLI flags > job logging block > global logging.
-func effectiveJobLogging(cfg *config.Config, jobCfg *config.JobConfig, overrides CLIOverrides) config.LoggingConfig {
-	logCfg := cfg.Logging
-	if jobCfg != nil {
-		logCfg = jobCfg.GetJobLogging(cfg.Logging)
-	}
+func effectiveJobLogging(global config.LoggingConfig, spec *jobspec.Spec, overrides CLIOverrides) config.LoggingConfig {
+	logCfg := spec.EffectiveLogging(global)
 	if overrides.LogLevel != "" {
 		logCfg.Level = overrides.LogLevel
 	}
@@ -88,8 +81,8 @@ func effectiveJobLogging(cfg *config.Config, jobCfg *config.JobConfig, overrides
 // newJobLogger builds the logger for a job command from the effective
 // per-job logging configuration. Every entry is tagged with the job name
 // so runs remain attributable when jobs share an output.
-func newJobLogger(cfg *config.Config, jobCfg *config.JobConfig, jobName string) (*logger.Logger, error) {
-	logCfg := effectiveJobLogging(cfg, jobCfg, GetCLIOverrides())
+func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string) (*logger.Logger, error) {
+	logCfg := effectiveJobLogging(doc.Shared.Logging, spec, GetCLIOverrides())
 	log, err := logger.New(&logCfg)
 	if err != nil {
 		return nil, err
@@ -113,16 +106,11 @@ func GetConfigFile() string {
 
 // CLIOverrides contains flag values that override config file settings
 type CLIOverrides struct {
-	LogLevel   string
-	LogFormat  string
-	SkipVerify bool
+	LogLevel  string
+	LogFormat string
 }
 
 // GetCLIOverrides returns the CLI flag override values
 func GetCLIOverrides() CLIOverrides {
-	return CLIOverrides{
-		LogLevel:   logLevel,
-		LogFormat:  logFormat,
-		SkipVerify: skipVerify,
-	}
+	return CLIOverrides{LogLevel: logLevel, LogFormat: logFormat}
 }

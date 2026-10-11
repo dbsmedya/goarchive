@@ -32,7 +32,7 @@ func TestHarnessReplicationDeclaration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			decl := fmt.Sprintf("test_name=TestDeclaration\nmode=%s\ncommand=%s\nreplication_hold=%s\ninterrupt=%s\nconfig_file=test.yaml\ntables=payment\nverify_method=none\nmin_duration=0.0\nexpected_rows=7\ninterrupt_after_batches=1\ninterrupt_expect_dest=1\nroot_pk=payment_id\n", tc.mode, tc.command, tc.hold, tc.interrupt)
+			decl := fmt.Sprintf("test_name=TestDeclaration\nmode=%s\ncommand=%s\nreplication_hold=%s\ninterrupt=%s\nconfig_file=test.yaml\ntables=payment\nverify_method=none\nmin_duration=0.0\nexpected_rows=7\ninterrupt_after_batches=1\ninterrupt_expect_dest=1\n", tc.mode, tc.command, tc.hold, tc.interrupt)
 			if err := os.WriteFile(filepath.Join(dir, "declaration.sh"), []byte(decl), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -57,6 +57,9 @@ run_replication_hold_job() { touch "$TESTS_DIR/executed"; }
 run_interrupted_job() { return 1; }
 ensure_goarchive_bin() { return 1; }
 assert_min_duration() { return 0; }
+assert_tracking_settled() { return 0; }
+assert_verified() { return 0; }
+extract_job_name() { echo declaration-job; }
 assert_postcondition() { [ "$3" = 10 ] && [ "$4" = 3 ] && [ "$5" = 0 ] && [ "$6" = 7 ]; }
 run_e2e_test 13
 rc=$?

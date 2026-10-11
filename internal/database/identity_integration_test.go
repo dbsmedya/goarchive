@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 // TestConnectRefusesSameDatabase_Integration is issue #13's reproduction shape:
@@ -79,11 +79,11 @@ func TestConnectAllowsDifferentServersSameSchema_Integration(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	a, err := readServerIdentity(ctx, m.Source)
+	a, err := ReadServerIdentity(ctx, m.Source)
 	if err != nil {
 		t.Fatalf("source identity: %v", err)
 	}
-	b, err := readServerIdentity(ctx, m.Destination)
+	b, err := ReadServerIdentity(ctx, m.Destination)
 	if err != nil {
 		t.Fatalf("destination identity: %v", err)
 	}

@@ -6,16 +6,15 @@ Detailed specifications for GoArchive. Start at the
 | Document | Covers |
 |----------|--------|
 | [Configuration](README_CONFIGURATION.md) | Every config block, option, default, and precedence rule; the `where` rules; identifier rules |
-| [Validation & Preflight](README_VALIDATION.md) | Every preflight and connection-time check, the check-to-command matrix, schema compatibility rules, SHA256 verification, dry-run payload validation |
+| [Validation & Preflight](README_VALIDATION.md) | Every preflight and connection-time check, the checks by job type, schema compatibility rules, SHA256 verification |
 | [Permissions](README_PERMISSIONS.md) | Grant recipes, the privilege matrix, the provable-grant rule, troubleshooting |
 | [Limitations](README_LIMITATIONS.md) | Hard constraints and the run contract, model limitations, operational cautions, trust model, supported versions |
 | [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning and memory, pausing, replication gating, crash recovery and resume, concurrency and locking |
-| [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: tracking table structures, inspection queries, what is safe to truncate |
+| [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: the tracking tables, the startup checks, inspection queries, what is safe to delete, failover re-binding |
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
 | [Testing](README_TESTING.md) | What each test layer proves |
-| [Upgrading to 2.2](README_UPGRADING_2_2.md) | UTC sessions, the tracking-schema 2.2 refusal and its remedy, what `where` means now |
-| [Upgrading to 2.1](README_UPGRADING_2_1.md) | Migrating the removed `replica:` block and `safety:` lag keys to `replication:` |
-| [Upgrading to 2.0](README_UPGRADING_2_0.md) | What changes when moving from 1.8, and what to do about it |
+| [Upgrading to 3.0](README_UPGRADING_3_0.md) | Moving from 2.x: the tracking tables, configuration and command-line changes, changed limits |
+| [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys, the path it takes for each, and what is still open |
 | [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
 
 ## Elsewhere in the repository
@@ -35,4 +34,4 @@ Detailed specifications for GoArchive. Start at the
 - **Deciding whether GoArchive fits your schema** → [Limitations](README_LIMITATIONS.md)
 - **A run is too slow, or needs pausing or resuming** → [Operations](README_OPERATIONS.md)
 - **Maintaining the tracking tables, or clearing a crashed job** → [Job Tracking Schema](README_JOBS_SCHEMA.md)
-- **Upgrading** → the upgrade note for your target release, in the table above
+- **Upgrading from 2.x** → [Upgrading to 3.0](README_UPGRADING_3_0.md)

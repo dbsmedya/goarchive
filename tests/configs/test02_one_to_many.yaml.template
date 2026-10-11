@@ -1,18 +1,15 @@
 # Test 02: FK-coverage rejection (validation demo — EXPECTED TO FAIL)
 #
-# Archives language -> film (1-N). `film` is pulled into the graph, but film is
-# ALSO referenced by tables left OUT of the graph (inventory, film_actor,
-# film_category). Deleting archived film rows would violate those FK constraints,
-# so preflight aborts with FK_COVERAGE_CHECK: every table referencing an in-graph
-# table must itself be covered by a relation.
-#
-# (Before the 1.4.0-community fix this scenario mis-reported FK_INDEX_CHECK because the
-# index check false-positived on out-of-graph children and ran first.)
+# Archives language -> film. `film` is pulled into the job, but film is ALSO
+# referenced by tables left OUT of it (inventory, film_actor, film_category).
+# Deleting archived film rows would violate those foreign keys, so preflight
+# refuses with FK_COVERAGE_CHECK: every table referencing a table of the job must
+# itself be a relation of the job.
 #
 # This template is the tracked source of truth. run-tests.sh renders it to
-# test02_one_to_many.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
-# placeholder from tests/.env. Edit this file, never the generated .yaml --
-# that one is gitignored (it holds a real password) and is overwritten.
+# test02_one_to_many.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
@@ -28,15 +25,18 @@ destination:
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila_archive
 
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
 jobs:
   archive-language-with-films:
+    job_type: archive
     root_table: language
     primary_key: language_id
     # Archive English and Italian (language_id 1 and 2)
     where: "language_id IN (1, 2)"
     relations:
-      # 1-N relationship: language has many films
+      # a language has many films
       - table: film
         primary_key: film_id
         foreign_key: language_id
-        dependency_type: "1-N"

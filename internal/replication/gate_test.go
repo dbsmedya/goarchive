@@ -18,8 +18,8 @@ import (
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	mysql "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // newTestLogger returns a real file-backed JSON logger plus a reader that

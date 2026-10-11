@@ -1,20 +1,22 @@
-# Test 04: rental -> payment (working 2-level archive)
-# A GDPR-shaped subgraph that IS expressible as a tree: payment is archived as a
-# child of rental via payment.rental_id -> rental. payment also references
-# customer and staff, but those stay OUT of the graph as upstream parents (an
-# in-graph table referencing an out-of-graph table is allowed), so there is no
-# diamond and no coverage violation.
+# Test 04: rental -> payment, a two-level tree
 #
-# NOTE: a customer-rooted archive (customer -> rental -> payment) is NOT
-# expressible — payment references both customer and rental, and rental
-# references customer, forming a diamond that the tree model + INTERNAL_FK_COVERAGE
-# reject. See docs/README_LIMITATIONS.md. This rental-rooted
-# shape is the closest working multi-level archive.
+# The suite's graph case: a non-diamond, GDPR-shaped subtree where the child must
+# be copied after its parent and deleted before it. customer and staff, which
+# rental and payment also reference, stay outside the job as upstream parents,
+# so FK checks are disabled for the copy.
+#
+# batch_size 200 makes the 200 selected rentals ONE full batch. A full batch is
+# followed by one more root fetch, which finds nothing, so the run sleeps
+# sleep_seconds (the default, 1 s) once: the 1.0 s pacing floor. At the default
+# batch_size of 1000 the single batch would be short, 3.0 would not sleep after
+# it, and the floor would be 0.
+#
+# verification: count, declared (3.0's default is sha256).
 #
 # This template is the tracked source of truth. run-tests.sh renders it to
-# test04_rental_payment.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
-# placeholder from tests/.env. Edit this file, never the generated .yaml --
-# that one is gitignored (it holds a real password) and is overwritten.
+# test04_rental_payment.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
 
 source:
   host: 127.0.0.1
@@ -33,15 +35,21 @@ destination:
 safety:
   disable_foreign_key_checks: true
 
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
 jobs:
   archive-rental-payments:
+    job_type: archive
     root_table: rental
     primary_key: rental_id
     # Archive the first 200 rentals and their payments.
     where: "rental_id <= 200"
+    verification: count
+    processing:
+      batch_size: 200
     relations:
-      # 1-N: a rental has many payments (payment.rental_id -> rental)
+      # a rental has many payments (payment.rental_id -> rental)
       - table: payment
         primary_key: payment_id
         foreign_key: rental_id
-        dependency_type: "1-N"

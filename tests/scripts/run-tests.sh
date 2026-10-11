@@ -8,9 +8,9 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working Sakila E2E tests (03, 04, 05, 06, 07, 08, 09, 13)
-#   --sakila-examples   Run the validation-demo tests (01, 02, 10, 11, 12)
-#   -t, --test NUM      Run only specific Sakila test (1-13)
+#   --sakila            Run the working E2E tests (01, 03-09, 13-16)
+#   --sakila-examples   Run the validation-demo tests (02, 10, 11, 12)
+#   -t, --test NUM      Run only specific E2E test (1-16)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -84,7 +84,7 @@ unset _lib
 render_test_configs || exit 1
 
 SETUP=false
-SAKILA=false            # Working Sakila E2E tests (03/04/05 archive, 06 purge, 07 copy-only)
+SAKILA=false            # Working E2E tests (see tests/e2e/README.md)
 SAKILA_EXAMPLES=false   # Validation-failure demonstration tests (see tests/e2e/validation/README.md)
 SPECIFIC_TEST=""
 UNIT_ONLY=false
@@ -108,8 +108,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working Sakila E2E tests (03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold)"
-            echo "  --sakila-examples   Run the validation-demonstration tests (01, 02, 10, 11, 12)"
+            echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold, 14-16 key matrix)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (02, 10, 11, 12)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
             echo "  -t, --test NUM      Run only the specified test number (works with"
@@ -122,8 +122,8 @@ while [[ $# -gt 0 ]]; do
             echo "Examples:"
             echo "  $0 --setup                    # Full setup: docker + databases"
             echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
-            echo "  $0 --sakila-examples -t 1     # Run only the composite-PK demo (test 01)"
-            echo "  $0 --sakila-examples          # Run validation demos (01, 02, 10, 11, 12)"
+            echo "  $0 --sakila-examples -t 2     # Run only the FK-coverage demo (test 02)"
+            echo "  $0 --sakila-examples          # Run validation demos (02, 10, 11, 12)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -231,7 +231,7 @@ main() {
     # each category's README. A list of tests in the dispatcher is a list that
     # goes stale, which is how this comment came to omit test 07.
     if [ "$SAKILA" = true ]; then
-        run_e2e_suite "3 4 5 6 7 8 9 13" "working"
+        run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16" "working"
         exit 0
     fi
 
@@ -243,8 +243,9 @@ main() {
     #
     # 10 and 11 are appended, not renumbered in: a number once given never moves,
     # because renumbering silently invalidates other phases' `Passed: N` counts.
+    # 01 moved to the working suite in M7b: 3.0 archives its composite keys.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_e2e_suite "1 2 10 11 12" "validation demos"
+        run_e2e_suite "2 10 11 12" "validation demos"
         exit 0
     fi
     

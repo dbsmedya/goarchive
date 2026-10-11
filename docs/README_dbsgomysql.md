@@ -21,7 +21,8 @@ with archiving:
 - A privilege held through an active role, or granted globally while
   `@@global.partial_revokes` is enabled, is not provable for a specific object from
   `information_schema` alone.
-- InnoDB's own foreign-key registry is complete but requires `PROCESS`;
+- InnoDB's own foreign-key registry is complete but normally requires `PROCESS` (one MySQL
+  version differs: [compatibility notes](README_COMPAT.md));
   `information_schema` is always readable but only shows constraints on tables the account
   is already privileged for — so a fallback silently answers a weaker question.
 - Integer display widths (`bigint(20)`) are cosmetic and not reported by MySQL 8.0.17 and
@@ -51,7 +52,7 @@ The split is deliberate and it is the reason the integration is safe:
 - **The library reports facts.** It does not know what GoArchive intends to do with a
   table, and it never decides that a schema difference is fatal.
 - **GoArchive owns policy.** Whether a destination may be looser than its source, which
-  primary-key types are acceptable for a root table, whether a difference blocks a copy —
+  key types can identify rows, whether a difference blocks a copy —
   all of that stays here, in GoArchive, where the consequences are understood (the rules:
   [Schema compatibility](README_VALIDATION.md#schema-compatibility-rules)).
 - **GoArchive owns its own session.** Properties of the connection GoArchive itself
@@ -83,7 +84,6 @@ grep dbsgomysql go.mod
 
 ## See also
 
-- [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
 - [Validation & Preflight](README_VALIDATION.md) — every check
 - [Permissions](README_PERMISSIONS.md) — the privilege matrix and grant recipes
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)

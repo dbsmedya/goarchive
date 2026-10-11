@@ -1,0 +1,38 @@
+# Environment matrix destination (tests/envmatrix/run-matrix.sh). The estate's db2.cnf,
+# sized for three throwaway pairs at 1 GiB each: a 128M buffer pool. Mounted in
+# /etc/my.cnf.d (Percona images) and /etc/mysql/conf.d (Oracle images).
+[mysqld]
+local_infile                 = ON
+server_id                    = 92
+report_host                  = mx2.local
+
+# Issue #16: the destination deliberately runs in a non-UTC zone, as db2 does, so every
+# run crosses a time-zone boundary. Offset form: valid at first boot, before the named
+# zone tables are loaded.
+default-time-zone            = '+03:00'
+
+skip-name-resolve            = ON
+
+log-bin                      = db2_binlog
+log-bin-index                = db2_binlog.index
+binlog-checksum              = NONE
+binlog-row-image             = FULL
+log_replica_updates          = 1
+enforce-gtid-consistency     = TRUE
+gtid-mode                    = ON
+relay-log                    = db2_relaylog
+
+# innodb_dedicated_server must stay OFF: an unbounded container would size InnoDB for the
+# whole Docker VM.
+innodb_dedicated_server      = OFF
+innodb_buffer_pool_size      = 128M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity     = 256M
+innodb_log_buffer_size       = 16M
+# loose-: Oracle builds have no NUMA option and refuse an unknown one at initialization.
+loose-innodb_numa_interleave = OFF
+
+# The integration suite peaks above the default 151 connections on the destination.
+max_connections              = 500
+
+plugin-load-add              = mysql_clone.so

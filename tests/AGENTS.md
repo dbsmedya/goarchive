@@ -61,7 +61,7 @@ fails because a server is down. A failed gate is the result: report it as `RED`.
 2. **Check nothing else is testing.** Run:
 
    ```bash
-   pgrep -fl '[r]un-gate\.sh|[r]un-tests\.sh|[c]heck-characterization-baseline\.sh'
+   pgrep -fl '[r]un-gate\.sh|[r]un-tests\.sh'
    ```
 
    Stop if it prints anything, and name what is running. The estate is shared, and two test
@@ -120,7 +120,6 @@ Use these only when a task asks for one layer; the gate runs them all in the rig
 |-------|---------|---------------------------|
 | Unit (no database) | `go test ./... -count=1` | *Unit tests* |
 | Integration | `bash tests/scripts/run-tests.sh --setup --integration-only` | *Integration tests* |
-| Characterization | `make characterization` | *The characterization baseline is checked, not recited* |
 | E2E (Sakila) | `make e2e` | *Sakila E2E tests* |
 | Validation demos | `make e2e-examples` (needs a seeded estate) | *Validation demos — preflight MUST fail* |
 
@@ -132,12 +131,9 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1412 FAIL=0 SKIP=17`, measured by the integration runner on
-  2026-10-02 (gate run `20261002T225328Z-2783`, the empty-`where` refusal and version-drift
-  tests). Sixteen skips
-  need disposable matrix profiles; the existing `TestExecute_CheckpointCallbackError` skip
-  remains. Re-measure after adding or removing tagged tests.
-- **Characterization expectation:** `58 / 287 / 345 / 0 / 0` (top-level / subtests / PASS /
-  FAIL / SKIP), held in `tests/characterization-baseline.txt` and checked by
-  `make characterization`. It changes only with the operator's prior authorization; change the
-  file and this line together. Never count it by hand; the script does the counting.
+- **Integration inventory:** `PASS=1126 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261011T225705Z-24902` on 2026-10-12 (the 3.0-alpha release PR). Re-measure after adding or
+  removing tagged tests.
+- **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
+  409 s, leaving about 190 s; record each new measurement here, since the margin shrinks as tests
+  are added.

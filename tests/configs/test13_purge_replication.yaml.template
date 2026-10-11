@@ -1,5 +1,16 @@
-# Test13: the same payment slice measured by Test03, now under a live
-# replication gate. The helper reasserts the selected count before it runs.
+# Test 13: the same payment slice as test 03, purged under a live replication gate
+#
+# The harness (lib/replication.sh) stops db3's SQL applier, starts the purge,
+# observes the gate's "replication hold:" line with the source unchanged, then
+# restarts the applier and waits for the SAME process to pass the gate
+# ("replication gate passed:") and finish. It reasserts the selected count (1999)
+# before it runs.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test13_purge_replication.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored
+# (it holds a real password) and is overwritten.
+
 source:
   host: 127.0.0.1
   port: 3305
@@ -29,8 +40,12 @@ replication:
       tls: disable
       type: async
 
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
 jobs:
   purge-replication-hold:
+    job_type: purge
     root_table: payment
     primary_key: payment_id
     where: "payment_id <= 2000"

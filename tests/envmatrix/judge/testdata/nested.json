@@ -1,0 +1,23 @@
+{"Time":"2026-10-11T14:02:49.804256+03:00","Action":"start","Package":"jfix/nested"}
+{"Time":"2026-10-11T14:02:50.121134+03:00","Action":"run","Package":"jfix/nested","Test":"TestA"}
+{"Time":"2026-10-11T14:02:50.12121+03:00","Action":"output","Package":"jfix/nested","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121258+03:00","Action":"output","Package":"jfix/nested","Test":"TestA","Output":"    p_test.go:6: parent says JOB_SCHEMA_PERMISSION_CHECK\n"}
+{"Time":"2026-10-11T14:02:50.121286+03:00","Action":"run","Package":"jfix/nested","Test":"TestA/one"}
+{"Time":"2026-10-11T14:02:50.121295+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/one","Output":"=== RUN   TestA/one\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121303+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/one","Output":"    p_test.go:7: Run = SOURCE_SELECT_PERMISSION_CHECK: unconfirmed\n","OutputType":"error"}
+{"Time":"2026-10-11T14:02:50.121334+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/one","Output":"--- FAIL: TestA/one (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121343+03:00","Action":"fail","Package":"jfix/nested","Test":"TestA/one","Elapsed":0}
+{"Time":"2026-10-11T14:02:50.121353+03:00","Action":"run","Package":"jfix/nested","Test":"TestA/two"}
+{"Time":"2026-10-11T14:02:50.12136+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/two","Output":"=== RUN   TestA/two\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121375+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/two","Output":"    p_test.go:8: Run = nil, want error\n","OutputType":"error"}
+{"Time":"2026-10-11T14:02:50.121389+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/two","Output":"--- FAIL: TestA/two (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121396+03:00","Action":"fail","Package":"jfix/nested","Test":"TestA/two","Elapsed":0}
+{"Time":"2026-10-11T14:02:50.121403+03:00","Action":"run","Package":"jfix/nested","Test":"TestA/three"}
+{"Time":"2026-10-11T14:02:50.121408+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/three","Output":"=== RUN   TestA/three\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121422+03:00","Action":"output","Package":"jfix/nested","Test":"TestA/three","Output":"--- PASS: TestA/three (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.12143+03:00","Action":"pass","Package":"jfix/nested","Test":"TestA/three","Elapsed":0}
+{"Time":"2026-10-11T14:02:50.121445+03:00","Action":"output","Package":"jfix/nested","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.121453+03:00","Action":"fail","Package":"jfix/nested","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T14:02:50.121459+03:00","Action":"output","Package":"jfix/nested","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.122165+03:00","Action":"output","Package":"jfix/nested","Output":"FAIL\tjfix/nested\t0.318s\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.122191+03:00","Action":"fail","Package":"jfix/nested","Elapsed":0.318}

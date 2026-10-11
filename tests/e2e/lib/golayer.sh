@@ -118,8 +118,10 @@ run_unit_tests() {
         GO_TEST_ARGS="./..."
     fi
 
+    # Real-DB tests are behind the `integration` build tag, so an untagged
+    # `go test` compiles none of them; no -run filter is needed.
     run_go_layer "unit" \
-        go test -v -run '^Test[^(Integration|Orchestrator_FailFast|Orchestrator_Full|Execute_|Real)].*' $GO_TEST_ARGS
+        go test -v $GO_TEST_ARGS
 }
 
 # Run Go integration tests
@@ -137,18 +139,12 @@ run_integration_tests() {
     # protecting the archive from empty tables.
     rm -f "$TESTS_DIR/.e2e-ready"
 
+    # The 3.0 packages, as `make test-integration` runs them. Each test creates
+    # and drops its own scratch schemas; the build tag selects the tests.
     if [ -z "$GO_TEST_ARGS" ]; then
-        GO_TEST_ARGS="./internal/archiver/... ./internal/database/..."
+        GO_TEST_ARGS="./internal/... ./cmd/..."
     fi
 
-    # Real-DB tests live behind the `integration` build tag and several are not
-    # named *Integration*/*Real* (e.g. TestExecute_*, TestOrchestrator_FullWorkflow),
-    # so the build tag — not a -run name filter — is what selects them.
-    # INTEGRATION_FORCE=true sets IntegrationConfig.Force, which makes every
-    # SetupIntegrationTest DROP and recreate its databases and re-apply the
-    # fixtures, so each test starts from a known schema. It does NOT gate which
-    # tests run -- the build tag does that. Reseed first (`--setup`) so the
-    # destination starts empty; see tests/README.md.
-    INTEGRATION_FORCE=true run_go_layer "integration" \
+    run_go_layer "integration" \
         go test -v -tags=integration -count=1 $GO_TEST_ARGS
 }

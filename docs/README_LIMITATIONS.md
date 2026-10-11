@@ -1,7 +1,7 @@
 # Limitations & Constraints
 
-What GoArchive Community edition cannot do, what it refuses to do, and what to
-plan around before pointing it at real data.
+What GoArchive cannot do, what it refuses to do, and what to plan around before pointing it at
+real data. What changed from 2.x: [Upgrading to 3.0](README_UPGRADING_3_0.md).
 
 **Related:** [Configuration](README_CONFIGURATION.md) ·
 [Validation & Preflight](README_VALIDATION.md) ·
@@ -15,8 +15,7 @@ plan around before pointing it at real data.
 > job in a staging environment with representative data before running it against
 > production.**
 
-The Community edition is recommended for **single-operator workstation archival
-of cold data**. It is not designed for hot, actively-transacting tables.
+GoArchive is for **cold data**. It is not designed for hot, actively-transacting tables.
 
 ---
 
@@ -28,7 +27,6 @@ of cold data**. It is not designed for hot, actively-transacting tables.
   - [Operational cautions](#operational-cautions)
 - [Trust model](#trust-model)
 - [Environment](#environment)
-- [What's included in Community](#whats-included-in-community)
 
 ---
 
@@ -40,249 +38,178 @@ of cold data**. It is not designed for hot, actively-transacting tables.
 
 ### Hard constraints
 
-These are not warnings. Structural constraints fail preflight before a run starts;
-stored temporal identities are checked when encountered and refused before they
-can drive copying, discovery, verification, or deletion.
+Preflight refuses these before a run starts; stored temporal identities are refused when
+encountered, before they drive any copy, discovery, verification or delete.
 
-#### Single-column primary keys only; root primary keys must be integer
+#### Primary keys
 
-GoArchive identifies, copies, verifies, and **deletes** rows by a single
-primary-key column (`WHERE pk IN (...)`). Each check below explains its reason and fix in
-[Primary key checks](README_VALIDATION.md#primary-key-checks).
-
-- **Composite (multi-column) primary keys are not supported** on any
-  participating table (`COMPOSITE_PK_CHECK`).
-- Every participating table must have a **single-column `PRIMARY KEY` equal to
-  its configured `primary_key`** (`PRIMARY_KEY_CHECK`).
-- **Root tables must additionally use an integer primary key** — `TINYINT`
-  through `BIGINT`, signed or unsigned (`ROOT_PK_TYPE_UNSUPPORTED`).
-- **Child tables may use single-column primary keys**, subject to the
-  [temporal identity restriction below](#temporal-values-and-identities).
-
-If your schema uses composite keys on the tables you want to archive, Community
-edition cannot safely archive them.
+Every participating table needs a `PRIMARY KEY`, single-column or composite, and its configured
+`primary_key` must name exactly those columns in key order
+([Primary key checks](README_VALIDATION.md#primary-key-checks)). Refused as keys
+(`KEY_TYPE_UNSUPPORTED`): `FLOAT`/`DOUBLE`, `ENUM`/`SET`, `BIT`, and a key part with a prefix
+length. The root table's key definition must stay the one the job was created with; a changed
+one is refused at startup.
 
 #### Temporal values and identities
 
-GoArchive refuses DATE, DATETIME and TIMESTAMP identities containing an invalid
-Gregorian date, zero year/month/day, invalid clock or unsupported text shape.
-DATE keys require `YYYY-MM-DD`, year 0001–9999 and a real calendar day. DATETIME and
-TIMESTAMP keys additionally require ` HH:MM:SS`, optionally 1–6 fractional digits;
-no timezone suffix, whitespace normalization or leap second is accepted. Valid
-keys retain their exact SQL spelling. Root keys remain integer-only.
-
-This restriction concerns identities, not ordinary payloads, which are copied as SQL text and
-never normalized ([INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision)).
-Copy and enabled verification require each fetched temporal identity set to equal the distinct
-requested set, including the empty-result case. Archive and purge run the pre-delete proof
-sequence described in the same section.
-
-Missing metadata or unfaithful representations fail with
-`TEMPORAL_READ_CONTRACT`. Neither verification nor preflight overrides bypass
-these identity rules, regardless of server modes. The existing cold-data/no-DDL
-contract still applies; the checks add no locking or concurrent-write protection.
+`DATE`, `DATETIME` and `TIMESTAMP` key values must be valid: `YYYY-MM-DD` with year 0001–9999
+and a real calendar day, plus ` HH:MM:SS` and 0–6 fractional digits for `DATETIME` and
+`TIMESTAMP`. Zero dates, invalid clocks, timezone suffixes and leap seconds are refused with
+`TEMPORAL_READ_CONTRACT`, whatever the server's modes; no override bypasses it. Ordinary
+(non-key) temporal values are copied as SQL text and never normalized
+([INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision)).
 
 #### No DDL and no concurrent writes during a run (contract)
 
-GoArchive's correctness during a run rests on three operating contracts:
+GoArchive's correctness rests on these operating contracts. Violations are documented, not
+detected:
 
-1. **No DDL on participating tables while a job runs.** Column lists are read
-   once at startup. A column renamed or dropped mid-run fails the next batch
-   with a MySQL "unknown column" error before that batch reaches deletion;
-   batches completed earlier remain deleted. A column **added** mid-run is
-   *not detected*: it is not copied, and DDL alone can diverge source and
-   destination (an add on one side only, or adds with differing defaults) —
-   with no error raised. Run migrations before or after archive jobs, never during one.
-2. **GoArchive archives cold data.** Concurrent transactions on the archived
-   row range are unsupported, including column additions and column-default
-   changes taking effect mid-run.
-3. **Eligibility only grows, in primary-key order.** A job continues from the last primary key it processed and never
-   looks below it, on this run or later ones. So the rows your `where` selects must be cold: once a row matches,
-   nothing writes to it, and no row below the checkpoint may start matching later. A predicate such as
-   `created_at < NOW() - INTERVAL 1 YEAR` meets this only when `created_at` is set at insert, never changes, and grows
-   with the primary key, which rules out backfills, imports with low IDs and rewritten timestamps. A predicate on a
-   column that changes, such as `status = 'closed'`, does not: a row that closes after the checkpoint has passed it is
-   never archived by that job. To pick such rows up, retire the job and create it again
-   ([Retiring a job completely](README_JOBS_SCHEMA.md#retiring-a-job-completely)).
+1. **No DDL on participating tables while a job runs.** Column lists are read once at startup.
+   A renamed or dropped column fails the next batch before it reaches the delete; an
+   **added** column is not detected and not copied. Run migrations between runs.
+2. **Cold data only.** The rows of a root's tree must not change from the moment GoArchive
+   reads them until it has finished that root, including across a crash and the recovery that
+   follows. Recovery finishes a logged root whose source rows were deleted from outside
+   without being able to tell.
+3. **Changed rows are not re-copied.** A source row updated after GoArchive copied it is not
+   re-copied, detected or reported.
 
 #### Source and destination must be different databases
 
-`SRC_DEST_IDENTITY_CHECK` refuses, at connection time, a source and destination that report
-the same `server_uuid` **and** the same schema name
-([the check](README_VALIDATION.md#connection-identity-check)). Same server, different schema
-is a supported layout. Two conservative refusals are deliberate:
+`SRC_DEST_IDENTITY_CHECK` refuses a source and destination with the same `server_uuid` **and**
+the same schema name ([the check](README_VALIDATION.md#src_dest_identity_check)). Same server,
+different schema is supported.
 
-- **Schema names are compared without regard to letter case.** MySQL looks
-  schema names up case-insensitively under `lower_case_table_names` 1 and 2
-  (its Windows and macOS defaults), where `App` and `app` are one schema.
-  GoArchive folds case on every server, so on a case-sensitive server (the Unix
-  default, `lower_case_table_names=0`) `App` and `app` are refused as one schema
-  even though MySQL keeps them apart. The message prints both spellings. Rename
-  one, or use a different destination.
-- **Two servers sharing a `server_uuid` are one server to GoArchive.** MySQL
-  reads the UUID from `auto.cnf` in the data directory and generates it only
-  when that file is absent, so an instance cloned from another's data directory
-  carries the same UUID. On the standalone archive server: stop mysqld, remove
-  `auto.cnf` from the data directory, start it again, and it writes a fresh
-  `server_uuid`. A server that takes part in replication follows MySQL's own
-  guidance for changing `server_uuid` instead.
-
-The check assumes each connection reaches one backend for the whole run — the
-same assumption verification and the advisory job lock already make. A proxy
-that routes one account's statements to different servers is outside it.
+- Schema names are compared case-insensitively on every server, so `App` and `app` are refused
+  as one schema even where MySQL keeps them apart.
+- Two servers sharing a `server_uuid` (a clone of another's data directory) are one server to
+  GoArchive. On a standalone archive server, stop mysqld, remove `auto.cnf`, and start it
+  again; a replicating server follows MySQL's guidance for changing `server_uuid`.
+- Each connection must reach one backend for the whole run; a proxy that routes one account's
+  statements to different servers is unsupported.
 
 #### InnoDB only
 
 Every participating **source** table must be InnoDB (`STORAGE_ENGINE_CHECK`). The destination
-engine is not checked and is the operator's choice, but MyISAM, MEMORY and ARCHIVE keep rows
-after `ROLLBACK`, voiding the per-batch rollback and `dry-run`'s rolled-back sample, and
-BLACKHOLE stores nothing, so verification fails unless it is skipped
+engine is not checked, but MyISAM, MEMORY and ARCHIVE keep rows after `ROLLBACK`, voiding the
+per-batch rollback, and BLACKHOLE stores nothing, so verification fails unless it is `none`
 ([the check](README_VALIDATION.md#storage_engine_check)).
 
 #### Uncovered incoming foreign keys
 
-Any table **outside** the graph holding a foreign key **into** it is fatal, for
-every `ON DELETE` rule (`FK_COVERAGE_CHECK`). A table in another schema can never be added to
-the graph ([identifier rules](README_CONFIGURATION.md#identifier-rules)), so an incoming
-cross-schema foreign key is always fatal rather than fixable by configuration. Proving that no
-such key was missed needs `PROCESS` on the source account
+Any table **outside** the job holding a foreign key **into** it is fatal, for every `ON DELETE`
+rule (`FK_COVERAGE_CHECK`). A table in another schema cannot join a job
+([identifier rules](README_CONFIGURATION.md#identifier-rules)), so an incoming cross-schema
+foreign key is always fatal. Proving that none was missed needs `PROCESS` on the source account
 ([the provable-grant rule](README_PERMISSIONS.md#the-provable-grant-rule)).
 
 #### Destination schema must not be stricter than source
 
-The destination may drop secondary indexes, `auto_increment`, and defaults, and
-may relax `NOT NULL`. It must not add constraints the source lacks. See the full
-matrix in
-[Validation](README_VALIDATION.md#schema-compatibility-rules).
+The destination may drop secondary indexes, `auto_increment` and defaults, and may relax
+`NOT NULL`; it must not add constraints the source lacks
+([the matrix](README_VALIDATION.md#schema-compatibility-rules)).
+
+#### Table names under `lower_case_table_names=1`
+
+On a server that stores names in lower case, write every table name in the job in lower case.
+A mixed-case name is refused with `TABLE_EXISTENCE_CHECK`.
 
 ---
 
 ### Model limitations
 
-Things the dependency model cannot express, which preflight cannot always catch
-for you.
+Things the relation model cannot express, which preflight cannot always catch.
 
 #### Supported relationship types
 
-GoArchive supports **1:1** and **1:N** (one-to-many) relationships.
+**1:1** and **1:N** only.
 
-- **Many-to-many (N:M) cannot be expressed.** A table appears once in the graph, so a join
-  table with two in-graph parents can carry only one relation; its second foreign key fails
-  `INTERNAL_FK_COVERAGE`. A foreign key spanning several columns between graph tables is
-  rejected the same way.
-- **Self-referential "adjacency list" hierarchies** — a table referencing its own id to build
-  a tree — pass preflight, because no check rejects them, but the model cannot archive the
-  hierarchy.
+- **Many-to-many (N:M) cannot be expressed.** A table appears once in a job, so a join table
+  with two in-job parents carries only one relation; its second foreign key fails
+  `INTERNAL_FK_COVERAGE`.
+- **Self-referencing hierarchies** (a table referencing its own key) pass preflight, which skips
+  self-referencing constraints, but the model cannot archive the hierarchy.
 
 #### Relations must describe ownership
 
-Archive and purge delete the child primary keys discovered for the current root batch; they do
-not check whether another root still needs them. If one child is reachable from several roots
-through its one configured relation, deduplication within a batch does not postpone its
-deletion.
-
-#### A job name is not bound to its source
-
-A job name is bound to its command and root table
-([`archiver_job`](README_JOBS_SCHEMA.md#root_table-is-sticky)), but not to the source server
-and schema: the same job name pointed at a different source that has a table of the same name
-is not detected. Use a new job name whenever the source changes.
+Archive and purge delete the child keys discovered for the current root batch without checking
+whether another root still needs them.
 
 #### Foreign key `ON DELETE CASCADE`
 
-GoArchive manages deletion order itself, via Kahn's algorithm, to prevent
-circular looping. A schema relying heavily on database-level `ON DELETE CASCADE`
-may hit conflicts or redundant operations; preflight warns about cascades among graph tables
+GoArchive deletes children before their parents itself. A cascade among the job's tables is
+redundant work that GoArchive does not account for; preflight warns about it
 ([Warnings](README_VALIDATION.md#warnings)).
-
-GoArchive is best suited to schemas where the **application** controls the
-deletion flow.
 
 #### Database triggers
 
-GoArchive has no visibility into logic hidden in MySQL triggers. A `DELETE` on a source table
-that fires a trigger modifying other tables produces side effects GoArchive does not verify.
-Preflight refuses destination `INSERT` triggers and, unless overridden, source `DELETE`
-triggers ([Trigger checks](README_VALIDATION.md#trigger-checks)). Audit your triggers before
-running a purge.
+GoArchive cannot see logic in triggers: a source `DELETE` trigger that changes other tables has
+side effects GoArchive does not verify. Preflight refuses destination `INSERT` triggers and,
+unless overridden, source `DELETE` triggers
+([Trigger checks](README_VALIDATION.md#trigger-checks)).
 
 ---
 
 ### Operational cautions
 
-Runtime behaviour to plan around. None of these is a bug; all of them can bite an
-unprepared operator.
+Runtime behaviour to plan around.
 
 #### Deep or wide graphs can exhaust memory
 
-BFS discovery accumulates **all descendant primary keys per root batch in
-memory**. A deeply nested schema (parent → child → grandchild → great-grandchild,
-each 1-N with high fanout) can grow that accumulator without bound.
+Discovery holds every descendant key of a root batch in memory. A deep tree with high fanout at
+each level can grow it without bound: start with a small `batch_size` and raise it after
+watching memory ([Tuning throughput](README_OPERATIONS.md#tuning-throughput)).
 
-If your root table has ~1M matching rows and each root has many descendants per
-level, start with a small `batch_size` and scale up only after observing actual
-memory use. Sizing guidance lives in
-[Tuning throughput](README_OPERATIONS.md#tuning-throughput).
+#### A row set larger than `max_allowed_packet` fails its batch
 
-#### The copy-phase transaction spans all tables
+[`MAX_ALLOWED_PACKET_CHECK`](README_VALIDATION.md#max_allowed_packet_check) bounds every
+key-addressed statement, but not the INSERTs, whose size is the rows' own. A wide `BLOB` or
+`TEXT` row set can fail with error 1153: the batch's destination transaction rolls back and
+nothing is deleted. Raise `max_allowed_packet` or lower `batch_size`, then rerun.
 
-**One** destination transaction covers the entire copy phase. It holds row locks
-on already-inserted tables while later tables are still streaming.
+#### The copy transaction spans all tables
 
-Avoid running against a shared destination that other workloads read from
-concurrently.
+One destination transaction copies, verifies and logs a batch across every table, holding row
+locks on tables already inserted while later ones stream. Avoid a destination that other
+workloads read concurrently.
 
 #### Sequential by design
 
-One batch at a time within a run; **there is no parallelism in Community edition.** A second
-run of the same job name, or of any job on the same root table, is refused — except that
-`copy-only --force` proceeds past a held lock whose heartbeat is stale
-([`--force`](README_OPERATIONS.md#--force-only-matters-for-copy-only)). Jobs with different names
-and root tables can run at the same time
+One batch at a time, no parallelism. A second run of the same job, or of any job on the same
+root table, is refused; jobs with different names and root tables can run together
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
 
-#### No built-in metrics or telemetry
+#### The job lock and long replication holds
 
-Run-level progress is available through the opt-in
-[`--progress` display](README_OPERATIONS.md#progress-display). Structured logs and the
-[tracking tables](README_JOBS_SCHEMA.md) remain the durable sources for batch activity and
-recovery state.
+The job's advisory lock lives on a dedicated connection, and losing it stops the job. During a
+replication-lag hold the batch's source session sits idle; once the hold outlasts that session's
+`wait_timeout` — the server's global, or 8 hours if that is lower
+([Session settings](README_CONFIGURATION.md#session-settings)) — the server closes it, and the
+next delete chunk fails with error 4031. The next start's recovery finishes the batch.
 
-#### Locks and `--force`
+#### Partial deletes after an interruption
 
-The job's advisory lock lives on a dedicated connection; losing it aborts the job, and
-`--force` never takes over a held lock for `archive` or `purge`. Requirements, including
-`wait_timeout`: [Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking).
+Delete chunks commit separately, to avoid long source locks. A run stopped between child and
+parent deletes leaves children removed while the parent remains, until the next start's
+recovery finishes the root. The rows were copied and verified first, but monitoring that
+asserts referential integrity mid-run will see the gap.
 
-#### Partial auto-commit deletes are expected after interruption
+#### Copy-only reruns rescan the whole range
 
-Deletes are intentionally committed in batches, to avoid long source locks. If a
-run stops between child and parent deletes, the source can temporarily have
-children removed while the parent remains.
+There is no checkpoint, so a copy-only rerun with `resume: true` reads the whole `where` range
+again to skip the roots it copied before; on a very large range that costs a full scan per run
+([Resume semantics](README_OPERATIONS.md#resume-semantics)).
 
-This is **not data loss** — the rows were copied and verified first — and resume
-completes the remaining work. But monitoring that asserts referential integrity
-mid-run will see the gap.
+#### No built-in metrics
 
-#### Verification method controls dirty-destination behaviour
-
-The choice of `verification.method` decides the INSERT strategy, whether a pre-existing
-destination row aborts the run, and whether an interrupted job can auto-resume — see
-[`verification:`](README_CONFIGURATION.md#verification) and
-[Resume semantics](README_OPERATIONS.md#resume-semantics).
-
-#### AUTO_INCREMENT zero values and dry-run allocation
-
-Explicit zero values are preserved on every connection
-([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#error-prefixes-that-are-not-checks)).
-Rolling back a dry-run sample does not promise to restore AUTO_INCREMENT counters or eliminate
-allocation gaps.
+There is no metrics endpoint. Use the [`--progress` display](README_OPERATIONS.md#progress-display),
+the structured logs and the [tracking tables](README_JOBS_SCHEMA.md).
 
 #### Data loss on misconfiguration is possible
 
 Validation checks structure, not intent: a job with the wrong `where` deletes the wrong rows.
-Review `goarchive dry-run`'s estimated row counts before running `archive`, and keep valid
-backups.
+Check the `where` against the data and `goarchive dry-run`'s first batch before running
+`archive`, and keep valid backups.
 
 ---
 
@@ -297,7 +224,6 @@ configuration file is trusted input: whoever writes it already holds the credent
 - When the person writing the configuration is not the credential holder, the boundary is the
   privileges of the accounts it names: grant only what the
   [privilege matrix](README_PERMISSIONS.md#privilege-matrix) lists.
-- A behaviour that only a deliberate operator could exploit is not a weakness.
 
 **Do not expose config editing to untrusted users or untrusted automation pipelines.**
 
@@ -311,21 +237,11 @@ link here rather than restating it.
 - **MySQL**: Oracle MySQL **8.0.40+** with the **InnoDB** storage engine, and Percona Server for
   MySQL as tested by [dbsgomysql](https://github.com/dbsmedya/dbsgomysql), which supplies every
   preflight fact ([Why GoArchive uses dbsgomysql](README_dbsgomysql.md))
-- **Go**: 1.26 or later to build from source — `go.mod` sets `go 1.26.0` and pins
-  `toolchain go1.26.8`, and the project's own builds (gate, CI, release binaries, Docker image)
-  all use go1.26.8. An older Go with the default `GOTOOLCHAIN=auto` downloads the pinned release
-  instead of building with itself
+- **Go**: 1.26 or later to build from source. `go.mod` pins `toolchain go1.26.8`, which the
+  project's own builds use; an older Go with `GOTOOLCHAIN=auto` downloads it
 - **Network**: access to the source and destination databases, and to every replica listed
   in `replication.servers` when the replication gate is enabled
 
 MySQL 5.7 and earlier are not supported, and neither is any 8.0 release below **8.0.40**.
-Nothing in GoArchive enforces the floor: an older server fails at whichever check
-first meets behaviour the library does not model, rather than being refused up front.
-
----
-
-## What's included in Community
-
-For the positive counterpart to this page — the complete list of what Community
-edition does provide, and what is deferred to Enterprise — see
-[Project Status in the README](../README.md#whats-included-in-community).
+Nothing enforces the floor: an older server fails at whichever check first meets behaviour the
+library does not model.

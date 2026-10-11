@@ -30,28 +30,4 @@ func TestCLIFlagsVariables(t *testing.T) {
 	assert.Equal(t, "archiver.yaml", cfgFile, "cfgFile should default to archiver.yaml")
 	assert.Equal(t, "", logLevel)
 	assert.Equal(t, "", logFormat)
-
-	// Bool flags should default to false
-	assert.Equal(t, false, skipVerify)
-}
-
-func TestCLIOverrideStruct(t *testing.T) {
-	// Test CLIOverrides struct creation
-	overrides := CLIOverrides{
-		LogLevel:   "debug",
-		LogFormat:  "json",
-		SkipVerify: true,
-	}
-
-	assert.Equal(t, "debug", overrides.LogLevel)
-	assert.Equal(t, "json", overrides.LogFormat)
-	assert.True(t, overrides.SkipVerify)
-}
-
-func TestJobVariables(t *testing.T) {
-	// Verify job-specific variables exist
-	assert.Equal(t, "", archiveJob, "archiveJob should default to empty")
-	assert.Equal(t, "", dryrunJob, "dryrunJob should default to empty")
-	assert.Equal(t, "", purgeJob, "purgeJob should default to empty")
-	assert.Equal(t, "", planJob, "planJob should default to empty")
 }

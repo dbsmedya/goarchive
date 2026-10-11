@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -645,13 +645,13 @@ func TestReadServerIdentity(t *testing.T) {
 		mock.ExpectQuery("server_uuid").
 			WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
 
-		got, err := readServerIdentity(context.Background(), db)
+		got, err := ReadServerIdentity(context.Background(), db)
 		if err != nil {
-			t.Fatalf("readServerIdentity: %v", err)
+			t.Fatalf("ReadServerIdentity: %v", err)
 		}
 		want := ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "app", Hostname: "db1.local", Port: 3306}
 		if got != want {
-			t.Fatalf("readServerIdentity = %+v, want %+v", got, want)
+			t.Fatalf("ReadServerIdentity = %+v, want %+v", got, want)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
@@ -677,7 +677,7 @@ func TestReadServerIdentity(t *testing.T) {
 			mock.ExpectQuery("server_uuid").
 				WillReturnRows(identityProbeRows(identityTestUUIDA, tc.schema, "db1.local", 3306))
 
-			_, err = readServerIdentity(context.Background(), db)
+			_, err = ReadServerIdentity(context.Background(), db)
 			if err == nil || !contains(err.Error(), "no selected schema") {
 				t.Fatalf("expected the no-selected-schema refusal, got %v", err)
 			}
@@ -693,7 +693,7 @@ func TestReadServerIdentity(t *testing.T) {
 		sentinel := errors.New("boom")
 		mock.ExpectQuery("server_uuid").WillReturnError(sentinel)
 
-		_, err = readServerIdentity(context.Background(), db)
+		_, err = ReadServerIdentity(context.Background(), db)
 		if !errors.Is(err, sentinel) || !contains(err.Error(), "identity probe failed") {
 			t.Fatalf("expected a wrapped, attributed probe failure, got %v", err)
 		}
@@ -815,5 +815,34 @@ func TestBuildDSNDiagnosticInitialization(t *testing.T) {
 	}
 	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroModeExpression {
 		t.Fatalf("diagnostic DSN initialization missing or auto-zero expression changed: %#v", dsn.Params)
+	}
+}
+
+// TestBuildDSNPinsAutocommit (M7c F1): every session commits each statement on its own,
+// whatever the server's global autocommit. Tracking writes outside a transaction rely on
+// it: under a global autocommit=0 they would never commit and would hold their locks.
+func TestBuildDSNPinsAutocommit(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dsn.Params["autocommit"]; got != "1" {
+		t.Fatalf("DSN autocommit = %q, want \"1\" (params %#v)", got, dsn.Params)
+	}
+}
+
+// TestBuildDSNPinsWaitTimeout (M7c-2 P4): every session keeps at least 8 h of idle time, so
+// a server whose wait_timeout is shorter than the lock keep-alive's 30 s does not close the
+// job lock's dedicated session (which releases GET_LOCK while the run goes on deleting), nor
+// a source session pinned through a lag wait. It never lowers the server's own value.
+// MySQL takes this expression only in the CAST form (1232 for GREATEST and IF alone,
+// M7c-2 probe PR-8).
+func TestBuildDSNPinsWaitTimeout(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dsn.Params["wait_timeout"], "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"; got != want {
+		t.Fatalf("DSN wait_timeout = %q, want %q (params %#v)", got, want, dsn.Params)
 	}
 }

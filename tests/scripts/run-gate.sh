@@ -5,7 +5,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 GATE_ROOT="$PROJECT_ROOT/tests/results/gate"
-STAGES=(estate fmt-check vet lint consumer-policy deadcode unit integration characterization e2e e2e-examples)
+STAGES=(estate fmt-check vet lint consumer-policy deadcode unit integration e2e e2e-examples)
 STATUS=() COMMAND_EXIT=() CAPTURE_EXIT=() LOG_PATH=() HEADLINE=()
 cd "$PROJECT_ROOT" || exit 1
 mkdir -p "$GATE_ROOT" || { echo "ERROR: gate recording failed: cannot create evidence root" >&2; exit 1; }
@@ -160,7 +160,6 @@ stage_headline() {
         lint) grep -m1 -oE '[0-9]+ issues' "$log" ;;
         consumer-policy|deadcode) grep -m1 -oE "$name: .*" "$log" | sed "s/^$name: //" ;;
         integration) grep -m1 -oE 'PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+' "$log" ;;
-        characterization) grep -m1 -oE 'baseline: OK \(.*\)' "$log" | sed 's/^baseline: //' ;;
         e2e|e2e-examples) p=$(grep -oE 'Passed: [0-9]+' "$log" | tail -1); f=$(grep -oE 'Failed: [0-9]+' "$log" | tail -1); [[ -n "$p" || -n "$f" ]] && echo "$p  $f" ;;
     esac
 }
@@ -217,7 +216,6 @@ run_stage consumer-policy make consumer-policy || fail_gate $?
 run_stage deadcode make deadcode || fail_gate $?
 run_stage unit make test-unit || fail_gate $?
 run_stage integration bash tests/scripts/run-tests.sh --setup --integration-only --verbose || fail_gate $?
-run_stage characterization bash tests/scripts/check-characterization-baseline.sh || fail_gate $?
 run_stage e2e make e2e || fail_gate $?
 run_stage e2e-examples make e2e-examples || fail_gate $?
 
