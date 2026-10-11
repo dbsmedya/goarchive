@@ -6,24 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `tests/README.md`. Anything duplicated here rots — record it in its owning file and point at
 it from here.
 
-## Primary development workflow
-
-**dev-contract** is the primary workflow for non-trivial development, including specs, plans,
-reviews, implementation dispatch, gates and PR preparation. Read the globally
-installed skill through the agent's skill catalog; its filesystem location depends on the
-installation. A workstation may expose `.agents/skills/dev-contract` as an optional local
-discovery link, but that ignored link is not shipped with this repository. Do not assume it
-exists or maintain a second copy here.
-
-It takes precedence over the older development-workflow, software-architect and Superpowers
-workflow instructions. Other skills may support work within this contract. This file and
-`tests/README.md` continue to own repository-specific facts and test procedures;
-`tests/AGENTS.md` only turns `tests/README.md` into steps for agents.
-
-Read the operator's rulings and approved spec before the plan. Existing approved specs remain
-authoritative; converting a plan does not reopen its spec. Workflow adoption does not approve
-development of pending plans: each requires the contract's review and dispatch authorization.
-
 ## Project Overview
 
 GoArchive is a Go CLI tool for safely archiving MySQL relational data across servers. It walks
@@ -262,12 +244,15 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | The run loop and its in-memory cursor; phases per job type | `internal/engine/run.go` → `(*run).loop`, `(*run).batch` |
 | Log status writes, inside the transaction that does the work | `internal/engine/run.go` → `logDeleting`, `complete`; `internal/engine/copy.go` → `(*run).copy`; `internal/tracking/log.go` → `(*Job).Insert`, `Transition` |
 | Key-set checks: copy-read identity, verification counts, delete row counts, warning 3170 | `internal/engine/copy.go` → `read`; `verify.go` → `verifyCount`, `verifyHash`; `delete.go` → `deleteOne` |
+| Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
+| Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
 | Startup recovery (delete-only replay) | `internal/engine/recover.go` → `recover`, `replay` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
 | Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
+| Session pins on every connection (UTC, `sql_notes`, `sql_mode`, `autocommit`) | `internal/database/database.go` → `BuildDSN` |
 | Temporal projection and representation contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalReadContractError` |
 | INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
 | Sticky `root_table` and job type; log-key and binding checks | `internal/tracking/job.go` → `(*Store).Attach` |
@@ -296,12 +281,12 @@ start, **Basic Usage**, **Architecture**, and project status. Reference material
 
 ### RULE: internal development documentation goes under `.ayder/superpowers_<YYYYMMDD>/`
 
-Every dev-contract internal artifact — designs, specs, implementation plans,
+Every internal artifact — designs, specs, implementation plans,
 architectural decisions — **MUST** be written to:
 
 ```
 .ayder/superpowers_<YYYYMMDD>/
-├── plans/       # dev-contract implementation plans, one per PR
+├── plans/       # implementation plans, one per PR
 ├── specs/       # designs and specifications
 ├── decisions/   # architectural decision records; why an approach was chosen/rejected
 └── pr/          # PR bodies and their gate evidence, one per PR of this effort
@@ -315,8 +300,7 @@ architectural decisions — **MUST** be written to:
   an archived artifact by path when a current document cites it. Only in-flight efforts stay
   at `.ayder/superpowers_<YYYYMMDD>/`.
 - File naming: `YYYY-MM-DD-<topic>.md`, designs suffixed `-design.md`.
-- Keep the existing `superpowers_<YYYYMMDD>` directory convention under dev-contract.
-  Reviews live under `.ayder/reviews/` as the contract specifies. Never create
+- Reviews live under `.ayder/reviews/`. Never create
   `docs/superpowers/` for internal artifacts.
 - `docs/` is exclusively published user-facing documentation. Never place a plan, spec,
   decision record, review, or session note there.

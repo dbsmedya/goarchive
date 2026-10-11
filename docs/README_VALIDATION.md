@@ -20,6 +20,7 @@ commands run it, and how to fix a failure.
 - [Foreign key checks](#foreign-key-checks)
 - [Permission checks](#permission-checks)
 - [Trigger checks](#trigger-checks)
+- [Server variable checks](#server-variable-checks)
 - [Warnings](#warnings)
 - [Schema compatibility rules](#schema-compatibility-rules)
 - [SHA256 verification](#sha256-verification)
@@ -63,7 +64,7 @@ GoArchive selects one of three profiles per command:
 
 ## Which checks run for which command
 
-19 preflight checks, plus the connection-time `SRC_DEST_IDENTITY_CHECK` (20 rows).
+20 preflight checks, plus the connection-time `SRC_DEST_IDENTITY_CHECK` (21 rows).
 ✅ = enforced, ❌ = not run.
 
 | Check | `archive` | `purge` | `copy-only` | `dry-run` | `validate` |
@@ -88,6 +89,7 @@ GoArchive selects one of three profiles per command:
 | `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ | ❌ | ✅ |
+| `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 Notes:
 
@@ -468,6 +470,26 @@ Triggers **will fire** during the delete phase. Audit what they do first.
 
 ---
 
+## Server variable checks
+
+### `MAX_ALLOWED_PACKET_CHECK`
+
+Every key-addressed statement — the copy read, verification, the delete chunk, discovery
+by `foreign_key`, and the tracking log's statements on the destination — carries at most
+its statement cap of key tuples (logged as `Statement cap:` lines). Preflight bounds the
+larger of the two packets each sends at its cap: the prepared text and the bound values.
+The values are counted as they travel: integers as 8 bytes; `DECIMAL` and temporal keys as
+SQL text; character keys at four bytes a character, because they are read and bound in the
+session's `utf8mb4` whatever the column's charset; and, for discovery, the parent key's
+values, which are bound against the child's `foreign_key` index.
+If that bound exceeds a server's `max_allowed_packet`, or the client's own 64 MiB limit,
+the run is refused before any row is read, naming the server, the table, the cap and the
+bytes needed. Without the check the statement would fail mid-run with error 1153.
+
+Fix: raise `max_allowed_packet` on that server, or lower `range_optimizer_max_mem_size`,
+which shrinks the caps. INSERTs carry rows rather than keys and are not bounded here
+([Known Limits](README_LIMITATIONS.md#a-row-set-larger-than-max_allowed_packet-fails-its-batch)).
+
 ## Warnings
 
 Not all findings are fatal.
@@ -487,7 +509,7 @@ Not all findings are fatal.
 ## Error prefixes that are not checks
 
 These prefixes can appear in preflight output. **They are not additional named checks — the
-count remains 19 preflight checks** — and they do not indicate a configuration problem.
+count remains 20 preflight checks** — and they do not indicate a configuration problem.
 
 | Prefix | Meaning | What to do |
 |---|---|---|

@@ -67,7 +67,7 @@ func acctOpen(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	}
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port), schema
-	cfg.Params = map[string]string{"time_zone": "'+00:00'"}
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1"}
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -388,7 +388,7 @@ func acctRoleActive(t *testing.T, db *sql.DB, role string) {
 // Pair (destination): CREATE, SELECT, INSERT, UPDATE on the job schema held through a
 // default role → JOB_SCHEMA_PERMISSION_CHECK with all four unconfirmed and the advice to
 // grant directly; the same four granted directly → archive passes.
-// The partial_revokes half of D1 needs SET GLOBAL and is not built here (plan M7c).
+// The partial_revokes half of D1 is TestMySQLPartialRevokes (M7c).
 func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "prole")
 	ctx := context.Background()
@@ -572,5 +572,51 @@ func TestMySQLPrivilegeReadOnAPoolOfOne(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// TestMySQLPartialRevokes (M7c, G5's partial_revokes half, deviation D1): while
+// @@global.partial_revokes is ON, dbsgomysql proves a privilege only from a direct schema
+// or table grant; a global grant is unconfirmed, and the permission check fails closed.
+// Environment pair (R56): the estate runs with it OFF; the M7c environment matrix turns it
+// ON with SET GLOBAL on a throwaway pair. On both, accounts built from
+// docs/README_PERMISSIONS.md's grant recipes pass for every job type. Accounts holding the
+// same privileges only as global grants pass with it OFF, and with it ON are refused by
+// the first permission check on a server that has it: JOB_SCHEMA_PERMISSION_CHECK on the
+// destination, else SOURCE_SELECT_PERMISSION_CHECK, every state unconfirmed.
+func TestMySQLPartialRevokes(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "prev")
+	ctx := context.Background()
+	on := func(db *sql.DB) bool {
+		var v int
+		if err := db.QueryRowContext(ctx, "SELECT @@global.partial_revokes").Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v != 0
+	}
+	srcOn, dstOn := on(src), on(dst)
+	t.Logf("partial_revokes: source %v, destination %v", srcOn, dstOn)
+
+	recipeSrc := acctCreate(t, "TEST_SOURCE", src, "prvrsrc", srcSchema,
+		"GRANT SELECT, DELETE ON `"+srcSchema+"`.* TO {{A}}", "GRANT PROCESS ON *.* TO {{A}}")
+	recipeDst := acctCreate(t, "TEST_DEST", dst, "prvrdst", dstSchema,
+		"GRANT SELECT, INSERT, CREATE, UPDATE ON `"+dstSchema+"`.* TO {{A}}")
+	globalSrc := acctCreate(t, "TEST_SOURCE", src, "prvgsrc", srcSchema, "GRANT SELECT, DELETE, PROCESS ON *.* TO {{A}}")
+	globalDst := acctCreate(t, "TEST_DEST", dst, "prvgdst", dstSchema, "GRANT SELECT, INSERT, CREATE, UPDATE ON *.* TO {{A}}")
+
+	for _, typ := range acctTypes {
+		if err := acctRun(ctx, t, recipeSrc, recipeDst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
+			t.Errorf("grant recipes, %s: Run() = %v, want success", typ, err)
+		}
+		err := acctRun(ctx, t, globalSrc, globalDst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+		switch {
+		case dstOn:
+			acctMessage(t, refusedWith(t, err, "JOB_SCHEMA_PERMISSION_CHECK"),
+				"CREATE(unconfirmed)", "SELECT(unconfirmed)", "INSERT(unconfirmed)", "UPDATE(unconfirmed)")
+		case srcOn:
+			acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"), "orders(unconfirmed)", "order_lines(unconfirmed)")
+		case err != nil:
+			t.Errorf("global grants, %s: Run() = %v with partial_revokes OFF, want success", typ, err)
+		}
 	}
 }

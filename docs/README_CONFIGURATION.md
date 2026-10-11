@@ -76,6 +76,11 @@ different zones — or two `SYSTEM` zones that resolve differently — would oth
 copied value by their offset while verification still matched. It is not configurable.
 `DATETIME`, `DATE` and `TIME` are stored as written and are unaffected.
 
+**Every session commits each statement on its own** (`autocommit = 1`), whatever the server's
+global `autocommit`. GoArchive writes its tracking state outside the copy and delete
+transactions; under a global `autocommit = 0` those writes would stay open and hold their
+locks. Only the session is set; the server's global value is never changed.
+
 Source and destination must be different databases
 ([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#connection-identity-check)). Every connection
 also preserves explicit AUTO_INCREMENT zero values

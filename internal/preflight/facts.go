@@ -32,6 +32,8 @@ type server interface {
 	Privileges(ctx context.Context) (privileges, error)
 	// RangeOptimizerMaxMemSize is the session's range_optimizer_max_mem_size.
 	RangeOptimizerMaxMemSize(ctx context.Context) (uint64, error)
+	// MaxAllowedPacket is the session's max_allowed_packet (read-only; the global's value).
+	MaxAllowedPacket(ctx context.Context) (uint64, error)
 }
 
 // privileges judges the account's privileges. The library emits a finding for every
@@ -104,6 +106,14 @@ func (s *mysqlServer) RangeOptimizerMaxMemSize(ctx context.Context) (uint64, err
 	return v, nil
 }
 
+func (s *mysqlServer) MaxAllowedPacket(ctx context.Context) (uint64, error) {
+	var v uint64
+	if err := s.db.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&v); err != nil {
+		return 0, fmt.Errorf("read max_allowed_packet: %w", err)
+	}
+	return v, nil
+}
+
 type grantsJudge struct{ g validations.Grants }
 
 func (j grantsJudge) Tables(schema string, tables []string, p validations.Privilege) []validations.Finding {
@@ -153,6 +163,7 @@ type facts struct {
 	keys    map[string]key.Def // source keys, by job table
 	dstKeys map[string]key.Def // destination keys, set by checkDestinationKeys
 	caps    []Cap
+	dstMem  uint64 // the destination's range_optimizer_max_mem_size, read by reportStatementCaps
 }
 
 func newFacts(cfg Config, src, dst server) *facts {

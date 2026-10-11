@@ -45,11 +45,12 @@ func TestStagesByJobType(t *testing.T) {
 		want []string
 	}{
 		{jobspec.Archive, false, join(structure, destination, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps"})},
+			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
 		{jobspec.Purge, false, join(structure, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps"})},
+			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps",
+			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
-			"SourceSelectPermissions", "StatementCaps"})},
+			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
 		// Under --skip-validate-preflight the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3).
 		{jobspec.Archive, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
@@ -84,13 +85,15 @@ func TestHealthyJobPasses(t *testing.T) {
 
 // TestPurgeNeedsNoDestinationTables is R5: validate and dry-run use the job's profile, so a
 // purge job passes with no tables on the destination and reads none of its table facts.
+// It reads the job schema privileges and two server variables, which bound the tracking
+// log's statements there (M7c F3).
 func TestPurgeNeedsNoDestinationTables(t *testing.T) {
 	w := healthy(t, jobspec.Purge)
 	w.dst.specs = nil
 	w.mustPass()
 	for _, c := range w.dst.calls {
-		if c != "Privileges" {
-			t.Errorf("purge read destination fact %s; only the job schema privileges are needed", c)
+		if c != "Privileges" && c != "RangeOptimizerMaxMemSize" && c != "MaxAllowedPacket" {
+			t.Errorf("purge read destination fact %s; only the job schema privileges and server variables are needed", c)
 		}
 	}
 	if !slices.Contains(w.dst.calls, "Privileges") {

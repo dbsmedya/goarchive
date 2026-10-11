@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
@@ -16,6 +17,21 @@ type Cap struct {
 	Statement string   // "by key": copy read, verification, delete; "discovery": child rows by foreign_key
 	Columns   []string // the columns of the index the statement addresses
 	Tuples    int
+
+	parts []key.Column // Columns' key types, for MaxTuples (the index addressed)
+	// bind are the types of the values the statement binds, when they differ from parts:
+	// discovery binds the parent's key, projected into references order, against the
+	// child's foreign_key index (engine discoveryStatements; Codex M7c-1 review B2). The
+	// packet bound (checkMaxAllowedPacket) charges them.
+	bind []key.Column
+}
+
+// binds are the types of the values c's statements bind.
+func (c Cap) binds() []key.Column {
+	if c.bind != nil {
+		return c.bind
+	}
+	return c.parts
 }
 
 // reportStatementCaps computes and logs the effective caps from each server's
@@ -33,7 +49,8 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 	var caps []Cap
 	for _, n := range f.tree.CopyOrder() {
 		def := f.keys[n.Table]
-		caps = append(caps, Cap{n.Table, "source", "by key", def.Names(), key.MaxTuples(def.Columns, srcMem)})
+		caps = append(caps, Cap{Table: n.Table, Server: "source", Statement: "by key", Columns: def.Names(),
+			Tuples: key.MaxTuples(def.Columns, srcMem), parts: def.Columns})
 		if n.Parent == nil {
 			continue
 		}
@@ -49,16 +66,26 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 			}
 			cols = append(cols, c)
 		}
-		caps = append(caps, Cap{n.Table, "source", "discovery", n.ForeignKey, key.MaxTuples(cols, srcMem)})
-	}
-	if f.dstKeys != nil {
-		dstMem, err := f.dst.RangeOptimizerMaxMemSize(ctx)
+		parent := f.keys[n.Parent.Table]
+		idx, err := n.Projection(parent.Names())
 		if err != nil {
-			return inspectionError("statement_caps", err)
+			return fmt.Errorf("preflight statement caps: %w", err)
 		}
+		caps = append(caps, Cap{Table: n.Table, Server: "source", Statement: "discovery", Columns: n.ForeignKey,
+			Tuples: key.MaxTuples(cols, srcMem), parts: cols, bind: jobspec.ProjectColumns(parent.Columns, idx)})
+	}
+	// The destination's budget is read for every job type: purge has no destination
+	// tables, but its tracking log statements run there (checkMaxAllowedPacket).
+	dstMem, err := f.dst.RangeOptimizerMaxMemSize(ctx)
+	if err != nil {
+		return inspectionError("statement_caps", err)
+	}
+	f.dstMem = dstMem
+	if f.dstKeys != nil {
 		for _, t := range f.tables {
 			def := f.dstKeys[t]
-			caps = append(caps, Cap{t, "destination", "by key", def.Names(), key.MaxTuples(def.Columns, dstMem)})
+			caps = append(caps, Cap{Table: t, Server: "destination", Statement: "by key", Columns: def.Names(),
+				Tuples: key.MaxTuples(def.Columns, dstMem), parts: def.Columns})
 		}
 	}
 	for _, c := range caps {

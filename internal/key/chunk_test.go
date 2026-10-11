@@ -102,3 +102,120 @@ func TestCheckRangeWarningRefusesAPool(t *testing.T) {
 		t.Fatalf("CheckRangeWarning(*sql.DB) = %v, want a refusal naming the connection pool", err)
 	}
 }
+
+// driverExecuteBytes is the COM_STMT_EXECUTE payload go-sql-driver sends for args
+// (writeExecutePacket): 1 command, 4 statement id, 1 flags and 4 iteration bytes, the null
+// bitmap, 1 new-params flag, 2 bytes of type per parameter, then each value: 8 bytes for
+// an int64 or uint64, a length-encoded length plus the bytes for a string or []byte.
+func driverExecuteBytes(args []any) int {
+	n := len(args)
+	size := 1 + 4 + 1 + 4 + (n+7)/8 + 1 + 2*n
+	for _, a := range args {
+		switch v := a.(type) {
+		case int64, uint64:
+			size += 8
+		case string:
+			size += lengthEncoded(len(v)) + len(v)
+		case []byte:
+			size += lengthEncoded(len(v)) + len(v)
+		}
+	}
+	return size
+}
+
+func lengthEncoded(l int) int {
+	switch {
+	case l < 251:
+		return 1
+	case l < 1<<16:
+		return 3
+	case l < 1<<24:
+		return 4
+	}
+	return 9
+}
+
+// widestKeys holds each key family with its widest value, as Decode holds it (M7c,
+// Fable M7c-1 review I1, whose probe measured them).
+var widestKeys = []struct {
+	name string
+	col  Column
+	val  any
+}{
+	{"int", Column{Name: "k", Family: FamilySigned}, int64(-1)},
+	{"bigint unsigned", Column{Name: "k", Family: FamilyUnsigned}, uint64(1)},
+	{"year", Column{Name: "k", Family: FamilyYear}, int64(2024)},
+	{"decimal(10,2)", Column{Name: "k", Family: FamilyDecimal, Precision: 10, Scale: 2}, "-" + strings.Repeat("9", 8) + ".99"},
+	{"decimal(38,0)", Column{Name: "k", Family: FamilyDecimal, Precision: 38}, "-" + strings.Repeat("9", 38)},
+	{"decimal(65,30)", Column{Name: "k", Family: FamilyDecimal, Precision: 65, Scale: 30}, "-" + strings.Repeat("9", 35) + "." + strings.Repeat("9", 30)},
+	{"date", Column{Name: "k", Family: FamilyDate}, "2024-01-01"},
+	{"datetime(0)", Column{Name: "k", Family: FamilyDateTime}, "2024-01-01 12:34:56"},
+	{"datetime(6)", Column{Name: "k", Family: FamilyDateTime, Fsp: 6}, "2024-01-01 12:34:56.123456"},
+	{"timestamp(6)", Column{Name: "k", Family: FamilyTimestamp, Fsp: 6}, "2024-01-01 12:34:56.123456"},
+	{"time(6)", Column{Name: "k", Family: FamilyTime, Fsp: 6}, "-838:59:59.000000"},
+	{"varchar(255) utf8mb4", Column{Name: "k", Family: FamilyString, Length: 255, Charset: "utf8mb4"}, []byte(strings.Repeat("x", 1020))},
+	// A latin1 key comes back converted to the session's utf8mb4 (character_set_results), so
+	// '€', one byte stored, is three on the wire (Codex M7c-1 review B1).
+	{"char(10) latin1", Column{Name: "k", Family: FamilyString, Length: 10, Charset: "latin1"}, []byte(strings.Repeat("€", 10))},
+	{"varchar(255) latin1", Column{Name: "k", Family: FamilyString, Length: 255, Charset: "latin1"}, []byte(strings.Repeat("€", 250) + "12345")},
+	{"binary(16)", Column{Name: "k", Family: FamilyBinary, Length: 16}, []byte(strings.Repeat("x", 16))},
+}
+
+// TestStatementBytesBoundsTheWire (M7c F3, Fable M7c-1 review I1): StatementBytes and
+// InsertBytes bound both packets of a statement: its prepared text and the execute packet
+// the driver really sends. The execute packet carries the value Decode holds (8 bytes for
+// an integer, SQL text for DECIMAL and the temporal families, the bytes for strings), not
+// the index key image MaxTuples charges. Checked for each family's widest value, at the
+// caps of three range budgets, alone and as the second part of a composite key, for an IN
+// statement with 0 and 2 integer status parameters and for the tracking log's INSERT, which
+// binds one status per row.
+func TestStatementBytesBoundsTheWire(t *testing.T) {
+	for _, w := range widestKeys {
+		lead := Column{Name: "a", Family: FamilySigned}
+		for _, shape := range []struct {
+			cols []Column
+			vals []any
+		}{{[]Column{w.col}, []any{w.val}}, {[]Column{lead, w.col}, []any{int64(-1), w.val}}} {
+			names := make([]string, len(shape.cols))
+			for i, c := range shape.cols {
+				names[i] = c.Name
+			}
+			for _, budget := range []uint64{8 << 20, 64 << 20, 0} {
+				tuples := MaxTuples(shape.cols, budget)
+				for _, ints := range []int{0, 2} {
+					args := make([]any, 0, tuples*len(shape.cols)+ints)
+					for range tuples {
+						args = append(args, shape.vals...)
+					}
+					for range ints {
+						args = append(args, int64(4))
+					}
+					text, exec := len(In(names, shape.cols, tuples)), driverExecuteBytes(args)
+					if got := StatementBytes(names, shape.cols, tuples, ints, 0); got < uint64(max(text, exec)) {
+						t.Errorf("%s, %d parts, budget %d, %d ints: StatementBytes = %d, below text %d / execute %d",
+							w.name, len(shape.cols), budget, ints, got, text, exec)
+					}
+				}
+
+				rows := min(tuples, 65535/(len(shape.cols)+1))
+				phs := make([]string, len(shape.cols))
+				for i, c := range shape.cols {
+					phs[i] = Placeholder(c)
+				}
+				row := "(" + strings.Join(phs, ", ") + ", ?)"
+				args := make([]any, 0, rows*(len(shape.cols)+1))
+				list := make([]string, rows)
+				for i := range list {
+					list[i] = row
+					args = append(args, shape.vals...)
+					args = append(args, int64(1))
+				}
+				text, exec := len(" VALUES "+strings.Join(list, ", ")), driverExecuteBytes(args)
+				if got := InsertBytes(shape.cols, rows, 1, 0); got < uint64(max(text, exec)) {
+					t.Errorf("%s, %d parts, budget %d: InsertBytes(%d rows) = %d, below text %d / execute %d",
+						w.name, len(shape.cols), budget, rows, got, text, exec)
+				}
+			}
+		}
+	}
+}

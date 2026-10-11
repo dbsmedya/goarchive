@@ -37,7 +37,7 @@ func (s server) open(t *testing.T, schema string) *sql.DB {
 	t.Helper()
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = s.user, s.pass, "tcp", fmt.Sprintf("%s:%d", s.host, s.port), schema
-	cfg.Params = map[string]string{"time_zone": "'+00:00'"}
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1"}
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)

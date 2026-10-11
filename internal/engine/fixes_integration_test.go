@@ -127,7 +127,13 @@ func TestMySQLRecoveryHonoursTheSentinel(t *testing.T) {
 		rep, err := Run(ctx, cfg)
 		done <- result{rep, err}
 	}()
-	<-paused
+	// A run that returns before the pause (refused at startup, say) fails the test here
+	// instead of leaving it blocked until the package's timeout (M7c T1).
+	select {
+	case <-paused:
+	case res := <-done:
+		t.Fatalf("Run() returned before the sentinel paused it: %+v, %v", res.rep, res.err)
+	}
 	time.Sleep(2*sentinelPollInterval + 500*time.Millisecond)
 	// While paused the run holds only its job lock's session: nothing else is left idle to
 	// outlive the server's wait_timeout (Fable M7a plan review, I1). A heartbeat can borrow

@@ -233,10 +233,14 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// rejects it. Offset form: needs no time-zone tables.
 	// Issue #108: preserve explicit AUTO_INCREMENT zero without replacing
 	// inherited strict/date modes. The driver initializes every new session.
+	// M7c F1: tracking writes outside an explicit transaction rely on each statement
+	// committing on its own. A server whose global autocommit is 0 would leave them open,
+	// holding their locks, so the session pins it.
 	dsnCfg.Params = map[string]string{
-		"sql_notes": "1",
-		"time_zone": "'+00:00'",
-		"sql_mode":  autoZeroModeExpression,
+		"sql_notes":  "1",
+		"time_zone":  "'+00:00'",
+		"sql_mode":   autoZeroModeExpression,
+		"autocommit": "1",
 	}
 
 	switch cfg.TLS {

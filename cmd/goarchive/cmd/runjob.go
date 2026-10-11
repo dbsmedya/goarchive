@@ -36,7 +36,8 @@ func registerRunFlags(c *cobra.Command, o *runOptions, typ jobspec.Type) {
 // registerSkipPolicyFlag adds --skip-validate-preflight (spec §8.3).
 func registerSkipPolicyFlag(c *cobra.Command, skipPolicy *bool) {
 	c.Flags().BoolVar(skipPolicy, "skip-validate-preflight", false,
-		"Skip preflight's policy checks (permissions, triggers, foreign-key coverage, destination compatibility). "+
+		"Skip preflight's policy checks (permissions, triggers, foreign-key coverage, destination compatibility, "+
+			"packet size). "+
 			"The keys are still read from MySQL, and the log-key and binding checks still run.")
 }
 

@@ -197,3 +197,111 @@ func TestStatementCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestMaxAllowedPacket (M7c F3): a key-addressed statement at its cap must fit each
+// server's max_allowed_packet, or preflight refuses before any row is read; the run would
+// otherwise fail mid-batch with error 1153. Pair: the healthy world's 64 MiB passes, the
+// same world with 16 KiB on one server is refused, naming that server. Purge is checked on
+// the destination too, where its tracking log statements run. It is a policy check.
+func TestMaxAllowedPacket(t *testing.T) {
+	healthy(t, jobspec.Archive).mustPass()
+	for _, side := range []string{"source", "destination"} {
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+			w := healthy(t, typ)
+			if side == "source" {
+				w.src.packet = 16 << 10
+			} else {
+				w.dst.packet = 16 << 10
+			}
+			e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+			for _, want := range []string{side + " max_allowed_packet is 16384 bytes", "key tuples", "Raise max_allowed_packet"} {
+				if !strings.Contains(e.Message, want) {
+					t.Errorf("%s %s: message %q lacks %q", side, typ, e.Message, want)
+				}
+			}
+			if len(e.Tables) != 1 {
+				t.Errorf("%s %s: tables = %v, want the one table with the largest statement", side, typ, e.Tables)
+			}
+		}
+	}
+	w := healthy(t, jobspec.Archive)
+	w.src.packet, w.cfg.SkipPolicy = 16<<10, true
+	w.mustPass()
+
+	// The tracking log's INSERT binds a status beside each root key, in VALUES text: at the
+	// healthy world's 16,000-root cap of a BIGINT UNSIGNED key it sends about 324 KB, more
+	// than its key lookups (Fable M7c-1 review I1). 320,000 bytes on the destination must be
+	// refused, naming that statement.
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+		w := healthy(t, typ)
+		w.dst.packet = 320000
+		if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a tracking log insert statement on orders") {
+			t.Errorf("%s: message %q does not name the tracking log's INSERT", typ, e.Message)
+		}
+	}
+
+	// Above the driver's own 64 MiB, the client's limit decides: a VARCHAR(255) utf8mb4 key
+	// at an unlimited range budget (the 65,535-placeholder cap) needs about 67 MB, and the
+	// remedy is to shrink the caps, not to raise the server's packet.
+	w = healthy(t, jobspec.Archive)
+	w.jobYAML = withoutNotes
+	w.src.fks = w.src.fks[:1]
+	for _, s := range []*fakeServer{w.src, w.dst} {
+		setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+		setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+	}
+	w.dst.mem, w.dst.packet = 0, 1<<30
+	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
+		t.Errorf("message %q does not name the client's limit", e.Message)
+	}
+
+	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
+	// four bytes a character, so a purge's log INSERT at 8,272 roots needs about 8.5 MB, not
+	// the 2.2 MB its stored bytes suggest. 4 MiB on the destination is refused; 16 MiB passes.
+	latin1 := healthy(t, jobspec.Purge)
+	latin1.jobYAML = withoutNotes
+	latin1.src.fks = latin1.src.fks[:1]
+	for _, s := range []*fakeServer{latin1.src, latin1.dst} {
+		setColumn(s, "orders", col("id", "varchar(255)", "latin1 latin1_bin"))
+		setColumn(s, "order_lines", col("order_id", "varchar(255)", "latin1 latin1_bin"))
+	}
+	latin1.dst.packet = 4 << 20
+	if e := latin1.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "destination max_allowed_packet") {
+		t.Errorf("latin1 key: message %q does not name the destination", e.Message)
+	}
+	latin1.dst.packet = 16 << 20
+	latin1.mustPass()
+
+	// Codex M7c-1 review B2: discovery binds the parent's key values, projected into
+	// references order, against the child's foreign_key index, so the parent's widths bound
+	// it. Each case has a wide parent key over a narrow foreign key: the narrow index caps
+	// discovery high, every tuple is a wide parent value, and discovery is the source's
+	// largest statement. The smaller source packet is refused naming discovery; the larger
+	// one passes.
+	for _, tc := range []struct {
+		name, parent, child string
+		cs                  string
+		refused, passes     uint64
+	}{
+		// 16,000 tuples of 1,020-byte values: about 16 MB.
+		{"VARCHAR(255) over VARCHAR(1)", "varchar(255)", "varchar(1)", "utf8mb4 utf8mb4_bin", 4 << 20, 32 << 20},
+		// 16,000 tuples of 67-character values: about 1.1 MB, above the root's own lookups.
+		{"DECIMAL(65,0) over DECIMAL(10,0)", "decimal(65,0)", "decimal(10,0)", "", 768 << 10, 2 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := healthy(t, jobspec.Archive)
+			w.jobYAML = withoutNotes
+			w.src.fks = w.src.fks[:1]
+			for _, s := range []*fakeServer{w.src, w.dst} {
+				setColumn(s, "orders", col("id", tc.parent, tc.cs))
+				setColumn(s, "order_lines", col("order_id", tc.child, tc.cs))
+			}
+			w.src.packet = tc.refused
+			if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "a discovery statement on order_lines") {
+				t.Errorf("message %q does not name discovery on order_lines", e.Message)
+			}
+			w.src.packet = tc.passes
+			w.mustPass()
+		})
+	}
+}
