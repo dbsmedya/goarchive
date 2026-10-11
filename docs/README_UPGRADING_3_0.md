@@ -68,7 +68,7 @@ nothing is migrated.
 
 ## Configuration changes
 
-The file is read strictly, and every error names its key.
+The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how-configuration-is-loaded)).
 
 - **Every job needs `job_type`:** `archive`, `purge` or `copy-only`. A job runs only under that
   command.

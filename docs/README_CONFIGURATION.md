@@ -32,8 +32,8 @@ GoArchive reads **exactly one** YAML file, `--config`/`-c` (default `archiver.ya
 working directory). There is no merging, no directory scan and no fallback chain. Values the
 file leaves out take the defaults below.
 
-The file is read strictly. Every error names its key, and a YAML or unknown-key error also its
-line:
+The file is read strictly. A validation error names the field it concerns; an unknown key also
+its line; a YAML parse error reports the line where the parser has one:
 
 - **Unknown keys are refused.** Key names are exact and lowercase.
 - **One YAML document per file:** a second document after `---` is refused.
