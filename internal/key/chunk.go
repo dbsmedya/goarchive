@@ -96,10 +96,18 @@ func keyWireBytes(cols []Column) uint64 {
 	return n
 }
 
+// resultMaxBytes is the most bytes one character takes in the session's
+// character_set_results: internal/database's DSN keeps go-sql-driver's utf8mb4 collation,
+// so a character key of any charset is read back, and bound again, in utf8mb4 (Codex
+// M7c-1 review B1: a latin1 '€' is one byte stored and three read).
+const resultMaxBytes = 4
+
 // wireBytes is an upper bound on one value of c in COM_STMT_EXECUTE: what Decode holds, as
 // the driver encodes it. Integers and YEAR are 8 bytes; DECIMAL and the temporal families
-// are SQL text, strings and binaries their bytes, each with a length-encoded length. This
-// is not partBytes, the value's size in an index key image, which MaxTuples charges.
+// are SQL text; strings are the bytes read in the results charset, up to resultMaxBytes a
+// character whatever the column's charset; binaries are their bytes; each with a
+// length-encoded length. This is not partBytes, the value's size in an index key image,
+// which MaxTuples charges.
 func wireBytes(c Column) uint64 {
 	fraction := 0
 	if c.Fsp > 0 {
@@ -117,7 +125,7 @@ func wireBytes(c Column) uint64 {
 	case FamilyTime:
 		return lengthEncodedText(len("-838:59:59") + fraction)
 	case FamilyString:
-		return lengthEncodedText(c.Length * charsetMaxBytes(c.Charset))
+		return lengthEncodedText(c.Length * resultMaxBytes)
 	case FamilyBinary:
 		return lengthEncodedText(c.Length)
 	default:
