@@ -197,3 +197,34 @@ func TestStatementCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestMaxAllowedPacket (M7c F3): a key-addressed statement at its cap must fit each
+// server's max_allowed_packet, or preflight refuses before any row is read; the run would
+// otherwise fail mid-batch with error 1153. Pair: the healthy world's 64 MiB passes, the
+// same world with 16 KiB on one server is refused, naming that server. Purge is checked on
+// the destination too, where its tracking log statements run. It is a policy check.
+func TestMaxAllowedPacket(t *testing.T) {
+	healthy(t, jobspec.Archive).mustPass()
+	for _, side := range []string{"source", "destination"} {
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+			w := healthy(t, typ)
+			if side == "source" {
+				w.src.packet = 16 << 10
+			} else {
+				w.dst.packet = 16 << 10
+			}
+			e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+			for _, want := range []string{side + " max_allowed_packet is 16384 bytes", "key tuples", "Raise max_allowed_packet"} {
+				if !strings.Contains(e.Message, want) {
+					t.Errorf("%s %s: message %q lacks %q", side, typ, e.Message, want)
+				}
+			}
+			if len(e.Tables) != 1 {
+				t.Errorf("%s %s: tables = %v, want the one table with the largest statement", side, typ, e.Tables)
+			}
+		}
+	}
+	w := healthy(t, jobspec.Archive)
+	w.src.packet, w.cfg.SkipPolicy = 16<<10, true
+	w.mustPass()
+}

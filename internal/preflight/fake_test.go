@@ -28,6 +28,7 @@ type fakeServer struct {
 	partial  bool                     // foreign-key metadata not proven complete
 	lacking  map[validations.Privilege][]string
 	mem      uint64
+	packet   uint64 // max_allowed_packet
 	calls    []string
 }
 
@@ -121,6 +122,11 @@ func (s *fakeServer) Privileges(context.Context) (privileges, error) {
 func (s *fakeServer) RangeOptimizerMaxMemSize(context.Context) (uint64, error) {
 	s.call("RangeOptimizerMaxMemSize")
 	return s.mem, nil
+}
+
+func (s *fakeServer) MaxAllowedPacket(context.Context) (uint64, error) {
+	s.call("MaxAllowedPacket")
+	return s.packet, nil
 }
 
 // fakePrivileges holds every privilege except those listed: by table, or "*" for the
@@ -248,11 +254,11 @@ func healthy(t *testing.T, typ jobspec.Type) *world {
 	core, logs := observer.New(zapcore.DebugLevel)
 	w := &world{
 		t: t, jobYAML: healthyJob, jobType: typ, logs: logs,
-		src: &fakeServer{schema: "src", specs: healthySpecs(), mem: 8 << 20, fks: []validations.ForeignKey{
+		src: &fakeServer{schema: "src", specs: healthySpecs(), mem: 8 << 20, packet: 64 << 20, fks: []validations.ForeignKey{
 			fk("fk_lines_order", "order_lines", []string{"order_id"}, "orders", []string{"id"}),
 			fk("fk_notes_line", "line_notes", []string{"order_id", "line_no"}, "order_lines", []string{"order_id", "line_no"}),
 		}},
-		dst: &fakeServer{schema: "dst", specs: healthySpecs(), mem: 8 << 20},
+		dst: &fakeServer{schema: "dst", specs: healthySpecs(), mem: 8 << 20, packet: 64 << 20},
 	}
 	w.cfg = Config{SourceDatabase: "src", DestinationDatabase: "dst", JobSchema: "dst",
 		Verification: jobspec.VerifyCount,
