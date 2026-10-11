@@ -100,7 +100,7 @@ run_suite() { # pair dir → go-test.json, go-test.stderr
 }
 
 run_row() { # pair name kind setup expect
-    local i=$1 name=$2 kind=$3 setup=$4 expect=$5 dir="$OUT/$2" c t0=$SECONDS note=""
+    local i=$1 name=$2 kind=$3 setup=$4 expect=$5 dir="$OUT/$2" c t0=$SECONDS note="" rc=-1
     rm -rf "$dir"; mkdir -p "$dir"
     case $kind in
     dynamic)
@@ -111,7 +111,7 @@ run_row() { # pair name kind setup expect
             done
         fi
         for c in src dst; do snapshot "ga-mx$i-$c" >"$dir/during-$c.tsv"; done
-        run_suite "$i" "$dir"
+        run_suite "$i" "$dir"; rc=$?
         for c in src dst; do
             sqlc "ga-mx$i-$c" "$(restore_sql "$dir/before-$c.tsv")" 2>>"$dir/restore.err"
             snapshot "ga-mx$i-$c" >"$dir/after-$c.tsv"
@@ -124,22 +124,24 @@ run_row() { # pair name kind setup expect
         if ! pair_up "$i" "$image" "$extra" >"$dir/pair.log" 2>&1; then
             note+="pair did not start (pair.log); "
         else
-            run_suite "$i" "$dir"
+            run_suite "$i" "$dir"; rc=$?
         fi
         pair_down "$i"; touch "$WORK/dirty$i"
         ;;
     *) note+="unknown kind $kind; " ;;
     esac
-    local verdict
-    verdict=$("$WORK/judge" -expect "$expect" -json "$dir/go-test.json" 2>&1)
-    local rc=$?
-    [[ -n $note ]] && { rc=1; verdict="${verdict/verdict: OK/verdict: FAIL}"$'\n'"  runner: $note"; }
+    # go test's exit status is reconciled with its stream (Codex M7c-2 review B2): a killed
+    # or crashed run fails the row however its stream ends.
+    local verdict judged
+    verdict=$("$WORK/judge" -expect "$expect" -json "$dir/go-test.json" -exit "$rc" 2>&1)
+    judged=$?
+    [[ -n $note ]] && { judged=1; verdict="${verdict/verdict: OK/verdict: FAIL}"$'\n'"  runner: $note"; }
     {
         echo "row: $name  kind: $kind  setup: $setup"
-        echo "image: $([[ $kind == version ]] && echo "$setup" || echo "$IMAGE")  pair: $i  code: $(git -C "$CODE" rev-parse --short HEAD)  tree: $TREE  seconds: $((SECONDS - t0))"
+        echo "image: $([[ $kind == version ]] && echo "$setup" || echo "$IMAGE")  pair: $i  code: $(git -C "$CODE" rev-parse --short HEAD)  tree: $TREE  go test exit: $rc  seconds: $((SECONDS - t0))"
         echo "$verdict"
     } >"$dir/verdict.txt"
-    [[ $rc -eq 0 ]] || touch "$WORK/failed-$name"
+    [[ $judged -eq 0 ]] || touch "$WORK/failed-$name"
     echo "[$(date +%H:%M:%S)] pair $i: $name → $(sed -n 3p "$dir/verdict.txt")"
 }
 

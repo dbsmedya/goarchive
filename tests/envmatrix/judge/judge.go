@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -14,9 +15,34 @@ type Verdict struct {
 	Reasons []string // why the row is not OK; empty when it is
 	// Pass, Fail and Skip count test results at every level (subtests included).
 	Pass, Fail, Skip int
-	// Failing names the failing leaf tests ("package Test/sub"), in order.
+	// Failing names the failing tests that hold an assertion ("package Test/sub"), in
+	// order: every failing leaf, and a failing parent with lines of its own.
 	Failing []string
+
+	failed bool // the stream holds a failing test or package
 }
+
+// Exit reconciles go test's exit status with the stream (Codex M7c-2 review B2): 0 with no
+// failure, 1 with one; anything else is a signal or a crash and fails the row whatever
+// the stream says. A negative code is unknown and checks nothing.
+func (v *Verdict) Exit(code int) {
+	switch {
+	case code < 0:
+		return
+	case code == 0 && v.failed:
+		v.Reasons = append(v.Reasons, "go test exited 0 though its stream failed")
+	case code == 1 && !v.failed:
+		v.Reasons = append(v.Reasons, "go test exited 1 with no failure in its stream")
+	case code > 1:
+		v.Reasons = append(v.Reasons, fmt.Sprintf("go test exited %d: killed or crashed", code))
+	}
+	v.OK = len(v.Reasons) == 0
+}
+
+// assertionLine matches a line testing writes for t.Error, t.Fatal and t.Log: indented,
+// "<file>_test.go:<line>: ". go1.26 does not tell an error from a log in go test -json,
+// so a failing parent's own such lines are judged as assertions (Codex M7c-2 review B3).
+var assertionLine = regexp.MustCompile(`^\s+\S+_test\.go:\d+: `)
 
 // event is one line of `go test -json` (cmd/test2json), build events included.
 type event struct {
@@ -33,7 +59,9 @@ type testID struct{ pkg, test string }
 // test fails) or "refuse:CODE[|CODE…]" (every failing leaf test's own output cites one of
 // the codes: the M7-8 rule that a run is exact, or refused at startup or failed closed by
 // name before any change). Under either, a panic, a timeout, a build failure or a package that
-// fails with no failing test fails the row (M7c-2 P2).
+// fails with no failing test fails the row (M7c-2 P2), and so does a test or a package
+// that started and never finished: an interrupted stream (Codex M7c-2 review B2). A
+// failing parent's own lines are judged like a leaf's (B3).
 func Judge(expect string, events io.Reader) Verdict {
 	var v Verdict
 	codes, err := parseExpect(expect)
@@ -47,6 +75,8 @@ func Judge(expect string, events io.Reader) Verdict {
 	pkgFailed := map[string]string{} // package → FailedBuild ("" when it built)
 	var pkgOrder []string
 	seen := false
+	var started []testID // tests ("run") and packages ("start", empty test), in order
+	finished := map[testID]bool{}
 
 	dec := json.NewDecoder(events)
 	for {
@@ -59,6 +89,8 @@ func Judge(expect string, events io.Reader) Verdict {
 		}
 		id := testID{e.Package, e.Test}
 		switch e.Action {
+		case "start", "run":
+			started = append(started, id)
 		case "output":
 			if output[id] == nil {
 				output[id] = &strings.Builder{}
@@ -74,6 +106,7 @@ func Judge(expect string, events io.Reader) Verdict {
 			}
 		case "pass", "fail", "skip":
 			seen = true
+			finished[id] = true
 			if e.Test == "" {
 				if e.Action == "fail" {
 					pkgFailed[e.Package] = e.FailedBuild
@@ -95,9 +128,20 @@ func Judge(expect string, events io.Reader) Verdict {
 	if !seen {
 		v.Reasons = append(v.Reasons, "no test ran: the stream has no test or package result")
 	}
+	for _, id := range started {
+		if finished[id] {
+			continue
+		}
+		if id.test == "" {
+			v.Reasons = append(v.Reasons, fmt.Sprintf("package %s started but did not finish", id.pkg))
+		} else {
+			v.Reasons = append(v.Reasons, fmt.Sprintf("%s %s started but did not finish", id.pkg, id.test))
+		}
+	}
 
-	// A leaf is a failing test none of whose subtests failed: the parent of a failing
-	// subtest fails with it, and its own output does not speak for the subtest.
+	// A leaf is a failing test none of whose subtests failed. The parent of a failing
+	// subtest fails with it; its output does not speak for the subtest, but its own lines
+	// may be its own assertions, which are judged like a leaf's.
 	isParent := map[testID]bool{}
 	for _, id := range failed {
 		for i := strings.LastIndex(id.test, "/"); i > 0; i = strings.LastIndex(id.test[:i], "/") {
@@ -107,7 +151,7 @@ func Judge(expect string, events io.Reader) Verdict {
 	failingIn := map[string]bool{}
 	for _, id := range failed {
 		failingIn[id.pkg] = true
-		if isParent[id] {
+		if isParent[id] && !ownLines(output[id]) {
 			continue
 		}
 		name := id.pkg + " " + id.test
@@ -126,8 +170,22 @@ func Judge(expect string, events io.Reader) Verdict {
 			v.Reasons = append(v.Reasons, fmt.Sprintf("package %s failed with no failing test", pkg))
 		}
 	}
+	v.failed = v.Fail > 0 || len(pkgOrder) > 0
 	v.OK = len(v.Reasons) == 0
 	return v
+}
+
+// ownLines reports whether out holds a line testing writes for the test itself.
+func ownLines(out *strings.Builder) bool {
+	if out == nil {
+		return false
+	}
+	for line := range strings.Lines(out.String()) {
+		if assertionLine.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseExpect returns nil codes for "pass", the codes of "refuse:A|B", or an error.

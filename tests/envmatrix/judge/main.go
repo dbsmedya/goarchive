@@ -2,7 +2,7 @@
 // (tests/envmatrix/rows.tsv), from the row's `go test -json` output. It prints the verdict
 // and exits 1 when the row is not OK.
 //
-//	go run ./tests/envmatrix/judge -expect 'refuse:MAX_ALLOWED_PACKET_CHECK' -json go-test.json
+//	go run ./tests/envmatrix/judge -expect 'refuse:MAX_ALLOWED_PACKET_CHECK' -json go-test.json -exit 1
 package main
 
 import (
@@ -14,6 +14,7 @@ import (
 func main() {
 	expect := flag.String("expect", "", "the row's expectation: pass or refuse:CODE[|CODE…]")
 	path := flag.String("json", "", "the row's go test -json output")
+	exit := flag.Int("exit", -1, "go test's exit status, reconciled with the stream (-1: unknown)")
 	flag.Parse()
 	f, err := os.Open(*path)
 	if err != nil {
@@ -22,6 +23,7 @@ func main() {
 	}
 	v := Judge(*expect, f)
 	_ = f.Close()
+	v.Exit(*exit)
 	verdict := "OK"
 	if !v.OK {
 		verdict = "FAIL"
