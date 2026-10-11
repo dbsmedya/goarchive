@@ -830,3 +830,19 @@ func TestBuildDSNPinsAutocommit(t *testing.T) {
 		t.Fatalf("DSN autocommit = %q, want \"1\" (params %#v)", got, dsn.Params)
 	}
 }
+
+// TestBuildDSNPinsWaitTimeout (M7c-2 P4): every session keeps at least 8 h of idle time, so
+// a server whose wait_timeout is shorter than the lock keep-alive's 30 s does not close the
+// job lock's dedicated session (which releases GET_LOCK while the run goes on deleting), nor
+// a source session pinned through a lag wait. It never lowers the server's own value.
+// MySQL takes this expression only in the CAST form (1232 for GREATEST and IF alone,
+// M7c-2 probe PR-8).
+func TestBuildDSNPinsWaitTimeout(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dsn.Params["wait_timeout"], "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"; got != want {
+		t.Fatalf("DSN wait_timeout = %q, want %q (params %#v)", got, want, dsn.Params)
+	}
+}
