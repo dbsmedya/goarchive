@@ -1,0 +1,9 @@
+{"Time":"2026-10-11T14:02:48.700768+03:00","Action":"start","Package":"jfix/pass"}
+{"Time":"2026-10-11T14:02:49.17098+03:00","Action":"run","Package":"jfix/pass","Test":"TestA"}
+{"Time":"2026-10-11T14:02:49.171069+03:00","Action":"output","Package":"jfix/pass","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.171127+03:00","Action":"output","Package":"jfix/pass","Test":"TestA","Output":"    p_test.go:5: fine\n"}
+{"Time":"2026-10-11T14:02:49.171143+03:00","Action":"output","Package":"jfix/pass","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.171152+03:00","Action":"pass","Package":"jfix/pass","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T14:02:49.171162+03:00","Action":"output","Package":"jfix/pass","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:49.171739+03:00","Action":"output","Package":"jfix/pass","Output":"ok  \tjfix/pass\t0.471s\n"}
+{"Time":"2026-10-11T14:02:49.171762+03:00","Action":"pass","Package":"jfix/pass","Elapsed":0.471}

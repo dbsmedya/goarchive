@@ -1,0 +1,22 @@
+{"Time":"2026-10-11T14:02:50.279031+03:00","Action":"start","Package":"jfix/panic"}
+{"Time":"2026-10-11T14:02:50.593967+03:00","Action":"run","Package":"jfix/panic","Test":"TestA"}
+{"Time":"2026-10-11T14:02:50.594062+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.594176+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"--- FAIL: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.596715+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"panic: assignment to entry in nil map [recovered, repanicked]\n"}
+{"Time":"2026-10-11T14:02:50.596734+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\n"}
+{"Time":"2026-10-11T14:02:50.596742+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"goroutine 35 [running]:\n"}
+{"Time":"2026-10-11T14:02:50.59675+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"testing.tRunner.func1.2({0x100356548, 0x10038cf60})\n"}
+{"Time":"2026-10-11T14:02:50.596757+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/goroot/src/testing/testing.go:2123 +0x1a0\n"}
+{"Time":"2026-10-11T14:02:50.596767+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"testing.tRunner.func1()\n"}
+{"Time":"2026-10-11T14:02:50.596774+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/goroot/src/testing/testing.go:2126 +0x2c8\n"}
+{"Time":"2026-10-11T14:02:50.59678+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"panic({0x100356548?, 0x10038cf60?})\n"}
+{"Time":"2026-10-11T14:02:50.596787+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/goroot/src/runtime/panic.go:859 +0x120\n"}
+{"Time":"2026-10-11T14:02:50.596799+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"jfix/panic.TestA(0x2fbd33252248?)\n"}
+{"Time":"2026-10-11T14:02:50.596806+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/src/jfix/panic/p_test.go:5 +0x34\n"}
+{"Time":"2026-10-11T14:02:50.596813+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"testing.tRunner(0x2fbd33252248, 0x1003733e8)\n"}
+{"Time":"2026-10-11T14:02:50.59682+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/goroot/src/testing/testing.go:2193 +0xc4\n"}
+{"Time":"2026-10-11T14:02:50.596832+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-10-11T14:02:50.596839+03:00","Action":"output","Package":"jfix/panic","Test":"TestA","Output":"\t/goroot/src/testing/testing.go:2258 +0x3b8\n"}
+{"Time":"2026-10-11T14:02:50.597551+03:00","Action":"fail","Package":"jfix/panic","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T14:02:50.597569+03:00","Action":"output","Package":"jfix/panic","Output":"FAIL\tjfix/panic\t0.318s\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:50.597582+03:00","Action":"fail","Package":"jfix/panic","Elapsed":0.319}
