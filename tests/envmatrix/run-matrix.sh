@@ -136,7 +136,7 @@ run_row() { # pair name kind setup expect
     [[ -n $note ]] && { rc=1; verdict="${verdict/verdict: OK/verdict: FAIL}"$'\n'"  runner: $note"; }
     {
         echo "row: $name  kind: $kind  setup: $setup"
-        echo "image: $([[ $kind == version ]] && echo "$setup" || echo "$IMAGE")  pair: $i  code: $(git -C "$CODE" rev-parse --short HEAD)  seconds: $((SECONDS - t0))"
+        echo "image: $([[ $kind == version ]] && echo "$setup" || echo "$IMAGE")  pair: $i  code: $(git -C "$CODE" rev-parse --short HEAD)  tree: $TREE  seconds: $((SECONDS - t0))"
         echo "$verdict"
     } >"$dir/verdict.txt"
     [[ $rc -eq 0 ]] || touch "$WORK/failed-$name"
@@ -162,6 +162,12 @@ worker() { # pair index: claims rows from the queue until it is empty
 }
 
 go build -o "$WORK/judge" "$REPO/tests/envmatrix/judge" || exit 2
+# The tree the suites run from, recorded in every verdict: a result names its code only if
+# the tree was clean (Fable M7c-2 review F6).
+dirty=$(git -C "$CODE" status --porcelain | wc -l | tr -d ' ')
+TREE=clean
+[[ $dirty -eq 0 ]] || TREE="dirty ($dirty paths)"
+echo "code: $(git -C "$CODE" rev-parse --short HEAD), tree $TREE"
 n=0
 while IFS= read -r line; do
     name=${line%%$'\t'*}
