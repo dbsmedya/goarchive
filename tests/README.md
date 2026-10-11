@@ -503,7 +503,8 @@ The environment matrix runs the integration suites again under **one changed MyS
 environment at a time**: a global variable, a setting fixed at initialization, or another
 server version. The rows are in [`envmatrix/rows.tsv`](envmatrix/rows.tsv), and each one states
 its expected outcome. Under every row a run must be exact, or refused at startup with a named
-error. A row expected to `pass` has no failing test. A row expected to `refuse:CODE|…` passes
+error, or fail closed by name before it changes anything (as under `max_error_count = 0`,
+where the INSERT and the range checks refuse the statement they cannot prove). A row expected to `pass` has no failing test. A row expected to `refuse:CODE|…` passes
 only if every failing test's own output cites one of those codes. A panic, a timeout or a build
 failure fails any row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
 
