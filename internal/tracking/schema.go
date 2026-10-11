@@ -16,12 +16,16 @@ const (
 )
 
 // bindingColumns are the 3.0 columns of archiver_job that no 2.x release has. A
-// marker-less archiver_job without them is a 2.x table.
-var bindingColumns = []string{"source_server_uuid", "source_database", "destination_database", "config_fingerprint", "root_key_columns"}
+// marker-less archiver_job without them is a 2.x table; under a 3.0 label, one without them
+// is refused too (a pre-alpha 3.0 table lacks destination_server_uuid).
+var bindingColumns = []string{"source_server_uuid", "source_database", "destination_database", "destination_server_uuid",
+	"config_fingerprint", "root_key_columns"}
 
 func (s *Store) createJobTableSQL() string {
 	// job_name is ASCII (R37) and unique without regard to letter case, so two configs
 	// cannot hold "Orders" and "orders" as two jobs in one job_schema.
+	// destination_server_uuid is reserved for GH #14's destination binding: alpha.0 neither
+	// writes nor compares it, and '' means not recorded.
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
   job_name VARCHAR(255) CHARACTER SET ascii COLLATE ascii_general_ci NOT NULL,
@@ -31,6 +35,7 @@ func (s *Store) createJobTableSQL() string {
   source_server_uuid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   source_database VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   destination_database VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  destination_server_uuid VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
   config_fingerprint TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   root_key_columns TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
