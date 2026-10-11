@@ -12,9 +12,8 @@ GoArchive is a Go CLI tool for safely archiving MySQL relational data across ser
 each job's table tree from its declared relations, recovers an interrupted run by replaying the
 job's typed log, and works in key-ordered batches.
 
-**Edition**: Community. Recommended for single-operator workstation archival of cold data.
-**Enterprise edition** (metrics, parallelism, large-scale load-testing) is planned as a
-separate product.
+Recommended for archival of cold data. 3.0 has one edition: there is no Community/Enterprise
+split, and the version carries no edition suffix.
 
 The current version is the `Makefile`'s `RELEASE_VERSION` (see *Versioning* below); `README.md` also states which release is stable.
 
@@ -38,9 +37,9 @@ that moves goarchive's own operator-visible acceptance; that gets a goarchive te
 
 ### Versioning (read before bumping the version)
 
-The version string carries the `-community` edition suffix; release candidates keep it and
-add an `RC` marker before it. It is repeated at four sites, and a bump MUST update **all** of
-them — a missed one ships mislabeled binaries:
+From 3.0 the version is SemVer with no edition suffix (`3.0.0`); a prerelease adds `-alpha.N`,
+`-beta.N` or `-RC.N` (2.x versions carry `-community`). It is repeated at four sites, and a
+bump MUST update **all** of them — a missed one ships mislabeled binaries:
 
 | Location | What it controls |
 |----------|------------------|
@@ -56,9 +55,10 @@ its bare number; an exception needs an allow-list entry in that test, approved b
 
 No workflow parses the version — the workflows trigger on the `v*` glob and extract it with a
 prefix strip, and CI injects the literal `ci-test`; the drift test is the one reader. The
-only semver consumer is `docker/metadata-action` (`.github/workflows/docker.yml`); both forms
-are valid SemVer prereleases, which is also what makes `release.yml` mark the GitHub release a
-prerelease automatically (`prerelease: contains(VERSION, '-')`).
+only semver consumer is `docker/metadata-action` (`.github/workflows/docker.yml`); every 3.0
+version is valid SemVer, and a prerelease's `-` is also what makes `release.yml` mark the
+GitHub release a prerelease automatically (`prerelease: contains(VERSION, '-')`), while a
+final `3.0.0` is published as a release.
 
 Do **not** change: `cmd/goarchive/cmd/version_test.go` (uses `1.2.3` as a test
 fixture, not the project version), or historical release notes under `.ayder/`.

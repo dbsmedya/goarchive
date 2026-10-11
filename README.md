@@ -90,7 +90,7 @@ Testing, backups and the other cautions before production: [Limitations](docs/RE
 
 ## Features
 
-Complete end-to-end archive, purge, and copy-only workflows in the Community edition:
+Complete end-to-end archive, purge, and copy-only workflows:
 
 - **Automatic foreign key dependency resolution** - Kahn's algorithm orders the related tables, so no operation ever orphans a row
 - **Referential integrity checks** - Detects foreign keys from outside the archive set pointing into it, including across schemas, and refuses to run rather than let an external `ON DELETE CASCADE` delete uncopied rows
@@ -327,12 +327,11 @@ How to run every test layer: [tests/README.md](tests/README.md).
 
 ## Project Status
 
-- **Edition**: Community
-- **Version**: `2.2.4-community` (**stable**)
+- **Version**: `3.0.0-alpha.0` (**prerelease**)
 - **Stable release**: `2.2.4-community` — the current production line.
-- **Recommended for**: single-operator workstation archival of cold MySQL data
+- **Recommended for**: archival of cold MySQL data
 
-### Planned for Enterprise
+### Planned
 
 - Archive to BigQuery
 - Observability: Prometheus metrics, OpenTelemetry traces, dashboards
