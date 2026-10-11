@@ -192,11 +192,11 @@ parent deletes leaves children removed while the parent remains, until the next 
 recovery finishes the root. The rows were copied and verified first, but monitoring that
 asserts referential integrity mid-run will see the gap.
 
-#### Copy-only reruns
+#### Copy-only reruns rescan the whole range
 
-With `resume: false` (the default) a rerun fails on the first root already in the destination.
-With `resume: true` it skips the roots the job copied before, but every run rescans the whole
-`where` range.
+There is no checkpoint, so a copy-only rerun with `resume: true` reads the whole `where` range
+again to skip the roots it copied before; on a very large range that costs a full scan per run
+([Resume semantics](README_OPERATIONS.md#resume-semantics)).
 
 #### No built-in metrics
 

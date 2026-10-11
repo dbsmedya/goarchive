@@ -277,11 +277,8 @@ replication hold: server replica1.internal:3306 unhealthy (channel <default>: la
 
 Healthy servers stay silent. A recovered server logs one `INFO` line, and the last one to recover
 logs another with the total hold. If the reason changes while a server is still down, the held
-time keeps accumulating.
-
-A source session idle through a hold longer than its `wait_timeout` (raised to at least 8 hours
-for every GoArchive session) is closed by the server; the next delete chunk then fails with
-error 4031, and the next run's recovery finishes the batch.
+time keeps accumulating. A hold longer than 8 hours fails the next delete chunk
+([the limit](README_LIMITATIONS.md#the-job-lock-and-long-replication-holds)).
 
 ### `cache_ttl` and the bounded detection delay
 
@@ -293,15 +290,9 @@ pass, a replica that has just become unhealthy is not noticed. `cache_ttl: 0` ch
 
 ## Crash recovery
 
-There is no checkpoint. Each job's log, `archiver_job_log_<id>` in the
-[tracking schema](README_JOBS_SCHEMA.md), records the roots of each batch with a status, written
-in the same transaction as the work it describes:
-
-| Status | Written | Meaning |
-|--------|---------|---------|
-| `1` copied | archive, with the batch's copy | copied and verified; source rows not yet all deleted |
-| `2` completed | after the deletes; copy-only, with the copy | done |
-| `4` deleting | purge, before its deletes | delete in progress |
+There is no checkpoint. Each job's log records the roots of each batch with a status, written
+in the same transaction as the work it describes
+([statuses](README_JOBS_SCHEMA.md#ga_status-values)).
 
 Rerun the same command to recover; there is no resume subcommand. Before its first batch, a run
 replays its log, page by page:
@@ -336,11 +327,9 @@ What a rerun does with work already done:
 - **copy-only, `resume: true`** — each batch drops the roots this job logged as copied before,
   and copies the rest. Every run rescans the whole `where` range.
 
-Before any of this, startup checks that the job is the one registered under its name: the same
-`job_type`, root table and root key. While the job has pending work, its binding must not have
-changed either: the source server and schema and the relations (purge: also the `where`;
-copy-only: also the destination database). With no pending work, a changed binding is simply
-recorded ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
+Before any of this, startup checks the job against its registration: its type, root table and
+root key are fixed, and while it has logged work, the config that work depends on must not
+change ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
 
 ---
 
@@ -374,6 +363,6 @@ destination. Startup needs at least three destination connections (`max_connecti
 
 Every 30 seconds the run checks that its job lock is still held by its own connection, and stops
 if it is not: GoArchive will not go on deleting without its lock. A lost lock is therefore
-noticed within 30 seconds. Every GoArchive session raises its `wait_timeout` to at least 8 hours
-(`GREATEST(@@GLOBAL.wait_timeout, 28800)`), and the lock connection is used every 30 seconds, so
-neither a long run nor a long pause lets the server close it.
+noticed within 30 seconds. The lock connection is used every 30 seconds and its `wait_timeout` is
+raised ([Session settings](README_CONFIGURATION.md#session-settings)), so neither a long run nor
+a long pause lets the server close it.
