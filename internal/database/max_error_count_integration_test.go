@@ -97,6 +97,8 @@ func TestMySQLMaxErrorCount(t *testing.T) {
 		if err == nil {
 			t.Fatal("Connect succeeded; want MAX_ERROR_COUNT_CHECK on the destination")
 		}
+		// The operator-facing message, as README_VALIDATION.md quotes it.
+		t.Logf("Connect refused: %v", err)
 		for _, want := range []string{"destination", "MAX_ERROR_COUNT_CHECK", "global max_error_count", "SESSION_VARIABLES_ADMIN"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("Connect error = %q, want it to contain %q", err, want)
