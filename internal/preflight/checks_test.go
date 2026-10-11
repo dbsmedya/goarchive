@@ -6,6 +6,7 @@ import (
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
@@ -204,6 +205,13 @@ func TestStatementCaps(t *testing.T) {
 // same world with 16 KiB on one server is refused, naming that server. Purge is checked on
 // the destination too, where its tracking log statements run. It is a policy check.
 func TestMaxAllowedPacket(t *testing.T) {
+	// These cases describe statements at their caps (M7c-1): batch sizes above every cap
+	// keep the bound there (M7c-F4, TestMaxAllowedPacketBatchBound).
+	healthy := func(t *testing.T, typ jobspec.Type) *world {
+		w := healthy(t, typ)
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: 1 << 20, BatchDeleteSize: 1 << 20}
+		return w
+	}
 	healthy(t, jobspec.Archive).mustPass()
 	for _, side := range []string{"source", "destination"} {
 		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
@@ -253,6 +261,10 @@ func TestMaxAllowedPacket(t *testing.T) {
 	w.dst.mem, w.dst.packet = 0, 1<<30
 	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
 		t.Errorf("message %q does not name the client's limit", e.Message)
+	} else if !strings.Contains(e.Message, "set range_optimizer_max_mem_size on the destination") || !strings.Contains(e.Message, "batch_size") {
+		// Fable M7c-1 review M4(b): at an unlimited range budget there is nothing to lower;
+		// the DBA must set a limit, or the job must send fewer keys.
+		t.Errorf("message %q: at range_optimizer_max_mem_size = 0 the remedy must be to set a limit or lower batch_size", e.Message)
 	}
 
 	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
@@ -303,5 +315,59 @@ func TestMaxAllowedPacket(t *testing.T) {
 			w.src.packet = tc.passes
 			w.mustPass()
 		})
+	}
+}
+
+// TestMaxAllowedPacketBatchBound (M7c-2, M7c-F4): the engine never sends more keys in one
+// statement than batch_size, or batch_delete_size for the source's deletes (engine
+// run.go byKeyChunk, discoveryChunk, deleteChunk; the tracking log sees one batch of
+// roots), so the check bounds each statement there, not at its cap.
+// Pair: a 2 MiB destination with a VARCHAR(255) utf8mb4 key passes at batch_size 1000
+// (about 1 MB a statement) and is refused at 16000 (the cap), offering batch_size. A
+// batch_delete_size above batch_size is the source's by-key bound, and is named.
+func TestMaxAllowedPacketBatchBound(t *testing.T) {
+	setup := func(batch, deletes int) *world {
+		w := healthy(t, jobspec.Archive)
+		w.jobYAML = withoutNotes
+		w.src.fks = w.src.fks[:1]
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+			setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+		}
+		w.cfg.Processing = config.ProcessingConfig{BatchSize: batch, BatchDeleteSize: deletes}
+		return w
+	}
+
+	w := setup(1000, 500)
+	w.dst.packet = 2 << 20
+	w.mustPass()
+
+	w = setup(16000, 500)
+	w.dst.packet = 2 << 20
+	e := w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+	for _, want := range []string{"destination max_allowed_packet is 2097152 bytes", "Raise max_allowed_packet on the destination", "lower batch_size to at most"} {
+		if !strings.Contains(e.Message, want) {
+			t.Errorf("batch_size 16000: message %q lacks %q", e.Message, want)
+		}
+	}
+
+	// Deletes: batch_delete_size bounds the source's by-key statements when it is larger.
+	w = setup(10, 16000)
+	w.src.packet = 2 << 20
+	e = w.mustFail("MAX_ALLOWED_PACKET_CHECK")
+	if !strings.Contains(e.Message, "lower batch_delete_size to at most") || strings.Contains(e.Message, "lower batch_size") {
+		t.Errorf("batch_delete_size 16000: message %q must offer batch_delete_size only (batch_size 10 fits)", e.Message)
+	}
+	w = setup(10, 1000)
+	w.src.packet = 2 << 20
+	w.mustPass()
+
+	// A size below 1 is a configuration error, never a bound of 0.
+	for _, p := range []config.ProcessingConfig{{BatchSize: 0, BatchDeleteSize: 500}, {BatchSize: 1000, BatchDeleteSize: 0}} {
+		w := healthy(t, jobspec.Archive)
+		w.cfg.Processing = p
+		if _, err := w.run(); err == nil || !strings.Contains(err.Error(), "batch") {
+			t.Errorf("run() with %+v = %v, want a configuration error naming the batch size", p, err)
+		}
 	}
 }
