@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
@@ -45,11 +46,11 @@ type sized struct {
 // up to two statuses) and its INSERT (the root key and a status per row, in VALUES text).
 // Each statement is bounded at the most keys the engine sends in it: its cap, or the
 // run's batch_size when that is smaller, or for the source's by-key statements, which
-// include the deletes, the larger of batch_size and batch_delete_size (M7c-F4; engine
-// byKeyChunk, discoveryChunk, deleteChunk; the log sees one batch of roots). Each bound
-// counts the prepared text and the bytes the driver sends (key.StatementBytes,
-// key.InsertBytes; Fable M7c-1 review I1). The copy's INSERTs carry rows, not keys, and
-// are not bounded here.
+// include the deletes (except under copy-only), the larger of batch_size and
+// batch_delete_size (M7c-F4; engine byKeyChunk, discoveryChunk, deleteChunk; the log sees
+// one batch of roots). Each bound counts the prepared text and the bytes the driver sends
+// (key.StatementBytes, key.InsertBytes; Fable M7c-1 review I1). The copy's INSERTs carry
+// rows, not keys, and are not bounded here.
 func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 	specs, err := f.sourceSpecs(ctx)
 	if err != nil {
@@ -66,7 +67,9 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 		knobs, mem := []knob{batch}, f.dstMem
 		if c.Server == "source" {
 			mem = f.srcMem
-			if c.Statement == "by key" {
+			// The source's by-key statements include the deletes, except for copy-only,
+			// which never deletes (Fable M7c-2 review F3).
+			if c.Statement == "by key" && f.cfg.Spec.Type != jobspec.CopyOnly {
 				knobs = []knob{batch, deletes}
 			}
 		}
