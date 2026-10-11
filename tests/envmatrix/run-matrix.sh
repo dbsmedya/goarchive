@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# The environment matrix (M7-8, M7c-2): the integration suites under one changed MySQL
+# environment at a time, each row judged against its expected outcome (rows.tsv).
+#
+#   tests/envmatrix/run-matrix.sh [row ...]      # default: every row of rows.tsv
+#
+# MX_PAIRS throwaway source/destination pairs work through a shared queue. A dynamic row
+# snapshots the globals in VARS on both servers of a long-lived MX_IMAGE pair, applies its
+# SET GLOBAL statements, runs the suites, restores the snapshot and compares it; a pair
+# whose restore differs is recreated. Init and version rows run on a fresh pair, removed
+# after the row. TestMySQLLiveReplicationGate is skipped: it changes the estate's replica
+# db3, which every pair shares and no row mutates; it runs on the estate only.
+#
+# Environment: MX_IMAGE (percona/percona-server:8.4), MX_PAIRS (3), MX_TIMEOUT (3m, per
+# test binary), MX_PKGS (./internal/... ./cmd/...), MX_TAG (a timestamp), MX_CODE (this
+# checkout). Results: tests/results/envmatrix/<tag>/<row>/ and <tag>/SUMMARY.txt. Exit 1
+# when any row is not OK.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+CODE="${MX_CODE:-$REPO}"
+IMAGE="${MX_IMAGE:-percona/percona-server:8.4}"
+PAIRS="${MX_PAIRS:-3}"
+TIMEOUT="${MX_TIMEOUT:-3m}"
+PKGS="${MX_PKGS:-./internal/... ./cmd/...}"
+TAG="${MX_TAG:-$(date +%Y%m%d-%H%M%S)}"
+VARS="sql_mode autocommit transaction_isolation character_set_server collation_server explicit_defaults_for_timestamp max_allowed_packet max_error_count sql_notes time_zone partial_revokes wait_timeout interactive_timeout default_storage_engine sql_require_primary_key sql_generate_invisible_primary_key"
+
+set -a
+# shellcheck source=/dev/null
+source "$REPO/tests/.env"
+set +a
+OUT="$REPO/tests/results/envmatrix/$TAG"
+WORK="$OUT/.work"
+mkdir -p "$WORK/queue" "$WORK/claimed"
+ln -sfn "$TAG" "$REPO/tests/results/envmatrix/latest"
+
+sqlc() { # container sql → tab-separated rows
+    MYSQL_PWD=$MYSQL_ROOT_PASSWORD docker exec -e MYSQL_PWD "$1" mysql -uroot -N -B -e "$2" </dev/null
+}
+
+# rows.tsv without comments, as name<TAB>kind<TAB>setup<TAB>expect.
+rows() { grep -v '^#' "$HERE/rows.tsv" | grep -v '^[[:space:]]*$'; }
+
+pair_down() { docker rm -f -v "ga-mx$1-src" "ga-mx$1-dst" >/dev/null 2>&1; }
+
+pair_up() { # pair image [extra-cnf] → containers ga-mx<i>-src/dst on 3375+10i / 3376+10i
+    local i=$1 image=$2 extra=${3:-} side port
+    pair_down "$i"
+    for side in src dst; do
+        local mounts=() dir
+        for dir in /etc/my.cnf.d /etc/mysql/conf.d; do
+            mounts+=(-v "$HERE/cnf/$side.cnf:$dir/goarchive-matrix.cnf:ro")
+            [[ -n $extra ]] && mounts+=(-v "$HERE/$extra:$dir/zz-row.cnf:ro")
+        done
+        port=$((3375 + 10 * i)); [[ $side == dst ]] && port=$((3376 + 10 * i))
+        docker run -d --name "ga-mx$i-$side" --cap-add SYS_NICE --memory 1g -p "$port:3306" \
+            -e MYSQL_ROOT_PASSWORD "${mounts[@]}" "$image" >/dev/null || return 1
+    done
+    for port in $((3375 + 10 * i)) $((3376 + 10 * i)); do
+        local ok=
+        for _ in $(seq 1 150); do
+            "$REPO/tests/scripts/mysql-query.sh" "$port" "SELECT 1" >/dev/null 2>&1 && { ok=1; break; }
+            docker inspect -f '{{.State.Running}}' "ga-mx$i-src" "ga-mx$i-dst" 2>/dev/null | grep -q false && break
+            sleep 2
+        done
+        if [[ -z $ok ]]; then
+            echo "pair $i: port $port did not start"
+            for side in src dst; do echo "== ga-mx$i-$side"; docker logs "ga-mx$i-$side" 2>&1 | grep -E 'ERROR|\[Warning\].*(unknown|deprecated)' | tail -5; done
+            return 1
+        fi
+    done
+    # The source holds Sakila (internal/key, internal/database); the destination an empty
+    # sakila_archive, as on the estate.
+    MYSQL_PWD=$MYSQL_ROOT_PASSWORD docker exec -i -e MYSQL_PWD "ga-mx$i-src" mysql -uroot <"$REPO/tests/sakila-db/sakila-schema.sql" &&
+        MYSQL_PWD=$MYSQL_ROOT_PASSWORD docker exec -i -e MYSQL_PWD "ga-mx$i-src" mysql -uroot <"$REPO/tests/sakila-db/sakila-data.sql" &&
+        sqlc "ga-mx$i-dst" "CREATE DATABASE IF NOT EXISTS sakila_archive"
+}
+
+snapshot() { # container → name<TAB>value per variable in VARS
+    local q="" v
+    for v in $VARS; do q+="SELECT '$v', @@GLOBAL.$v UNION ALL "; done
+    sqlc "$1" "${q% UNION ALL }"
+}
+
+restore_sql() { # snapshot file → SET GLOBAL statements
+    local v val
+    while IFS=$'\t' read -r v val; do
+        if [[ $val =~ ^[0-9]+$ ]]; then echo "SET GLOBAL $v = $val;"; else echo "SET GLOBAL $v = '$val';"; fi
+    done <"$1"
+}
+
+run_suite() { # pair dir → go-test.json, go-test.stderr
+    local i=$1 dir=$2 pkgs
+    read -ra pkgs <<<"$PKGS"
+    (cd "$CODE" && TEST_SOURCE_PORT=$((3375 + 10 * i)) TEST_DEST_PORT=$((3376 + 10 * i)) \
+        go test -tags=integration -json "${pkgs[@]}" -count=1 -timeout "$TIMEOUT" \
+        -skip TestMySQLLiveReplicationGate) >"$dir/go-test.json" 2>"$dir/go-test.stderr" </dev/null
+}
+
+run_row() { # pair name kind setup expect
+    local i=$1 name=$2 kind=$3 setup=$4 expect=$5 dir="$OUT/$2" c t0=$SECONDS note=""
+    rm -rf "$dir"; mkdir -p "$dir"
+    case $kind in
+    dynamic)
+        for c in src dst; do snapshot "ga-mx$i-$c" >"$dir/before-$c.tsv"; done
+        if [[ $setup != "-" ]]; then
+            for c in src dst; do
+                sqlc "ga-mx$i-$c" "$setup" 2>>"$dir/apply.err" || note+="apply failed on $c; "
+            done
+        fi
+        for c in src dst; do snapshot "ga-mx$i-$c" >"$dir/during-$c.tsv"; done
+        run_suite "$i" "$dir"
+        for c in src dst; do
+            sqlc "ga-mx$i-$c" "$(restore_sql "$dir/before-$c.tsv")" 2>>"$dir/restore.err"
+            snapshot "ga-mx$i-$c" >"$dir/after-$c.tsv"
+            cmp -s "$dir/before-$c.tsv" "$dir/after-$c.tsv" || { note+="restore differs on $c; "; touch "$WORK/dirty$i"; }
+        done
+        ;;
+    init | version)
+        local image=$IMAGE extra=""
+        if [[ $kind == init ]]; then extra=$setup; else image=$setup; fi
+        if ! pair_up "$i" "$image" "$extra" >"$dir/pair.log" 2>&1; then
+            note+="pair did not start (pair.log); "
+        else
+            run_suite "$i" "$dir"
+        fi
+        pair_down "$i"; touch "$WORK/dirty$i"
+        ;;
+    *) note+="unknown kind $kind; " ;;
+    esac
+    local verdict
+    verdict=$("$WORK/judge" -expect "$expect" -json "$dir/go-test.json" 2>&1)
+    local rc=$?
+    [[ -n $note ]] && { rc=1; verdict="${verdict/verdict: OK/verdict: FAIL}"$'\n'"  runner: $note"; }
+    {
+        echo "row: $name  kind: $kind  setup: $setup"
+        echo "image: $([[ $kind == version ]] && echo "$setup" || echo "$IMAGE")  pair: $i  code: $(git -C "$CODE" rev-parse --short HEAD)  seconds: $((SECONDS - t0))"
+        echo "$verdict"
+    } >"$dir/verdict.txt"
+    [[ $rc -eq 0 ]] || touch "$WORK/failed-$name"
+    echo "[$(date +%H:%M:%S)] pair $i: $name → $(sed -n 3p "$dir/verdict.txt")"
+}
+
+worker() { # pair index: claims rows from the queue until it is empty
+    local i=$1 up="" f name kind setup expect
+    for f in "$WORK"/queue/*; do
+        [[ -e $f ]] || continue
+        mv "$f" "$WORK/claimed/" 2>/dev/null || continue # another worker took it
+        IFS=$'\t' read -r name kind setup expect <"$WORK/claimed/$(basename "$f")"
+        if [[ $kind == dynamic ]] && { [[ -z $up ]] || [[ -e $WORK/dirty$i ]]; }; then
+            rm -f "$WORK/dirty$i"
+            if ! pair_up "$i" "$IMAGE" >"$WORK/pair$i.log" 2>&1; then
+                echo "pair $i did not start ($WORK/pair$i.log)"; touch "$WORK/failed-$name"; continue
+            fi
+            up=1
+        fi
+        run_row "$i" "$name" "$kind" "$setup" "$expect"
+    done
+    pair_down "$i"
+}
+
+go build -o "$WORK/judge" "$REPO/tests/envmatrix/judge" || exit 2
+n=0
+while IFS= read -r line; do
+    name=${line%%$'\t'*}
+    if [[ $# -gt 0 ]] && [[ " $* " != *" $name "* ]]; then continue; fi
+    printf '%s\n' "$line" >"$WORK/queue/$(printf '%03d' $n)-$name"
+    n=$((n + 1))
+done < <(rows)
+[[ $n -gt 0 ]] || { echo "no row matches: $*"; exit 2; }
+for want in "$@"; do rows | cut -f1 | grep -qx "$want" || { echo "unknown row: $want"; exit 2; }; done
+
+trap 'for i in $(seq 0 $((PAIRS - 1))); do pair_down "$i"; done' EXIT
+echo "environment matrix: $n row(s), $PAIRS pair(s), image $IMAGE, results $OUT"
+for i in $(seq 0 $((PAIRS - 1))); do worker "$i" & done
+wait
+
+{
+    for f in "$WORK"/claimed/*; do
+        name=$(cut -f1 "$f")
+        printf '%-40s %s\n' "$name" "$(sed -n 3p "$OUT/$name/verdict.txt" 2>/dev/null || echo 'verdict: FAIL (no verdict)')"
+    done
+} | tee "$OUT/SUMMARY.txt"
+ls "$WORK"/failed-* >/dev/null 2>&1 && exit 1
+exit 0

@@ -188,6 +188,12 @@ test-integration:
 	fi
 	go test -tags=integration ./internal/... ./cmd/... -count=1
 
+# The environment matrix (tests/envmatrix, M7-8): the integration suites under one changed
+# MySQL environment at a time, on throwaway containers. ROWS="a b" runs some rows only.
+.PHONY: env-matrix
+env-matrix:
+	tests/envmatrix/run-matrix.sh $(ROWS)
+
 # Start test databases (Docker)
 .PHONY: test-up
 test-up:
