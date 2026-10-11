@@ -680,13 +680,27 @@ func TestMySQLRangeWarning(t *testing.T) {
 	schema, db := scratch(t, "range")
 	exec(t, db, "CREATE TABLE r (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a, b)) ENGINE=InnoDB")
 	s := mustOpen(t, db, schema)
-	j, err := s.Attach(ctx, JobInput{Name: "range", Type: jobspec.Purge, RootKey: rootKey(t, db, schema, "r"), Binding: binding("1=1")})
+	root := rootKey(t, db, schema, "r")
+	j, err := s.Attach(ctx, JobInput{Name: "range", Type: jobspec.Purge, RootKey: root, Binding: binding("1=1")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	keys := make([]key.Key, 10000)
 	for i := range keys {
 		keys[i] = key.Key{int64(i / 100), int64(i % 100)}
+	}
+	// The test sends these keys straight to MySQL, past preflight: the log INSERT and one
+	// membership statement over all 10,000. Under the environment matrix's
+	// max_allowed_packet_64k row MySQL cannot carry them, and preflight would refuse such a
+	// run (M7c-2), so the premise cannot hold there.
+	need := max(key.InsertBytes(root.Columns, len(keys), 1, 1024),
+		key.StatementBytes([]string{"k1", "k2"}, root.Columns, len(keys), 2, 1024))
+	var packet uint64
+	if err := db.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&packet); err != nil {
+		t.Fatal(err)
+	}
+	if need > packet {
+		t.Skipf("the test's statements need about %d bytes and max_allowed_packet is %d (the environment matrix row max_allowed_packet_64k)", need, packet)
 	}
 	if err := inTx(t, db, true, func(tx *sql.Tx) error { return j.Insert(ctx, tx, StatusDeleting, keys) }); err != nil {
 		t.Fatal(err)
