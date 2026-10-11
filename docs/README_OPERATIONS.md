@@ -202,11 +202,14 @@ session is at 0 fails with `MAX_ERROR_COUNT_CHECK`
 the privilege never meets it on a server whose global is above 0. At startup the command
 stops before any change. Mid-run, a pooled connection is retired 10 minutes after it was
 opened, or after 5 minutes idle, once it is back in the pool, and its replacement takes the
-global as it is then: if that is 0 and the account lacks the privilege, the run stops and the
-batch in flight rolls back. Connections the run holds throughout (the job lock's session, a
-source session pinned through a lag wait) keep the value they started with. A connection that
-dies during the check is an ordinary connection failure. Replica connections read replica
-status only and are not checked. GoArchive never changes the global.
+global as it is then: if that is 0 and the account lacks the privilege, the refused connection
+is never used and the run stops. Only the transaction in progress rolls back: a batch's copy
+and its delete chunks each commit on their own, so what they committed stays, and the next run
+finishes the batch once the setting or the grant is fixed
+([Crash recovery](#crash-recovery)). Connections the run holds throughout (the job lock's
+session, a source session pinned through a lag wait) keep the value they started with. A
+connection that dies during the check is an ordinary connection failure. Replica connections
+read replica status only and are not checked. GoArchive never changes the global.
 
 `--skip-verify` follows the narrow conversion policy in
 [Configuration](README_CONFIGURATION.md#verification), with visible committed-copy
