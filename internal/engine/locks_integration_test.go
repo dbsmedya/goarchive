@@ -5,6 +5,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,33 @@ func TestMySQLTakerKeepsItsStatus(t *testing.T) {
 	}
 	if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 1 {
 		t.Errorf("after B the source holds %d orders, want 1", got)
+	}
+}
+
+// TestMySQLCheckCancelledIsNotALoss (Fable final M1): a commit check on a cancelled
+// context (a second signal) reports the cancellation, not a lost lock, and the sets are
+// still held.
+func TestMySQLCheckCancelledIsNotALoss(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, "cancelcheck")
+	l := &locks{
+		job:    lock.NewSet(e.dst, lock.JobLockName(e.dstSchema, "j")),
+		tables: lock.NewSet(e.src, lock.TableLockName(e.srcSchema, "r")),
+	}
+	for _, s := range []*lock.Set{l.job, l.tables} {
+		if err := s.Acquire(ctx); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = s.Release(ctx) }()
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	err := l.check(cancelled)
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "lost") {
+		t.Errorf("check on a cancelled context = %v, want context.Canceled, not a lost lock", err)
+	}
+	if err := l.check(ctx); err != nil {
+		t.Errorf("check after the cancelled one = %v, want both sets still held", err)
 	}
 }
 
