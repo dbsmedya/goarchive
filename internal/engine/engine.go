@@ -289,6 +289,8 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		final = tracking.JobFailed
 	}
-	finalStatus(ctx, job, final, cfg.Name, held.job, cfg.Destination, log)
+	if taker := finalStatus(ctx, job, final, cfg.Name, held.job, cfg.Destination, log); taker != 0 && err != nil {
+		err = fmt.Errorf("%w; job %q is now run by destination connection %d, which owns its status", err, cfg.Name, taker)
+	}
 	return r.report, err
 }

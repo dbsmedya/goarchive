@@ -224,10 +224,22 @@ func heartbeat(ctx context.Context, fail context.CancelCauseFunc, job *tracking.
 }
 
 // finalStatus writes the job's status at the end of a run that marked it running, on a
-// cleanup context: every way out of such a run writes it (M5-F1).
+// cleanup context: every way out of such a run writes it (M5-F1), unless another run of the
+// job now holds its lock (F1 I1). The row is then that run's: nothing is written, and the
+// holder's connection id is returned for the run's error. A failed holder lookup writes the
+// status, as before.
 func finalStatus(ctx context.Context, job *tracking.Job, st tracking.JobStatus, name string, jobLock *lock.Set, dst *sql.DB, log *logger.Logger) (taker int64) {
 	statusCtx, done := cleanupContext(ctx)
 	defer done()
+	holder, err := lock.Holder(statusCtx, dst, jobLock.Names()[0])
+	switch {
+	case err != nil:
+		log.Warnw("could not read the job lock's holder; writing the final status", "job", name, "error", err)
+	case holder != 0 && holder != jobLock.ConnectionID():
+		log.Errorw("the job is now run by another session, which owns its status; the final status is not written",
+			"job", name, "destination_connection", holder)
+		return holder
+	}
 	if err := job.SetStatus(statusCtx, st); err != nil {
 		log.Errorw("failed to write the final job status", "job", name, "status", st, "error", err)
 	}
