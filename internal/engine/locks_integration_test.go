@@ -231,6 +231,58 @@ func TestMySQLGuardedCommit(t *testing.T) {
 	}
 }
 
+// TestMySQLTakerKeepsItsStatus (T8t, F1 I1): run A loses both lock sets (a stall past the
+// session timeout); run B of the same job starts and is held running; A then fails. A must
+// not overwrite B's running status, and A's error names B's connection.
+func TestMySQLTakerKeepsItsStatus(t *testing.T) {
+	slowKeepAlive(t)
+	srcAdmin, dstAdmin := openServer(t, "TEST_SOURCE", "", nil), openServer(t, "TEST_DEST", "", nil)
+	e := newEnv(t, "taker")
+	e.both(t, orderTables(cs4)...)
+	seedOrders(t, e, 3)
+	a := e.config(t, job(t, jobspec.Archive, orderJob))
+	bRunning, bGo, bDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	fired := false
+	a.at = func(p point) {
+		if p != atCommitted || fired {
+			return
+		}
+		fired = true
+		killHolder(t, dstAdmin, lock.JobLockName(e.dstSchema, "j"))
+		killHolder(t, srcAdmin, lock.TableLockName(e.srcSchema, "orders"))
+		b := e.config(t, job(t, jobspec.Archive, orderJob))
+		b.at = func(p point) {
+			if p == atRunning {
+				close(bRunning)
+				<-bGo
+			}
+		}
+		go func() {
+			_, err := e.run(t, b)
+			bDone <- err
+		}()
+		select {
+		case <-bRunning:
+		case err := <-bDone:
+			t.Errorf("run B ended before running: %v", err)
+		}
+	}
+	_, errA := e.run(t, a)
+	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobRunning) {
+		t.Errorf("job_status while B runs = %d, want running: A overwrote it", got)
+	}
+	if errA == nil || !strings.Contains(errA.Error(), "is now run by destination connection") {
+		t.Errorf("run A = %v, want its error to name the taker", errA)
+	}
+	close(bGo)
+	if err := <-bDone; err != nil {
+		t.Fatalf("run B = %v", err)
+	}
+	if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 1 {
+		t.Errorf("after B the source holds %d orders, want 1", got)
+	}
+}
+
 // TestMySQLLeakGuard (T10): the env's cleanup guard reports a recorded lock some session
 // still holds, and nothing once it is released.
 func TestMySQLLeakGuard(t *testing.T) {
