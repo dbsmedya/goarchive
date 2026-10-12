@@ -4,12 +4,14 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/lock"
+	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
 // The source-table-locks tests (spec .ayder/superpowers_20261012/specs/
@@ -23,6 +25,37 @@ const purgeNotesJob = `
     primary_key: note_id
     where: "note_id > 0"
 `
+
+// slowKeepAlive makes the keep-alive tick hourly, so only the guarded commit notices a lost
+// lock.
+func slowKeepAlive(t *testing.T) {
+	saved := keepAliveEvery
+	keepAliveEvery = time.Hour
+	t.Cleanup(func() { keepAliveEvery = saved })
+}
+
+// killHolder kills the session that holds name on admin's server and waits until the
+// server has freed the lock, so a run started next cannot meet it.
+func killHolder(t *testing.T, admin *sql.DB, name string) {
+	t.Helper()
+	ctx := context.Background()
+	id, err := lock.Holder(ctx, admin, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 {
+		t.Fatalf("nobody holds %s", name)
+	}
+	execAll(t, admin, "KILL "+itoa(id))
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if id, err = lock.Holder(ctx, admin, name); err != nil || id == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still held 3 s after KILL", name)
+		}
+	}
+}
 
 // TestMySQLOverlappingTreesRunOneAtATime (T3, G1): an archive whose tree ends in line_notes
 // runs; a purge of line_notes, another root, is refused naming the table and deletes
@@ -126,6 +159,75 @@ func TestMySQLPoolMinimums(t *testing.T) {
 	e.dst.SetMaxOpenConns(3)
 	if _, err := e.runContext(t, ctx, e.config(t, job(t, jobspec.Archive, decimalJob))); err != nil {
 		t.Fatalf("Run with two source and three destination connections = %v", err)
+	}
+}
+
+// TestMySQLGuardedCommit (T8): a lock session killed between a commit's writes and its
+// COMMIT, with the keep-alive too slow to notice, rolls the transaction back and fails the
+// run; the next run finishes the job.
+func TestMySQLGuardedCommit(t *testing.T) {
+	slowKeepAlive(t)
+	srcAdmin, dstAdmin := openServer(t, "TEST_SOURCE", "", nil), openServer(t, "TEST_DEST", "", nil)
+	for _, tc := range []struct {
+		name    string
+		at      point
+		jobLock bool // kill the job lock's session, not the source table locks'
+		want    string
+		check   func(t *testing.T, e env)
+	}{
+		{"delete chunk, source table locks", atDeleteWritten, false, "source table locks were lost", func(t *testing.T, e env) {
+			if got := count(t, e.src, "SELECT COUNT(*) FROM line_notes"); got != 8 {
+				t.Errorf("line_notes = %d, want 8: the chunk must roll back", got)
+			}
+			if got := statuses(t, e.dst, e.dstSchema); got[int(tracking.StatusCopied)] != 2 {
+				t.Errorf("log = %v, want the batch copied", got)
+			}
+		}},
+		{"delete chunk, job lock", atDeleteWritten, true, "job lock was lost", func(t *testing.T, e env) {
+			if got := count(t, e.src, "SELECT COUNT(*) FROM line_notes"); got != 8 {
+				t.Errorf("line_notes = %d, want 8: the chunk must roll back", got)
+			}
+		}},
+		{"copy commit", atCopyWritten, false, "source table locks were lost", func(t *testing.T, e env) {
+			if got := count(t, e.dst, "SELECT COUNT(*) FROM orders"); got != 0 {
+				t.Errorf("destination orders = %d, want 0: the copy must roll back", got)
+			}
+			if got := statuses(t, e.dst, e.dstSchema); len(got) != 0 {
+				t.Errorf("log = %v, want empty", got)
+			}
+		}},
+		{"log-only commit", atLogWritten, false, "source table locks were lost", func(t *testing.T, e env) {
+			if got := statuses(t, e.dst, e.dstSchema); got[int(tracking.StatusCopied)] != 2 || got[int(tracking.StatusCompleted)] != 0 {
+				t.Errorf("log = %v, want the batch still copied: complete must roll back", got)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, "guard")
+			e.both(t, orderTables(cs4)...)
+			seedOrders(t, e, 3)
+			cfg := e.config(t, job(t, jobspec.Archive, orderJob))
+			fired := false
+			cfg.at = func(p point) {
+				if p != tc.at || fired {
+					return
+				}
+				fired = true
+				if tc.jobLock {
+					killHolder(t, dstAdmin, lock.JobLockName(e.dstSchema, "j"))
+				} else {
+					killHolder(t, srcAdmin, lock.TableLockName(e.srcSchema, "orders"))
+				}
+			}
+			if _, err := e.run(t, cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run = %v, want %q", err, tc.want)
+			}
+			tc.check(t, e)
+			e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob)))
+			if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 1 {
+				t.Errorf("after the rerun the source holds %d orders, want 1", got)
+			}
+		})
 	}
 }
 
