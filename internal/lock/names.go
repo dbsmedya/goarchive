@@ -1,3 +1,5 @@
+// Package lock holds GoArchive's MySQL user-level locks: the source table locks and the
+// destination job lock of a run (source-table-locks spec §3, §4).
 package lock
 
 import (
