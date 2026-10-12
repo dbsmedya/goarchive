@@ -70,7 +70,7 @@ func TestMySQLLostJobLock(t *testing.T) {
 		if p != atCommitted {
 			return
 		}
-		holder, err := lock.Holder(context.Background(), admin, lock.JobLockName(e.dstSchema, "j"))
+		holder, err := lockHolder(context.Background(), admin, lock.JobLockName(e.dstSchema, "j"))
 		if err != nil {
 			t.Error(err)
 			return

@@ -45,13 +45,14 @@ func unique(t *testing.T, n int) []string {
 	return out
 }
 
+// holder returns the connection id holding name on db's server, or 0 when it is free.
 func holder(t *testing.T, db *sql.DB, name string) int64 {
 	t.Helper()
-	id, err := Holder(context.Background(), db, name)
-	if err != nil {
+	var id sql.NullInt64
+	if err := db.QueryRowContext(context.Background(), "SELECT IS_USED_LOCK(?)", name).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	return id
+	return id.Int64
 }
 
 // TestMySQLSetLongNames (T2): the names of the longest identities config allows are
@@ -68,8 +69,8 @@ func TestMySQLSetLongNames(t *testing.T) {
 		t.Fatalf("Acquire = %v", err)
 	}
 	for _, n := range names {
-		if got := holder(t, observer, n); got != s.ConnectionID() {
-			t.Errorf("%s held by %d, want the set's session %d", n, got, s.ConnectionID())
+		if got := holder(t, observer, n); got != s.connID {
+			t.Errorf("%s held by %d, want the set's session %d", n, got, s.connID)
 		}
 	}
 	if err := s.Release(ctx); err != nil {
@@ -99,7 +100,7 @@ func TestMySQLSetSession(t *testing.T) {
 	if wt != 300 {
 		t.Errorf("lock session wait_timeout = %d, want 300", wt)
 	}
-	first := s.ConnectionID()
+	first := s.connID
 	if err := s.Release(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestMySQLSetSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = again.Release(ctx) }()
-	if again.ConnectionID() == first {
+	if again.connID == first {
 		t.Errorf("a new set reused connection %d", first)
 	}
 }
@@ -156,8 +157,8 @@ func TestMySQLSetRefusal(t *testing.T) {
 	if err := NewSet(db, names...).Acquire(ctx); !errors.As(err, &held) {
 		t.Fatalf("Acquire = %v, want *HeldError", err)
 	}
-	if held.Name != names[1] || held.Holder != other.ConnectionID() {
-		t.Errorf("HeldError = %+v, want %s held by %d", held, names[1], other.ConnectionID())
+	if held.Name != names[1] || held.Holder != other.connID {
+		t.Errorf("HeldError = %+v, want %s held by %d", held, names[1], other.connID)
 	}
 	for _, n := range []string{names[0], names[2]} {
 		if got := holder(t, observer, n); got != 0 {

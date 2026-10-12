@@ -293,10 +293,21 @@ func (s *Store) bind(ctx context.Context, j *Job, row jobRow, current Binding) e
 
 // SetStatus writes archiver_job.job_status.
 func (j *Job) SetStatus(ctx context.Context, st JobStatus) error {
+	return j.SetStatusOn(ctx, j.store.db, st)
+}
+
+// execer is a pool or one session.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// SetStatusOn writes archiver_job.job_status on ex: the engine's final status runs on the
+// session that holds the job's lock (source-table-locks spec §4 step 4, Codex P1).
+func (j *Job) SetStatusOn(ctx context.Context, ex execer, st JobStatus) error {
 	if !st.valid() {
 		return fmt.Errorf("tracking: job status %d", st)
 	}
-	if _, err := j.store.db.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET job_status = ? WHERE id = ?", j.store.jobTable), st, j.ID); err != nil {
+	if _, err := ex.ExecContext(ctx, fmt.Sprintf("UPDATE %s SET job_status = ? WHERE id = ?", j.store.jobTable), st, j.ID); err != nil {
 		return fmt.Errorf("tracking: set the status of job %q: %w", j.Name, err)
 	}
 	return nil

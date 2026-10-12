@@ -323,7 +323,7 @@ func TestMySQLLocksHeldForTheRun(t *testing.T) {
 	table, jobName := lock.TableLockName(e.srcSchema, "r"), lock.JobLockName(e.dstSchema, "j")
 	held := func(db *sql.DB, name string) bool {
 		t.Helper()
-		id, err := lock.Holder(context.Background(), db, name)
+		id, err := lockHolder(context.Background(), db, name)
 		if err != nil {
 			t.Fatal(err)
 		}

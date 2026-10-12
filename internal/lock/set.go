@@ -36,7 +36,7 @@ func (e *HeldError) Error() string {
 }
 
 // Set is a set of user-level locks held on one dedicated session for the length of a run
-// (spec §4). The session runs nothing but lock statements. A Set is acquired once and never
+// (spec §4). The session runs nothing but lock statements, and what Do runs. A Set is acquired once and never
 // reused: user-level locks are recursive, so a reused session would get 1 for a lock it
 // already holds (probe L5).
 type Set struct {
@@ -45,7 +45,7 @@ type Set struct {
 
 	mu     sync.Mutex // held across every statement on conn and its scan (F1 M2)
 	conn   *sql.Conn
-	connID int64 // kept after a loss: the final-status check compares holders with it
+	connID int64 // the session's connection id
 	held   bool
 	used   bool // Acquire was called
 
@@ -62,14 +62,6 @@ func NewSet(db *sql.DB, names ...string) *Set {
 
 // Names returns the set's lock names, sorted.
 func (s *Set) Names() []string { return slices.Clone(s.names) }
-
-// ConnectionID is the connection id of the session that acquired the set, or 0 before an
-// acquisition. It stays set after the locks are lost or released.
-func (s *Set) ConnectionID() int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.connID
-}
 
 // Acquire takes a dedicated session, sets its wait_timeout and takes every lock with
 // timeout 0: it never queues. When another session holds a name it releases what it took,
@@ -129,6 +121,24 @@ func checkSQL(n int) string {
 func (s *Set) Check(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.checkLocked(ctx)
+}
+
+// Do runs f on the set's own session once that session has proved, under the set's mutex,
+// that it still holds every lock (Check). Nothing else uses the session while f runs, so f's
+// statements run only while the locks are this session's: the locks can then be lost only
+// with the session itself, and f's statement fails instead of landing (Codex P1). A failed
+// check returns its error, wrapping ErrLost, and f is not called.
+func (s *Set) Do(ctx context.Context, f func(*sql.Conn) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkLocked(ctx); err != nil {
+		return err
+	}
+	return f(s.conn)
+}
+
+func (s *Set) checkLocked(ctx context.Context) error {
 	if !s.held || s.conn == nil {
 		return ErrLost
 	}
@@ -224,15 +234,6 @@ func (s *Set) Release(ctx context.Context) error {
 		return fmt.Errorf("lock: RELEASE_ALL_LOCKS: %w (the session was discarded, which frees them)", err)
 	}
 	return nil
-}
-
-// Holder returns the connection id holding name on db's server, or 0 when it is free.
-func Holder(ctx context.Context, db *sql.DB, name string) (int64, error) {
-	var id sql.NullInt64
-	if err := db.QueryRowContext(ctx, "SELECT IS_USED_LOCK(?)", name).Scan(&id); err != nil {
-		return 0, fmt.Errorf("lock: IS_USED_LOCK(%s): %w", name, err)
-	}
-	return id.Int64, nil
 }
 
 // discard closes conn's MySQL session instead of returning it to the pool; MySQL frees

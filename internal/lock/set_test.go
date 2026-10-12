@@ -48,9 +48,6 @@ func TestSetCheckTreatsNullAsLost(t *testing.T) {
 			if got := db.Stats().OpenConnections; got != 0 {
 				t.Errorf("%d open connections after a lost check; the session must be discarded", got)
 			}
-			if got := s.ConnectionID(); got != 7 {
-				t.Errorf("ConnectionID after the loss = %d, want 7 (kept for the final-status check)", got)
-			}
 		})
 	}
 }

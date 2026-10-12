@@ -233,23 +233,39 @@ func heartbeat(ctx context.Context, fail context.CancelCauseFunc, job *tracking.
 
 // finalStatus writes the job's status at the end of a run that marked it running, on a
 // cleanup context: every way out of such a run writes it (M5-F1), unless another run of the
-// job now holds its lock (F1 I1). The row is then that run's: nothing is written, and the
-// holder's connection id is returned for the run's error. A failed holder lookup writes the
-// status, as before.
-func finalStatus(ctx context.Context, job *tracking.Job, st tracking.JobStatus, name string, jobLock *lock.Set, dst *sql.DB, log *logger.Logger) (taker int64) {
+// job now holds its lock (F1 I1). The write runs only on a session that holds the job lock
+// while it runs (Codex P1): the run's own job-lock session, after its ownership check; or, when
+// that session has lost the lock, a fresh session that takes the lock again first. When a
+// taker holds it, the row is the taker's: nothing is written, and the taker's connection id is
+// returned for the run's error. A lock that cannot be taken for any other reason leaves the
+// status unwritten too, since an unproven write could overwrite a taker's.
+func finalStatus(ctx context.Context, cfg Config, job *tracking.Job, st tracking.JobStatus, jobLock *lock.Set) (taker int64) {
 	statusCtx, done := cleanupContext(ctx)
 	defer done()
-	holder, err := lock.Holder(statusCtx, dst, jobLock.Names()[0])
-	switch {
-	case err != nil:
-		log.Warnw("could not read the job lock's holder; writing the final status", "job", name, "error", err)
-	case holder != 0 && holder != jobLock.ConnectionID():
-		log.Errorw("the job is now run by another session, which owns its status; the final status is not written",
-			"job", name, "destination_connection", holder)
-		return holder
+	log := cfg.Logger
+	write := func(conn *sql.Conn) error { return job.SetStatusOn(statusCtx, conn, st) }
+	err := jobLock.Do(statusCtx, write)
+	if errors.Is(err, lock.ErrLost) {
+		if cfg.at != nil {
+			cfg.at(atFinalWrite)
+		}
+		again := lock.NewSet(cfg.Destination, jobLock.Names()...)
+		err = again.Acquire(statusCtx)
+		var held *lock.HeldError
+		if errors.As(err, &held) {
+			log.Errorw("the job is now run by another session, which owns its status; the final status is not written",
+				"job", cfg.Name, "destination_connection", held.Holder)
+			return held.Holder
+		}
+		if err == nil {
+			err = again.Do(statusCtx, write)
+			if rerr := again.Release(statusCtx); rerr != nil {
+				log.Warnw("advisory lock release failed", "error", rerr)
+			}
+		}
 	}
-	if err := job.SetStatus(statusCtx, st); err != nil {
-		log.Errorw("failed to write the final job status", "job", name, "status", st, "error", err)
+	if err != nil {
+		log.Errorw("failed to write the final job status", "job", cfg.Name, "status", st, "error", err)
 	}
 	return 0
 }

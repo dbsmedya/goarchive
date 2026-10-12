@@ -95,6 +95,10 @@ const (
 	atDeleteWritten point = "delete-written" // a source delete chunk
 	atCopyWritten   point = "copy-written"   // the destination copy, its verification and log insert
 	atLogWritten    point = "log-written"    // a log-only destination transaction
+
+	// The run's own job-lock session has lost the lock, and its final status is about to be
+	// written on a fresh session that takes the lock again first (Codex P1).
+	atFinalWrite point = "final-write"
 )
 
 // Report is what a run did.
@@ -275,7 +279,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	}
 	r.reached(atMarked)
 	if err := job.Heartbeat(runCtx); err != nil {
-		finalStatus(ctx, job, tracking.JobFailed, cfg.Name, held.job, cfg.Destination, log)
+		finalStatus(ctx, cfg, job, tracking.JobFailed, held.job)
 		return nil, withCause(runCtx, err)
 	}
 	r.reached(atRunning)
@@ -289,7 +293,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		final = tracking.JobFailed
 	}
-	if taker := finalStatus(ctx, job, final, cfg.Name, held.job, cfg.Destination, log); taker != 0 && err != nil {
+	if taker := finalStatus(ctx, cfg, job, final, held.job); taker != 0 && err != nil {
 		err = fmt.Errorf("%w; job %q is now run by destination connection %d, which owns its status", err, cfg.Name, taker)
 	}
 	return r.report, err

@@ -40,7 +40,7 @@ func slowKeepAlive(t *testing.T) {
 func killHolder(t *testing.T, admin *sql.DB, name string) {
 	t.Helper()
 	ctx := context.Background()
-	id, err := lock.Holder(ctx, admin, name)
+	id, err := lockHolder(ctx, admin, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func killHolder(t *testing.T, admin *sql.DB, name string) {
 	}
 	execAll(t, admin, "KILL "+itoa(id))
 	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		if id, err = lock.Holder(ctx, admin, name); err != nil || id == 0 {
+		if id, err = lockHolder(ctx, admin, name); err != nil || id == 0 {
 			return
 		}
 		if time.Now().After(deadline) {

@@ -114,6 +114,16 @@ func (e env) record(cfg Config) {
 	}
 }
 
+// lockHolder returns the connection id holding the user-level lock name on db's server, or 0
+// when it is free.
+func lockHolder(ctx context.Context, db *sql.DB, name string) (int64, error) {
+	var id sql.NullInt64
+	if err := db.QueryRowContext(ctx, "SELECT IS_USED_LOCK(?)", name).Scan(&id); err != nil {
+		return 0, fmt.Errorf("IS_USED_LOCK(%s): %w", name, err)
+	}
+	return id.Int64, nil
+}
+
 // leaked returns the recorded lock names some session still holds.
 func (e env) leaked(t *testing.T) []string {
 	t.Helper()
@@ -128,7 +138,7 @@ func (e env) leaked(t *testing.T) []string {
 		names map[string]bool
 	}{{e.src, e.rec.source}, {e.dst, e.rec.destination}} {
 		for name := range side.names {
-			id, err := lock.Holder(context.Background(), side.db, name)
+			id, err := lockHolder(context.Background(), side.db, name)
 			if err != nil {
 				t.Errorf("leak guard: %v", err)
 				continue
