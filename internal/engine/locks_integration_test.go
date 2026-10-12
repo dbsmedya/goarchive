@@ -268,6 +268,9 @@ func TestMySQLTakerKeepsItsStatus(t *testing.T) {
 		}
 	}
 	_, errA := e.run(t, a)
+	if !fired {
+		t.Fatalf("run A ended before its committed point: %v", errA)
+	}
 	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobRunning) {
 		t.Errorf("job_status while B runs = %d, want running: A overwrote it", got)
 	}
