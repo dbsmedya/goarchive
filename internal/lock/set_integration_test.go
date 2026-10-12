@@ -5,10 +5,13 @@ package lock
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -31,6 +34,158 @@ func pool(t *testing.T) *sql.DB {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// unique returns lock names no other test or run uses.
+func unique(t *testing.T, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = TableLockName(fmt.Sprintf("ga3stl_%d", os.Getpid()), fmt.Sprintf("%s_%d", t.Name(), i))
+	}
+	return out
+}
+
+func holder(t *testing.T, db *sql.DB, name string) int64 {
+	t.Helper()
+	id, err := Holder(context.Background(), db, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// TestMySQLSetLongNames (T2): the names of the longest identities config allows are
+// acquired and released; the old constructors' names failed with error 4163 (probe L1).
+func TestMySQLSetLongNames(t *testing.T) {
+	ctx := context.Background()
+	db, observer := pool(t), pool(t)
+	names := []string{
+		TableLockName(strings.Repeat("d", 64), strings.Repeat("t", 64)),
+		JobLockName(strings.Repeat("s", 64), strings.Repeat("j", 255)),
+	}
+	s := NewSet(db, names...)
+	if err := s.Acquire(ctx); err != nil {
+		t.Fatalf("Acquire = %v", err)
+	}
+	for _, n := range names {
+		if got := holder(t, observer, n); got != s.ConnectionID() {
+			t.Errorf("%s held by %d, want the set's session %d", n, got, s.ConnectionID())
+		}
+	}
+	if err := s.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if got := holder(t, observer, n); got != 0 {
+			t.Errorf("%s still held by %d after Release", n, got)
+		}
+	}
+}
+
+// TestMySQLSetSession (T6): the lock session runs at wait_timeout 300, is discarded on
+// release, and a new set gets a new session.
+func TestMySQLSetSession(t *testing.T) {
+	ctx := context.Background()
+	db := pool(t)
+	names := unique(t, 1)
+	s := NewSet(db, names...)
+	if err := s.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var wt int64
+	if err := s.conn.QueryRowContext(ctx, "SELECT @@SESSION.wait_timeout").Scan(&wt); err != nil {
+		t.Fatal(err)
+	}
+	if wt != 300 {
+		t.Errorf("lock session wait_timeout = %d, want 300", wt)
+	}
+	first := s.ConnectionID()
+	if err := s.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := db.Stats().OpenConnections; got != 0 {
+		t.Errorf("%d open connections after Release; the lock session must not return to the pool", got)
+	}
+	again := NewSet(db, names...)
+	if err := again.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = again.Release(ctx) }()
+	if again.ConnectionID() == first {
+		t.Errorf("a new set reused connection %d", first)
+	}
+}
+
+// TestMySQLSetTimeoutFreesLocks (T7): with no keep-alive, the server frees a silent set
+// after the session's wait_timeout. The lost-host case itself is probe L4.
+func TestMySQLSetTimeoutFreesLocks(t *testing.T) {
+	saved := sessionWaitTimeout
+	sessionWaitTimeout = 2
+	t.Cleanup(func() { sessionWaitTimeout = saved })
+	ctx := context.Background()
+	db, observer := pool(t), pool(t)
+	names := unique(t, 2)
+	s := NewSet(db, names...)
+	if err := s.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Release(ctx) }()
+	time.Sleep(4 * time.Second)
+	for _, n := range names {
+		if got := holder(t, observer, n); got != 0 {
+			t.Errorf("%s still held by %d after the session idled past its wait_timeout", n, got)
+		}
+	}
+	if err := s.Check(ctx); !errors.Is(err, ErrLost) {
+		t.Errorf("Check after the timeout = %v, want ErrLost", err)
+	}
+}
+
+// TestMySQLSetRefusal: one held name refuses the whole set, names its holder, and leaves
+// none of the set's other names held.
+func TestMySQLSetRefusal(t *testing.T) {
+	ctx := context.Background()
+	db, observer := pool(t), pool(t)
+	names := unique(t, 3)
+	other := NewSet(observer, names[1])
+	if err := other.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Release(ctx) }()
+	var held *HeldError
+	if err := NewSet(db, names...).Acquire(ctx); !errors.As(err, &held) {
+		t.Fatalf("Acquire = %v, want *HeldError", err)
+	}
+	if held.Name != names[1] || held.Holder != other.ConnectionID() {
+		t.Errorf("HeldError = %+v, want %s held by %d", held, names[1], other.ConnectionID())
+	}
+	for _, n := range []string{names[0], names[2]} {
+		if got := holder(t, observer, n); got != 0 {
+			t.Errorf("%s held by %d after the refusal", n, got)
+		}
+	}
+}
+
+// TestMySQLSetCancelledReleaseFreesLock (issue #79): a release on a cancelled context
+// cannot run RELEASE_ALL_LOCKS, and the lock is still free at once.
+func TestMySQLSetCancelledReleaseFreesLock(t *testing.T) {
+	ctx := context.Background()
+	db, observer := pool(t), pool(t)
+	names := unique(t, 1)
+	s := NewSet(db, names...)
+	if err := s.Acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	_ = s.Release(cancelled)
+	deadline := time.Now().Add(3 * time.Second)
+	for holder(t, observer, names[0]) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still held 3 s after a cancelled release", names[0])
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // TestMySQLLockNameFormula (probe L8): MySQL computes the same names, so an operator can
