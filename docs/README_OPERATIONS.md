@@ -393,8 +393,8 @@ locks. The check comes after the transaction's writes and before its `COMMIT`.
 
 Each lock session runs with `wait_timeout = 300`, and the 30-second check keeps it from
 idling that long. If goarchive's process dies, the server frees its locks at once. If its
-host or network is lost, the server frees them within 5 minutes; the next run waits that long
-at most.
+host or network is lost, the server frees them within 5 minutes: a run started before then is
+refused at once (nothing waits for a lock), and the next start after that goes through.
 
 A run that lost its job lock may find the job already started again by another run. It then
 leaves the job's status to that run and its error names that run's destination connection.
