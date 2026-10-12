@@ -57,3 +57,20 @@ func (e *DuplicateError) Error() string {
 	}
 	return b.String()
 }
+
+// TableLockedError refuses a run because another GoArchive run holds the source lock on one
+// of its tables (source-table-locks spec §6). The run did nothing. HolderConnectionID is the
+// holding source connection, or 0 when it released the lock a moment before the lookup.
+type TableLockedError struct {
+	Database, Table    string
+	HolderConnectionID int64
+}
+
+func (e *TableLockedError) Error() string {
+	holder := fmt.Sprintf("is in use by another GoArchive run (source connection %d)", e.HolderConnectionID)
+	if e.HolderConnectionID == 0 {
+		holder = "was in use by another GoArchive run a moment ago"
+	}
+	return fmt.Sprintf("engine: the source table %s.%s %s. Jobs whose tables overlap run one at a time; this run did nothing",
+		e.Database, e.Table, holder)
+}

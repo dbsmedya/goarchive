@@ -62,7 +62,7 @@ func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []k
 	if err := key.CheckRangeWarning(ctx, tx); err != nil {
 		return fmt.Errorf("engine: delete from %s: %w", table, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := r.commit(ctx, tx, atDeleteWritten); err != nil {
 		return fmt.Errorf("engine: delete from %s: commit: %w", table, err)
 	}
 	return nil

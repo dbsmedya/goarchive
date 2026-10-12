@@ -32,7 +32,7 @@ func TestMySQLFailedFirstHeartbeat(t *testing.T) {
 			cancel() // the heartbeat that follows fails on the cancelled context
 		}
 	}
-	if _, err := Run(ctx, cfg); !errors.Is(err, context.Canceled) {
+	if _, err := e.runContext(t, ctx, cfg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() = %v, want the run stopped by its failed first heartbeat (context.Canceled)", err)
 	}
 	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobFailed) {
@@ -125,7 +125,7 @@ func TestMySQLRecoveryHonoursTheSentinel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	go func() {
-		rep, err := Run(ctx, cfg)
+		rep, err := e.runContext(t, ctx, cfg)
 		done <- result{rep, err}
 	}()
 	// A run that returns before the pause (refused at startup, say) fails the test here
@@ -181,7 +181,7 @@ func TestMySQLRecoveryWaitsAtStartup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	go func() {
-		_, err := Run(ctx, cfg)
+		_, err := e.runContext(t, ctx, cfg)
 		done <- err
 	}()
 	time.Sleep(2*sentinelPollInterval + 500*time.Millisecond)
@@ -254,7 +254,7 @@ func TestMySQLSecondRunWhilePaused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	go func() {
-		rep, err := Run(ctx, first)
+		rep, err := e.runContext(t, ctx, first)
 		done <- result{rep, err}
 	}()
 	time.Sleep(2*sentinelPollInterval + 500*time.Millisecond) // the first run is paused before its first batch
@@ -296,7 +296,7 @@ func TestMySQLSmallDestinationPool(t *testing.T) {
 	cfg.Destination = small
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	_, err := Run(ctx, cfg)
+	_, err := e.runContext(t, ctx, cfg)
 	if err == nil || !strings.Contains(err.Error(), "destination.max_connections") {
 		t.Fatalf("Run() with a 2-connection destination pool = %v, want a refusal naming destination.max_connections", err)
 	}
@@ -309,7 +309,7 @@ func TestMySQLSmallDestinationPool(t *testing.T) {
 	cfg.Destination = enough
 	ctx3, cancel3 := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel3()
-	rep, err := Run(ctx3, cfg)
+	rep, err := e.runContext(t, ctx3, cfg)
 	if err != nil || rep.Recovered != 2 || rep.Roots != 1 {
 		t.Fatalf("Run() with a 3-connection pool = %+v, %v, want 2 recovered and 1 archived", rep, err)
 	}

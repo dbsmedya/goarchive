@@ -341,12 +341,14 @@ WHERE job_name = '<name>'
 ```
 
 **Before that `UPDATE`, verify the old process is gone.** A stale heartbeat does not release
-the job lock; only the closing of its MySQL session does:
+the job lock; only the closing of its MySQL session does. On the destination:
 
 ```sql
-SELECT * FROM performance_schema.metadata_locks WHERE object_type = 'USER LEVEL LOCK';
-SHOW PROCESSLIST;
+SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'), CHAR(0), LOWER('<job_name>')), 256), 32)));
 ```
+
+`NULL` means no session holds it. A connection id is a live session: find it with
+`SHOW PROCESSLIST`.
 
 Then mark the job idle and rerun it: its log drives recovery. Do not delete the log rows.
 

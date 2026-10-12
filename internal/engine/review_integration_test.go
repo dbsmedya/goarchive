@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
@@ -69,8 +70,8 @@ func TestMySQLLostJobLock(t *testing.T) {
 		if p != atCommitted {
 			return
 		}
-		var holder int64
-		if err := admin.QueryRowContext(context.Background(), "SELECT IS_USED_LOCK('goarchive:job:j')").Scan(&holder); err != nil {
+		holder, err := lockHolder(context.Background(), admin, lock.JobLockName(e.dstSchema, "j"))
+		if err != nil {
 			t.Error(err)
 			return
 		}
@@ -78,7 +79,7 @@ func TestMySQLLostJobLock(t *testing.T) {
 		time.Sleep(500 * time.Millisecond) // past several keep-alive checks
 	}
 	_, err := e.run(t, cfg)
-	if err == nil || !strings.Contains(err.Error(), "advisory lock was lost") {
+	if err == nil || !strings.Contains(err.Error(), "job lock was lost") {
 		t.Fatalf("Run() = %v, want the lost lock", err)
 	}
 	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobFailed) {

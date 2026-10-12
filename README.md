@@ -33,6 +33,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Verify copy before delete | ✅ SHA256 (default) or count | ❌ |
 | Inspect INSERT conversion / truncation warnings before source deletion | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
 | Crash recovery / resume | ✅ a per-root log; interrupted roots are finished at the next start | ❌ |
+| Protection against overlapping runs | ✅ a job lock on the destination and a `GET_LOCK` on every tree table on the source, checked before every commit ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)) | `--pid` file on one host only; no server-side lock in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
 | Foreign key coverage check | ✅ blocks uncovered FKs | ❌ |
 | Composite primary keys | ✅ root and child, with composite foreign keys | ✅ |
 | Non-integer primary keys | ✅ root and child (string, UUID, DECIMAL, temporal); FLOAT/DOUBLE, ENUM/SET and BIT keys are refused | ✅ |
@@ -99,7 +100,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Composite and non-integer keys** - String, UUID, DECIMAL and temporal keys, single-column or composite, at the root and at every child
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks and same-root checks refuse a second run of a job, or of another job on the same root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
+- **No overlapping runs** - Advisory locks on the source tables and the job, and a same-root check, refuse any run whose tables overlap a running job's ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
 - **Dry-run mode** - Runs preflight, reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
@@ -285,9 +286,9 @@ goarchive purge -c archiver.yaml --job purge_old_sessions
 ### Processing pipeline
 
 1. **Preflight** - the checks that apply to the job type run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
-2. **Startup** - the tracking schema, the job and root-table locks, the job's binding check, then the roots an interrupted run left in the job's log are finished
+2. **Startup** - the tracking schema, the job lock and the source table locks, the job's binding check, then the roots an interrupted run left in the job's log are finished
 3. **Batch loop** - fetch the next root keys → discover every child row, parent-first → copy, verify and log in one destination transaction → delete child-first in chunks, each its own transaction with an exact row count. Purge skips the copy and copy-only the delete. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
-4. **Safety** - one run per job name and per root table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing before every delete chunk while any monitored replica is lagging, stopped, or unreachable; a sentinel file pauses the run, and SIGTERM/SIGINT stops it at a batch boundary
+4. **Safety** - one run at a time per source table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing before every delete chunk while any monitored replica is lagging, stopped, or unreachable; a sentinel file pauses the run, and SIGTERM/SIGINT stops it at a batch boundary
 
 ### Key Components
 

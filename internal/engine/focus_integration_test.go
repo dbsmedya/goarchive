@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -250,22 +251,24 @@ func TestMySQLBookkeepingNames(t *testing.T) {
 	}
 }
 
-// TestMySQLConcurrency: the job's own advisory lock, held by another session, refuses the
-// run; another job marked running on the same root table refuses it too.
+// TestMySQLConcurrency: the job's own lock, held by another session, refuses the run;
+// another job marked running on the same source database and root table refuses it too,
+// also when its source_server_uuid differs (a failover, source-table-locks spec §5.4, T5);
+// one on a same-named root in another source database does not (G3).
 func TestMySQLConcurrency(t *testing.T) {
 	e := newEnv(t, "conc")
 	e.both(t, intTables)
 	execAll(t, e.src, "INSERT INTO r VALUES (1, 1)")
 	cfg := e.config(t, job(t, jobspec.Archive, decimalJob))
 
-	held := lock.NewJobLock(e.dst, "j")
-	if ok, err := held.TryAcquire(context.Background()); err != nil || !ok {
-		t.Fatalf("TryAcquire = %v, %v", ok, err)
+	held := lock.NewSet(e.dst, lock.JobLockName(e.dstSchema, "j"))
+	if err := held.Acquire(context.Background()); err != nil {
+		t.Fatalf("Acquire = %v", err)
 	}
 	if _, err := e.run(t, cfg); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Errorf("a held job lock = %v", err)
 	}
-	_, _ = held.ReleaseLock(context.Background())
+	_ = held.Release(context.Background())
 
 	store, err := tracking.Open(context.Background(), e.dst, e.dstSchema)
 	if err != nil {
@@ -277,17 +280,26 @@ func TestMySQLConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := store.Attach(context.Background(), tracking.JobInput{Name: "other", Type: jobspec.Purge, RootKey: res.Keys["r"],
-		Binding: tracking.Binding{SourceServerUUID: "u", SourceDatabase: "s", DestinationDatabase: "d"}})
-	if err != nil {
-		t.Fatal(err)
+	running := func(name, sourceDatabase string) {
+		t.Helper()
+		other, err := store.Attach(context.Background(), tracking.JobInput{Name: name, Type: jobspec.Purge, RootKey: res.Keys["r"],
+			Binding: tracking.Binding{SourceServerUUID: "u", SourceDatabase: sourceDatabase, DestinationDatabase: "d"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := other.SetStatus(context.Background(), tracking.JobRunning); err != nil {
+			t.Fatal(err)
+		}
+		if err := other.Heartbeat(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := other.SetStatus(context.Background(), tracking.JobRunning); err != nil {
-		t.Fatal(err)
+	running("elsewhere", e.srcSchema+"_other")
+	if _, err := e.run(t, cfg); err != nil {
+		t.Fatalf("a job running on r in another source database refused the run: %v", err)
 	}
-	if err := other.Heartbeat(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	execAll(t, e.src, "INSERT INTO r VALUES (2, 1)")
+	running("other", strings.ToUpper(e.srcSchema)) // another server_uuid ("u"), the same database in another case
 	_, err = e.run(t, cfg)
 	ce := wantErr[*ConcurrentError](t, err)
 	if !strings.Contains(ce.Error(), "another job is running") {
@@ -298,36 +310,41 @@ func TestMySQLConcurrency(t *testing.T) {
 	}
 }
 
-// TestMySQLRootLockHeldUntilRunning: the root table's lock is still held when the job is
-// marked running, so a second job starting on the same root table waits for the lock and
-// then sees this one in the same-root guard (2.x held it the same way). Released early, two
-// jobs started together could both pass the guard.
-func TestMySQLRootLockHeldUntilRunning(t *testing.T) {
-	e := newEnv(t, "rootlock")
+// TestMySQLLocksHeldForTheRun: at the running point the run's own sessions hold the job
+// lock on the destination and the source table lock on the source; after the run both are
+// free (source-table-locks spec §5.1). It replaces TestMySQLRootLockHeldUntilRunning, whose
+// lock is retired.
+func TestMySQLLocksHeldForTheRun(t *testing.T) {
+	e := newEnv(t, "lockheld")
 	e.both(t, intTables)
 	execAll(t, e.src, "INSERT INTO r VALUES (1, 1)")
 	cfg := e.config(t, job(t, jobspec.Archive, decimalJob))
-	admin := openServer(t, "TEST_DEST", "", nil)
-	name := lock.GenerateRootTableLockName("r")
+	srcAdmin, dstAdmin := openServer(t, "TEST_SOURCE", "", nil), openServer(t, "TEST_DEST", "", nil)
+	table, jobName := lock.TableLockName(e.srcSchema, "r"), lock.JobLockName(e.dstSchema, "j")
+	held := func(db *sql.DB, name string) bool {
+		t.Helper()
+		id, err := lockHolder(context.Background(), db, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id != 0
+	}
 	reached := false
 	cfg.at = func(p point) {
 		if p != atRunning {
 			return
 		}
 		reached = true
-		if got := count(t, admin, "SELECT IS_USED_LOCK(?) IS NOT NULL", name); got != 1 {
-			t.Errorf("the root-table lock %s is free once the job is marked running", name)
-		}
-		if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobRunning) {
-			t.Errorf("job_status at the running point = %d, want running", got)
+		if !held(srcAdmin, table) || !held(dstAdmin, jobName) {
+			t.Errorf("at the running point: table lock held = %v, job lock held = %v; want both", held(srcAdmin, table), held(dstAdmin, jobName))
 		}
 	}
 	e.mustRun(t, cfg)
 	if !reached {
 		t.Fatal("the running point was never reached")
 	}
-	if got := count(t, admin, "SELECT IS_USED_LOCK(?) IS NULL", name); got != 1 {
-		t.Errorf("the root-table lock %s is still held after the run", name)
+	if held(srcAdmin, table) || held(dstAdmin, jobName) {
+		t.Error("a lock is still held after the run")
 	}
 }
 

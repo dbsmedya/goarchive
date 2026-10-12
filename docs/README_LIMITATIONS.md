@@ -175,13 +175,22 @@ workloads read concurrently.
 
 #### Sequential by design
 
-One batch at a time, no parallelism. A second run of the same job, or of any job on the same
-root table, is refused; jobs with different names and root tables can run together
-([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+One batch at a time, no parallelism. Runs whose job trees share a source table run one at a
+time: a second run of the same job, a job on another root whose tree overlaps, the same tables
+sent to another destination, and two copy-only jobs reading the same tables are all refused
+while the first runs ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+
+The locks live on one server. Every connection must reach one backend for the whole run (see
+[Source and destination must be different databases](#source-and-destination-must-be-different-databases)):
+a read/write-splitting proxy could send the locks to a replica while the deletes go to the
+primary. A copy-only job reading a replica and an archive writing its primary are not
+serialized; the [run contract](#no-ddl-and-no-concurrent-writes-during-a-run-contract) covers
+that case. On Group Replication in multi-primary mode, locks are local to a member, so runs
+connected to different members are not serialized.
 
 #### The job lock and long replication holds
 
-The job's advisory lock lives on a dedicated connection, and losing it stops the job. During a
+The run's locks live on dedicated sessions, and losing either set stops the run. During a
 replication-lag hold the batch's source session sits idle; once the hold outlasts that session's
 `wait_timeout` — the server's global, or 8 hours if that is lower
 ([Session settings](README_CONFIGURATION.md#session-settings)) — the server closes it, and the

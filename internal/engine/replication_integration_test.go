@@ -105,7 +105,7 @@ func TestMySQLLiveReplicationGate(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 				defer cancel()
 				start := time.Now()
-				if _, err := Run(ctx, cfg); err != nil {
+				if _, err := e.runContext(t, ctx, cfg); err != nil {
 					t.Fatalf("Run() = %v", err)
 				}
 				if got := count(t, e.src, oldOrders); got != 0 {
@@ -123,7 +123,7 @@ func TestMySQLLiveReplicationGate(t *testing.T) {
 				defer cancel()
 				done := make(chan error, 1)
 				go func() {
-					_, err := Run(ctx, cfg)
+					_, err := e.runContext(t, ctx, cfg)
 					done <- err
 				}()
 				select {
@@ -166,7 +166,7 @@ func TestMySQLLiveReplicationGate(t *testing.T) {
 				defer cancel()
 				done := make(chan error, 1)
 				go func() {
-					_, err := Run(ctx, cfg)
+					_, err := e.runContext(t, ctx, cfg)
 					done <- err
 				}()
 				select {
@@ -191,7 +191,7 @@ func TestMySQLLiveReplicationGate(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				done := make(chan error, 1)
 				go func() {
-					_, err := Run(ctx, cfg)
+					_, err := e.runContext(t, ctx, cfg)
 					done <- err
 				}()
 				time.Sleep(3 * time.Second)

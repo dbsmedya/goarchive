@@ -89,6 +89,16 @@ const (
 	atDeleted   point = "deleted"   // one source delete chunk committed
 	atMarked    point = "marked"    // startup: the job is marked running, before its first heartbeat
 	atRunning   point = "running"   // startup: the job is marked running and has beaten once
+
+	// A commit's writes are done and it is not committed: the guarded commit's lock check
+	// comes next (source-table-locks spec §4 step 4).
+	atDeleteWritten point = "delete-written" // a source delete chunk
+	atCopyWritten   point = "copy-written"   // the destination copy, its verification and log insert
+	atLogWritten    point = "log-written"    // a log-only destination transaction
+
+	// The run's own job-lock session has lost the lock, and its final status is about to be
+	// written on a fresh session that takes the lock again first (Codex P1).
+	atFinalWrite point = "final-write"
 )
 
 // Report is what a run did.
@@ -131,20 +141,29 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// checkPool refuses a destination pool too small for a run (M5-F6).
+// checkPool refuses a pool too small for a run (M5-F6): a smaller one would wait forever.
 func (c *Config) checkPool() error {
+	if n := c.Source.Stats().MaxOpenConnections; n > 0 && n < minSourceConnections {
+		return fmt.Errorf("engine: the source pool allows %d connections, and a run needs at least %d "+
+			"(source.max_connections): the source table locks hold one for the whole run while the batch works on another",
+			n, minSourceConnections)
+	}
 	if n := c.Destination.Stats().MaxOpenConnections; n > 0 && n < minDestinationConnections {
 		return fmt.Errorf("engine: the destination pool allows %d connections, and a run needs at least %d "+
-			"(destination.max_connections): startup holds the root-table and job locks on two of them while it "+
-			"reads the job registry on a third", n, minDestinationConnections)
+			"(destination.max_connections): the job lock holds one for the whole run while the registry, the copy "+
+			"and the heartbeat use the others", n, minDestinationConnections)
 	}
 	return nil
 }
 
-// minDestinationConnections is the smallest destination pool a run can use: the job lock
-// holds one connection for the whole run, the root-table lock a second during startup, and
-// the registry, the log and the copy need a third (M5-F6). A smaller pool would wait forever.
-const minDestinationConnections = 3
+// minSourceConnections and minDestinationConnections are the smallest pools a run can use.
+// The source: the table locks' session and the batch's pinned session. The destination is
+// kept at three (M5-F6, every gate since): the job lock's session, the copy's and the
+// heartbeat's, which run at the same time; the retired root lock's slot is the heartbeat's.
+const (
+	minSourceConnections      = 2
+	minDestinationConnections = 3
+)
 
 // Run runs one job: startup, recovery, then batches until the where range is exhausted or a
 // graceful stop is requested. It returns what it did, even when it fails part way.
@@ -236,64 +255,46 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		return nil, err
 	}
-	jobLock, rootLock, err := lockJob(ctx, cfg, store)
-	if err != nil {
-		return nil, err
-	}
-	defer releaseLock(jobLock, log)
-	// The root lock is held until the job is marked running (lockJob).
-	rootHeld := true
-	releaseRoot := func() {
-		if rootHeld {
-			releaseLock(rootLock, log)
-			rootHeld = false
-		}
-	}
-	defer releaseRoot()
-
-	job, err := store.Attach(ctx, tracking.JobInput{Name: cfg.Name, Type: cfg.Spec.Type, RootKey: root, Binding: binding})
-	if err != nil {
-		return nil, err
-	}
-	r, err := newRun(ctx, cfg, res, job, binding.SourceDatabase)
-	if err != nil {
-		return nil, err
-	}
-	if err := job.SetStatus(ctx, tracking.JobRunning); err != nil {
-		return nil, err
-	}
-	r.reached(atMarked)
-	if err := job.Heartbeat(ctx); err != nil {
-		finalStatus(ctx, job, tracking.JobFailed, cfg.Name, log)
-		return nil, err
-	}
-	r.reached(atRunning)
-	releaseRoot()
-
+	// runCtx is cancelled with the reason when a lock set is lost or the heartbeat fails,
+	// from the moment the first lock is held (spec §4 step 3).
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	stopBeat := keepAlive(runCtx, cancel, jobLock, job, log)
+	held, err := lockJob(runCtx, cancel, cfg, store, binding.SourceDatabase)
+	if err != nil {
+		return nil, withCause(runCtx, err)
+	}
+	defer held.release(log)
 
+	job, err := store.Attach(runCtx, tracking.JobInput{Name: cfg.Name, Type: cfg.Spec.Type, RootKey: root, Binding: binding})
+	if err != nil {
+		return nil, withCause(runCtx, err)
+	}
+	r, err := newRun(runCtx, cfg, res, job, binding.SourceDatabase)
+	if err != nil {
+		return nil, withCause(runCtx, err)
+	}
+	r.locks = held
+	if err := job.SetStatus(runCtx, tracking.JobRunning); err != nil {
+		return nil, withCause(runCtx, err)
+	}
+	r.reached(atMarked)
+	if err := job.Heartbeat(runCtx); err != nil {
+		finalStatus(ctx, cfg, job, tracking.JobFailed, held.job)
+		return nil, withCause(runCtx, err)
+	}
+	r.reached(atRunning)
+
+	stopBeat := heartbeat(runCtx, cancel, job, log)
 	err = r.execute(runCtx)
 	stopBeat()
-	if cause := context.Cause(runCtx); err != nil && cause != nil && !errors.Is(cause, context.Canceled) {
-		err = fmt.Errorf("%w (%v)", cause, err)
-	}
+	err = withCause(runCtx, err)
 
 	final := tracking.JobIdle
 	if err != nil {
 		final = tracking.JobFailed
 	}
-	finalStatus(ctx, job, final, cfg.Name, log)
-	return r.report, err
-}
-
-// finalStatus writes the job's status at the end of a run that marked it running, on a
-// cleanup context: every way out of such a run writes it (M5-F1).
-func finalStatus(ctx context.Context, job *tracking.Job, st tracking.JobStatus, name string, log *logger.Logger) {
-	statusCtx, done := cleanupContext(ctx)
-	defer done()
-	if err := job.SetStatus(statusCtx, st); err != nil {
-		log.Errorw("failed to write the final job status", "job", name, "status", st, "error", err)
+	if taker := finalStatus(ctx, cfg, job, final, held.job); taker != 0 && err != nil {
+		err = fmt.Errorf("%w; job %q is now run by destination connection %d, which owns its status", err, cfg.Name, taker)
 	}
+	return r.report, err
 }

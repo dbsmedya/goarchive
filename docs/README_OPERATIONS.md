@@ -222,8 +222,8 @@ connection 10 minutes after it opened, or after 5 minutes idle, so a global lowe
 reaches the next replacement connection: if the account lacks `SESSION_VARIABLES_ADMIN`, the run
 stops there. Only the open transaction rolls back; committed copies and delete chunks stay, and
 the next run's [recovery](#crash-recovery) finishes the batch once the setting or grant is fixed.
-Connections the run holds throughout (the job lock's, a source session pinned through a lag
-wait) keep the value they started with.
+Connections the run holds throughout (the two lock sessions, a source session pinned through a
+lag wait) keep the value they started with.
 
 ---
 
@@ -244,8 +244,8 @@ touch /var/run/goarchive/pause.flag   # pause, e.g. to relieve a struggling repl
 rm /var/run/goarchive/pause.flag      # resume
 ```
 
-- A paused run holds only its job lock's session, so a second run of the same job is refused as
-  already running.
+- A paused run still holds both lock sets, so for the length of the pause a second run of the
+  same job is refused as already running, and so is any run whose tables overlap.
 - A first `Ctrl-C` or `SIGTERM` ends the pause and stops the run; a second signal cancels at
   once.
 
@@ -303,8 +303,10 @@ replays its log, page by page:
 - **copy-only** — nothing: each batch's copy, verification and log are one transaction, so a
   batch either happened or did not.
 
-A root already gone from the source was deleted before the crash, after its children, so only
-the roots still present are deleted again. Then the run starts at the beginning of the `where`
+A root already gone from the source was deleted before the run stopped: by a crash after its
+deletes and before it was marked completed, by a run that lost its locks between the same two
+steps, or by another run that took the job over after a stall. Recovery deletes only the roots
+still present, and warns about the rest. Then the run starts at the beginning of the `where`
 range: completed archive and purge roots are gone from the source, so they are not seen again.
 
 ### Graceful shutdown
@@ -335,20 +337,42 @@ change ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
 
 ## Concurrency and locking
 
-GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design), per job name
-and per root table, through locks on the destination server:
+GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design): two runs
+that would touch the same source table never run together, whatever their job names, root
+tables or destinations. A run holds two sets of MySQL user-level locks (`GET_LOCK()`) for its
+whole length, each on a dedicated session:
 
-1. **The root-table lock** (`goarchive:root:<table>`) serializes startups on one root table. A
-   startup waits up to 10 seconds for it, then refuses: `timed out waiting for the root-table lock
-   of "<table>": another job is starting on it`. It is held until the job is marked running.
-2. **The same-root check**: a different job marked running on the same root table refuses the
-   run. When that job's heartbeat stopped (a crash leaves a job marked running), the error says
-   so and gives the `UPDATE … SET job_status = 0` to mark it idle once no process runs it.
-3. **The job lock** (`GET_LOCK()` on the job name) is held for the whole run on a dedicated
-   connection; a second run of the same job is refused as already running.
+1. **The job lock**, on the destination, beside the tracking tables. It is taken first, so a
+   second run of the same job is refused as `job "<name>" is already running: its advisory
+   lock is held by another session (destination connection <id>)`.
+2. **A table lock on every table of the job's tree**, root included, on the **source**: the
+   one server every run that could conflict shares. A run whose tree shares a table with a
+   running job is refused before it does anything:
+   `the source table <database>.<table> is in use by another GoArchive run (source connection
+   <id>). Jobs whose tables overlap run one at a time; this run did nothing.` This holds for
+   every job type and across destinations: the same source tables archived to two
+   destinations run one after the other, and so do two copy-only jobs reading the same tables.
+3. **The same-root check**: a different job marked running on the same source database and
+   root table refuses the run. A live job is already refused by the table locks; this check
+   catches a crashed one, which is left marked running with logged work. When its heartbeat
+   stopped, the error says so and gives the `UPDATE … SET job_status = 0` to mark it idle once
+   no process runs it.
 
-Jobs with different names and different root tables can run at the same time against one
-destination. Startup needs at least three destination connections (`max_connections` ≥ 3).
+Every lock name is a prefix and a hash, so any table or job name fits MySQL's 64-character
+limit. MySQL computes the same names, so you can find a holder from SQL:
+
+```sql
+-- the job lock of job_name in job_schema (run on the destination)
+SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'), CHAR(0), LOWER('<job_name>')), 256), 32)));
+-- the lock on database.table (run on the source)
+SELECT IS_USED_LOCK(CONCAT('goarchive:t:', LEFT(SHA2(CONCAT(LOWER('<database>'), CHAR(0), LOWER('<table>')), 256), 32)));
+```
+
+The result is the holding connection id (`SHOW PROCESSLIST`), or `NULL` when the lock is free.
+A run also logs each lock with the job or table it stands for, at debug level.
+
+A run needs at least two source connections and three destination connections
+(`max_connections`).
 
 ### Heartbeat and keepalive timing
 
@@ -357,12 +381,20 @@ destination. Startup needs at least three destination connections (`max_connecti
 | Heartbeat write interval | 15 seconds |
 | Staleness threshold | 60 seconds |
 | Consecutive heartbeat failures before the run stops | 3 |
-| Job-lock ownership check | 30 seconds |
+| Lock-ownership check, each lock set | 30 seconds, and before every commit |
+| Lock session `wait_timeout` | 300 seconds |
 
-### The lock connection must stay alive
+### The lock sessions must stay alive
 
-Every 30 seconds the run checks that its job lock is still held by its own connection, and stops
-if it is not: GoArchive will not go on deleting without its lock. A lost lock is therefore
-noticed within 30 seconds. The lock connection is used every 30 seconds and its `wait_timeout` is
-raised ([Session settings](README_CONFIGURATION.md#session-settings)), so neither a long run nor
-a long pause lets the server close it.
+Every 30 seconds, and again before every transaction the run commits, the run checks that its
+own sessions still hold both lock sets. If either is lost, the run stops and the transaction
+in flight rolls back: GoArchive never commits a copy, a delete or a log write without its
+locks. The check comes after the transaction's writes and before its `COMMIT`.
+
+Each lock session runs with `wait_timeout = 300`, and the 30-second check keeps it from
+idling that long. If goarchive's process dies, the server frees its locks at once. If its
+host or network is lost, the server frees them within 5 minutes: a run started before then is
+refused at once (nothing waits for a lock), and the next start after that goes through.
+
+A run that lost its job lock may find the job already started again by another run. It then
+leaves the job's status to that run and its error names that run's destination connection.
