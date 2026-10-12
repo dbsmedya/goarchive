@@ -106,3 +106,32 @@ func TestCheckSQL(t *testing.T) {
 		t.Errorf("checkSQL(3) = %q, want %q", got, want)
 	}
 }
+
+// TestSetDoRunsOnlyWhileHeld (Codex P1): Do runs its function on the set's own session after
+// the ownership check passes, and never after it fails.
+func TestSetDoRunsOnlyWhileHeld(t *testing.T) {
+	check := regexp.QuoteMeta("SELECT (IS_USED_LOCK(?) <=> CONNECTION_ID())")
+
+	s, _, mock := acquired(t, "goarchive:j:a")
+	mock.ExpectQuery(check).WillReturnRows(sqlmock.NewRows([]string{"ok"}).AddRow(int64(1)))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE registry")).WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := s.Do(context.Background(), func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(context.Background(), "UPDATE registry")
+		return err
+	}); err != nil {
+		t.Fatalf("Do while held = %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the write did not run on the set's session: %v", err)
+	}
+
+	lost, _, mock := acquired(t, "goarchive:j:b")
+	mock.ExpectQuery(check).WillReturnRows(sqlmock.NewRows([]string{"ok"}).AddRow(int64(0)))
+	called := false
+	if err := lost.Do(context.Background(), func(*sql.Conn) error { called = true; return nil }); !errors.Is(err, ErrLost) {
+		t.Errorf("Do after a loss = %v, want ErrLost", err)
+	}
+	if called {
+		t.Error("Do ran its function after the ownership check failed")
+	}
+}
