@@ -186,7 +186,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Lock names (hashed, case-folded) and the lock set: one session, `wait_timeout` 300, keep-alive, discard on release | `internal/lock/names.go` → `TableLockName`, `JobLockName`; `internal/lock/set.go` → `Set` |
 | Startup locking: job lock, source table locks, scoped same-root check | `internal/engine/startup.go` → `lockJob`; `internal/tracking/job.go` → `(*Store).Running` |
 | Guarded commit (write → check → `COMMIT`) at every commit site | `internal/engine/run.go` → `(*run).commit` |
-| Final status skipped when another run holds the job lock | `internal/engine/startup.go` → `finalStatus` |
+| Final status written only on a session that holds the job lock; skipped, naming the taker, when another run holds it | `internal/engine/startup.go` → `finalStatus`; `internal/lock/set.go` → `(*Set).Do` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
 | Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
