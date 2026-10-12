@@ -25,6 +25,9 @@ type run struct {
 	meta map[string]types.ColumnMetadata // every table's columns, as the source reports them
 	caps caps
 	job  *tracking.Job
+	// locks are the run's lock sets; every commit checks them (spec §4 step 4). Explain's
+	// run has none and never commits.
+	locks *locks
 
 	report   *Report
 	progress *progressTracker // nil unless --progress is on
@@ -298,7 +301,7 @@ func (r *run) waitForLag(ctx context.Context) error {
 	return nil
 }
 
-// inDestinationTx runs f in a destination transaction and commits it.
+// inDestinationTx runs f in a destination transaction and commits it through the guard.
 func (r *run) inDestinationTx(ctx context.Context, f func(*sql.Tx) error) error {
 	tx, err := r.cfg.Destination.BeginTx(ctx, nil)
 	if err != nil {
@@ -306,6 +309,22 @@ func (r *run) inDestinationTx(ctx context.Context, f func(*sql.Tx) error) error 
 	}
 	if err := f(tx); err != nil {
 		_ = tx.Rollback()
+		return err
+	}
+	if err := r.commit(ctx, tx, atLogWritten); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return nil
+}
+
+// commit is the guarded commit (spec §4 step 4): after the transaction's writes, the run
+// checks that it still holds both lock sets, then commits. A failed check leaves tx to the
+// caller's rollback. The check is a separate SELECT on the lock sessions, never part of the
+// DML. at is the crash point between the writes and the check.
+func (r *run) commit(ctx context.Context, tx *sql.Tx, at point) error {
+	r.reached(at)
+	if err := r.locks.check(ctx); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -89,6 +89,12 @@ const (
 	atDeleted   point = "deleted"   // one source delete chunk committed
 	atMarked    point = "marked"    // startup: the job is marked running, before its first heartbeat
 	atRunning   point = "running"   // startup: the job is marked running and has beaten once
+
+	// A commit's writes are done and it is not committed: the guarded commit's lock check
+	// comes next (source-table-locks spec §4 step 4).
+	atDeleteWritten point = "delete-written" // a source delete chunk
+	atCopyWritten   point = "copy-written"   // the destination copy, its verification and log insert
+	atLogWritten    point = "log-written"    // a log-only destination transaction
 )
 
 // Report is what a run did.
@@ -263,6 +269,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		return nil, withCause(runCtx, err)
 	}
+	r.locks = held
 	if err := job.SetStatus(runCtx, tracking.JobRunning); err != nil {
 		return nil, withCause(runCtx, err)
 	}

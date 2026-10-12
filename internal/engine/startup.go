@@ -145,6 +145,21 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 	return l, nil
 }
 
+// check is the guarded commit's ownership check (spec §4 step 4): both sets, each on its
+// own session. A run without locks (Explain) never commits; a commit without them fails.
+func (l *locks) check(ctx context.Context) error {
+	if l == nil {
+		return errors.New("engine: a commit without the run's locks")
+	}
+	if err := l.tables.Check(ctx); err != nil {
+		return fmt.Errorf("engine: the source table locks were lost: %w", err)
+	}
+	if err := l.job.Check(ctx); err != nil {
+		return fmt.Errorf("engine: the job lock was lost: %w", err)
+	}
+	return nil
+}
+
 // release stops the keep-alives and releases both sets on a cleanup context, the table
 // locks first.
 func (l *locks) release(log *logger.Logger) {
