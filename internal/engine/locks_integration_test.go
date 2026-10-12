@@ -287,6 +287,64 @@ func TestMySQLTakerKeepsItsStatus(t *testing.T) {
 	}
 }
 
+// TestMySQLFinalStatusTakeoverRace (Codex P1): run A loses both lock sets and fails; run B of
+// the same job starts after A has found its own lock gone and before A writes its final
+// status, and is held running. A must not overwrite B's status, and A's error names B. The
+// existing TestMySQLTakerKeepsItsStatus starts B earlier, before A's final status begins.
+func TestMySQLFinalStatusTakeoverRace(t *testing.T) {
+	slowKeepAlive(t)
+	srcAdmin, dstAdmin := openServer(t, "TEST_SOURCE", "", nil), openServer(t, "TEST_DEST", "", nil)
+	e := newEnv(t, "race")
+	e.both(t, orderTables(cs4)...)
+	seedOrders(t, e, 3)
+	a := e.config(t, job(t, jobspec.Archive, orderJob))
+	bRunning, bGo, bDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	killed, started := false, false
+	a.at = func(p point) {
+		switch {
+		case p == atCommitted && !killed:
+			killed = true
+			killHolder(t, dstAdmin, lock.JobLockName(e.dstSchema, "j"))
+			killHolder(t, srcAdmin, lock.TableLockName(e.srcSchema, "orders"))
+		case p == atFinalWrite && killed && !started:
+			started = true
+			b := e.config(t, job(t, jobspec.Archive, orderJob))
+			b.at = func(p point) {
+				if p == atRunning {
+					close(bRunning)
+					<-bGo
+				}
+			}
+			go func() {
+				_, err := e.run(t, b)
+				bDone <- err
+			}()
+			select {
+			case <-bRunning:
+			case err := <-bDone:
+				t.Errorf("run B ended before running: %v", err)
+			}
+		}
+	}
+	_, errA := e.run(t, a)
+	if !killed || !started {
+		t.Fatalf("run A never reached its committed point and its final status (killed %v, B started %v): %v", killed, started, errA)
+	}
+	if got := count(t, e.dst, "SELECT job_status FROM archiver_job WHERE job_name = 'j'"); got != int64(tracking.JobRunning) {
+		t.Errorf("job_status while B runs = %d, want running: A overwrote it", got)
+	}
+	if errA == nil || !strings.Contains(errA.Error(), "is now run by destination connection") {
+		t.Errorf("run A = %v, want its error to name the taker", errA)
+	}
+	close(bGo)
+	if err := <-bDone; err != nil {
+		t.Fatalf("run B = %v", err)
+	}
+	if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 1 {
+		t.Errorf("after B the source holds %d orders, want 1", got)
+	}
+}
+
 // TestMySQLCheckCancelledIsNotALoss (Fable final M1): a commit check on a cancelled
 // context (a second signal) reports the cancellation, not a lost lock, and the sets are
 // still held.
