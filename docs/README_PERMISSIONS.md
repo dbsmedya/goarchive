@@ -94,6 +94,11 @@ preflight.
   8.0.46 and later refuse that read without `PROCESS`; MySQL 8.0.40 serves it unfiltered without
   `PROCESS`, so the check passes there without the grant and still sees every foreign key
   ([compatibility notes](README_COMPAT.md)).
+- **Locks need no privilege.** `GET_LOCK()`, `IS_USED_LOCK()` and `RELEASE_ALL_LOCKS()` need no
+  grant, on the source or the destination, and work on a `super_read_only` server. Reading
+  `performance_schema.metadata_locks` (the upgrade check in
+  [README_UPGRADING_3_0.md](README_UPGRADING_3_0.md#moving-from-30-alpha0)) needs `SELECT` on
+  `performance_schema`: run it as a DBA account, not as GoArchive's.
 - **`SESSION_VARIABLES_ADMIN`** also lets the account change other restricted session variables,
   so raising the global `max_error_count` is usually the better remedy. The recipes above do not
   include it.

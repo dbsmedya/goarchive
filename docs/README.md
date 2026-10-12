@@ -13,7 +13,7 @@ Detailed specifications for GoArchive. Start at the
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: the tracking tables, the startup checks, inspection queries, what is safe to delete, failover re-binding |
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
 | [Testing](README_TESTING.md) | What each test layer proves |
-| [Upgrading to 3.0](README_UPGRADING_3_0.md) | Moving from 2.x: the tracking tables, configuration and command-line changes, changed limits |
+| [Upgrading to 3.0](README_UPGRADING_3_0.md) | Moving from 2.x and from 3.0 alpha.0: the tracking tables, configuration and command-line changes, changed limits |
 | [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys, the path it takes for each, and what is still open |
 | [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
 

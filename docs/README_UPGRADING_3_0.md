@@ -12,6 +12,7 @@ What changed from 2.x, and how to move a job to 3.0.
 
 - [The short version](#the-short-version)
 - [Moving from 2.2](#moving-from-22)
+- [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -63,6 +64,28 @@ nothing is migrated.
    starts at the beginning of the job's `where` range: for archive and purge the finished rows
    are gone from the source; a copy-only job would copy everything again, so point it at an empty
    destination, or give it a `where` that starts after what 2.x copied.
+
+---
+
+## Moving from 3.0 alpha.0
+
+The lock names changed: alpha.0 locked `goarchive:job:<name>` and `goarchive:root:<table>` on
+the destination; later releases lock a hashed job name on the destination and every table of
+the tree on the source. The two do not see each other's locks. **Stop every alpha.0 run before
+starting a run of a later release.** Mixed, the same job can run twice, and jobs whose trees
+overlap run together; the outcome is a loud failure (a duplicate key, or a row-count refusal),
+but it is the stop that prevents it. A different job on the same root table is still refused
+by the shared registry's same-root check. Nothing at startup looks for alpha.0's locks.
+
+To see live alpha.0 runs, as a DBA account on each destination:
+
+```sql
+SELECT OBJECT_NAME FROM performance_schema.metadata_locks
+WHERE OBJECT_TYPE = 'USER LEVEL LOCK' AND OBJECT_NAME LIKE 'goarchive:%';
+```
+
+Names starting `goarchive:job:` or `goarchive:root:` are alpha.0 runs. The tracking tables are
+unchanged.
 
 ---
 

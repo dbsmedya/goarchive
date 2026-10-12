@@ -460,6 +460,22 @@ the duplicate with `resume: false` and finish with `resume: true`. The crash poi
 seams in the engine, not timers. Binary E2E 08 and 09 send real signals to the CLI; test 13
 holds and releases a live replication gate in one invocation.
 
+Three more seams sit between a commit's writes and its `COMMIT` (`delete-written`,
+`copy-written`, `log-written`): `TestMySQLGuardedCommit` kills a lock session there and proves
+the transaction rolls back. Tests that touch locks follow three rules:
+
+- A test that needs a silent lock holder shortens `sessionWaitTimeout` (`internal/lock`) and
+  restores it; none waits out the 300-second lock-session timeout.
+- Lock names come from `lock.TableLockName` and `lock.JobLockName`, never a literal: they are
+  hashes.
+- Every engine test runs through its `env` (`e.run`, `e.runContext`), which records the run's
+  lock names; when the test ends, a guard fails it if any is still held. The helper child of
+  `TestMySQLKillRecovery` exits when its parent goes, so a timed-out parent cannot leave its
+  locks held.
+
+The environment-matrix row `wait_timeout_10` also proves the lock sessions keep their 300
+seconds under a 10-second global (`TestMySQLWaitTimeout`, side A).
+
 ### Environment matrix
 
 The environment matrix runs the integration suites again under **one changed MySQL

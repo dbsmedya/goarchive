@@ -183,6 +183,10 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
 | Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
 | Startup recovery (delete-only replay) | `internal/engine/recover.go` → `recover`, `replay` |
+| Lock names (hashed, case-folded) and the lock set: one session, `wait_timeout` 300, keep-alive, discard on release | `internal/lock/names.go` → `TableLockName`, `JobLockName`; `internal/lock/set.go` → `Set` |
+| Startup locking: job lock, source table locks, scoped same-root check | `internal/engine/startup.go` → `lockJob`; `internal/tracking/job.go` → `(*Store).Running` |
+| Guarded commit (write → check → `COMMIT`) at every commit site | `internal/engine/run.go` → `(*run).commit` |
+| Final status skipped when another run holds the job lock | `internal/engine/startup.go` → `finalStatus` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
 | Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
