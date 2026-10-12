@@ -62,7 +62,7 @@ func (e *ConcurrentError) Error() string {
 // advisory lock. It returns both locks: the caller keeps the root lock until its job is
 // marked running, so a second startup on the same root table waits for it and then sees
 // this job in the guard (2.x held it the same way). On an error no lock is held.
-func lockJob(ctx context.Context, cfg Config, store *tracking.Store) (jobLock, rootLock *lock.AdvisoryLock, err error) {
+func lockJob(ctx context.Context, cfg Config, store *tracking.Store, sourceDatabase string) (jobLock, rootLock *lock.AdvisoryLock, err error) {
 	root := cfg.Spec.RootTable
 	rl := lock.NewRootTableLock(cfg.Destination, root)
 	held, err := rl.AcquireLock(ctx, lock.TimeoutMedium)
@@ -78,7 +78,7 @@ func lockJob(ctx context.Context, cfg Config, store *tracking.Store) (jobLock, r
 		}
 	}()
 
-	running, err := store.Running(ctx, root, cfg.Name)
+	running, err := store.Running(ctx, sourceDatabase, root, cfg.Name)
 	if err != nil {
 		return nil, nil, err
 	}

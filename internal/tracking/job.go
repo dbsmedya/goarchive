@@ -50,7 +50,7 @@ type Job struct {
 //     compared part is refused with *BindingError; with none, it is overwritten.
 //
 // These are bookkeeping integrity, not preflight policy: no flag skips them. The caller
-// holds the job's advisory lock.
+// holds the job's advisory lock and the source table locks.
 func (s *Store) Attach(ctx context.Context, in JobInput) (*Job, error) {
 	if err := in.validate(); err != nil {
 		return nil, err
@@ -320,16 +320,19 @@ type RunningJob struct {
 	Beat         bool // false: the job has never beaten
 }
 
-// Running returns the jobs other than except that archiver_job marks running on rootTable,
-// with their heartbeat ages, for the engine's same-root guard (kept from 2.x, spec §9).
+// Running returns the jobs other than except that archiver_job marks running on
+// sourceDatabase.rootTable, with their heartbeat ages, for the engine's same-root guard
+// (kept from 2.x, core spec §9; scoped by source-table-locks spec §5.4). Both names compare
+// without case, as the lock names fold. source_server_uuid is deliberately not compared: a
+// failover gives the source a new one, and a crashed job's logged roots must still be seen.
 // Two startups on one root table cannot both pass the guard only if the caller holds the
-// root table's advisory lock from before this call until its own job is marked running, as
-// the engine does.
-func (s *Store) Running(ctx context.Context, rootTable, except string) ([]RunningJob, error) {
+// source table locks from before this call to the end of its run, as the engine does.
+func (s *Store) Running(ctx context.Context, sourceDatabase, rootTable, except string) ([]RunningJob, error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
 		"SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s "+
-			"WHERE root_table = ? AND job_status = ? AND job_name <> ? ORDER BY job_name", s.jobTable),
-		rootTable, JobRunning, except)
+			"WHERE LOWER(source_database) = LOWER(?) AND LOWER(root_table) = LOWER(?) AND job_status = ? AND job_name <> ? "+
+			"ORDER BY job_name", s.jobTable),
+		sourceDatabase, rootTable, JobRunning, except)
 	if err != nil {
 		return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
 	}
