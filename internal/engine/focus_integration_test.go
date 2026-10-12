@@ -250,8 +250,10 @@ func TestMySQLBookkeepingNames(t *testing.T) {
 	}
 }
 
-// TestMySQLConcurrency: the job's own advisory lock, held by another session, refuses the
-// run; another job marked running on the same root table refuses it too.
+// TestMySQLConcurrency: the job's own lock, held by another session, refuses the run;
+// another job marked running on the same source database and root table refuses it too,
+// also when its source_server_uuid differs (a failover, source-table-locks spec §5.4, T5);
+// one on a same-named root in another source database does not (G3).
 func TestMySQLConcurrency(t *testing.T) {
 	e := newEnv(t, "conc")
 	e.both(t, intTables)
@@ -277,17 +279,26 @@ func TestMySQLConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := store.Attach(context.Background(), tracking.JobInput{Name: "other", Type: jobspec.Purge, RootKey: res.Keys["r"],
-		Binding: tracking.Binding{SourceServerUUID: "u", SourceDatabase: "s", DestinationDatabase: "d"}})
-	if err != nil {
-		t.Fatal(err)
+	running := func(name, sourceDatabase string) {
+		t.Helper()
+		other, err := store.Attach(context.Background(), tracking.JobInput{Name: name, Type: jobspec.Purge, RootKey: res.Keys["r"],
+			Binding: tracking.Binding{SourceServerUUID: "u", SourceDatabase: sourceDatabase, DestinationDatabase: "d"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := other.SetStatus(context.Background(), tracking.JobRunning); err != nil {
+			t.Fatal(err)
+		}
+		if err := other.Heartbeat(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := other.SetStatus(context.Background(), tracking.JobRunning); err != nil {
-		t.Fatal(err)
+	running("elsewhere", e.srcSchema+"_other")
+	if _, err := e.run(t, cfg); err != nil {
+		t.Fatalf("a job running on r in another source database refused the run: %v", err)
 	}
-	if err := other.Heartbeat(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	execAll(t, e.src, "INSERT INTO r VALUES (2, 1)")
+	running("other", strings.ToUpper(e.srcSchema)) // another server_uuid ("u"), the same database in another case
 	_, err = e.run(t, cfg)
 	ce := wantErr[*ConcurrentError](t, err)
 	if !strings.Contains(ce.Error(), "another job is running") {
