@@ -10,12 +10,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
@@ -72,13 +74,71 @@ func execAll(t *testing.T, db *sql.DB, stmts ...string) {
 type env struct {
 	src, dst             *sql.DB
 	srcSchema, dstSchema string
+	rec                  *recorder // nil in the helper child
+}
+
+// recorder holds the lock names of every run the env started, for the leak guard
+// (source-table-locks spec §8a rule 3). The names are hashes, so they are computed from the
+// Config that reached Run, never searched for.
+type recorder struct {
+	mu                  sync.Mutex
+	source, destination map[string]bool
 }
 
 func newEnv(t *testing.T, name string) env {
 	t.Helper()
 	ss, src := scratch(t, "TEST_SOURCE", name)
 	ds, dst := scratch(t, "TEST_DEST", name)
-	return env{src: src, dst: dst, srcSchema: ss, dstSchema: ds}
+	e := env{src: src, dst: dst, srcSchema: ss, dstSchema: ds,
+		rec: &recorder{source: map[string]bool{}, destination: map[string]bool{}}}
+	// Registered after scratch's cleanups, so it runs before the schemas are dropped.
+	t.Cleanup(func() {
+		for _, name := range e.leaked(t) {
+			t.Errorf("lock %s is still held after the test: a run left its lock session alive", name)
+		}
+	})
+	return e
+}
+
+// record notes the lock names a run of cfg takes: its job lock, and a table lock for every
+// table of its tree in the env's source schema.
+func (e env) record(cfg Config) {
+	if e.rec == nil || cfg.Spec == nil {
+		return
+	}
+	e.rec.mu.Lock()
+	defer e.rec.mu.Unlock()
+	e.rec.destination[lock.JobLockName(cfg.JobSchema, cfg.Name)] = true
+	for _, n := range jobspec.NewTree(cfg.Spec).CopyOrder() {
+		e.rec.source[lock.TableLockName(e.srcSchema, n.Table)] = true
+	}
+}
+
+// leaked returns the recorded lock names some session still holds.
+func (e env) leaked(t *testing.T) []string {
+	t.Helper()
+	if e.rec == nil {
+		return nil
+	}
+	e.rec.mu.Lock()
+	defer e.rec.mu.Unlock()
+	var out []string
+	for _, side := range []struct {
+		db    *sql.DB
+		names map[string]bool
+	}{{e.src, e.rec.source}, {e.dst, e.rec.destination}} {
+		for name := range side.names {
+			id, err := lock.Holder(context.Background(), side.db, name)
+			if err != nil {
+				t.Errorf("leak guard: %v", err)
+				continue
+			}
+			if id != 0 {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
 }
 
 // both creates the tables on the source and, for archive and copy-only, the destination.
@@ -128,7 +188,15 @@ func (e env) config(t *testing.T, spec *jobspec.Spec) Config {
 
 func (e env) run(t *testing.T, cfg Config) (*Report, error) {
 	t.Helper()
-	return Run(context.Background(), cfg)
+	return e.runContext(t, context.Background(), cfg)
+}
+
+// runContext is the one way an engine test runs a job: it records the run's lock names for
+// the leak guard first.
+func (e env) runContext(t *testing.T, ctx context.Context, cfg Config) (*Report, error) {
+	t.Helper()
+	e.record(cfg)
+	return Run(ctx, cfg)
 }
 
 func (e env) mustRun(t *testing.T, cfg Config) *Report {

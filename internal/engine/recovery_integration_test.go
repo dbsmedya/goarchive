@@ -20,13 +20,25 @@ import (
 
 // The SIGKILL tests of spec §10: a child process runs the engine and stops dead at a crash
 // point; the parent kills it with SIGKILL, so nothing of the child's cleanup runs, and then
-// runs the job again in-process. The job's advisory lock dies with the child's session.
+// runs the job again in-process. The run's locks die with the child's sessions.
 
 // TestEngineHelperProcess is the child. It runs only under GA_ENGINE_HELPER.
 func TestEngineHelperProcess(t *testing.T) {
 	if os.Getenv("GA_ENGINE_HELPER") == "" {
 		t.Skip("helper process")
 	}
+	// The child exits with its parent: a parent that dies without killing it (a go test
+	// -timeout panic) would leave it parked below with its lock sessions alive and kept
+	// alive (source-table-locks spec §8a rule 4). Its stdin is /dev/null, so the poll is on
+	// the parent's pid; macOS has no Pdeathsig.
+	parent := os.Getppid()
+	go func() {
+		for range time.Tick(200 * time.Millisecond) {
+			if os.Getppid() != parent {
+				os.Exit(3)
+			}
+		}
+	}()
 	e := env{
 		srcSchema: os.Getenv("GA_SRC_SCHEMA"), dstSchema: os.Getenv("GA_DST_SCHEMA"),
 	}

@@ -31,7 +31,7 @@ func (e env) interrupted(t *testing.T, cfg Config, p point) {
 	// Only the cancellation at p counts: a run refused or failed before p (a preflight
 	// refusal under the environment matrix's partial_revokes_on row, M7c-2) is reported as
 	// itself, not taken for the interruption.
-	if _, err := Run(ctx, cfg); !errors.Is(err, context.Canceled) {
+	if _, err := e.runContext(t, ctx, cfg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() = %v, want it interrupted at %s (context.Canceled)", err, p)
 	}
 }

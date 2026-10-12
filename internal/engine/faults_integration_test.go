@@ -207,7 +207,7 @@ func TestMySQLRangeWarningFailsClosed(t *testing.T) {
 					res.Caps[i].Tuples = n
 				}
 			}
-			_, err := Run(context.Background(), cfg)
+			_, err := e.runContext(t, context.Background(), cfg)
 			if !errors.Is(err, key.ErrRangeScan) {
 				t.Fatalf("Run() = %v, want key.ErrRangeScan", err)
 			}
