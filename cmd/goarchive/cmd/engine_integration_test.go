@@ -60,6 +60,8 @@ func TestMySQLDestinationStorageEngine(t *testing.T) {
 			t.Errorf("the run completed but source lines = %d, want 2", lines)
 		case err != nil && strings.Contains(err.Error(), "DEST_STORAGE_ENGINE_CHECK"):
 			t.Errorf("the bypass did not skip the check: %v", err)
+		case err != nil && !strings.Contains(err.Error(), "Error 1785"):
+			t.Errorf("the run failed past preflight with %v, want MySQL's GTID-consistency refusal (error 1785)", err)
 		case err != nil && lines != 8:
 			t.Errorf("the run failed (%v) but source lines = %d, want 8 (nothing deleted)", err, lines)
 		}
@@ -68,10 +70,10 @@ func TestMySQLDestinationStorageEngine(t *testing.T) {
 	t.Run("I3 BLACKHOLE stopped by verification", func(t *testing.T) {
 		f := setup(t, "eng_blackhole", "BLACKHOLE")
 		out, err := execute(t, "archive", "-c", f.config, "--job", "archive_orders", bypass, "--verification=count")
-		if err == nil || strings.Contains(err.Error(), "DEST_STORAGE_ENGINE_CHECK") {
-			t.Fatalf("archive into BLACKHOLE = %v\n%s, want a verification refusal", err, out)
+		if err == nil || !strings.Contains(err.Error(), "count verification of order_lines failed") ||
+			!strings.Contains(err.Error(), "0 destination rows") {
+			t.Fatalf("archive into BLACKHOLE = %v\n%s, want the count verification of order_lines to fail on 0 destination rows", err, out)
 		}
-		t.Logf("refusal: %v", err)
 		if got := scalar(t, f.src, "SELECT COUNT(*) FROM order_lines"); got != 8 {
 			t.Errorf("source lines = %d, want 8 (nothing deleted)", got)
 		}
