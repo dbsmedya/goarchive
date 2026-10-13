@@ -303,8 +303,8 @@ This is a deliberate act: replaying a log against a source that does not hold th
 deletes or skips the wrong rows.
 
 Until the re-bind, other jobs whose trees share the stopped job's tables are refused on the new
-server too when it runs `gtid_mode = ON` and holds the old server's transactions (the old
-`server_uuid` is in its `gtid_executed`), or is a Group Replication member. Two cases are not
+server too when it holds the old server's transactions (the old `server_uuid` is in its
+`gtid_executed`), does not run `gtid_mode = ON`, or is a Group Replication member. Two cases are not
 seen, and need the re-bind before any other job runs on those tables: a server that received
 the data only before a GTID migration, and a server outside a group that holds the group's data
 ([Sequential by design](README_LIMITATIONS.md#sequential-by-design)). Write the uuid exactly: a
