@@ -340,12 +340,14 @@ change ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
 GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design): two runs
 that would touch the same source table never run together, whatever their job names, root
 tables or destinations. A run holds two sets of MySQL user-level locks (`GET_LOCK()`) for its
-whole length, each on a dedicated session:
+whole length, each on a dedicated session. They are names in MySQL's lock registry, **not table
+locks**: GoArchive never runs `LOCK TABLES`, and a name locks no table or row, so the
+application's reads and writes are not blocked by it. It only stops another GoArchive run.
 
 1. **The job lock**, on the destination, beside the tracking tables. It is taken first, so a
    second run of the same job is refused as `job "<name>" is already running: its advisory
    lock is held by another session (destination connection <id>)`.
-2. **A table lock on every table of the job's tree**, root included, on the **source**: the
+2. **A lock name for every table of the job's tree**, root included, on the **source**: the
    one server every run that could conflict shares. A run whose tree shares a table with a
    running job is refused before it does anything:
    `the source table <database>.<table> is in use by another GoArchive run (source connection
@@ -356,7 +358,7 @@ whole length, each on a dedicated session:
    registry, on the same source data, whose tree shares a table with this run's and which is
    marked running, or holds unfinished roots (`copied` or `deleting`) in its log whatever its
    status, refuses the run before it does anything. A live job is already refused by the table
-   locks; the guard protects a job that stopped (a crash, an error, a stop during recovery)
+   lock names; the guard protects a job that stopped (a crash, an error, a stop during recovery)
    until its own rerun finishes that work. *The same source data* is this server's, or that of
    a server whose transactions are in this server's `gtid_executed` (a promoted replica, a
    clone, or a server this source replicates from); a server that replicates from this source
