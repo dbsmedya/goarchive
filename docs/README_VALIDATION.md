@@ -188,8 +188,8 @@ prefix length. `FLOAT`/`DOUBLE` are approximate, `ENUM`/`SET` sort by their inte
 
 **Fix:** choose another root table, or leave the table out of the job.
 
-`PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under `--skip-dangerously-validate-preflight-allow-experimental`,
-because the SQL is built from the keys.
+`PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under
+`--skip-dangerously-validate-preflight-allow-experimental`, because the SQL is built from the keys.
 
 ### `PK_COLUMN_CASE_CHECK`
 
