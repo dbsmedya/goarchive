@@ -119,19 +119,23 @@ func (g *countingGate) WaitForLag(context.Context) error { g.waits.Add(1); retur
 func TestMySQLKillRecovery(t *testing.T) {
 	cs := "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
 	for _, tc := range []struct {
-		name  string
-		typ   jobspec.Type
-		at    point
-		nth   int
-		state map[int]int64 // the log after the kill
+		name      string
+		typ       jobspec.Type
+		at        point
+		nth       int
+		state     map[int]int64 // the log after the kill
+		recovered int64         // roots the rerun's recovery finishes
 	}{
-		{"archive after the destination commit", jobspec.Archive, atCommitted, 2, map[int]int64{1: 2, 2: 2}},
-		{"archive mid-delete", jobspec.Archive, atDeleted, 3, map[int]int64{1: 2}}, // batch 1 has five delete chunks: notes 2, lines 2, orders 1
+		// A kill inside the copy transaction: MySQL rolls it back, the log is empty, and the
+		// rerun recovers nothing and archives the whole range.
+		{"archive inside the copy transaction", jobspec.Archive, atCopyWritten, 1, map[int]int64{}, 0},
+		{"archive after the destination commit", jobspec.Archive, atCommitted, 2, map[int]int64{1: 2, 2: 2}, 2},
+		{"archive mid-delete", jobspec.Archive, atDeleted, 3, map[int]int64{1: 2}, 2}, // batch 1 has five delete chunks: notes 2, lines 2, orders 1
 		// The fifth chunk of batch 1 deletes its two roots: they are gone from the source but
 		// still logged copied, so the replay deletes only their (already deleted) trees.
-		{"archive after its last delete chunk", jobspec.Archive, atDeleted, 5, map[int]int64{1: 2}},
-		{"purge after deleting is logged", jobspec.Purge, atLogged, 1, map[int]int64{4: 2}},
-		{"purge mid-delete", jobspec.Purge, atDeleted, 7, map[int]int64{2: 2, 4: 2}}, // the second chunk of batch 2
+		{"archive after its last delete chunk", jobspec.Archive, atDeleted, 5, map[int]int64{1: 2}, 2},
+		{"purge after deleting is logged", jobspec.Purge, atLogged, 1, map[int]int64{4: 2}, 2},
+		{"purge mid-delete", jobspec.Purge, atDeleted, 7, map[int]int64{2: 2, 4: 2}, 2}, // the second chunk of batch 2
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, "kill")
@@ -154,7 +158,7 @@ func TestMySQLKillRecovery(t *testing.T) {
 			cfg := e.config(t, job(t, tc.typ, orderJob))
 			cfg.Lag = gate
 			rep := e.mustRun(t, cfg)
-			if rep.Recovered != 2 || rep.Roots != 5-2-int64(tc.state[2]) {
+			if rep.Recovered != tc.recovered || rep.Roots != 5-tc.recovered-int64(tc.state[2]) {
 				t.Errorf("report = %+v", rep)
 			}
 			if got := count(t, e.src, "SELECT COUNT(*) FROM orders"); got != 1 {
