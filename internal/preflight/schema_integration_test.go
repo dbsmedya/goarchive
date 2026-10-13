@@ -61,12 +61,13 @@ const (
 // library's real SpecDiff strings.
 //
 // Pair: each fatal variant of the destination (a type change, tinyint(1) to smallint, a
-// destination-only NOT NULL, a generated column, a missing column, a column order change,
-// two bad tables, a table with two bad columns) → DEST_SCHEMA_COMPATIBILITY_CHECK naming
-// exactly its entries; the identical destination, that one difference undone → passes with
-// no advisory. Each looser variant (secondary index, AUTO_INCREMENT, DEFAULT, ON UPDATE
-// dropped, NULL relaxed, tinyint(1) to tinyint, a ZEROFILL width) passes with no advisory,
-// and a case-only column or key name passes with exactly one advisory.
+// destination-only NOT NULL, a generated column, a missing column, two bad tables, a table
+// with two bad columns) → DEST_SCHEMA_COMPATIBILITY_CHECK naming exactly its entries, and a
+// missing middle column, which moves every later column, with no order advisory; the
+// identical destination, that one difference undone → passes with no advisory. Each looser
+// variant (secondary index, AUTO_INCREMENT, DEFAULT, ON UPDATE dropped, NULL relaxed,
+// tinyint(1) to tinyint, a ZEROFILL width) passes with no advisory, and a case-only column
+// or key name, or two columns swapped (GH #105), passes with exactly one advisory.
 func TestMySQLSchemaCompatibilityFromRealFacts(t *testing.T) {
 	src := scratch(t, "TEST_SOURCE", "schcompat")
 	execAll(t, src, schCompatT,
@@ -96,8 +97,8 @@ func TestMySQLSchemaCompatibilityFromRealFacts(t *testing.T) {
 				"column and MySQL rejects it with error 3105)"}},
 		{name: "missing column", t: tSwap(", f TINYINT(1) NULL", ""),
 			fatal: []string{"t(column f: column missing on one side; source=tinyint(1), destination=)"}},
-		{name: "column order", u: uSwap("n INT NULL, m INT NULL", "m INT NULL, n INT NULL"),
-			fatal: []string{"u(column n: column order mismatch; source=3, destination=4)"}},
+		{name: "missing middle column", t: tSwap("z INT(5) UNSIGNED ZEROFILL NULL, ", ""),
+			fatal: []string{"t(column z: column missing on one side; source=int(5) unsigned zerofill, destination=)"}},
 		{name: "two bad tables", t: typeA, u: uSwap("n INT NULL", "n BIGINT NULL"),
 			fatal: []string{"t(column a: column type mismatch; source=int, destination=bigint)",
 				"u(column n: column type mismatch; source=int, destination=bigint)"}},
@@ -113,6 +114,9 @@ func TestMySQLSchemaCompatibilityFromRealFacts(t *testing.T) {
 		{name: "zerofill width", t: tSwap("z INT(5) UNSIGNED ZEROFILL", "z INT(10) UNSIGNED ZEROFILL")},
 		{name: "case-only column", t: tSwap("b VARCHAR(20)", "B VARCHAR(20)"),
 			warnings: []string{"Table t column b: " + fmt.Sprintf(caseOnly, "b", "B")}},
+		{name: "column order", u: uSwap("n INT NULL, m INT NULL", "m INT NULL, n INT NULL"),
+			warnings: []string{"Table u column order differs from the source (n: 3->4, m: 4->3); every read and " +
+				"INSERT names its columns, so copy and verification are unaffected"}},
 		{name: "case-only key", u: schSwap(t, uSwap("id INT NOT NULL", "ID INT NOT NULL"), "PRIMARY KEY (id)", "PRIMARY KEY (ID)"),
 			warnings: []string{"Table u column id: " + fmt.Sprintf(caseOnly, "id", "ID")}},
 	} {

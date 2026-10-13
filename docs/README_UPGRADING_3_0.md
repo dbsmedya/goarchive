@@ -70,13 +70,13 @@ nothing is migrated.
 ## Moving from 3.0 alpha.0
 
 The lock names changed: alpha.0 locked `goarchive:job:<name>` and `goarchive:root:<table>` on
-the destination; later releases lock a hashed job name on the destination and every table of
-the tree on the source. The two do not see each other's locks. **Stop every alpha.0 run before
-starting a run of a later release.** Mixed, the same job can run twice, and jobs whose trees
-overlap run together; the outcome is a loud failure (a duplicate key, or a row-count refusal),
-but it is the stop that prevents it. A later release's run is still refused while an alpha.0
-job whose tree shares one of its tables is marked running in the shared registry. Nothing at
-startup looks for alpha.0's locks.
+the destination; later releases lock a hashed job name on the destination and a hashed name for
+every table of the tree on the source (`GET_LOCK()` names, not table locks). The two do not see
+each other's locks. **Stop every alpha.0 run before starting a run of a later release.** Mixed,
+the same job can run twice, and jobs whose trees overlap run together; the outcome is a loud
+failure (a duplicate key, or a row-count refusal), but it is the stop that prevents it. A later
+release's run is still refused while an alpha.0 job whose tree shares one of its tables is
+marked running in the shared registry. Nothing at startup looks for alpha.0's locks.
 
 To see live alpha.0 runs, as a DBA account on each destination:
 
@@ -109,6 +109,11 @@ another engine ([`DEST_STORAGE_ENGINE_CHECK`](README_VALIDATION.md#dest_storage_
 and `validate` and `dry-run` report it; convert it with `ALTER TABLE … ENGINE=InnoDB`. A destination created on a server whose
 `default_storage_engine` is not InnoDB is the usual cause. **`--skip-validate-preflight` is
 renamed** `--skip-dangerously-validate-preflight-allow-experimental`; the old name is refused.
+
+**A destination whose columns are in another order is accepted.** alpha.0 refused it with
+`DEST_SCHEMA_COMPATIBILITY_CHECK`; later releases log one warning per table naming the displaced
+columns, because every read and INSERT names its columns
+([Schema compatibility rules](README_VALIDATION.md#schema-compatibility-rules)).
 
 ---
 

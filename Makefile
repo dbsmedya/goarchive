@@ -3,7 +3,7 @@
 
 # Version configuration - EDIT RELEASE_VERSION below when releasing
 # Or override per-build with: make build VERSION=1.2.3
-RELEASE_VERSION := 3.0.0-alpha.0
+RELEASE_VERSION := 3.0.0-alpha.1
 # Use the exact git tag when building from a tagged release commit, otherwise
 # fall back to the pinned RELEASE_VERSION above.
 VERSION := $(shell git describe --tags --exact-match 2>/dev/null || echo "$(RELEASE_VERSION)")
