@@ -1,0 +1,115 @@
+# Group Replication topology for the replication test layers.
+#
+# One file serves every supported server: choose the image with GR_IMAGE and
+# the host ports with the GR_PORT_* variables, and give each run its own
+# compose project name (-p) so several versions can run at once.
+#
+# Services:
+#   gr1, gr2, gr3   a three-member single-primary InnoDB Cluster; gr1 is the
+#                   primary, gr3 is the member the held-recovery test stops
+#                   and rejoins
+#   gr-installed    a standalone server with the plugin loaded and ACTIVE,
+#                   never configured (group name unset)
+#   gr-disabled     a standalone server with the plugin loaded but DISABLED
+#   gr-ext          a standalone GTID source that a test replicates into the
+#                   primary as an ordinary async channel
+#   gr-bootstrap    forms the cluster and prepares gr-ext, then idles
+#
+# Ports (host side), disjoint from every other stack in this directory (33xx-40xx):
+#
+#   image                         gr1   gr2   gr3   installed disabled ext
+#   mysql:8.0                     4180  4280  4380  4780      4880     4980
+#   mysql:8.4 (defaults)          4184  4284  4384  4784      4884     4984
+#   mysql:9.7                     4197  4297  4397  4797      4897     4997
+#   percona/percona-server:8.0    4480  4580  4680  5080      5180     5280
+#   percona/percona-server:8.4    4484  4584  4684  5084      5184     5284
+#   percona/percona-server:9.7    4497  4597  4697  5097      5197     5297
+#
+#   GR_IMAGE=mysql:9.7 GR_PORT_1=4197 GR_PORT_2=4297 GR_PORT_3=4397 \
+#   GR_PORT_INSTALLED=4797 GR_PORT_DISABLED=4897 GR_PORT_EXT=4997 \
+#     docker compose -p gr97 -f tests/docker/compose_group_replication.yaml up -d --wait --wait-timeout 300
+#   docker compose -p gr97 -f tests/docker/compose_group_replication.yaml down -v
+#
+# `up --wait` returns only when gr1-gr3 each report themselves ONLINE (their
+# healthcheck reads their own row of performance_schema.replication_group_members)
+# and the standalone servers answer a ping. gr-bootstrap builds the cluster
+# with the MySQL Shell AdminAPI, which ships in every supported image.
+# InnoDB Cluster is Group Replication managed by the AdminAPI: the facts read
+# the same tables either way. AdminAPI adds the mysql_innodb_cluster_metadata
+# schema and mysql_innodb_cluster_* accounts to every member; no test may
+# assume their absence.
+#
+# The topology is disposable: gr-bootstrap forms a cluster from fresh servers
+# only and exits non-zero unless all three members are ONLINE. After any
+# failure, `down -v` and start again.
+#
+# Verified 2026-10-12 (draft without the three standalone services): ONLINE
+# within 21-26 s on mysql:8.0.40, :8.4 (8.4.11), :9.7 (9.7.1) and
+# percona/percona-server:8.0 (8.0.46-37), :8.4 (8.4.11-11), :9.7 (9.7.1-1).
+#
+# Root password: root. Cluster name: dbsgomysql; the group name is generated.
+
+x-member: &member
+  image: ${GR_IMAGE:-mysql:8.4}
+  environment: { MYSQL_ROOT_PASSWORD: root }
+  healthcheck:
+    test: ["CMD-SHELL", "mysql -h127.0.0.1 -uroot -proot -N -B -e \"SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_ID = @@server_uuid\" 2>/dev/null | grep -qx ONLINE"]
+    interval: 5s
+    timeout: 5s
+    retries: 60
+    start_period: 30s
+
+x-standalone: &standalone
+  image: ${GR_IMAGE:-mysql:8.4}
+  environment: { MYSQL_ROOT_PASSWORD: root }
+  healthcheck:
+    test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+    interval: 5s
+    timeout: 5s
+    retries: 24
+
+services:
+  gr1:
+    <<: *member
+    hostname: gr1
+    command: >-
+      --server-id=1 --report-host=gr1
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports: [ "${GR_PORT_1:-4184}:3306" ]
+  gr2:
+    <<: *member
+    hostname: gr2
+    command: >-
+      --server-id=2 --report-host=gr2
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports: [ "${GR_PORT_2:-4284}:3306" ]
+  gr3:
+    <<: *member
+    hostname: gr3
+    command: >-
+      --server-id=3 --report-host=gr3
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports: [ "${GR_PORT_3:-4384}:3306" ]
+
+  gr-installed:
+    <<: *standalone
+    command: --server-id=11 --plugin-load-add=group_replication.so
+    ports: [ "${GR_PORT_INSTALLED:-4784}:3306" ]
+  gr-disabled:
+    <<: *standalone
+    # Without the loose- prefix the image's entrypoint aborts: its
+    # option-parsing pass runs before the plugin is loaded.
+    command: --server-id=12 --plugin-load-add=group_replication.so --loose-group-replication=OFF
+    ports: [ "${GR_PORT_DISABLED:-4884}:3306" ]
+  gr-ext:
+    <<: *standalone
+    hostname: gr-ext
+    command: --server-id=99 --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports: [ "${GR_PORT_EXT:-4984}:3306" ]
+
+  gr-bootstrap:
+    image: ${GR_IMAGE:-mysql:8.4}
+    depends_on: [ gr1, gr2, gr3, gr-ext ]
+    entrypoint: [ "sh", "/gr-bootstrap.sh" ]
+    volumes: [ "./gr-bootstrap.sh:/gr-bootstrap.sh:ro" ]
+    restart: "no"
