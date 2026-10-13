@@ -300,7 +300,8 @@ replays its log, page by page:
 - **archive** — `copied` roots: their trees are rediscovered from the source by key and checked
   against the destination; when the destination holds every rediscovered row, they are deleted
   child-first and the roots marked `completed`. Nothing is copied again.
-- **purge** — `deleting` roots, the same way.
+- **purge** — `deleting` roots: their trees are rediscovered and deleted the same way; there is
+  no destination to check.
 - **copy-only** — nothing: each batch's copy, verification and log are one transaction, so a
   batch either happened or did not.
 
