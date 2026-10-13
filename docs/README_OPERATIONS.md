@@ -359,9 +359,13 @@ whole length, each on a dedicated session:
    locks; the guard protects a job that stopped (a crash, an error, a stop during recovery)
    until its own rerun finishes that work. *The same source data* is this server's, or that of
    a server whose transactions are in this server's `gtid_executed` (a promoted replica, a
-   clone); where the server cannot tell (no `gtid_mode = ON`, or a Group Replication member),
-   every server's database of the same name in the registry
-   ([limits](README_LIMITATIONS.md#sequential-by-design)). The refusal lists each job with its
+   clone, or a server this source replicates from); a server that replicates from this source
+   holds this source's data, not the other way round, so a job recorded there is another
+   server's. Where the server cannot tell, every server's database of the same name in the
+   registry counts as one: without `gtid_mode = ON`; on a Group Replication member, whose group
+   logs its transactions under the group name, not a member's uuid; and for shards provisioned
+   from one another, which keep each other's uuids in `gtid_executed`. The guard reads this
+   run's registry only ([limits](README_LIMITATIONS.md#sequential-by-design)). The refusal lists each job with its
    state and the tables it shares, and the way out: rerun that job so its recovery finishes
    its work. A job marked running with nothing in its log, whose process is gone, is cleared as
    before ([Clearing a stale running job](README_JOBS_SCHEMA.md#clearing-a-stale-running-job)).
