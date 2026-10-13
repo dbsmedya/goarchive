@@ -110,6 +110,11 @@ and `validate` and `dry-run` report it; convert it with `ALTER TABLE … ENGINE=
 `default_storage_engine` is not InnoDB is the usual cause. **`--skip-validate-preflight` is
 renamed** `--skip-dangerously-validate-preflight-allow-experimental`; the old name is refused.
 
+**A destination whose columns are in another order is accepted.** alpha.0 refused it with
+`DEST_SCHEMA_COMPATIBILITY_CHECK`; later releases log one warning per table naming the displaced
+columns, because every read and INSERT names its columns
+([Schema compatibility rules](README_VALIDATION.md#schema-compatibility-rules)).
+
 ---
 
 ## Configuration changes

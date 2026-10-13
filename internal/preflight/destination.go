@@ -166,7 +166,7 @@ func typesCompatible(a, b string) bool {
 
 // checkDestinationSchemaCompatibility needs every destination table able to receive
 // copies of the source rows. The destination may be looser (dropped secondary indexes,
-// AUTO_INCREMENT, defaults, ON UPDATE, NULL allowed) but never stricter. Every
+// AUTO_INCREMENT, defaults, ON UPDATE, NULL allowed, column order) but never stricter. Every
 // incompatible table is reported at once; each table's first fatal difference is shown.
 // Advisory differences of compatible tables are logged.
 func checkDestinationSchemaCompatibility(ctx context.Context, f *facts) error {
@@ -234,6 +234,7 @@ func judgeSchema(table string, src, dst validations.TableSpec, keyCols []string,
 		return verdict, nil
 	}
 	warnedCharset := map[string]bool{}
+	var moved []string
 	for _, diff := range diffs {
 		if (diff.Kind == validations.ColumnCharsetMismatch || diff.Kind == validations.ColumnCollationMismatch) &&
 			slices.ContainsFunc(keyCols, func(c string) bool { return asciiFoldEqual(c, diff.Column) }) {
@@ -246,9 +247,17 @@ func judgeSchema(table string, src, dst validations.TableSpec, keyCols []string,
 		switch {
 		case d.fatal != "" && verdict.fatal == "":
 			verdict.fatal = fmt.Sprintf("%s(column %s: %s; source=%s, destination=%s)", table, diff.Column, d.fatal, diff.A, diff.B)
+		case diff.Kind == validations.ColumnOrderMismatch:
+			moved = append(moved, d.warning)
 		case d.warning != "":
 			verdict.warnings = append(verdict.warnings, d.warning)
 		}
+	}
+	// The library reports each displaced column, so one moved column displaces every column
+	// after it; the table gets one warning naming them all.
+	if len(moved) > 0 {
+		verdict.warnings = append(verdict.warnings, "column order differs from the source ("+strings.Join(moved, ", ")+
+			"); every read and INSERT names its columns, so copy and verification are unaffected")
 	}
 	return verdict, nil
 }
@@ -266,7 +275,9 @@ func disposeDiff(diff validations.SpecDiff, charsetStrict bool, warnedCharset ma
 	case validations.ColumnAbsent:
 		return disposition{fatal: "column missing on one side"}, nil
 	case validations.ColumnOrderMismatch:
-		return disposition{fatal: "column order mismatch"}, nil
+		// Every read and INSERT names its columns, so the order is never relied on (GH #105).
+		// A and B are the column's positions; judgeSchema joins a table's into one warning.
+		return disposition{warning: fmt.Sprintf("%s: %s->%s", diff.Column, diff.A, diff.B)}, nil
 	case validations.ColumnTypeMismatch:
 		if typesCompatible(diff.A, diff.B) {
 			return disposition{}, nil

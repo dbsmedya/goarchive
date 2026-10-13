@@ -440,8 +440,9 @@ Logged, never fatal:
 - **A relation's edge declared by several foreign keys** with the same columns and pairing: one
   advisory naming them; redundant and harmless to the job.
 - **Schema advisories:** a collation difference outside the keys and destination unique indexes,
-  a charset difference under sha256 verification, and column names that differ only in ASCII
-  letter case ([Schema compatibility rules](#schema-compatibility-rules)).
+  a charset difference under sha256 verification, column names that differ only in ASCII
+  letter case, and a column order that differs from the source's
+  ([Schema compatibility rules](#schema-compatibility-rules)).
 
 `validate` logs them at warning level, so `logging.level: error` hides them.
 
@@ -493,6 +494,7 @@ reject rows. Every incompatible table is reported, each with its first fatal dif
 | Column `INVISIBLE` on one side only | Every read and INSERT names its columns, so the column is copied and verified |
 | Integer display width (`bigint(20)` vs `bigint`, `tinyint(1)` vs `tinyint`, a `zerofill` width) | Cosmetic: the copy and the hash read the value, not its padded text. `unsigned` and `zerofill` themselves must match |
 | `year(4)` vs `year` | Cosmetic; normalised by the library |
+| Column order differs | **Advisory**, one per table naming each displaced column and its source and destination positions. Every read and INSERT names its columns, so rows copy and verify normally |
 | Column name differs only in ASCII letter case | **Advisory.** MySQL resolves column names case-insensitively and the copy names the source's columns, so rows copy and verify normally. Non-ASCII letters are compared exactly |
 
 ### Fatal — destination must not be stricter
@@ -501,7 +503,6 @@ reject rows. Every incompatible table is reported, each with its first fatal dif
 |------------|-------------|
 | A column on one side only | Wrong column mapping |
 | Column type differs (beyond display width) | Value corruption or insert failure |
-| Column order differs | The destination must keep the source's order |
 | Destination `NOT NULL`, source nullable | NULL rows rejected mid-copy |
 | Destination column generated, even when the source's is generated the same way | MySQL rejects an explicit value with error 3105 |
 | Destination-only unique index | Rows the source holds as distinct collide, and the copy fails |
