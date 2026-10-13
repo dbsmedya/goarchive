@@ -75,11 +75,20 @@ func (f keyFamily) seed(t *testing.T, e env) {
 }
 
 // TestMySQLKeyMatrix runs each key family as archive, purge and copy-only, three roots per
-// batch, and checks every row byte for byte: no witness is lost, merged or replaced.
+// batch, and archive once more interrupted after its first copy and recovered, and checks
+// every row byte for byte: no witness is lost, merged or replaced.
 func TestMySQLKeyMatrix(t *testing.T) {
 	for _, f := range keyFamilies {
-		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
-			t.Run(f.name+"/"+string(typ), func(t *testing.T) {
+		for _, c := range []struct {
+			typ       jobspec.Type
+			recovered bool
+		}{{jobspec.Archive, false}, {jobspec.Archive, true}, {jobspec.Purge, false}, {jobspec.CopyOnly, false}} {
+			typ := c.typ
+			name := f.name + "/" + string(typ)
+			if c.recovered {
+				name += "/recovered"
+			}
+			t.Run(name, func(t *testing.T) {
 				e := newEnv(t, "km")
 				if typ == jobspec.Purge {
 					execAll(t, e.src, f.tables()...)
@@ -97,9 +106,16 @@ func TestMySQLKeyMatrix(t *testing.T) {
 
 				cfg := e.config(t, job(t, typ, keyJob))
 				cfg.Processing.BatchSize = 3
+				var first int64
+				if c.recovered {
+					// Interrupted after its first batch's copy commits: the rerun's recovery reads
+					// every key of that batch back from the destination (GH #7) before deleting it.
+					e.interrupted(t, cfg, atCommitted)
+					first = int64(min(3, len(f.keys)))
+				}
 				rep := e.mustRun(t, cfg)
-				if rep.Roots != int64(len(f.keys)) {
-					t.Errorf("roots = %d, want %d", rep.Roots, len(f.keys))
+				if rep.Recovered != first || rep.Roots != int64(len(f.keys))-first {
+					t.Errorf("recovered = %d, roots = %d, want %d and %d", rep.Recovered, rep.Roots, first, int64(len(f.keys))-first)
 				}
 				if typ != jobspec.CopyOnly {
 					if got := rows(t, e.src, "r", "k"); !equal(got, keepR) {

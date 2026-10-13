@@ -62,7 +62,7 @@ and a real calendar day, plus ` HH:MM:SS` and 0–6 fractional digits for `DATET
 #### No DDL and no concurrent writes during a run (contract)
 
 GoArchive's correctness rests on these operating contracts. Violations are documented, not
-detected:
+detected, except where [recovery](README_OPERATIONS.md#crash-recovery) stops:
 
 1. **No DDL on participating tables while a job runs.** Column lists are read once at startup.
    A renamed or dropped column fails the next batch before it reaches the delete; an

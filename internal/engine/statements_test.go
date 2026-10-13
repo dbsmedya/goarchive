@@ -89,7 +89,7 @@ func TestKeyAddressedStatements(t *testing.T) {
 		"count":     {countSQL(d, 1), "SELECT COUNT(*) FROM `p` WHERE " + in},
 		"sha256":    {hashed, "SELECT `a`, `b`, CAST(`at` AS CHAR) AS `at`, `note` FROM `p` WHERE " + in + " ORDER BY `a`, `b`"},
 		"delete":    {deleteSQL(d, 1), "DELETE FROM `p` WHERE " + in},
-		"present":   {presentSQL(d, 1), "SELECT `a`, `b` FROM `p` WHERE " + in},
+		"by key":    {byKeySQL(d, 1), "SELECT `a`, `b` FROM `p` WHERE " + in},
 		"insert":    {insertSQL("p", []string{"a", "b"}, 2), "INSERT INTO `p` (`a`, `b`) VALUES (?, ?), (?, ?)"},
 	} {
 		if tc.got != tc.want {

@@ -13,8 +13,8 @@ func base() Binding {
 		Fingerprint: Fingerprint{Relations: []Edge{{Parent: "orders", Table: "lines", Pairs: [][2]string{{"order_id", "id"}}}}, Where: "1=1"}}
 }
 
-// TestChangedParts is spec §6.2's table: archive compares source and relations; purge
-// adds where; copy-only adds the destination database instead.
+// TestChangedParts is spec §6.2's table, as GH #7 changed it: every type compares source and
+// relations; archive and copy-only add the destination database; purge adds where instead.
 func TestChangedParts(t *testing.T) {
 	edits := map[Part]func(b *Binding){
 		PartSource:      func(b *Binding) { b.SourceServerUUID = "u2" },
@@ -23,7 +23,7 @@ func TestChangedParts(t *testing.T) {
 		PartDestination: func(b *Binding) { b.DestinationDatabase = "dst2" },
 	}
 	compared := map[jobspec.Type][]Part{
-		jobspec.Archive:  {PartSource, PartRelations},
+		jobspec.Archive:  {PartSource, PartRelations, PartDestination},
 		jobspec.Purge:    {PartSource, PartRelations, PartWhere},
 		jobspec.CopyOnly: {PartSource, PartRelations, PartDestination},
 	}

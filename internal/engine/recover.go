@@ -13,8 +13,9 @@ import (
 // replay runs under the config that wrote the log rows.
 //
 //   - archive: copied roots were copied and verified; their trees are re-discovered from
-//     the source by key, deleted child first, and the roots marked completed;
-//   - purge: deleting roots are replayed the same way;
+//     the source by key, checked against the destination, deleted child first, and the
+//     roots marked completed;
+//   - purge: deleting roots are replayed the same way, with no destination to check;
 //   - copy-only: each batch was all or nothing, so there is nothing to recover.
 //
 // A root whose own row is gone from the source was deleted before the crash, after its
@@ -84,54 +85,123 @@ func (r *run) replay(ctx context.Context, st tracking.Status, roots []key.Key) e
 	if err != nil {
 		return err
 	}
-	if gone := len(roots) - len(present); gone > 0 {
+	gone := without(roots, present)
+	if len(gone) > 0 {
 		// A crash after a root's delete committed leaves it logged; so does a root deleted
 		// from outside, which delete-only replay cannot tell apart (spec §6.4, GH #7).
-		r.log.Warnf("Recovery: %d logged roots of %s were already gone from the source; their trees are re-checked and the roots marked completed", gone, r.root.Table)
+		r.log.Warnf("Recovery: %d logged roots of %s were already gone from the source; their trees are re-checked and the roots marked completed", len(gone), r.root.Table)
 	}
 	t, err := r.discover(ctx, src, roots)
 	if err != nil {
 		return err
 	}
 	t.keys[r.root.Table] = present
+	if r.typ == jobspec.Archive {
+		// Recovery deletes only what the destination holds (GH #7): every table is read
+		// before the first delete, and a page with a missing row is refused whole.
+		if err := r.checkHeld(ctx, t, gone); err != nil {
+			return err
+		}
+	}
 	if err := r.deleteTree(ctx, src, t); err != nil {
 		return err
 	}
 	return r.complete(ctx, st, roots)
 }
 
-// present returns the logged roots still in the source, in the order logged. A returned key
-// that was not requested, or repeats one, fails the replay (spec §7.1a).
+// present returns the logged roots still in the source, in the order logged.
 func (r *run) present(ctx context.Context, src queryer, roots []key.Key) ([]key.Key, error) {
+	return r.members(ctx, src, r.root, roots, opPresent, false)
+}
+
+// members returns the keys of d's table, among keys, that q holds, in the order given. A
+// returned key that was not requested, or repeats one, fails with *KeySetError (spec §7.1a).
+func (r *run) members(ctx context.Context, q queryer, d key.Def, keys []key.Key, o op, destination bool) ([]key.Key, error) {
 	requested := key.NewSet()
-	for _, k := range roots {
+	for _, k := range keys {
 		requested.Add(k)
 	}
 	found := key.NewSet()
 	var extra int64
-	for _, chunk := range key.Chunks(roots, r.byKeyChunk(r.root.Table)) {
-		keys, err := r.queryKeys(ctx, src, r.root, statement{
-			op: opPresent, table: r.root.Table, query: presentSQL(r.root, len(chunk)), args: key.Args(chunk),
+	for _, chunk := range key.Chunks(keys, r.byKeyChunk(d.Table)) {
+		got, err := r.queryKeys(ctx, q, d, statement{
+			op: o, destination: destination, table: d.Table, query: byKeySQL(d, len(chunk)), args: key.Args(chunk),
 		})
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range keys {
+		for _, k := range got {
 			if !requested.Has(k) || !found.Add(k) {
 				extra++
 			}
 		}
 	}
 	if extra > 0 {
-		return nil, &KeySetError{Table: r.root.Table, Statement: string(opPresent), Requested: int64(len(roots)), Matched: int64(len(found.Keys())), Extra: extra}
+		return nil, &KeySetError{Table: d.Table, Statement: string(o), Requested: int64(len(requested.Keys())),
+			Matched: int64(len(found.Keys())), Extra: extra, Destination: destination}
 	}
 	var out []key.Key
-	for _, k := range roots {
+	for _, k := range keys {
 		if found.Has(k) {
 			out = append(out, k)
 		}
 	}
 	return out, nil
+}
+
+// checkHeld is archive recovery's evidence check (GH #7). Before any delete of a page it
+// reads, table by table, which of the re-discovered keys the destination holds, and refuses
+// the page with *UncopiedError when one is missing: a row written into a copied root's tree
+// after its copy, or one the destination lost. gone are the page's logged roots already
+// deleted from the source; they are not deleted again, and one the destination lacks as well
+// exists on neither server, so it is warned about, not refused. The destination connection
+// is released before the page's deletes.
+func (r *run) checkHeld(ctx context.Context, t *tree, gone []key.Key) error {
+	dst, err := r.cfg.Destination.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dst.Close() }()
+	var missing []MissingRows
+	for _, n := range r.tree.CopyOrder() {
+		keys := t.keys[n.Table]
+		held, err := r.members(ctx, dst, r.keys[n.Table], keys, opHeld, true)
+		if err != nil {
+			return err
+		}
+		if lack := without(keys, held); len(lack) > 0 {
+			missing = append(missing, MissingRows{Table: n.Table, Root: n.Parent == nil, Count: int64(len(lack)), Keys: formatKeys(lack)})
+		}
+	}
+	if len(gone) > 0 {
+		held, err := r.members(ctx, dst, r.root, gone, opHeld, true)
+		if err != nil {
+			return err
+		}
+		if lost := without(gone, held); len(lost) > 0 {
+			r.log.Warnf("Recovery: %d logged roots of %s are gone from both the source and the destination: their rows exist on neither server (%s)",
+				len(lost), r.root.Table, formatKeys(lost))
+		}
+	}
+	if len(missing) > 0 {
+		return &UncopiedError{Missing: missing}
+	}
+	return nil
+}
+
+// without returns the keys of all that are not in some, in the order of all.
+func without(all, some []key.Key) []key.Key {
+	drop := key.NewSet()
+	for _, k := range some {
+		drop.Add(k)
+	}
+	var out []key.Key
+	for _, k := range all {
+		if !drop.Has(k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // dropLogged removes the roots this copy-only job already completed (spec §6.6, resume:
@@ -153,16 +223,7 @@ func (r *run) dropLogged(ctx context.Context, roots []key.Key) ([]key.Key, error
 	if len(logged) == 0 {
 		return roots, nil
 	}
-	skip := key.NewSet()
-	for _, k := range logged {
-		skip.Add(k)
-	}
-	var keep []key.Key
-	for _, k := range roots {
-		if !skip.Has(k) {
-			keep = append(keep, k)
-		}
-	}
+	keep := without(roots, logged)
 	skipped := len(roots) - len(keep)
 	r.report.Skipped += int64(skipped)
 	if skipped > 0 {

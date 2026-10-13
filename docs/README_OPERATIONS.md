@@ -297,9 +297,11 @@ in the same transaction as the work it describes
 Rerun the same command to recover; there is no resume subcommand. Before its first batch, a run
 replays its log, page by page:
 
-- **archive** — `copied` roots: their trees are rediscovered from the source by key, deleted
-  child-first, and the roots marked `completed`. Nothing is copied again.
-- **purge** — `deleting` roots, the same way.
+- **archive** — `copied` roots: their trees are rediscovered from the source by key and checked
+  against the destination; when the destination holds every rediscovered row, they are deleted
+  child-first and the roots marked `completed`. Nothing is copied again.
+- **purge** — `deleting` roots: their trees are rediscovered and deleted the same way; there is
+  no destination to check.
 - **copy-only** — nothing: each batch's copy, verification and log are one transaction, so a
   batch either happened or did not.
 
@@ -308,6 +310,24 @@ deletes and before it was marked completed, by a run that lost its locks between
 steps, or by another run that took the job over after a stall. Recovery deletes only the roots
 still present, and warns about the rest. Then the run starts at the beginning of the `where`
 range: completed archive and purge roots are gone from the source, so they are not seen again.
+
+An archive page whose rediscovered rows the destination does not all hold is refused before any
+delete: recovery stops, names the missing rows by table, and leaves the page's roots `copied`.
+Every start checks again, so the refusal holds until the rows are resolved, and meanwhile no
+other job sharing the tables runs.
+
+- **A missing child row** was either written into its root's tree after the root was copied,
+  against the [run contract](README_LIMITATIONS.md#no-ddl-and-no-concurrent-writes-during-a-run-contract),
+  or lost by the destination. Copy it into the destination and rerun: recovery then deletes it
+  with its tree. Remove it from the source only once you know it is not wanted, since the source
+  may hold its last copy.
+- **A missing root** was logged in the transaction that copied it, so the destination lost it
+  (a restore, a failover that lost transactions, a retention job on the archive tables). Restore
+  it to the destination and rerun, or
+  [abandon the logged roots](README_JOBS_SCHEMA.md#abandoning-logged-roots).
+
+A root gone from both the source and the destination exists on neither server; recovery warns,
+naming it, and finishes the page.
 
 ### Graceful shutdown
 

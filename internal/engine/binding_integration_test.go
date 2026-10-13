@@ -153,6 +153,22 @@ func TestMySQLArchiveBinding(t *testing.T) {
 		}
 	})
 
+	t.Run("a changed destination database is refused while copied roots are pending", func(t *testing.T) {
+		e := setup(t)
+		before := srcRows(t, e.src)
+		real := strings.Split(e.storedBinding(t, e.dstSchema), "|")[2]
+		execAll(t, e.dst, "UPDATE archiver_job SET destination_database = 'archive_elsewhere' WHERE job_name = 'j'")
+		_, err := e.run(t, e.config(t, job(t, jobspec.Archive, orderJob)))
+		refused(t, err, tracking.PartDestination)
+		if srcRows(t, e.src) != before {
+			t.Error("the source changed")
+		}
+		execAll(t, e.dst, "UPDATE archiver_job SET destination_database = '"+real+"' WHERE job_name = 'j'")
+		if rep := e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob))); rep.Recovered != 2 {
+			t.Errorf("the original destination: %+v", rep)
+		}
+	})
+
 	t.Run("a config change between clean runs rebinds", func(t *testing.T) {
 		e := setup(t)
 		e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob)))
