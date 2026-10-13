@@ -62,7 +62,8 @@ const (
 //
 // Pair: each fatal variant of the destination (a type change, tinyint(1) to smallint, a
 // destination-only NOT NULL, a generated column, a missing column, two bad tables, a table
-// with two bad columns) → DEST_SCHEMA_COMPATIBILITY_CHECK naming exactly its entries; the
+// with two bad columns) → DEST_SCHEMA_COMPATIBILITY_CHECK naming exactly its entries, and a
+// missing middle column, which moves every later column, with no order advisory; the
 // identical destination, that one difference undone → passes with no advisory. Each looser
 // variant (secondary index, AUTO_INCREMENT, DEFAULT, ON UPDATE dropped, NULL relaxed,
 // tinyint(1) to tinyint, a ZEROFILL width) passes with no advisory, and a case-only column
@@ -96,6 +97,8 @@ func TestMySQLSchemaCompatibilityFromRealFacts(t *testing.T) {
 				"column and MySQL rejects it with error 3105)"}},
 		{name: "missing column", t: tSwap(", f TINYINT(1) NULL", ""),
 			fatal: []string{"t(column f: column missing on one side; source=tinyint(1), destination=)"}},
+		{name: "missing middle column", t: tSwap("z INT(5) UNSIGNED ZEROFILL NULL, ", ""),
+			fatal: []string{"t(column z: column missing on one side; source=int(5) unsigned zerofill, destination=)"}},
 		{name: "two bad tables", t: typeA, u: uSwap("n INT NULL", "n BIGINT NULL"),
 			fatal: []string{"t(column a: column type mismatch; source=int, destination=bigint)",
 				"u(column n: column type mismatch; source=int, destination=bigint)"}},
