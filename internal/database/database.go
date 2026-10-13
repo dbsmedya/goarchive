@@ -225,7 +225,7 @@ const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UN
 func BuildDSN(cfg *config.DatabaseConfig) string {
 	// Start from NewConfig() so the driver's safe defaults are preserved.
 	// A bare mysql.Config{} literal would zero AllowNativePasswords (default
-	// true), CheckConnLiveness (default true) and MaxAllowedPacket, emitting
+	// true) and CheckConnLiveness (default true), emitting
 	// allowNativePasswords=false — which breaks any server whose user
 	// authenticates with the mysql_native_password plugin (e.g. MySQL 8.4 /
 	// Cloud SQL) with "this user requires mysql native password authentication".
@@ -236,6 +236,14 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	dsnCfg.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	dsnCfg.DBName = cfg.Database
 	dsnCfg.ParseTime = true
+	// M7c-F1: read each server's max_allowed_packet at connect instead of the driver's
+	// default 64 MiB. The driver sends a value as long data when it reaches
+	// max_allowed_packet/(parameters+1); against a smaller server, 64 MiB put values inline
+	// that the server's limit could not hold, and it dropped the connection over the INSERT.
+	// With the server's value every INSERT fits but one holding a value larger than the
+	// packet, which the server refuses by name (1105). A session's max_allowed_packet is
+	// fixed at connect, so the value read is the one the session keeps.
+	dsnCfg.MaxAllowedPacket = 0
 	// Issue #16: MySQL converts TIMESTAMP through the SESSION zone on every
 	// read and write, so a copied value is the same instant on both servers
 	// only if both sessions share one zone. Pin it. The driver sends this as

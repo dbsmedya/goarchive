@@ -182,6 +182,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Key-set checks: copy-read identity, verification counts, delete row counts, warning 3170 | `internal/engine/copy.go` → `read`; `verify.go` → `verifyCount`, `verifyHash`; `delete.go` → `deleteOne` |
 | Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
 | Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
+| The driver reads each server's `max_allowed_packet` (large values go as long data); an INSERT value that still does not fit the destination's packet | `internal/database/database.go` → `BuildDSN`; `internal/engine/copy.go` → `packetError`; `internal/engine/errors.go` → `PacketError` |
 | Storage engine checks, source and destination (`STORAGE_ENGINE_CHECK`, `DEST_STORAGE_ENGINE_CHECK`) | `internal/preflight/checks.go` → `checkStorageEngine`, `checkDestinationStorageEngine`, `judgeStorageEngine` |
 | Startup recovery (delete-only replay; refused before any delete when the destination lacks a rediscovered row, GH #7) | `internal/engine/recover.go` → `recover`, `replay`, `checkHeld`; `internal/engine/errors.go` → `UncopiedError` |
 | Lock names (hashed, case-folded) and the lock set: one session, `wait_timeout` 300, keep-alive, discard on release | `internal/lock/names.go` → `TableLockName`, `JobLockName`; `internal/lock/set.go` → `Set` |

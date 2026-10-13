@@ -97,7 +97,7 @@ package:
 | `internal/tracking` | The schema label and the refused revisions, the typed log, the log-key and binding checks, registration and leftover logs |
 | `internal/database` | The session pins, `wait_timeout`, `max_error_count`, AUTO_INCREMENT zero, the identity guard, single-statement connections, a partly failing replica fleet |
 | `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
-| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output, `validate` over every job |
+| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet` |
 
 `TestMySQLLiveReplicationGate` stops the real replica's applier and needs the estate to itself.
 

@@ -158,12 +158,12 @@ Discovery holds every descendant key of a root batch in memory. A deep tree with
 each level can grow it without bound: start with a small `batch_size` and raise it after
 watching memory ([Tuning throughput](README_OPERATIONS.md#tuning-throughput)).
 
-#### A row set larger than `max_allowed_packet` fails its batch
+#### A value larger than the destination's `max_allowed_packet` fails its batch
 
-[`MAX_ALLOWED_PACKET_CHECK`](README_VALIDATION.md#max_allowed_packet_check) bounds every
-key-addressed statement, but not the INSERTs, whose size is the rows' own. A wide `BLOB` or
-`TEXT` row set can fail with error 1153: the batch's destination transaction rolls back and
-nothing is deleted. Raise `max_allowed_packet` or lower `batch_size`, then rerun.
+A row or an INSERT may exceed it: the driver reads each server's value and sends large values
+separately. One value larger than it cannot be sent: the batch rolls back, nothing of it is
+logged or deleted, and the error names the table, column and size. Raise the destination's
+`max_allowed_packet` above that size, then rerun.
 
 #### The copy transaction spans all tables
 

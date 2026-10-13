@@ -18,6 +18,14 @@ import (
 
 const mysqlDuplicateEntry = 1062
 
+// MySQL refuses a long-data value larger than max_allowed_packet with ER_UNKNOWN_ERROR and a
+// message naming the variable (probed on 8.0, 8.4 and 9.7, M7c-F1); a statement larger than
+// the packet is ER_NET_PACKET_TOO_LARGE.
+const (
+	mysqlUnknownError   = 1105
+	mysqlPacketTooLarge = 1153
+)
+
 // copy copies one batch's discovered rows into the destination, parents first, verifies
 // them and logs the roots with status st, all in one destination transaction (spec §6.3,
 // §7.4). It commits only when every step passed; otherwise nothing of the batch exists in
@@ -198,6 +206,9 @@ func (r *run) insert(ctx context.Context, tx *sql.Tx, session diagnosticSession,
 			if errors.As(err, &me) && me.Number == mysqlDuplicateEntry {
 				return &DuplicateError{Table: table, Key: duplicateKey(me.Message), Raw: me.Message, CopyOnly: r.typ == jobspec.CopyOnly}
 			}
+			if pe := packetError(table, cols, part, err); pe != nil {
+				return pe
+			}
 			return fmt.Errorf("engine: insert into %s: %w", table, err)
 		}
 		if n, err := res.RowsAffected(); err != nil || n != int64(len(part)) {
@@ -235,4 +246,35 @@ func duplicateKey(msg string) string {
 		return msg
 	}
 	return msg[first+1 : first+1+last]
+}
+
+// packetError names an INSERT of table that did not fit the destination's max_allowed_packet
+// (M7c-F1): one value larger than it, refused as long data and named by the largest value of
+// rows; or the statement as a whole, refused by the driver or the server. It is nil for any
+// other error.
+func packetError(table string, cols []string, rows [][]any, err error) *PacketError {
+	var me *mysql.MySQLError
+	isMySQL := errors.As(err, &me)
+	switch {
+	case isMySQL && me.Number == mysqlUnknownError && strings.Contains(me.Message, "max_allowed_packet"):
+		e := &PacketError{Table: table}
+		for _, row := range rows {
+			for i, v := range row {
+				n := 0
+				switch v := v.(type) {
+				case []byte:
+					n = len(v)
+				case string:
+					n = len(v)
+				}
+				if n > e.Bytes {
+					e.Column, e.Bytes = cols[i], n
+				}
+			}
+		}
+		return e
+	case errors.Is(err, mysql.ErrPktTooLarge), isMySQL && me.Number == mysqlPacketTooLarge:
+		return &PacketError{Table: table}
+	}
+	return nil
 }
