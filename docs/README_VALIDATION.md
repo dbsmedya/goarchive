@@ -71,6 +71,7 @@ type.
 | `FK_INDEX_CHECK` | ✅ | ✅ | ✅ |
 | `JOB_SCHEMA_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `DEST_TABLE_EXISTENCE_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_STORAGE_ENGINE_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_KEY_IDENTITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_WRITE_PERMISSION_CHECK` | ✅ | ❌ | ✅ |
@@ -97,7 +98,7 @@ type.
 ## Connection checks
 
 These run when GoArchive connects, before preflight and before any tracking row is written.
-`--skip-validate-preflight` does not reach them.
+`--skip-dangerously-validate-preflight-allow-experimental` does not reach them.
 
 ### `SRC_DEST_IDENTITY_CHECK`
 
@@ -161,8 +162,6 @@ case.
 
 Every source job table must be **InnoDB**. A base table whose engine MySQL reports as `NULL` is
 refused too, as `<table>(<unknown>)`; that usually means a corrupted or unknown-engine table.
-The destination engine is not checked
-([why it matters](README_LIMITATIONS.md#innodb-only)).
 
 **Fix:** `ALTER TABLE <table> ENGINE=InnoDB;`
 
@@ -189,7 +188,7 @@ prefix length. `FLOAT`/`DOUBLE` are approximate, `ENUM`/`SET` sort by their inte
 
 **Fix:** choose another root table, or leave the table out of the job.
 
-`PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under `--skip-validate-preflight`,
+`PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under `--skip-dangerously-validate-preflight-allow-experimental`,
 because the SQL is built from the keys.
 
 ### `PK_COLUMN_CASE_CHECK`
@@ -230,6 +229,14 @@ Every job table must exist in the destination schema, under the same name, as a 
 **Fix:** create the destination tables, usually from a schema-only dump of the source. If the
 destination's lookup tables will be empty, see
 [`disable_foreign_key_checks`](README_CONFIGURATION.md#disable_foreign_key_checks).
+
+### `DEST_STORAGE_ENGINE_CHECK`
+
+Every destination job table must be **InnoDB**: the copy writes each batch in one destination
+transaction, and only InnoDB rolls it back. A table whose engine MySQL reports as `NULL` is
+refused as `<table>(<unknown>)`.
+
+**Fix:** `ALTER TABLE <table> ENGINE=InnoDB;` on the destination.
 
 ### `DEST_KEY_IDENTITY_CHECK`
 
@@ -458,7 +465,7 @@ rather than guess. Report them with the full message.
 connection, a query error) while reading facts. Diagnose the cause.
 
 These run-time failures are not preflight checks either, and stay active under
-`--skip-validate-preflight`:
+`--skip-dangerously-validate-preflight-allow-experimental`:
 
 | Identifier | Meaning | Explained in |
 |---|---|---|
@@ -552,14 +559,15 @@ already completed stay archived.
 
 ## Bypassing preflight
 
-`--skip-validate-preflight` is accepted by `archive`, `purge`, `copy-only` and `dry-run`. A run
-prints a warning before it starts:
+`--skip-dangerously-validate-preflight-allow-experimental` is accepted by `archive`, `purge`, `copy-only` and
+`dry-run`, on the command line only: no configuration key sets it. A run prints a warning before
+it starts:
 
 ```
-WARNING: --skip-validate-preflight: preflight's policy checks are skipped (permissions, triggers,
-foreign-key coverage, destination compatibility, packet size). The keys are still read from
-MySQL, and the log-key and binding checks still run. A misspelled foreign_key column fails as a
-statement-caps error instead of RELATION_KEY_CHECK.
+WARNING: --skip-dangerously-validate-preflight-allow-experimental: preflight's policy checks are skipped (storage
+engines, permissions, triggers, foreign-key coverage, destination compatibility, packet size).
+The keys are still read from MySQL, and the log-key and binding checks still run. A misspelled
+foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK.
 ```
 
 Still enforced on a run: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
@@ -570,3 +578,12 @@ registration or binding: a dry-run that passes does not promise the run will sta
 has no skip flag.
 
 Use it only to recover from an incident, after verifying the schema by hand.
+
+It is also the only way to run against an experimental destination engine, which GoArchive does
+not test or support. A non-InnoDB destination table keeps its rows when a batch rolls back: a
+failed batch leaves orphan rows there, and the rerun stops on their duplicate keys until they are
+removed by hand. `MEMORY` loses the archive when the server restarts, after the source rows are
+deleted. `BLACKHOLE` stores nothing, so every verification fails, unless it is `none`, which then
+discards the rows. With `enforce_gtid_consistency = ON` on the destination, MySQL itself refuses
+a non-transactional table's rows inside the copy transaction (error 1785). The old name,
+`--skip-validate-preflight`, is refused.

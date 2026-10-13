@@ -59,11 +59,11 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 
 | Command | Flags |
 |---------|-------|
-| `archive` | `-j`, `--job` · `--verification` · `--skip-validate-preflight` · `--force-triggers` · `--progress[=<interval>]` |
-| `copy-only` | `-j`, `--job` · `--verification` · `--skip-validate-preflight` · `--progress[=<interval>]` |
-| `purge` | `-j`, `--job` · `--skip-validate-preflight` · `--force-triggers` · `--progress[=<interval>]` |
+| `archive` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--progress[=<interval>]` |
+| `copy-only` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--progress[=<interval>]` |
+| `purge` | `-j`, `--job` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--progress[=<interval>]` |
 | `validate` | `-j`, `--job` · `--verification` · `--force-triggers` |
-| `dry-run` | `-j`, `--job` · `--verification` · `--skip-validate-preflight` · `--force-triggers` |
+| `dry-run` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` |
 | `plan` | `-j`, `--job` |
 
 | Flag | Meaning |
@@ -71,11 +71,11 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | `-j`, `--job <name>` | The job to run; required except for `validate`, which checks every job without it |
 | `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)) |
 | `--force-triggers` | Accept source DELETE triggers; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)) |
-| `--skip-validate-preflight` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
+| `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
 | `--progress[=<interval>]` | Periodic progress on stdout ([Progress display](#progress-display)) |
 
 Before a run starts, each setting that weakens its checks prints one `WARNING:` line:
-`--skip-validate-preflight`, `--force-triggers`, `verification: none`, and
+`--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: none`, and
 `safety.disable_foreign_key_checks`.
 
 ### Progress display

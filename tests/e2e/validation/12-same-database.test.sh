@@ -7,7 +7,7 @@
 # Both connection blocks name 127.0.0.1:3305/sakila. GoArchive identifies a
 # database by the server_uuid its connection reports plus the selected schema,
 # and refuses to start when source and destination match — at connection time,
-# before preflight, out of reach of --skip-validate-preflight (issue #13).
+# before preflight, out of reach of --skip-dangerously-validate-preflight-allow-experimental (issue #13).
 #
 # The demo runs `validate` only. The integration witness is
 # TestConnectRefusesSameDatabase_Integration (internal/database).

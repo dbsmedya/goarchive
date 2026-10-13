@@ -794,5 +794,5 @@ which drops them when the test ends, and give each job a name of its own. Read M
 through dbsgomysql, not raw `SHOW` queries.
 
 Destructive CLI tests that intentionally use broken-schema fixtures must pass
-`--skip-validate-preflight`, since `archive`, `purge`, and `copy-only` run
+`--skip-dangerously-validate-preflight-allow-experimental`, since `archive`, `purge`, and `copy-only` run
 preflight at startup.
