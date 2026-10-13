@@ -100,7 +100,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Composite and non-integer keys** - String, UUID, DECIMAL and temporal keys, single-column or composite, at the root and at every child
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks on the source tables and the job, and a same-root check, refuse any run whose tables overlap a running job's ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
+- **No overlapping runs** - Advisory locks on the source tables and the job, and a guard on stopped jobs' unfinished work, refuse any run whose tables overlap a running job's, or those of a job that has not finished its work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
 - **Dry-run mode** - Runs preflight, reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary

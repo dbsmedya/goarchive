@@ -172,6 +172,9 @@ drops that table (after confirming no job uses it) or restores `archiver_job`.
 3. **During a run** — `job_status = 1`, the heartbeat refreshes, log rows are written per batch.
 4. **The end of a run** — `job_status` returns to `0`, or `3` after an error. A crash or kill
    leaves `1` with a stale heartbeat ([Clearing a stale running job](#clearing-a-stale-running-job)).
+   A job whose log still holds `copied` or `deleting` roots, in any status, holds its tables
+   against overlapping jobs until its own rerun finishes them
+   ([the unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking)).
 
 Nothing is cleaned up automatically: the log is the record of what left production.
 
@@ -257,7 +260,9 @@ Pending roots are interrupted work: an archive root at `copied` has its whole tr
 destination, and some of its source rows — children first — may already be deleted; a purge root
 at `deleting` may be partly deleted. Only the log can finish them: recovery rediscovers each
 tree by key, whatever the `where`. **Prefer finishing them:** restore the original config or
-source and run once, or [re-bind after a failover](#re-binding-a-job-after-a-failover).
+source and run once, or [re-bind after a failover](#re-binding-a-job-after-a-failover). Until
+they are finished or abandoned, no other job whose tree shares one of this job's tables runs on
+the same source data ([the unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking)).
 
 Abandoning means deleting their log rows, so the next run rebinds to the current config and never
 finishes them. Do it only when the original config or source is gone, with backups of both
@@ -297,6 +302,15 @@ WHERE job_name = 'archive_old_orders';
 This is a deliberate act: replaying a log against a source that does not hold the same data
 deletes or skips the wrong rows.
 
+Until the re-bind, other jobs whose trees share the stopped job's tables are refused on the new
+server too when it runs `gtid_mode = ON` and holds the old server's transactions (the old
+`server_uuid` is in its `gtid_executed`), or is a Group Replication member. Two cases are not
+seen, and need the re-bind before any other job runs on those tables: a server that received
+the data only before a GTID migration, and a server outside a group that holds the group's data
+([Sequential by design](README_LIMITATIONS.md#sequential-by-design)). Write the uuid exactly: a
+value that is not a well-formed uuid is refused by the job's own run and keeps blocking
+overlapping jobs.
+
 ---
 
 ## Retiring a job completely
@@ -330,18 +344,21 @@ again and fails on duplicates in a destination that still holds them.
 
 ## Clearing a stale running job
 
-A crashed run leaves `job_status = 1` with an ageing heartbeat, and the same-root check refuses
-new runs on that root table:
+A crashed run leaves `job_status = 1` with an ageing heartbeat. That job, and any job whose log
+holds `copied` or `deleting` roots whatever its status, refuses the runs of other jobs whose
+trees share one of its tables ([the unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking)):
 
 ```
-engine: the root table "orders" has jobs marked running whose heartbeat stopped:
-archive_old_orders (heartbeat 3841s ago). A crashed run leaves its job marked running. When no
-process runs them, mark them idle with UPDATE `goarchive`.archiver_job SET job_status = 0
-WHERE job_name = '<name>'
+engine: job "purge_logs" shares source tables in `shop` with jobs that are marked running or
+stopped with unfinished work (registry `goarchive`.`archiver_job`). This run did nothing.
+  archive_old_orders: marked running, heartbeat 1h4m1s ago, unfinished roots in its log; shares payment_logs
+Rerun each job with unfinished roots so that its recovery finishes them, then rerun this one.
+A job marked running whose heartbeat stopped: confirm its process is gone first
+(docs/README_JOBS_SCHEMA.md, "Clearing a stale running job").
 ```
 
-**Before that `UPDATE`, verify the old process is gone.** A stale heartbeat does not release
-the job lock; only the closing of its MySQL session does. On the destination:
+**First verify the old process is gone.** A stale heartbeat does not release the job lock; only
+the closing of its MySQL session does. On the destination:
 
 ```sql
 SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'), CHAR(0), LOWER('<job_name>')), 256), 32)));
@@ -350,7 +367,12 @@ SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'
 `NULL` means no session holds it. A connection id is a live session: find it with
 `SHOW PROCESSLIST`.
 
-Then mark the job idle and rerun it: its log drives recovery. Do not delete the log rows.
+Then rerun the job itself, with no `UPDATE`: its log drives recovery, and once its unfinished
+roots are finished it blocks nobody. Mark a job idle (`UPDATE … SET job_status = 0 WHERE
+job_name = '<name>'`, as the refusal spells it) only when its log holds no `copied` or
+`deleting` root: marking does not finish the work, and while the log holds such roots the job
+still blocks overlapping jobs. Do not delete the log rows; that is
+[abandonment](#abandoning-logged-roots).
 
 ---
 

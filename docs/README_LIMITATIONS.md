@@ -180,6 +180,26 @@ time: a second run of the same job, a job on another root whose tree overlaps, t
 sent to another destination, and two copy-only jobs reading the same tables are all refused
 while the first runs ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
 
+A job that stopped with unfinished work (`copied` or `deleting` roots in its log, after a crash,
+an error or a stop, whatever its `job_status`), or that is still marked running, holds its
+tables the same way until its own rerun finishes that work: another job whose tree shares one
+of them is refused on the same source data. *The same source data* is the server the job ran
+on, or one whose `gtid_executed` holds that server's transactions (a promoted replica, a
+clone). Where the server cannot tell, every server's database of that name in one registry
+counts as one: a source without `gtid_mode = ON`; a Group Replication member, whose group logs
+its transactions under the group name; and shards provisioned from one another, which keep
+each other's uuids in `gtid_executed`. An estate that repeats a database name across such
+servers should give each source server its own
+[`job_schema`](README_CONFIGURATION.md#job_schema-destination-only). Two cases are not seen: a
+server that received the stopped job's data only before a GTID migration (position-based
+replication), and a server outside a group that holds the group's data (an asynchronous replica
+promoted after the group was lost). In both, [re-bind the stopped
+job](README_JOBS_SCHEMA.md#re-binding-a-job-after-a-failover) before any other job runs on its
+tables. The guard looks downstream only (a server this source replicates from counts as another
+server's data; writes arriving from it during a run are outside the
+[run contract](#no-ddl-and-no-concurrent-writes-during-a-run-contract)), and it reads one
+registry: a stopped job tracked in another `job_schema` does not block.
+
 The locks live on one server. Every connection must reach one backend for the whole run (see
 [Source and destination must be different databases](#source-and-destination-must-be-different-databases)):
 a read/write-splitting proxy could send the locks to a replica while the deletes go to the

@@ -74,8 +74,9 @@ the destination; later releases lock a hashed job name on the destination and ev
 the tree on the source. The two do not see each other's locks. **Stop every alpha.0 run before
 starting a run of a later release.** Mixed, the same job can run twice, and jobs whose trees
 overlap run together; the outcome is a loud failure (a duplicate key, or a row-count refusal),
-but it is the stop that prevents it. A different job on the same root table is still refused
-by the shared registry's same-root check. Nothing at startup looks for alpha.0's locks.
+but it is the stop that prevents it. A later release's run is still refused while an alpha.0
+job whose tree shares one of its tables is marked running in the shared registry. Nothing at
+startup looks for alpha.0's locks.
 
 To see live alpha.0 runs, as a DBA account on each destination:
 
@@ -86,6 +87,22 @@ WHERE OBJECT_TYPE = 'USER LEVEL LOCK' AND OBJECT_NAME LIKE 'goarchive:%';
 
 Names starting `goarchive:job:` or `goarchive:root:` are alpha.0 runs. The tracking tables are
 unchanged.
+
+**Stopped jobs now hold their tables.** A job whose log holds `copied` or `deleting` roots, in
+any status, refuses the runs of other jobs whose trees share one of its tables, until its own
+rerun finishes them ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+Under alpha.0 a failed or idle job blocked nobody, and a running one blocked only its own root
+table. Before upgrading, finish the unfinished work of every job: list the jobs, then each
+log's pending roots, and rerun every job whose count is not 0.
+
+```sql
+SELECT id, job_name, job_type, job_status FROM goarchive.archiver_job ORDER BY id;
+SELECT COUNT(*) FROM goarchive.archiver_job_log_42 WHERE ga_status IN (1, 4);  -- per id
+```
+
+Two jobs that share a table and both still hold such roots refuse each other's reruns; finish
+one by [abandoning its roots](README_JOBS_SCHEMA.md#abandoning-logged-roots), then rerun the
+other.
 
 ---
 
