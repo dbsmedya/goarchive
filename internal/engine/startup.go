@@ -57,7 +57,7 @@ func (e *OverlapError) Error() string {
 		b.WriteString("\n  " + j.Name + ": " + blockerState(j))
 		if j.Unreadable != nil {
 			fmt.Fprintf(&b, "; its config_fingerprint cannot be read (%v)", j.Unreadable)
-			unreadable = true
+			unreadable = unreadable || j.Pending
 		} else {
 			b.WriteString("; shares " + strings.Join(j.Shared, ", "))
 		}
@@ -77,7 +77,8 @@ func (e *OverlapError) Error() string {
 		}
 	}
 	if pending {
-		b.WriteString("\nRerun each job with unfinished roots so that its recovery finishes them, then rerun this one.")
+		b.WriteString("\nRerun each job with unfinished roots so that its recovery finishes them, then rerun this one. " +
+			"A job that cannot be rerun (its source or config is gone): docs/README_JOBS_SCHEMA.md, \"Abandoning logged roots\".")
 	}
 	if stopped {
 		b.WriteString("\nA job marked running whose heartbeat stopped: confirm its process is gone first " +
