@@ -60,13 +60,31 @@ func judgeTablesExist(tables []string, found []validations.TableInfo, id, missin
 	return nil
 }
 
-// checkStorageEngine refuses a table that is not InnoDB. A NULL engine is reported as
-// <unknown> rather than passing.
+// checkStorageEngine refuses a source table that is not InnoDB.
 func checkStorageEngine(ctx context.Context, f *facts) error {
 	found, err := f.sourceTables(ctx)
 	if err != nil {
 		return inspectionError("storage_engine", err)
 	}
+	return judgeStorageEngine(found, "STORAGE_ENGINE_CHECK", "Only InnoDB tables are supported. Use ALTER TABLE to convert")
+}
+
+// checkDestinationStorageEngine refuses a destination table that is not InnoDB: the copy
+// writes each batch in one destination transaction, and only InnoDB rolls it back
+// (destination-engine spec §4). The bypass flag skips it with every policy check.
+func checkDestinationStorageEngine(ctx context.Context, f *facts) error {
+	found, err := f.destTables(ctx)
+	if err != nil {
+		return inspectionError("destination_storage_engine", err)
+	}
+	return judgeStorageEngine(found, "DEST_STORAGE_ENGINE_CHECK",
+		"Only InnoDB destination tables are supported: the copy writes each batch in one destination transaction, "+
+			"which only InnoDB rolls back. Use ALTER TABLE <table> ENGINE=InnoDB to convert")
+}
+
+// judgeStorageEngine names every table that is not InnoDB, with its engine; a NULL engine
+// is reported as <unknown> rather than passing.
+func judgeStorageEngine(found []validations.TableInfo, check, message string) error {
 	var offenders []string
 	for _, fd := range validations.CheckStorageEngine(found, requiredStorageEngine) {
 		if fd.Check != validations.IDStorageEngine {
@@ -83,7 +101,7 @@ func checkStorageEngine(ctx context.Context, f *facts) error {
 		offenders = append(offenders, info.Table+"("+engine+")")
 	}
 	if len(offenders) > 0 {
-		return &Error{Check: "STORAGE_ENGINE_CHECK", Message: "Only InnoDB tables are supported. Use ALTER TABLE to convert", Tables: offenders}
+		return &Error{Check: check, Message: message, Tables: offenders}
 	}
 	return nil
 }

@@ -316,7 +316,7 @@ func disposeDiff(diff validations.SpecDiff, charsetStrict bool, warnedCharset ma
 		// index diffs, so renaming an equivalent index cannot fail.
 		return disposition{}, nil
 	case validations.EngineMismatch, validations.CharsetMismatch, validations.CollationMismatch:
-		// Table-level defaults; the source engine is STORAGE_ENGINE_CHECK's.
+		// Table-level defaults; engines are STORAGE_ENGINE_CHECK's and DEST_STORAGE_ENGINE_CHECK's.
 		return disposition{}, nil
 	case validations.IndexUnconfirmed:
 		return disposition{}, fmt.Errorf("PREFLIGHT_INSPECTION_INTEGRITY: DiffSpecs reported IndexUnconfirmed on side %v "+

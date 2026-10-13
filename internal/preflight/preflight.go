@@ -168,6 +168,7 @@ func stages(cfg Config) []stage {
 		// The tracking schema is on the destination server for every job type.
 		{"JobSchemaPermissions", policy, checkJobSchemaPermissions},
 		{"DestinationTablesExist", destination, checkDestinationTablesExist},
+		{"DestinationStorageEngine", destination, checkDestinationStorageEngine},
 		{"DestinationKeys", destination, checkDestinationKeys},
 		{"DestinationSchemaCompatibility", destination, checkDestinationSchemaCompatibility},
 		{"DestinationWritePermissions", destination, checkDestinationWritePermissions},
