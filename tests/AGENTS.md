@@ -131,10 +131,11 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1075 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261012T120448Z-60739` on 2026-10-12 (the source-table-locks PR, at `0bd3297`). It was
-  1126 before: that PR deleted the 2.x `internal/lock` tests and their sanitization subtests and
-  added the lock-set and engine locking tests. Re-measure after adding or removing tagged tests.
+- **Integration inventory:** `PASS=1116 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261013T062857Z-15527` on 2026-10-13 (the unfinished-work guard PR, at `658579d`). It was
+  1075 before: that PR added the guard's tests (`TestMySQLBlockers`, `TestMySQLGuard*`,
+  `TestStoredTables`, `TestSameData`, `TestOverlapError`) and deleted `TestMySQLRunning` and
+  `TestConcurrentError`. Re-measure after adding or removing tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  410 s, leaving about 190 s; record each new measurement here, since the margin shrinks as tests
+  417 s, leaving about 183 s; record each new measurement here, since the margin shrinks as tests
   are added.
