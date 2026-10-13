@@ -1,10 +1,12 @@
 package preflight
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
@@ -218,7 +220,7 @@ func TestDisposeDiffCoversEveryKind(t *testing.T) {
 	type want struct{ disposition, a, b string }
 	cases := map[validations.SpecDiffKind]want{
 		validations.ColumnAbsent:                 {fatal, "", ""},
-		validations.ColumnOrderMismatch:          {fatal, "", ""},
+		validations.ColumnOrderMismatch:          {warn, "3", "4"},
 		validations.ColumnTypeMismatch:           {fatal, "int", "varchar(3)"},
 		validations.ColumnNullabilityMismatch:    {fatal, "true", "false"},
 		validations.ColumnNameCaseMismatch:       {warn, "Sku", "sku"},
@@ -288,6 +290,29 @@ func TestDisposeDiffCoversEveryKind(t *testing.T) {
 	}
 	if got := judge(validations.SpecDiff{Kind: validations.SpecDiffKind(250)}); got != "PREFLIGHT_UNKNOWN_DIFF" {
 		t.Errorf("an unpublished kind: %s, want PREFLIGHT_UNKNOWN_DIFF", got)
+	}
+}
+
+// TestColumnOrderWarnsOncePerTable (GH #105): a destination whose columns are in another order
+// passes, because every read and INSERT names its columns. The library reports one difference
+// per displaced column; the operator gets one warning for the table, naming each of them.
+func TestColumnOrderWarnsOncePerTable(t *testing.T) {
+	w := healthy(t, jobspec.Archive)
+	w.dst.specs = healthySpecs()
+	w.dst.specs["order_lines"] = table("order_lines", []validations.ColumnSpec{
+		col("sku", "varchar(32)", "utf8mb4 utf8mb4_0900_ai_ci"), col("order_id", "bigint unsigned", ""), col("line_no", "smallint", ""),
+	}, []string{"order_id", "line_no"})
+	w.mustPass()
+	want := []string{"Table order_lines column order differs from the source (order_id: 1->2, line_no: 2->3, sku: 3->1); " +
+		"every read and INSERT names its columns, so copy and verification are unaffected"}
+	var got []string
+	for _, e := range w.logs.All() {
+		if e.Level == zapcore.WarnLevel && strings.Contains(e.Message, "order") && strings.Contains(e.Message, "->") {
+			got = append(got, e.Message)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("order warnings = %q, want %q", got, want)
 	}
 }
 

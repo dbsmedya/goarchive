@@ -85,3 +85,28 @@ func TestMySQLDestinationStorageEngine(t *testing.T) {
 		}
 	})
 }
+
+// TestMySQLArchiveIntoReorderedDestination (GH #105): every read and INSERT names its
+// columns, so a destination whose columns are in another order receives each value in the
+// column of its name, sha256 verification compares by name, and the source rows are deleted.
+func TestMySQLArchiveIntoReorderedDestination(t *testing.T) {
+	f := newFixture(t, "reordered", orderJobs)
+	mustExec(t, f.src, orderDDL...)
+	mustExec(t, f.dst,
+		"CREATE TABLE orders (placed DATE NOT NULL, id CHAR(36) NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+		"CREATE TABLE order_lines (sku VARCHAR(32), line_no SMALLINT NOT NULL, order_id CHAR(36) NOT NULL, "+
+			"PRIMARY KEY (order_id, line_no)) ENGINE=InnoDB")
+	seed(t, f)
+	if out, err := execute(t, "archive", "-c", f.config, "--job", "archive_orders", "--verification=sha256"); err != nil {
+		t.Fatalf("archive: %v\n%s", err, out)
+	}
+	if got := scalar(t, f.src, "SELECT COUNT(*) FROM order_lines"); got != 2 {
+		t.Errorf("source lines = %d, want the recent order's 2", got)
+	}
+	if got := scalar(t, f.dst, "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01' AND id LIKE '00000000-%'"); got != 3 {
+		t.Errorf("destination orders with their dates = %d, want 3", got)
+	}
+	if got := scalar(t, f.dst, "SELECT COUNT(*) FROM order_lines WHERE (line_no = 1 AND sku = 'a') OR (line_no = 2 AND sku = 'b')"); got != 6 {
+		t.Errorf("destination lines with their skus = %d, want 6", got)
+	}
+}
