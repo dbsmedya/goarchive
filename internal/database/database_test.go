@@ -818,6 +818,21 @@ func TestBuildDSNDiagnosticInitialization(t *testing.T) {
 	}
 }
 
+// TestBuildDSNReadsTheServersPacket (M7c-F1): the driver reads each server's
+// max_allowed_packet at connect (MaxAllowedPacket 0) instead of assuming its own 64 MiB.
+// Against a smaller server it would otherwise put values inline that the server's limit
+// cannot hold, and the server drops the connection over the INSERT; with the server's value
+// the driver sends them as long data and the INSERT fits.
+func TestBuildDSNReadsTheServersPacket(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dsn.MaxAllowedPacket != 0 {
+		t.Fatalf("DSN MaxAllowedPacket = %d, want 0 (read the server's max_allowed_packet at connect)", dsn.MaxAllowedPacket)
+	}
+}
+
 // TestBuildDSNPinsAutocommit (M7c F1): every session commits each statement on its own,
 // whatever the server's global autocommit. Tracking writes outside a transaction rely on
 // it: under a global autocommit=0 they would never commit and would hold their locks.
