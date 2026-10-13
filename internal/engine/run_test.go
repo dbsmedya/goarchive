@@ -117,11 +117,13 @@ func TestOverlapError(t *testing.T) {
 			{Name: "archive_orders", Status: tracking.JobFailed, Registered: true, Pending: true, Shared: []string{"payment_logs"}},
 			{Name: "sweep", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: time.Hour, Pending: true,
 				Shared: []string{"order_items", "payment_logs"}, SourceServerUUID: "22222222-2222-2222-2222-222222222222"},
-			{Name: "killed", Status: tracking.JobRunning, Registered: true, Shared: []string{"payments"}},
+			{ID: 3, Name: "killed", Status: tracking.JobRunning, Registered: true, Shared: []string{"payments"}},
 			{Name: "fresh", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: 5 * time.Second, Shared: []string{"payments"}},
 			{Name: "broken", Status: tracking.JobIdle, Registered: true, Pending: true, Unreadable: errors.New("bad json")},
-			{Name: "half", Status: tracking.JobRunning, Beat: true, HeartbeatAge: time.Hour, Shared: []string{"payments"}},
-			{Name: "garbled", Status: tracking.JobRunning, Registered: true, Unreadable: errors.New("bad json")},
+			{ID: 6, Name: "half", Status: tracking.JobRunning, Beat: true, HeartbeatAge: time.Hour, Shared: []string{"payments"}},
+			{ID: 7, Name: "garbled", Status: tracking.JobRunning, Registered: true, Unreadable: errors.New("bad json")},
+			// Job names may hold ' and \ (printable ASCII): the remedy names the row by id (Codex N1).
+			{ID: 8, Name: `it's\old`, Status: tracking.JobRunning, Registered: true, Shared: []string{"payments"}},
 		},
 		Why: map[string]string{"sweep": "whose data this server holds (its uuid is in this server's gtid_executed)"}}
 	msg := e.Error()
@@ -138,17 +140,19 @@ func TestOverlapError(t *testing.T) {
 		"half has no unfinished roots: once its process is gone, mark it idle",
 		"garbled has no unfinished roots: once its process is gone, mark it idle",
 		"Rerun each job with unfinished roots", "Clearing a stale running job",
-		"killed has no unfinished roots: once its process is gone, mark it idle with UPDATE `goarchive`.`archiver_job` SET job_status = 0 WHERE job_name = 'killed'.",
+		"killed has no unfinished roots: once its process is gone, mark it idle with UPDATE `goarchive`.`archiver_job` SET job_status = 0 WHERE id = 3.",
+		"it's\\old has no unfinished roots: once its process is gone, mark it idle with UPDATE `goarchive`.`archiver_job` SET job_status = 0 WHERE id = 8.",
 		"a live process on another server", "Abandoning logged roots",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("refusal lacks %q:\n%s", want, msg)
 		}
 	}
-	for _, name := range []string{"archive_orders", "sweep", "broken", "fresh"} {
-		if strings.Contains(msg, "WHERE job_name = '"+name+"'") {
-			t.Errorf("the refusal offers to mark %s idle:\n%s", name, msg)
-		}
+	if strings.Contains(msg, "WHERE job_name") {
+		t.Errorf("the remedy quotes a job name in SQL:\n%s", msg)
+	}
+	if n := strings.Count(msg, "SET job_status = 0 WHERE id = "); n != 4 {
+		t.Errorf("%d mark-idle remedies, want 4 (killed, half, garbled, it's\\old):\n%s", n, msg)
 	}
 	// One job with unfinished roots only: no heartbeat or idle remedy at all.
 	one := &OverlapError{Job: "b", Database: "s", Registry: "r",

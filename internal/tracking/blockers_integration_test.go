@@ -104,6 +104,9 @@ func TestMySQLBlockers(t *testing.T) {
 			t.Errorf("%s = %+v, want pending %v, shared %v", c.name, b, c.pending, c.shared)
 		}
 	}
+	if m["crashed"].ID != crashed.ID {
+		t.Errorf("crashed.ID = %d, want its registry id %d", m["crashed"].ID, crashed.ID)
+	}
 	if m["unregistered"].Registered || !m["crashed"].Registered || !m["unreadable"].Registered {
 		t.Errorf("Registered: unregistered %v, crashed %v, unreadable %v; want false, true, true",
 			m["unregistered"].Registered, m["crashed"].Registered, m["unreadable"].Registered)

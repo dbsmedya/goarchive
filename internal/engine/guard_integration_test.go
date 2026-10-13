@@ -152,7 +152,7 @@ func TestMySQLGuardRunningEmptyLog(t *testing.T) {
 	before := srcRows(t, e)
 	_, err := e.run(t, purge)
 	oe := refusedBy(t, e, err, "notes", before, "j")
-	if !strings.Contains(oe.Error(), "no unfinished roots in its log") || !strings.Contains(oe.Error(), "WHERE job_name = 'j'") {
+	if !strings.Contains(oe.Error(), "no unfinished roots in its log") || !strings.Contains(oe.Error(), fmt.Sprintf("WHERE id = %d.", logID(t, e, "j"))) {
 		t.Errorf("refusal:\n%s", oe)
 	}
 	// With a recent heartbeat the job may be live elsewhere: no "mark it idle".
