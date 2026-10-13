@@ -156,6 +156,16 @@ func TestOverlapError(t *testing.T) {
 	if msg := one.Error(); strings.Contains(msg, "UPDATE") || strings.Contains(msg, "heartbeat") {
 		t.Errorf("an idle job with unfinished roots: %s", msg)
 	}
+	// A job that cannot be rerun has its way out in the abandonment procedure (Fable final M2a).
+	if msg := one.Error(); !strings.Contains(msg, "A job that cannot be rerun") || !strings.Contains(msg, "Abandoning logged roots") {
+		t.Errorf("the pending remedy does not cite the abandonment procedure: %s", msg)
+	}
+	// An unreadable fingerprint with nothing unfinished gets the idle remedy only (Fable final M2b).
+	clean := &OverlapError{Job: "b", Database: "s", Registry: "r",
+		Blockers: []tracking.Blocker{{Name: "g", Status: tracking.JobRunning, Registered: true, Unreadable: errors.New("bad json")}}}
+	if msg := clean.Error(); strings.Contains(msg, "restore it from a known-good record") || !strings.Contains(msg, "g has no unfinished roots") {
+		t.Errorf("an unreadable job with nothing unfinished: %s", msg)
+	}
 }
 
 func TestDuplicateError(t *testing.T) {
