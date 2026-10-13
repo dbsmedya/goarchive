@@ -131,11 +131,11 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1126 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261013T102646Z-39965` on 2026-10-13 (the column order PR, GH #105, at `b174d1d`). It was
-  1123 before: that PR added `TestColumnOrderWarnsOncePerTable`,
-  `TestMySQLArchiveIntoReorderedDestination` and the `missing_middle_column` subtest of
-  `TestMySQLSchemaCompatibilityFromRealFacts`. Re-measure after adding or removing tagged tests.
+- **Integration inventory:** `PASS=1133 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261013T125752Z-94813` on 2026-10-13 (the issue evidence PR, at `621b4fe`). It was 1126
+  before: that PR added `TestMySQLRowEligibleLaterIsProcessed` with three subtests and
+  `TestMySQLLoggedRootsNeverReplayedOnAnotherTable` with two. Re-measure after adding or removing
+  tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  465 s, leaving about 135 s; record each new measurement here, since the margin shrinks as tests
+  420 s, leaving about 180 s; record each new measurement here, since the margin shrinks as tests
   are added.
