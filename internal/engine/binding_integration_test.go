@@ -114,7 +114,7 @@ func TestMySQLArchiveBinding(t *testing.T) {
 		if srcRows(t, e.src) != before || srcRows(t, o.src) != beforeTwin {
 			t.Error("a source changed")
 		}
-		// --skip-validate-preflight skips no bookkeeping check (spec §6.4).
+		// --skip-dangerously-validate-preflight-allow-experimental skips no bookkeeping check (spec §6.4).
 		cfg := o.config(t, job(t, jobspec.Archive, orderJob))
 		cfg.SkipPolicy = true
 		_, err = o.run(t, cfg)

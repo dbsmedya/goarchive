@@ -118,6 +118,31 @@ jobs:
 	}
 }
 
+// TestSkipFlagIsNotAKey (destination-engine spec §5, G2): the preflight bypass is a
+// command-line flag only; no spelling of it is a configuration key.
+func TestSkipFlagIsNotAKey(t *testing.T) {
+	errs := mustFail(t, `
+skip_dangerously_validate_preflight_allow_experimental: true
+safety:
+  skip_dangerously_validate_preflight_allow_experimental: true
+  skip_validate_preflight: true
+jobs:
+  j:
+    job_type: archive
+    root_table: t
+    primary_key: id
+    where: "1=1"
+    skip_validate_preflight: true
+`)
+	for _, field := range []string{"skip_dangerously_validate_preflight_allow_experimental",
+		"safety.skip_dangerously_validate_preflight_allow_experimental", "safety.skip_validate_preflight",
+		"jobs.j.skip_validate_preflight"} {
+		if !hasError(errs, field, "unknown key (line ") {
+			t.Errorf("no unknown-key error on %s:\n%v", field, errs)
+		}
+	}
+}
+
 // TestParseRefusesUnknownKeys at every level, with the path and line of each.
 func TestParseRefusesUnknownKeys(t *testing.T) {
 	errs := mustFail(t, `

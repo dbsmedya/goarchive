@@ -29,7 +29,7 @@ func TestBanners(t *testing.T) {
 		want          []string
 	}{
 		{"skip preflight", plain, jobspec.Archive, jobspec.VerifySHA256, true, false,
-			[]string{"--skip-validate-preflight", "keys are still read from MySQL", "log-key and binding checks still run",
+			[]string{"--skip-dangerously-validate-preflight-allow-experimental", "storage engines", "keys are still read from MySQL", "log-key and binding checks still run",
 				"misspelled foreign_key column fails as a statement-caps error"}},
 		{"force triggers", plain, jobspec.Purge, "", false, true, []string{"--force-triggers", "every delete fires them"}},
 		{"no verification, archive", plain, jobspec.Archive, jobspec.VerifyNone, false, false,

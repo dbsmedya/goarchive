@@ -51,7 +51,7 @@ func TestStagesByJobType(t *testing.T) {
 			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
-		// Under --skip-validate-preflight the keys are still read, the destination's too:
+		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3).
 		{jobspec.Archive, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
 		{jobspec.CopyOnly, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
