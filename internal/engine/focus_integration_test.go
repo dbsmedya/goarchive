@@ -252,9 +252,9 @@ func TestMySQLBookkeepingNames(t *testing.T) {
 }
 
 // TestMySQLConcurrency: the job's own lock, held by another session, refuses the run;
-// another job marked running on the same source database and root table refuses it too,
-// also when its source_server_uuid differs (a failover, source-table-locks spec §5.4, T5);
-// one on a same-named root in another source database does not (G3).
+// another job marked running on the same source data and root table refuses it too
+// (unfinished-work guard spec §3); one on a same-named root in another source database does
+// not (source-table-locks spec G3).
 func TestMySQLConcurrency(t *testing.T) {
 	e := newEnv(t, "conc")
 	e.both(t, intTables)
@@ -299,11 +299,14 @@ func TestMySQLConcurrency(t *testing.T) {
 		t.Fatalf("a job running on r in another source database refused the run: %v", err)
 	}
 	execAll(t, e.src, "INSERT INTO r VALUES (2, 1)")
-	running("other", strings.ToUpper(e.srcSchema)) // another server_uuid ("u"), the same database in another case
+	// The same database in another case, recorded under "u", which is not a well-formed uuid:
+	// the guard counts it as this source's data (unfinished-work guard spec §3a, I2), and the
+	// refusal says on what grounds (on a Group Replication source, membership comes first).
+	running("other", strings.ToUpper(e.srcSchema))
 	_, err = e.run(t, cfg)
-	ce := wantErr[*ConcurrentError](t, err)
-	if !strings.Contains(ce.Error(), "another job is running") {
-		t.Errorf("a live job on the root: %v", ce)
+	oe := wantErr[*OverlapError](t, err)
+	if !strings.Contains(oe.Error(), "other: marked running") || !strings.Contains(oe.Error(), "recorded on source server u, ") {
+		t.Errorf("a job marked running on the root: %v", oe)
 	}
 	if count(t, e.src, "SELECT COUNT(*) FROM r") != 1 {
 		t.Error("the source changed")
