@@ -52,7 +52,7 @@ func (e *OverlapError) Error() string {
 	fmt.Fprintf(&b, "engine: job %q shares source tables in %s with jobs that are marked running or stopped with unfinished work "+
 		"(registry %s). This run did nothing.", e.Job, sqlutil.QuoteIdentifier(e.Database), e.Registry)
 	var pending, recent, stopped, unreadable bool
-	var idle []string
+	var idle []tracking.Blocker
 	for _, j := range e.Blockers {
 		b.WriteString("\n  " + j.Name + ": " + blockerState(j))
 		if j.Unreadable != nil {
@@ -71,7 +71,7 @@ func (e *OverlapError) Error() string {
 			} else {
 				stopped = true
 				if !j.Pending {
-					idle = append(idle, j.Name)
+					idle = append(idle, j)
 				}
 			}
 		}
@@ -83,9 +83,10 @@ func (e *OverlapError) Error() string {
 	if stopped {
 		b.WriteString("\nA job marked running whose heartbeat stopped: confirm its process is gone first " +
 			"(docs/README_JOBS_SCHEMA.md, \"Clearing a stale running job\").")
-		for _, name := range idle {
+		// The row is named by id: a job name may hold ' or \, which a quoted literal would garble.
+		for _, j := range idle {
 			fmt.Fprintf(&b, " %s has no unfinished roots: once its process is gone, mark it idle with "+
-				"UPDATE %s SET job_status = 0 WHERE job_name = '%s'.", name, e.Registry, name)
+				"UPDATE %s SET job_status = 0 WHERE id = %d.", j.Name, e.Registry, j.ID)
 		}
 	}
 	if recent {

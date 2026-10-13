@@ -369,7 +369,7 @@ SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'
 
 Then rerun the job itself, with no `UPDATE`: its log drives recovery, and once its unfinished
 roots are finished it blocks nobody. Mark a job idle (`UPDATE … SET job_status = 0 WHERE
-job_name = '<name>'`, as the refusal spells it) only when its log holds no `copied` or
+id = <id>`, as the refusal spells it, naming the job's registry row) only when its log holds no `copied` or
 `deleting` root: marking does not finish the work, and while the log holds such roots the job
 still blocks overlapping jobs. Do not delete the log rows; that is
 [abandonment](#abandoning-logged-roots).

@@ -16,6 +16,7 @@ import (
 // Blocker is a job whose unfinished work, or running status, overlaps an incoming run's
 // tables on the same source data (unfinished-work guard spec §3).
 type Blocker struct {
+	ID               int64 // its registry id: the remedy names the row by it, since a name may hold ' or \
 	Name             string
 	Status           JobStatus
 	Registered       bool // false: its registration did not complete, so it has no log yet
@@ -95,6 +96,7 @@ func (s *Store) Blockers(ctx context.Context, sourceDatabase string, same SameDa
 		if !same(c.b.SourceServerUUID) {
 			continue
 		}
+		c.b.ID = c.id
 		c.b.Status = JobStatus(status)
 		c.b.Beat = seconds.Valid
 		c.b.HeartbeatAge = time.Duration(seconds.Int64) * time.Second
