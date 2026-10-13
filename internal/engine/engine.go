@@ -58,7 +58,7 @@ type Config struct {
 	DisableForeignKeyChecks bool
 
 	// ForceTriggers and SkipPolicy are preflight's (--force-triggers,
-	// --skip-validate-preflight). Neither skips the log-key or binding check (spec §6.4).
+	// --skip-dangerously-validate-preflight-allow-experimental). Neither skips the log-key or binding check (spec §6.4).
 	ForceTriggers, SkipPolicy bool
 
 	// Lag is the replication lag gate; nil means none.

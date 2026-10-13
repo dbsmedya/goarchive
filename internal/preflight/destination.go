@@ -71,7 +71,7 @@ func checkDestinationKeys(ctx context.Context, f *facts) error {
 }
 
 // readDestinationKeys reads the destination keys without judging them, for
-// --skip-validate-preflight: the statement caps of destination statements are computed from
+// --skip-dangerously-validate-preflight-allow-experimental: the statement caps of destination statements are computed from
 // them (spec §8.3: the key definitions are always read). A destination table without a key
 // the engine can address fails, because no cap could be computed for it.
 func readDestinationKeys(ctx context.Context, f *facts) error {

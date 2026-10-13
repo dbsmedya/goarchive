@@ -84,7 +84,7 @@ type Config struct {
 	Verification jobspec.Verification
 	// ForceTriggers accepts source DELETE triggers (--force-triggers).
 	ForceTriggers bool
-	// SkipPolicy skips every policy check (--skip-validate-preflight). The key
+	// SkipPolicy skips every policy check (--skip-dangerously-validate-preflight-allow-experimental). The key
 	// definitions are still read, because the SQL is built from them (spec §8.3).
 	SkipPolicy bool
 	// Processing is the job's effective processing block (Spec.EffectiveProcessing). The

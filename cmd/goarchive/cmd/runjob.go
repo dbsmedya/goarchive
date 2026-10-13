@@ -33,12 +33,30 @@ func registerRunFlags(c *cobra.Command, o *runOptions, typ jobspec.Type) {
 	registerProgressFlag(c, &o.progress)
 }
 
-// registerSkipPolicyFlag adds --skip-validate-preflight (spec §8.3).
+// skipPolicyFlag is the preflight bypass (spec §8.3; destination-engine spec §5). It is a
+// command-line flag only: no configuration key reaches it.
+const skipPolicyFlag = "skip-dangerously-validate-preflight-allow-experimental"
+
+// registerSkipPolicyFlag adds the preflight bypass, and its old name, hidden, which refuses
+// while the command line is parsed.
 func registerSkipPolicyFlag(c *cobra.Command, skipPolicy *bool) {
-	c.Flags().BoolVar(skipPolicy, "skip-validate-preflight", false,
-		"Skip preflight's policy checks (permissions, triggers, foreign-key coverage, destination compatibility, "+
-			"packet size). "+
+	c.Flags().BoolVar(skipPolicy, skipPolicyFlag, false,
+		"Dangerous. Skip preflight's policy checks (storage engines, permissions, triggers, foreign-key coverage, "+
+			"destination compatibility, packet size), for an experimental setup GoArchive does not test or support. "+
 			"The keys are still read from MySQL, and the log-key and binding checks still run.")
+	c.Flags().Var(renamedFlag{to: skipPolicyFlag}, "skip-validate-preflight", "")
+	f := c.Flags().Lookup("skip-validate-preflight")
+	f.NoOptDefVal = "true"
+	f.Hidden = true
+}
+
+// renamedFlag refuses a flag's old name, whatever its value, naming the new one.
+type renamedFlag struct{ to string }
+
+func (renamedFlag) String() string { return "" }
+func (renamedFlag) Type() string   { return "bool" }
+func (r renamedFlag) Set(string) error {
+	return fmt.Errorf("--skip-validate-preflight was renamed --%s (docs/README_UPGRADING_3_0.md)", r.to)
 }
 
 // registerForceTriggersFlag adds --force-triggers, which preflight's DELETE-trigger check
