@@ -338,3 +338,32 @@ run_integration_tests`)
 		t.Fatalf("integration layer ran %q", got)
 	}
 }
+
+// TestE2ESourceGTIDSet: Test13's replica check reads the source's gtid_executed on one line.
+// A server separates the uuids of a set with a newline (probe L11), and mysql-query.sh prints
+// a value as it gets it, so the fake answers with the newline unless the statement removes
+// it on the server; a set with one uuid has none.
+func TestE2ESourceGTIDSet(t *testing.T) {
+	const a, b = "7fcbfd08-c636-11f1-9db5-5ee215af872f:1-1657", "f11ed000-57a1-4c0d-9e5e-000000000001:1"
+	for _, tc := range []struct{ name, set, want string }{
+		{"one uuid", a, a},
+		{"two uuids", a + ",\n" + b, a + "," + b},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, filepath.Join(dir, "mysql-query.sh"), `#!/bin/bash
+set=$(printf '`+strings.ReplaceAll(tc.set, "\n", `\n`)+`')
+echo value
+if [[ "$2" == *"REPLACE(@@GLOBAL.gtid_executed, CHAR(10), '')"* ]]; then
+  printf '%s\n' "${set//$'\n'/}"
+else
+  printf '%s\n' "$set"
+fi
+`)
+			r := runLib(t, dir, "source_gtid_set")
+			if r.rc != 0 || strings.TrimSpace(r.stdout) != tc.want {
+				t.Errorf("source_gtid_set = %q (rc %d, stderr %q), want %q", r.stdout, r.rc, r.stderr, tc.want)
+			}
+		})
+	}
+}

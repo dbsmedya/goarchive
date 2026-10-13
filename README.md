@@ -33,7 +33,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Verify copy before delete | ✅ SHA256 (default) or count | ❌ |
 | Inspect INSERT conversion / truncation warnings before source deletion | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) | No built-in check in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
 | Crash recovery / resume | ✅ a per-root log; interrupted roots are finished at the next start | ❌ |
-| Protection against overlapping runs | ✅ a job lock on the destination and a `GET_LOCK` on every tree table on the source, checked before every commit ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)) | `--pid` file on one host only; no server-side lock in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
+| Protection against overlapping runs | ✅ a job lock on the destination and a `GET_LOCK` on every tree table on the source, checked before every commit, and a guard that refuses a run over a stopped job's unfinished work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)) | `--pid` file on one host only; no server-side lock and no record of an interrupted run in reviewed [v3.7.1 source](https://github.com/percona/percona-toolkit/blob/v3.7.1/bin/pt-archiver) |
 | Foreign key coverage check | ✅ blocks uncovered FKs | ❌ |
 | Composite primary keys | ✅ root and child, with composite foreign keys | ✅ |
 | Non-integer primary keys | ✅ root and child (string, UUID, DECIMAL, temporal); FLOAT/DOUBLE, ENUM/SET and BIT keys are refused | ✅ |
@@ -100,7 +100,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Composite and non-integer keys** - String, UUID, DECIMAL and temporal keys, single-column or composite, at the root and at every child
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks on the source tables and the job, and a same-root check, refuse any run whose tables overlap a running job's ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
+- **No overlapping runs** - Advisory locks on the source tables and the job, and a guard on stopped jobs' unfinished work, refuse any run whose tables overlap a running job's, or those of a job that has not finished its work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
 - **Dry-run mode** - Runs preflight, reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary

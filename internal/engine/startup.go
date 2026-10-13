@@ -22,8 +22,8 @@ import (
 // tree on the source, the one server every conflicting run shares. The heartbeat is kept
 // from 2.x (core spec §9).
 const (
-	// staleAfter is how old a running job's heartbeat may be before the same-root guard
-	// calls it stale rather than live.
+	// staleAfter is how old a running job's heartbeat may be before the unfinished-work
+	// guard's refusal calls it stopped rather than recent.
 	staleAfter = 60 * time.Second
 	// heartbeatFailures consecutive failed heartbeats fail the run.
 	heartbeatFailures = 3
@@ -36,31 +36,90 @@ var (
 	keepAliveEvery = 30 * time.Second
 )
 
-// ConcurrentError refuses a run while another job is marked running on the same root table.
-type ConcurrentError struct {
-	RootTable string
-	JobTable  string // the qualified archiver_job, for the remedy
-	Jobs      []tracking.RunningJob
+// OverlapError refuses a run while another job on the same source data shares a table
+// with it and is marked running or holds unfinished roots in its log (unfinished-work guard
+// spec §3, §7). Why holds, by job name, why a job recorded on another source server counts as
+// this source's data (§3a).
+type OverlapError struct {
+	Job, Database string
+	Registry      string // the qualified archiver_job, for the remedy
+	Blockers      []tracking.Blocker
+	Why           map[string]string
 }
 
-func (e *ConcurrentError) Error() string {
-	var live, stale []string
-	for _, j := range e.Jobs {
-		switch {
-		case j.Beat && j.HeartbeatAge <= staleAfter:
-			live = append(live, j.Name)
-		case j.Beat:
-			stale = append(stale, fmt.Sprintf("%s (heartbeat %s ago)", j.Name, j.HeartbeatAge))
-		default:
-			stale = append(stale, j.Name+" (no heartbeat)")
+func (e *OverlapError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "engine: job %q shares source tables in %s with jobs that are marked running or stopped with unfinished work "+
+		"(registry %s). This run did nothing.", e.Job, sqlutil.QuoteIdentifier(e.Database), e.Registry)
+	var pending, recent, stopped, unreadable bool
+	var idle []tracking.Blocker
+	for _, j := range e.Blockers {
+		b.WriteString("\n  " + j.Name + ": " + blockerState(j))
+		if j.Unreadable != nil {
+			fmt.Fprintf(&b, "; its config_fingerprint cannot be read (%v)", j.Unreadable)
+			unreadable = unreadable || j.Pending
+		} else {
+			b.WriteString("; shares " + strings.Join(j.Shared, ", "))
+		}
+		if why := e.Why[j.Name]; why != "" {
+			fmt.Fprintf(&b, "; recorded on source server %s, %s", j.SourceServerUUID, why)
+		}
+		pending = pending || j.Pending
+		if j.Status == tracking.JobRunning {
+			if j.Beat && j.HeartbeatAge <= staleAfter {
+				recent = true
+			} else {
+				stopped = true
+				if !j.Pending {
+					idle = append(idle, j)
+				}
+			}
 		}
 	}
-	if len(live) > 0 {
-		return fmt.Sprintf("engine: another job is running on the root table %q: %s", e.RootTable, strings.Join(live, ", "))
+	if pending {
+		b.WriteString("\nRerun each job with unfinished roots so that its recovery finishes them, then rerun this one. " +
+			"A job that cannot be rerun (its source or config is gone): docs/README_JOBS_SCHEMA.md, \"Abandoning logged roots\".")
 	}
-	return fmt.Sprintf("engine: the root table %q has jobs marked running whose heartbeat stopped: %s. "+
-		"A crashed run leaves its job marked running. When no process runs them, mark them idle with "+
-		"UPDATE %s SET job_status = 0 WHERE job_name = '<name>'", e.RootTable, strings.Join(stale, ", "), e.JobTable)
+	if stopped {
+		b.WriteString("\nA job marked running whose heartbeat stopped: confirm its process is gone first " +
+			"(docs/README_JOBS_SCHEMA.md, \"Clearing a stale running job\").")
+		// The row is named by id: a job name may hold ' or \, which a quoted literal would garble.
+		for _, j := range idle {
+			fmt.Fprintf(&b, " %s has no unfinished roots: once its process is gone, mark it idle with "+
+				"UPDATE %s SET job_status = 0 WHERE id = %d.", j.Name, e.Registry, j.ID)
+		}
+	}
+	if recent {
+		b.WriteString("\nA job marked running with a recent heartbeat is a live process on another server that holds this data, " +
+			"or a run on this source that lost its locks moments ago and stops at its next check: stop it or wait for it to end, then rerun this job.")
+	}
+	if unreadable {
+		b.WriteString("\nA job whose config_fingerprint cannot be read: restore it from a known-good record, or resolve its unfinished " +
+			"work by hand (docs/README_JOBS_SCHEMA.md, \"Abandoning logged roots\").")
+	}
+	return b.String()
+}
+
+// blockerState is a blocker's status, heartbeat and log, for the refusal.
+func blockerState(j tracking.Blocker) string {
+	var st string
+	switch {
+	case j.Status == tracking.JobRunning && !j.Beat:
+		st = "marked running, never beat"
+	case j.Status == tracking.JobRunning:
+		st = fmt.Sprintf("marked running, heartbeat %s ago", j.HeartbeatAge)
+	case j.Status == tracking.JobFailed:
+		st = "failed"
+	default:
+		st = "idle"
+	}
+	switch {
+	case j.Pending:
+		return st + ", unfinished roots in its log"
+	case !j.Registered:
+		return st + ", unregistered, no log yet"
+	}
+	return st + ", no unfinished roots in its log"
 }
 
 // locks are a run's two lock sets and the identities of the table locks, for refusals.
@@ -71,9 +130,11 @@ type locks struct {
 }
 
 // lockJob takes the job lock, then the source table locks, starting each keep-alive as soon
-// as its set is held, then runs the same-root guard (spec §5.1). A lost set calls fail with
-// the reason. On an error nothing is held.
-func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, store *tracking.Store, sourceDatabase string) (_ *locks, err error) {
+// as its set is held, then runs the unfinished-work guard (source-table-locks spec §5.1;
+// unfinished-work guard spec §6). A lost set calls fail with the reason. On an error nothing
+// is held.
+func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, store *tracking.Store, source tracking.Binding) (_ *locks, err error) {
+	sourceDatabase := source.SourceDatabase
 	l := &locks{table: map[string][2]string{}}
 	watch, stopWatch := context.WithCancel(ctx)
 	var wg sync.WaitGroup
@@ -113,11 +174,12 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 	keep(job, "job lock")
 	cfg.Logger.Debugw("job lock held", "lock", jobName, "job", cfg.JobSchema+"."+cfg.Name)
 
-	var names []string
+	var names, tree []string
 	for _, n := range jobspec.NewTree(cfg.Spec).CopyOrder() {
 		name := lock.TableLockName(sourceDatabase, n.Table)
 		l.table[name] = [2]string{sourceDatabase, n.Table}
 		names = append(names, name)
+		tree = append(tree, n.Table)
 	}
 	tables := lock.NewSet(cfg.Source, names...)
 	if err := tables.Acquire(ctx); err != nil {
@@ -135,12 +197,27 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 		cfg.Logger.Debugw("source table lock held", "lock", name, "table", id[0]+"."+id[1])
 	}
 
-	running, err := store.Running(ctx, sourceDatabase, cfg.Spec.RootTable, cfg.Name)
+	// The unfinished-work guard, under every table lock (spec §6).
+	facts, err := readSourceData(ctx, cfg.Source)
+	if err != nil {
+		return nil, fmt.Errorf("engine: cannot read the source's gtid_mode, gtid_executed and Group Replication state, which decide "+
+			"whose unfinished work this run must respect: %w. This run did nothing", err)
+	}
+	same := func(stored string) bool {
+		ok, _ := sameData(source.SourceServerUUID, facts, stored)
+		return ok
+	}
+	blockers, err := store.Blockers(ctx, sourceDatabase, same, tree, cfg.Name)
 	if err != nil {
 		return nil, err
 	}
-	if len(running) > 0 {
-		return nil, &ConcurrentError{RootTable: cfg.Spec.RootTable, JobTable: sqlutil.QuoteIdentifier(cfg.JobSchema) + ".archiver_job", Jobs: running}
+	if len(blockers) > 0 {
+		why := map[string]string{}
+		for _, b := range blockers {
+			_, why[b.Name] = sameData(source.SourceServerUUID, facts, b.SourceServerUUID)
+		}
+		return nil, &OverlapError{Job: cfg.Name, Database: sourceDatabase,
+			Registry: sqlutil.QuoteIdentifier(cfg.JobSchema) + "." + sqlutil.QuoteIdentifier("archiver_job"), Blockers: blockers, Why: why}
 	}
 	return l, nil
 }

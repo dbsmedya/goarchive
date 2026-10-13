@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -107,19 +108,67 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestConcurrentError(t *testing.T) {
-	live := &ConcurrentError{RootTable: "orders", JobTable: "`t`.archiver_job", Jobs: []tracking.RunningJob{
-		{Name: "a", Beat: true, HeartbeatAge: 5 * time.Second}, {Name: "b", Beat: true, HeartbeatAge: time.Hour}}}
-	if msg := live.Error(); !strings.Contains(msg, "another job is running") || !strings.Contains(msg, "a") || strings.Contains(msg, "UPDATE") {
-		t.Errorf("a live job: %s", msg)
-	}
-	stale := &ConcurrentError{RootTable: "orders", JobTable: "`t`.archiver_job", Jobs: []tracking.RunningJob{
-		{Name: "b", Beat: true, HeartbeatAge: time.Hour}, {Name: "c"}}}
-	msg := stale.Error()
-	for _, want := range []string{"b (heartbeat 1h0m0s ago)", "c (no heartbeat)", "UPDATE `t`.archiver_job SET job_status = 0"} {
+// TestOverlapError (U2, unfinished-work guard spec §7): every blocker is listed with its
+// state and shared tables, each state gets its remedy, and no job with unfinished roots is
+// ever offered "mark it idle".
+func TestOverlapError(t *testing.T) {
+	e := &OverlapError{Job: "purge_logs", Database: "shop", Registry: "`goarchive`.`archiver_job`",
+		Blockers: []tracking.Blocker{
+			{Name: "archive_orders", Status: tracking.JobFailed, Registered: true, Pending: true, Shared: []string{"payment_logs"}},
+			{Name: "sweep", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: time.Hour, Pending: true,
+				Shared: []string{"order_items", "payment_logs"}, SourceServerUUID: "22222222-2222-2222-2222-222222222222"},
+			{ID: 3, Name: "killed", Status: tracking.JobRunning, Registered: true, Shared: []string{"payments"}},
+			{Name: "fresh", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: 5 * time.Second, Shared: []string{"payments"}},
+			{Name: "broken", Status: tracking.JobIdle, Registered: true, Pending: true, Unreadable: errors.New("bad json")},
+			{ID: 6, Name: "half", Status: tracking.JobRunning, Beat: true, HeartbeatAge: time.Hour, Shared: []string{"payments"}},
+			{ID: 7, Name: "garbled", Status: tracking.JobRunning, Registered: true, Unreadable: errors.New("bad json")},
+			// Job names may hold ' and \ (printable ASCII): the remedy names the row by id (Codex N1).
+			{ID: 8, Name: `it's\old`, Status: tracking.JobRunning, Registered: true, Shared: []string{"payments"}},
+		},
+		Why: map[string]string{"sweep": "whose data this server holds (its uuid is in this server's gtid_executed)"}}
+	msg := e.Error()
+	for _, want := range []string{
+		"job \"purge_logs\" shares source tables in `shop`", "registry `goarchive`.`archiver_job`", "This run did nothing.",
+		"archive_orders: failed, unfinished roots in its log; shares payment_logs",
+		"sweep: marked running, heartbeat 1h0m0s ago, unfinished roots in its log; shares order_items, payment_logs; " +
+			"recorded on source server 22222222-2222-2222-2222-222222222222, whose data this server holds",
+		"killed: marked running, never beat, no unfinished roots in its log; shares payments",
+		"fresh: marked running, heartbeat 5s ago, no unfinished roots in its log",
+		"broken: idle, unfinished roots in its log; its config_fingerprint cannot be read (bad json)",
+		"half: marked running, heartbeat 1h0m0s ago, unregistered, no log yet; shares payments",
+		"garbled: marked running, never beat, no unfinished roots in its log; its config_fingerprint cannot be read (bad json)",
+		"half has no unfinished roots: once its process is gone, mark it idle",
+		"garbled has no unfinished roots: once its process is gone, mark it idle",
+		"Rerun each job with unfinished roots", "Clearing a stale running job",
+		"killed has no unfinished roots: once its process is gone, mark it idle with UPDATE `goarchive`.`archiver_job` SET job_status = 0 WHERE id = 3.",
+		"it's\\old has no unfinished roots: once its process is gone, mark it idle with UPDATE `goarchive`.`archiver_job` SET job_status = 0 WHERE id = 8.",
+		"a live process on another server", "Abandoning logged roots",
+	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("stale jobs: %q lacks %q", msg, want)
+			t.Errorf("refusal lacks %q:\n%s", want, msg)
 		}
+	}
+	if strings.Contains(msg, "WHERE job_name") {
+		t.Errorf("the remedy quotes a job name in SQL:\n%s", msg)
+	}
+	if n := strings.Count(msg, "SET job_status = 0 WHERE id = "); n != 4 {
+		t.Errorf("%d mark-idle remedies, want 4 (killed, half, garbled, it's\\old):\n%s", n, msg)
+	}
+	// One job with unfinished roots only: no heartbeat or idle remedy at all.
+	one := &OverlapError{Job: "b", Database: "s", Registry: "r",
+		Blockers: []tracking.Blocker{{Name: "a", Status: tracking.JobIdle, Pending: true, Shared: []string{"t"}}}}
+	if msg := one.Error(); strings.Contains(msg, "UPDATE") || strings.Contains(msg, "heartbeat") {
+		t.Errorf("an idle job with unfinished roots: %s", msg)
+	}
+	// A job that cannot be rerun has its way out in the abandonment procedure (Fable final M2a).
+	if msg := one.Error(); !strings.Contains(msg, "A job that cannot be rerun") || !strings.Contains(msg, "Abandoning logged roots") {
+		t.Errorf("the pending remedy does not cite the abandonment procedure: %s", msg)
+	}
+	// An unreadable fingerprint with nothing unfinished gets the idle remedy only (Fable final M2b).
+	clean := &OverlapError{Job: "b", Database: "s", Registry: "r",
+		Blockers: []tracking.Blocker{{Name: "g", Status: tracking.JobRunning, Registered: true, Unreadable: errors.New("bad json")}}}
+	if msg := clean.Error(); strings.Contains(msg, "restore it from a known-good record") || !strings.Contains(msg, "g has no unfinished roots") {
+		t.Errorf("an unreadable job with nothing unfinished: %s", msg)
 	}
 }
 

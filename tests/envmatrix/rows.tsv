@@ -3,8 +3,12 @@
 #   kind    dynamic: SET GLOBAL on a long-lived pair of MX_IMAGE, restored after the row
 #           init:    a fresh pair of MX_IMAGE with an extra cnf (settable only at initialization)
 #           version: a fresh, unmutated pair of another image
+#           group:   dbsgomysql's Group Replication cluster as the source, with a fresh
+#                    destination; the unfinished-work guard tests only
 #   setup   dynamic: the SQL, run on both servers ("-" for none); init: the cnf, relative to
-#           this directory; version: the image
+#           this directory; version: the image; group: the image of dbsgomysql's Group
+#           Replication cluster (group/README.md), whose primary is the source; only the
+#           unfinished-work guard tests run
 #   expect  pass, or refuse:CODE[|CODE...] (tests/envmatrix/judge): every failing test must
 #           cite one of the codes, the M7-8 rule that a run is exact or refused by name
 baseline	dynamic	-	pass
@@ -14,6 +18,7 @@ collation_server_utf8mb4_general_ci	dynamic	SET GLOBAL collation_server = utf8mb
 default_engine_myisam	dynamic	SET GLOBAL default_storage_engine = MyISAM	pass
 explicit_defaults_ts_off	dynamic	SET GLOBAL explicit_defaults_for_timestamp = OFF	pass
 gipk_on	dynamic	SET GLOBAL sql_generate_invisible_primary_key = ON	pass
+gtid_mode_on_permissive	dynamic	SET GLOBAL gtid_mode = ON_PERMISSIVE	pass
 isolation_read_uncommitted	dynamic	SET GLOBAL transaction_isolation = 'READ-UNCOMMITTED'	pass
 isolation_serializable	dynamic	SET GLOBAL transaction_isolation = 'SERIALIZABLE'	pass
 max_allowed_packet_64k	dynamic	SET GLOBAL max_allowed_packet = 65536	refuse:MAX_ALLOWED_PACKET_CHECK
@@ -40,3 +45,4 @@ v8040_oracle	version	mysql:8.0.40	pass
 v8046_oracle	version	mysql:8.0.46	pass
 v84_oracle	version	mysql:8.4	pass
 v97_oracle	version	mysql:9.7	pass
+group_replication_source	group	percona/percona-server:8.4	pass

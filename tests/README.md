@@ -113,7 +113,7 @@ through the real CLI.
 | **07** | `test07_rental_payment_copyonly.yaml` | `rental → payment`, same slice as 04 | **`copy-only`** — the command that never deletes, so the assertion that carries it is the negative one: **the source must be unchanged** |
 | **08** | `test08_payment_graceful_resume.yaml` | `payment`, same config as 05, run **twice** | **Graceful stop → resume.** `SIGTERM` after batch 1; the batch completes, so **zero** non-terminal roots are left, recovery has nothing to replay, and run 2 continues the where range. |
 | **09** | `test09_payment_crash_replay.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **twice** | **Crash → replay.** `SIGKILL` inside batch 1's delete phase leaves its 100 roots at `copied`, so run 2's startup recovery replays them delete-only. The only test that starts from a stale `job_status=1`. |
-| **13** | `test13_purge_replication.yaml` | `payment`, same selected slice as 03 (1999 selected rows, reasserted before launch) | Stops the real replica applier, observes a purge hold with unchanged rows, restarts it and requires the same process to finish; exact deletes, no copy or verification. |
+| **13** | `test13_purge_replication.yaml` | `payment`, same selected slice as 03 (1999 selected rows, reasserted before launch) | Stops the real replica applier, observes a purge hold with unchanged rows, restarts it and requires the same process to finish; exact deletes, no copy or verification. Its replica check reads the source's `gtid_executed` on one line: a set with two uuids spans two. |
 | **14** | `test14_keymatrix_composite.yaml` | `km_line (order_id, line_no)` → `km_item` → `km_item_note` | Key matrix, **archive**: a composite root, a child on the composite key, a grandchild on a three-column foreign key; composite orphan checks |
 | **15** | `test15_keymatrix_binary.yaml` | `km_blob` (`BINARY(16)`) → `km_blob_ref` | Key matrix, **purge**: keys whose bytes are not valid UTF-8 |
 | **16** | `test16_keymatrix_latin1.yaml` | `km_name` (`latin1` `VARCHAR`) → `km_name_tag` | Key matrix, **copy-only**: non-ASCII `latin1` keys, verified by sha256 and logged in a `latin1` key column |
@@ -496,6 +496,7 @@ row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
 | `dynamic` | Takes a snapshot of the globals on a long-lived source/destination pair of `MX_IMAGE`, applies the row's `SET GLOBAL` to both servers, runs the suites, then restores the snapshot and compares it |
 | `init` | Starts a fresh pair with an extra `my.cnf` (for example `lower_case_table_names = 1`) |
 | `version` | Starts a fresh, unchanged pair of another image (Percona and Oracle, 8.0.40 to 9.7) |
+| `group` | Starts dbsgomysql's three-member Group Replication cluster (`envmatrix/group/`, copied unchanged from the pinned library) as the source, with a fresh destination, and runs only the unfinished-work guard tests: Group Replication refuses tables without a primary key, which other suites create on purpose |
 
 ```bash
 make env-matrix                                   # every row
@@ -504,7 +505,8 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 
 - **Needs:** Docker, the local images that `rows.tsv` names, and `tests/.env`.
 - **Servers:** the throwaway pairs (`ga-mx<i>-src`/`-dst`, ports 3375–3396) are removed with
-  their volumes when the run ends.
+  their volumes when the run ends; a group row's cluster (compose project `ga-mxg<i>`) takes
+  the rest of its pair's block of ten ports, and is removed with its volumes after the row.
 - **The estate:** the suites still reach db3 as the replica, so
   `TestMySQLLiveReplicationGate`, which stops db3's applier, is skipped here. Run it on the
   estate alone.
@@ -748,6 +750,8 @@ docker compose down -v      # the -v is what removes the data volumes
 | `e2e/README.md` | The E2E test-file format and how to add a test |
 | `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers, the tracking-table reader and the interrupt/resume arm |
 | `e2e/<category>/NN-*.test.sh` | One declaration file per test, grouped by the command under test |
+| `harness/` | Database-free tests of the test infrastructure: the E2E library (against a fake `mysql-query.sh`), version and toolchain drift, the consumer policy, and every tracked Markdown file's relative links and anchors (`TestDocLinks`) |
+| `envmatrix/` | The environment matrix: `rows.tsv`, `run-matrix.sh`, the judge, and `group/`, dbsgomysql's Group Replication cluster |
 | `scripts/check-servers.sh` | Database connectivity checker |
 | `scripts/get_sakila_db.sh` | Downloads the Sakila database |
 | `scripts/dump_master.js` | MySQL Shell script for schema dump |

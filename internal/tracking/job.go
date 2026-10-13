@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
@@ -322,45 +321,4 @@ func (j *Job) Heartbeat(ctx context.Context) error {
 		return fmt.Errorf("tracking: heartbeat of job %q: %w", j.Name, err)
 	}
 	return nil
-}
-
-// RunningJob is a job that archiver_job marks running.
-type RunningJob struct {
-	Name         string
-	HeartbeatAge time.Duration
-	Beat         bool // false: the job has never beaten
-}
-
-// Running returns the jobs other than except that archiver_job marks running on
-// sourceDatabase.rootTable, with their heartbeat ages, for the engine's same-root guard
-// (kept from 2.x, core spec §9; scoped by source-table-locks spec §5.4). Both names compare
-// without case, as the lock names fold. source_server_uuid is deliberately not compared: a
-// failover gives the source a new one, and a crashed job's logged roots must still be seen.
-// Two startups on one root table cannot both pass the guard only if the caller holds the
-// source table locks from before this call to the end of its run, as the engine does.
-func (s *Store) Running(ctx context.Context, sourceDatabase, rootTable, except string) ([]RunningJob, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
-		"SELECT job_name, TIMESTAMPDIFF(SECOND, last_heartbeat_at, UTC_TIMESTAMP()) FROM %s "+
-			"WHERE LOWER(source_database) = LOWER(?) AND LOWER(root_table) = LOWER(?) AND job_status = ? AND job_name <> ? "+
-			"ORDER BY job_name", s.jobTable),
-		sourceDatabase, rootTable, JobRunning, except)
-	if err != nil {
-		return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []RunningJob
-	for rows.Next() {
-		var r RunningJob
-		var seconds sql.NullInt64
-		if err := rows.Scan(&r.Name, &seconds); err != nil {
-			return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
-		}
-		r.Beat = seconds.Valid
-		r.HeartbeatAge = time.Duration(seconds.Int64) * time.Second
-		out = append(out, r)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("tracking: read the jobs running on %q: %w", rootTable, err)
-	}
-	return out, nil
 }

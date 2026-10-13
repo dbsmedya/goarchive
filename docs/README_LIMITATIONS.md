@@ -22,7 +22,7 @@ GoArchive is for **cold data**. It is not designed for hot, actively-transacting
 ## Contents
 
 - [Known Limits & Caution](#known-limits--caution)
-  - [Hard constraints](#hard-constraints--rejected-by-preflight)
+  - [Hard constraints](#hard-constraints)
   - [Model limitations](#model-limitations)
   - [Operational cautions](#operational-cautions)
 - [Trust model](#trust-model)
@@ -179,6 +179,21 @@ One batch at a time, no parallelism. Runs whose job trees share a source table r
 time: a second run of the same job, a job on another root whose tree overlaps, the same tables
 sent to another destination, and two copy-only jobs reading the same tables are all refused
 while the first runs ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+
+A stopped job with unfinished work blocks every other job that shares one of its tables until
+its own rerun finishes that work
+([unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking)). Its limits:
+
+- **Same-named databases on different servers block each other** when they share one
+  `job_schema` and the source cannot tell them apart: `gtid_mode` is not `ON`, the source is a
+  Group Replication member, or the shards were provisioned from one another. Give each source
+  server its own [`job_schema`](README_CONFIGURATION.md#job_schema-destination-only).
+- **Not detected:** a server that received the stopped job's data only before a GTID
+  migration, and a server outside a group that holds the group's data.
+  [Re-bind the stopped job](README_JOBS_SCHEMA.md#re-binding-a-job-after-a-failover) before
+  another job runs on its tables.
+- **Not detected:** a stopped job recorded on a replica of this source.
+- **One registry:** a stopped job tracked in another `job_schema` does not block.
 
 The locks live on one server. Every connection must reach one backend for the whole run (see
 [Source and destination must be different databases](#source-and-destination-must-be-different-databases)):

@@ -80,6 +80,14 @@ tracking tables, so its account needs `CREATE` there
 ([Permissions](README_PERMISSIONS.md#why-create-on-the-tracking-schema)). The tables:
 [Job Tracking Schema](README_JOBS_SCHEMA.md).
 
+**One `job_schema` per source server where database names repeat.** A job that stopped with
+unfinished work holds its tables against the other jobs in its registry on the same source
+data. Where a server cannot tell its data from another's (no `gtid_mode = ON`, a Group
+Replication member, or shards provisioned from one another), every source database of the same
+name in one registry counts as one, so one server's stopped job holds the same-named tables of
+every other server ([Sequential by design](README_LIMITATIONS.md#sequential-by-design)). A
+`job_schema` per source server keeps them apart.
+
 ---
 
 ## Session settings

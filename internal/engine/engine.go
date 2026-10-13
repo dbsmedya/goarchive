@@ -259,7 +259,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	// from the moment the first lock is held (spec §4 step 3).
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	held, err := lockJob(runCtx, cancel, cfg, store, binding.SourceDatabase)
+	held, err := lockJob(runCtx, cancel, cfg, store, binding)
 	if err != nil {
 		return nil, withCause(runCtx, err)
 	}

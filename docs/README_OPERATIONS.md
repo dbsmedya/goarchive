@@ -352,11 +352,23 @@ whole length, each on a dedicated session:
    <id>). Jobs whose tables overlap run one at a time; this run did nothing.` This holds for
    every job type and across destinations: the same source tables archived to two
    destinations run one after the other, and so do two copy-only jobs reading the same tables.
-3. **The same-root check**: a different job marked running on the same source database and
-   root table refuses the run. A live job is already refused by the table locks; this check
-   catches a crashed one, which is left marked running with logged work. When its heartbeat
-   stopped, the error says so and gives the `UPDATE … SET job_status = 0` to mark it idle once
-   no process runs it.
+3. **The unfinished-work guard**, while both lock sets are held: another job in the same
+   registry, on the same source data, whose tree shares a table with this run's and which is
+   marked running, or holds unfinished roots (`copied` or `deleting`) in its log whatever its
+   status, refuses the run before it does anything. A live job is already refused by the table
+   locks; the guard protects a job that stopped (a crash, an error, a stop during recovery)
+   until its own rerun finishes that work. *The same source data* is this server's, or that of
+   a server whose transactions are in this server's `gtid_executed` (a promoted replica, a
+   clone, or a server this source replicates from); a server that replicates from this source
+   holds this source's data, not the other way round, so a job recorded there is another
+   server's. Where the server cannot tell, every server's database of the same name in the
+   registry counts as one: without `gtid_mode = ON`; on a Group Replication member, whose group
+   logs its transactions under the group name, not a member's uuid; and for shards provisioned
+   from one another, which keep each other's uuids in `gtid_executed`. The guard reads this
+   run's registry only ([limits](README_LIMITATIONS.md#sequential-by-design)). The refusal lists each job with its
+   state and the tables it shares, and the way out: rerun that job so its recovery finishes
+   its work. A job marked running with nothing in its log, whose process is gone, is cleared as
+   before ([Clearing a stale running job](README_JOBS_SCHEMA.md#clearing-a-stale-running-job)).
 
 Every lock name is a prefix and a hash, so any table or job name fits MySQL's 64-character
 limit. MySQL computes the same names, so you can find a holder from SQL:
