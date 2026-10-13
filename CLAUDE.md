@@ -204,10 +204,12 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
 
-> **Do not rename the `## Known Limits & Caution` heading in
-> `docs/README_LIMITATIONS.md`.** An error message points operators at it by name
-> (`internal/database/identity.go`, `SRC_DEST_IDENTITY_CHECK`). Renaming the heading breaks
-> that reference.
+> **Do not rename a doc heading that an error message names.** Operators are pointed at these
+> by name: `## Known Limits & Caution` in `docs/README_LIMITATIONS.md`
+> (`internal/database/identity.go`, `SRC_DEST_IDENTITY_CHECK`); *Crash recovery* in
+> `docs/README_OPERATIONS.md` (`internal/engine/errors.go`, `UncopiedError`); *A value larger than
+> the destination's `max_allowed_packet` fails its batch* in `docs/README_LIMITATIONS.md` (same
+> file, `PacketError`). Renaming one breaks that reference.
 
 ## Documentation Layout (RULE)
 

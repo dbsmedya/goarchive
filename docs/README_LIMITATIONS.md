@@ -160,10 +160,10 @@ watching memory ([Tuning throughput](README_OPERATIONS.md#tuning-throughput)).
 
 #### A value larger than the destination's `max_allowed_packet` fails its batch
 
-A row or an INSERT may exceed it: the driver reads each server's value and sends large values
-separately. One value larger than it cannot be sent: the batch rolls back, nothing of it is
-logged or deleted, and the error names the table, column and size. Raise the destination's
-`max_allowed_packet` above that size, then rerun.
+A row or an INSERT may exceed it: the driver sends large values separately. One value larger
+than it cannot be sent: nothing of the batch is logged or deleted, and the error names the
+table, column and size; raise the destination's `max_allowed_packet` above it. An INSERT of many
+values each just under the driver's long-data threshold can be refused whole: lower `batch_size`.
 
 #### The copy transaction spans all tables
 
