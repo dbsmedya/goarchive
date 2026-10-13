@@ -43,6 +43,30 @@ func TestStorageEngine(t *testing.T) {
 	}
 }
 
+// TestDestinationStorageEngine (destination-engine spec §4): archive and copy-only refuse a
+// destination table that is not InnoDB, naming each with its engine; a NULL engine is
+// <unknown>; the name is compared without case; purge has no destination to judge.
+func TestDestinationStorageEngine(t *testing.T) {
+	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.CopyOnly} {
+		w := healthy(t, typ)
+		w.dst.engines = map[string]string{"order_lines": "BLACKHOLE", "line_notes": ""}
+		e := w.mustFail("DEST_STORAGE_ENGINE_CHECK")
+		if !hasTable(e, "order_lines(BLACKHOLE)") || !hasTable(e, "line_notes(<unknown>)") || len(e.Tables) != 2 {
+			t.Errorf("%s: tables = %v", typ, e.Tables)
+		}
+		if !strings.Contains(e.Message, "one destination transaction") || !strings.Contains(e.Message, "ENGINE=InnoDB") {
+			t.Errorf("%s: message = %q", typ, e.Message)
+		}
+	}
+	w := healthy(t, jobspec.Archive)
+	w.dst.engines = map[string]string{"orders": "innodb"}
+	w.mustPass()
+
+	w = healthy(t, jobspec.Purge)
+	w.dst.engines = map[string]string{"orders": "MyISAM"}
+	w.mustPass()
+}
+
 // TestPermissions: each privilege check passes only on a provable grant, for the job types
 // that need it.
 func TestPermissions(t *testing.T) {

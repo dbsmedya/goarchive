@@ -82,6 +82,7 @@ jobs:
 // and picks the job before it opens a connection, so a wrong subcommand, a missing job, a
 // 2.x file or a bad flag is refused at once, and never as a connection error.
 func TestCommandsCheckTheJobBeforeConnecting(t *testing.T) {
+	const renamed = "--skip-validate-preflight was renamed --skip-dangerously-validate-preflight-allow-experimental"
 	cfg := writeConfig(t, unreachable)
 	old := writeConfig(t, "\nsource:\n  host: h\n  user: u\n  database: s\ndestination:\n  host: h\n  user: u\n  database: d\njobs:\n  j:\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n")
 	for _, tc := range []struct {
@@ -104,6 +105,11 @@ func TestCommandsCheckTheJobBeforeConnecting(t *testing.T) {
 		{[]string{"archive", "-c", old, "--job", "j"}, "docs/README_UPGRADING_3_0.md"},
 		// Review Focus 4: a --progress interval below 1s is refused before any connection.
 		{[]string{"purge", "-c", cfg, "--job", "purge_old", "--progress=500ms"}, `--progress interval "500ms" is too small`},
+		// The renamed preflight bypass (destination-engine spec §5, G3), both forms.
+		{[]string{"archive", "-c", cfg, "--job", "purge_old", "--skip-validate-preflight"}, renamed},
+		{[]string{"purge", "-c", cfg, "--job", "purge_old", "--skip-validate-preflight=false"}, renamed},
+		{[]string{"copy-only", "-c", cfg, "--job", "copy_old", "--skip-validate-preflight"}, renamed},
+		{[]string{"dry-run", "-c", cfg, "--job", "copy_old", "--skip-validate-preflight=true"}, renamed},
 	} {
 		_, err := execute(t, tc.args...)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -136,12 +142,12 @@ func TestRunCommandsConnect(t *testing.T) {
 // whose preflight checks DELETE triggers: archive and purge, and validate and dry-run, which
 // run their preflight. copy-only's profile has no such check (spec §8.1).
 func TestFlagMatrix(t *testing.T) {
-	all := []string{"job", "verification", "skip-validate-preflight", "force-triggers", "progress", "force", "skip-verify"}
+	all := []string{"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress", "force", "skip-verify"}
 	for name, want := range map[string][]string{
-		"archive":   {"job", "verification", "skip-validate-preflight", "force-triggers", "progress"},
-		"purge":     {"job", "skip-validate-preflight", "force-triggers", "progress"},
-		"copy-only": {"job", "verification", "skip-validate-preflight", "progress"},
-		"dry-run":   {"job", "verification", "skip-validate-preflight", "force-triggers"},
+		"archive":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress"},
+		"purge":     {"job", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress"},
+		"copy-only": {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "progress"},
+		"dry-run":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers"},
 		"validate":  {"job", "verification", "force-triggers"},
 		"plan":      {"job"},
 		"list-jobs": nil,
@@ -154,6 +160,13 @@ func TestFlagMatrix(t *testing.T) {
 			if has := c.Flags().Lookup(f) != nil; has != slices.Contains(want, f) {
 				t.Errorf("%s --%s registered = %v, want %v", name, f, has, !has)
 			}
+		}
+	}
+	// The old name stays registered, hidden, only to refuse (destination-engine spec §5, G3).
+	for _, name := range []string{"archive", "purge", "copy-only", "dry-run"} {
+		c, _, _ := rootCmd.Find([]string{name})
+		if f := c.Flags().Lookup("skip-validate-preflight"); f == nil || !f.Hidden {
+			t.Errorf("%s: --skip-validate-preflight is not registered hidden", name)
 		}
 	}
 }

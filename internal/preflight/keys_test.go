@@ -87,7 +87,7 @@ func TestCaseOnlyIsReportedFirst(t *testing.T) {
 	}
 }
 
-// TestSkipPolicyStillReadsKeys: --skip-validate-preflight skips policy, not the key read
+// TestSkipPolicyStillReadsKeys: --skip-dangerously-validate-preflight-allow-experimental skips policy, not the key read
 // the SQL is built from (spec §8.3).
 func TestSkipPolicyStillReadsKeys(t *testing.T) {
 	w := healthy(t, jobspec.Archive)

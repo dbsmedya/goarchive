@@ -36,7 +36,7 @@ func enabledStages(cfg Config) []string {
 // has no destination-table checks but keeps the job schema permission check (R5).
 func TestStagesByJobType(t *testing.T) {
 	structure := []string{"TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
-	destination := []string{"DestinationTablesExist", "DestinationKeys", "DestinationSchemaCompatibility",
+	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "DestinationKeys", "DestinationSchemaCompatibility",
 		"DestinationWritePermissions", "DestinationInsertTriggers"}
 	join := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	for _, tc := range []struct {
@@ -51,7 +51,7 @@ func TestStagesByJobType(t *testing.T) {
 			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
-		// Under --skip-validate-preflight the keys are still read, the destination's too:
+		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3).
 		{jobspec.Archive, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
 		{jobspec.CopyOnly, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},

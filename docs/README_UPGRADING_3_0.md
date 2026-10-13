@@ -104,6 +104,12 @@ Two jobs that share a table and both still hold such roots refuse each other's r
 one by [abandoning its roots](README_JOBS_SCHEMA.md#abandoning-logged-roots), then rerun the
 other.
 
+**Destination tables must be InnoDB.** `archive` and `copy-only` refuse a destination table on
+another engine ([`DEST_STORAGE_ENGINE_CHECK`](README_VALIDATION.md#dest_storage_engine_check)),
+and `validate` and `dry-run` report it; convert it with `ALTER TABLE … ENGINE=InnoDB`. A destination created on a server whose
+`default_storage_engine` is not InnoDB is the usual cause. **`--skip-validate-preflight` is
+renamed** `--skip-dangerously-validate-preflight-allow-experimental`; the old name is refused.
+
 ---
 
 ## Configuration changes

@@ -353,7 +353,7 @@ func TestMySQLLocksHeldForTheRun(t *testing.T) {
 
 // TestMySQLVerificationDetectsAChangedValue: a destination trigger changes a non-key value
 // on insert. Preflight refuses destination INSERT triggers, so the run skips its policy
-// checks (--skip-validate-preflight), the one way such a trigger reaches a copy. sha256
+// checks (--skip-dangerously-validate-preflight-allow-experimental), the one way such a trigger reaches a copy. sha256
 // refuses the batch and rolls it back; count, which proves only which keys landed, passes
 // (R41).
 func TestMySQLVerificationDetectsAChangedValue(t *testing.T) {

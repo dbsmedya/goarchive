@@ -142,6 +142,7 @@ check proves that discovery was complete, whatever the schema holds
 
 **Least-privilege deployments.** Running `validate` or `dry-run` from a more privileged account is
 diagnostic only: `archive`, `purge` and `copy-only` run preflight again with their own accounts,
-which must hold every privilege their job type needs. `--skip-validate-preflight` skips the
-permission checks, not the privileges: a missing one then fails mid-run
+which must hold every privilege their job type needs.
+`--skip-dangerously-validate-preflight-allow-experimental` skips the permission checks, not the
+privileges: a missing one then fails mid-run
 ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)).

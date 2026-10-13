@@ -105,9 +105,9 @@ func TestMySQLValidateAllJobs(t *testing.T) {
 
 // TestMySQLPreflightFlags (spec §8.3, M3-F3): the two preflight overrides reach preflight from
 // the command line. A DELETE trigger on a source table is refused; --force-triggers accepts it,
-// and so does --skip-validate-preflight, which skips the policy checks.
+// and so does --skip-dangerously-validate-preflight-allow-experimental, which skips the policy checks.
 func TestMySQLPreflightFlags(t *testing.T) {
-	for _, flag := range []string{"--force-triggers", "--skip-validate-preflight"} {
+	for _, flag := range []string{"--force-triggers", "--skip-dangerously-validate-preflight-allow-experimental"} {
 		t.Run(flag, func(t *testing.T) {
 			f := newFixture(t, "flags", orderJobs)
 			mustExec(t, f.src, orderDDL...)

@@ -90,10 +90,8 @@ different schema is supported.
 
 #### InnoDB only
 
-Every participating **source** table must be InnoDB (`STORAGE_ENGINE_CHECK`). The destination
-engine is not checked, but MyISAM, MEMORY and ARCHIVE keep rows after `ROLLBACK`, voiding the
-per-batch rollback, and BLACKHOLE stores nothing, so verification fails unless it is `none`
-([the check](README_VALIDATION.md#storage_engine_check)).
+Every participating source and destination table must be InnoDB (`STORAGE_ENGINE_CHECK`,
+[`DEST_STORAGE_ENGINE_CHECK`](README_VALIDATION.md#dest_storage_engine_check)).
 
 #### Uncovered incoming foreign keys
 

@@ -249,7 +249,7 @@ func TestMySQLReplayKeepsKeyBytes(t *testing.T) {
 	}
 }
 
-// TestMySQLLogKeyCheckUnderSkip (spec §10 binding tests, BD-4): --skip-validate-preflight
+// TestMySQLLogKeyCheckUnderSkip (spec §10 binding tests, BD-4): --skip-dangerously-validate-preflight-allow-experimental
 // skips preflight's policy checks, not the log-key check. A root key widened from INT to
 // BIGINT since the job's first run is refused before anything is touched; the same second
 // run without the change archives.
