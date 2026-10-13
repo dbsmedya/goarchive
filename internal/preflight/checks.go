@@ -66,7 +66,7 @@ func checkStorageEngine(ctx context.Context, f *facts) error {
 	if err != nil {
 		return inspectionError("storage_engine", err)
 	}
-	return judgeStorageEngine(found, "STORAGE_ENGINE_CHECK", "Only InnoDB tables are supported. Use ALTER TABLE to convert")
+	return judgeStorageEngine(found, "storage_engine", "STORAGE_ENGINE_CHECK", "Only InnoDB tables are supported. Use ALTER TABLE to convert")
 }
 
 // checkDestinationStorageEngine refuses a destination table that is not InnoDB: the copy
@@ -77,22 +77,22 @@ func checkDestinationStorageEngine(ctx context.Context, f *facts) error {
 	if err != nil {
 		return inspectionError("destination_storage_engine", err)
 	}
-	return judgeStorageEngine(found, "DEST_STORAGE_ENGINE_CHECK",
+	return judgeStorageEngine(found, "destination_storage_engine", "DEST_STORAGE_ENGINE_CHECK",
 		"Only InnoDB destination tables are supported: the copy writes each batch in one destination transaction, "+
 			"which only InnoDB rolls back. Use ALTER TABLE <table> ENGINE=InnoDB to convert")
 }
 
 // judgeStorageEngine names every table that is not InnoDB, with its engine; a NULL engine
-// is reported as <unknown> rather than passing.
-func judgeStorageEngine(found []validations.TableInfo, check, message string) error {
+// is reported as <unknown> rather than passing. stage labels a fail-closed inspection error.
+func judgeStorageEngine(found []validations.TableInfo, stage, check, message string) error {
 	var offenders []string
 	for _, fd := range validations.CheckStorageEngine(found, requiredStorageEngine) {
 		if fd.Check != validations.IDStorageEngine {
-			return unexpectedFinding("storage_engine", fd)
+			return unexpectedFinding(stage, fd)
 		}
 		info, ok := fd.Facts.(validations.TableInfo)
 		if !ok {
-			return unexpectedFacts("storage_engine", fd, "validations.TableInfo")
+			return unexpectedFacts(stage, fd, "validations.TableInfo")
 		}
 		engine := info.Engine
 		if engine == "" {
