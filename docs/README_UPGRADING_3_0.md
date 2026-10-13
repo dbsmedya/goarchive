@@ -74,9 +74,9 @@ the destination; later releases lock a hashed job name on the destination and a 
 every table of the tree on the source (`GET_LOCK()` names, not table locks). The two do not see
 each other's locks. **Stop every alpha.0 run before starting a run of a later release.** Mixed,
 the same job can run twice, and jobs whose trees overlap run together; the outcome is a loud
-failure (a duplicate key, or a row-count refusal), but it is the stop that prevents it. A later release's run is still refused while an alpha.0
-job whose tree shares one of its tables is marked running in the shared registry. Nothing at
-startup looks for alpha.0's locks.
+failure (a duplicate key, or a row-count refusal), but it is the stop that prevents it. A later
+release's run is still refused while an alpha.0 job whose tree shares one of its tables is
+marked running in the shared registry. Nothing at startup looks for alpha.0's locks.
 
 To see live alpha.0 runs, as a DBA account on each destination:
 
