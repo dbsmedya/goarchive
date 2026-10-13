@@ -215,6 +215,14 @@ func TestMySQLGuardSourceData(t *testing.T) {
 	e.interrupted(t, archive, atCommitted)
 	facts := sourceDataFacts(t, e.src)
 	precise := facts.gtid.Mode == "ON" && facts.group.GroupName == ""
+	branch := "precise (gtid_executed)"
+	switch {
+	case facts.group.GroupName != "":
+		branch = "fallback (Group Replication member)"
+	case !precise:
+		branch = "fallback (gtid_mode " + facts.gtid.Mode + ")"
+	}
+	t.Logf("gtid_mode %s, group %q: %s branch", facts.gtid.Mode, facts.group.GroupName, branch)
 
 	if precise {
 		injectGTID(t)
