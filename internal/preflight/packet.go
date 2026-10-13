@@ -53,8 +53,8 @@ type sized struct {
 // (key.AfterBytes; Codex M7c-2 review B1). Each bound counts the prepared text and the
 // bytes the driver sends (key.StatementBytes, key.InsertBytes; Fable M7c-1 review I1). The
 // copy's INSERTs carry rows, not keys, and are not bounded here: the driver sends their
-// large values as long data, so only one value larger than the destination's packet fails
-// them (engine PacketError).
+// large values as long data, so what can still fail them is one value larger than the
+// destination's packet, or rarely the whole statement (engine PacketError).
 func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 	specs, err := f.sourceSpecs(ctx)
 	if err != nil {

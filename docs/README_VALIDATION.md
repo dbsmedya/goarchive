@@ -425,8 +425,8 @@ The message names the server, the statement, the table and the bytes needed, and
 that fit: raise `max_allowed_packet` to at least that size; lower `batch_size` or
 `batch_delete_size` to the largest count that fits; or, for a statement at its cap, lower
 `range_optimizer_max_mem_size` (set it, when it is 0) to shrink the cap. INSERTs carry rows, not
-keys, and are not bounded here: the driver sends their large values separately, so only one value
-larger than the destination's packet fails them
+keys, and are not bounded here: the driver sends their large values separately, so what can still
+fail them is one value larger than the destination's packet, or rarely the whole statement
 ([Known Limits](README_LIMITATIONS.md#a-value-larger-than-the-destinations-max_allowed_packet-fails-its-batch)).
 
 ---

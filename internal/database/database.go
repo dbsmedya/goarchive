@@ -240,9 +240,11 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// default 64 MiB. The driver sends a value as long data when it reaches
 	// max_allowed_packet/(parameters+1); against a smaller server, 64 MiB put values inline
 	// that the server's limit could not hold, and it dropped the connection over the INSERT.
-	// With the server's value every INSERT fits but one holding a value larger than the
-	// packet, which the server refuses by name (1105). A session's max_allowed_packet is
-	// fixed at connect, so the value read is the one the session keeps.
+	// With the server's value a row or an INSERT larger than the packet fits. What can still
+	// fail is one value larger than the packet, which the server refuses by name (1105), or
+	// rarely a statement of many inline values each just under the threshold, which the
+	// driver refuses before sending (ErrPktTooLarge); both are engine PacketError. A session's
+	// max_allowed_packet is fixed at connect, so the value read is the one the session keeps.
 	dsnCfg.MaxAllowedPacket = 0
 	// Issue #16: MySQL converts TIMESTAMP through the SESSION zone on every
 	// read and write, so a copied value is the same instant on both servers
