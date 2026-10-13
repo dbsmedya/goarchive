@@ -1,3 +1,12 @@
+# source_gtid_set prints the source's gtid_executed on one line. The server separates the
+# uuids of a set with a newline (probe L11, .ayder unfinished-work guard), which
+# mysql-query.sh prints as two lines, so the newline is removed on the server.
+source_gtid_set() {
+    MYSQL_QUERY_HOST="$SOURCE_HOST" MYSQL_QUERY_USER="$SOURCE_USER" \
+        "$SCRIPT_DIR/mysql-query.sh" "$SOURCE_PORT" "SELECT REPLACE(@@GLOBAL.gtid_executed, CHAR(10), '')" |
+        awk 'NR == 2 { print; seen=1 } END { if (!seen || NR != 2) exit 1 }'
+}
+
 # Test13's live replication witness. The subshell scopes traps and private
 # helpers so an interrupted test cannot poison the next engine invocation.
 # No operator data is used: this runs only on the seeded E2E payment fixture.
@@ -39,7 +48,7 @@ run_replication_hold_job() (
             log_error "PURGE_REPLICA_NOT_READY: io=$io sql=$sql delay=$delay"
             return 1
         fi
-        gtid=$(source_query "SELECT @@GLOBAL.gtid_executed" | scalar_value) || return 1
+        gtid=$(source_gtid_set) || return 1
         # A GTID set contains only UUIDs, transaction ranges and separators.
         if [[ -z "$gtid" || "$gtid" == *[!a-fA-F0-9:,-]* ]]; then
             log_error "PURGE_REPLICA_NOT_READY: missing or invalid source GTID set"
