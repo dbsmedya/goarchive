@@ -19,7 +19,8 @@ import (
 // where range (spec §6.5).
 func TestMySQLRowEligibleLaterIsProcessed(t *testing.T) {
 	cs := "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
-	const inScope = "SELECT COUNT(*) FROM orders WHERE id = 'o1'"
+	// RTRIM: under PAD_CHAR_TO_FULL_LENGTH a NO PAD collation compares the padded CHAR value.
+	const inScope = "SELECT COUNT(*) FROM orders WHERE RTRIM(id) = 'o1'"
 	setup := func(t *testing.T, name string, destination bool) env {
 		e := newEnv(t, name)
 		if destination {
@@ -29,11 +30,11 @@ func TestMySQLRowEligibleLaterIsProcessed(t *testing.T) {
 		}
 		seedOrders(t, e, 3)
 		// o1 is not eligible yet: the first run's where range passes over its key.
-		execAll(t, e.src, "UPDATE orders SET placed = '2025-06-01' WHERE id = 'o1'")
+		execAll(t, e.src, "UPDATE orders SET placed = '2025-06-01' WHERE RTRIM(id) = 'o1'")
 		return e
 	}
 	becomeEligible := func(t *testing.T, e env) {
-		execAll(t, e.src, "UPDATE orders SET placed = '2019-06-01' WHERE id = 'o1'")
+		execAll(t, e.src, "UPDATE orders SET placed = '2019-06-01' WHERE RTRIM(id) = 'o1'")
 	}
 
 	t.Run("archive", func(t *testing.T) {
@@ -45,7 +46,7 @@ func TestMySQLRowEligibleLaterIsProcessed(t *testing.T) {
 		becomeEligible(t, e)
 		rep := e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob)))
 		if rep.Roots != 1 || count(t, e.src, inScope) != 0 || count(t, e.dst, inScope) != 1 ||
-			count(t, e.dst, "SELECT COUNT(*) FROM line_notes WHERE order_id = 'o1'") != 2 {
+			count(t, e.dst, "SELECT COUNT(*) FROM line_notes WHERE RTRIM(order_id) = 'o1'") != 2 {
 			t.Errorf("second run = %+v, want o1's tree archived", rep)
 		}
 	})
@@ -58,7 +59,7 @@ func TestMySQLRowEligibleLaterIsProcessed(t *testing.T) {
 		becomeEligible(t, e)
 		rep := e.mustRun(t, e.config(t, job(t, jobspec.Purge, orderJob)))
 		if rep.Roots != 1 || count(t, e.src, inScope) != 0 ||
-			count(t, e.src, "SELECT COUNT(*) FROM line_notes WHERE order_id = 'o1'") != 0 {
+			count(t, e.src, "SELECT COUNT(*) FROM line_notes WHERE RTRIM(order_id) = 'o1'") != 0 {
 			t.Errorf("second run = %+v, want o1's tree purged", rep)
 		}
 	})

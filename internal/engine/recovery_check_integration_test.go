@@ -23,6 +23,10 @@ import (
 // re-discovered rows the destination lacks is refused before its first delete (spec
 // 2026-10-13-gh7-recovery-destination-check-design.md rev 3).
 
+// Test statements that name a CHAR key by its literal trim it: under PAD_CHAR_TO_FULL_LENGTH
+// (an environment matrix row) a NO PAD collation compares the stored value padded to its full
+// length, so id = 'o0' matches nothing (probe, 8.4.11).
+
 // lateNote is a row written under o0's first line after o0 was copied.
 const lateNote = "INSERT INTO line_notes VALUES (100, 'o0', 1, 'late')"
 
@@ -150,8 +154,8 @@ func TestMySQLRecoveryRefusesARootTheDestinationLost(t *testing.T) {
 	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
 	seedOrders(t, e, 3)
 	e.interrupted(t, e.config(t, job(t, jobspec.Archive, orderJob)), atCommitted)
-	execAll(t, e.dst, "DELETE FROM line_notes WHERE order_id = 'o0'", "DELETE FROM order_lines WHERE order_id = 'o0'",
-		"DELETE FROM orders WHERE id = 'o0'")
+	execAll(t, e.dst, "DELETE FROM line_notes WHERE RTRIM(order_id) = 'o0'", "DELETE FROM order_lines WHERE RTRIM(order_id) = 'o0'",
+		"DELETE FROM orders WHERE RTRIM(id) = 'o0'")
 	before := treeCounts(t, e.src)
 
 	_, err := e.run(t, e.config(t, job(t, jobspec.Archive, orderJob)))
@@ -187,8 +191,8 @@ func TestMySQLRecoveryWarnsOfARootGoneFromBoth(t *testing.T) {
 	if st := statuses(t, e.dst, e.dstSchema); st[int(tracking.StatusCopied)] != 2 {
 		t.Fatalf("log after the kill = %v, want 2 copied", st)
 	}
-	execAll(t, e.dst, "DELETE FROM line_notes WHERE order_id = 'o0'", "DELETE FROM order_lines WHERE order_id = 'o0'",
-		"DELETE FROM orders WHERE id = 'o0'")
+	execAll(t, e.dst, "DELETE FROM line_notes WHERE RTRIM(order_id) = 'o0'", "DELETE FROM order_lines WHERE RTRIM(order_id) = 'o0'",
+		"DELETE FROM orders WHERE RTRIM(id) = 'o0'")
 
 	core, logs := observer.New(zapcore.WarnLevel)
 	cfg := e.config(t, job(t, jobspec.Archive, orderJob))
