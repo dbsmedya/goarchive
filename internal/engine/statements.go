@@ -25,6 +25,7 @@ const (
 	opHash     op = "sha256 verification"
 	opDelete   op = "delete"
 	opPresent  op = "recovery read"
+	opHeld     op = "recovery destination read"
 )
 
 // statement is one key-addressed statement before it runs.
@@ -98,8 +99,9 @@ func deleteSQL(d key.Def, tuples int) string {
 	return "DELETE FROM " + sqlutil.QuoteIdentifier(d.Table) + " WHERE " + byKey(d, tuples)
 }
 
-// presentSQL reads which of the logged roots recovery replays still exist in the source.
-func presentSQL(d key.Def, tuples int) string {
+// byKeySQL reads which of the bound keys a table holds: recovery's read of the logged roots
+// in the source, and its check of every rediscovered key in the destination (GH #7).
+func byKeySQL(d key.Def, tuples int) string {
 	return "SELECT " + key.Projection(d) + " FROM " + sqlutil.QuoteIdentifier(d.Table) + " WHERE " + byKey(d, tuples)
 }
 

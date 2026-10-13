@@ -81,15 +81,15 @@ preflight.
 | **Source** | `DELETE` | ✅ | ✅ | — | Deleting archived rows |
 | **Source** | `PROCESS` (global) | ✅ | ✅ | — | Proving foreign-key metadata complete (`FK_COVERAGE_VISIBILITY_CHECK`); not needed on MySQL 8.0.40 (below) |
 | **Destination** (data) | `INSERT` | ✅ | — | ✅ | Copying rows |
-| **Destination** (data) | `SELECT` | ✅ | — | ✅ | Reading copies back under `verification: sha256` or `count` |
+| **Destination** (data) | `SELECT` | ✅ | — | ✅ | Reading copies back under `verification: sha256` or `count`, and archive recovery's check of what the destination holds |
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | ✅ | ✅ | ✅ | The registry, the per-job logs, the label |
 | **Source** and **destination** (optional, global) | `SESSION_VARIABLES_ADMIN` | ✅ | ✅ | ✅ | Only on a server whose global `max_error_count` is 0 ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 | **Each monitored replica** (optional) | `REPLICATION CLIENT` | ✅ | ✅ | — | Replication gating |
 
 - **Destination `SELECT`.** Preflight proves `INSERT` only, and `validate` and `dry-run` never read
-  copies. A run that verifies (`sha256` or `count`) reads them back, so an account without
-  `SELECT` fails there, before any delete; under `verification: none` nothing reads them. The
-  recipes grant it, for the default `sha256`.
+  copies. A run that verifies (`sha256` or `count`) reads them back, and archive recovery reads
+  them before it deletes a logged root's tree, so an account without `SELECT` fails there, before
+  any delete; under `verification: none` only archive recovery reads them. The recipes grant it.
 - **`PROCESS` and the MySQL version.** The proof reads InnoDB's foreign-key registry. MySQL
   8.0.46 and later refuse that read without `PROCESS`; MySQL 8.0.40 serves it unfiltered without
   `PROCESS`, so the check passes there without the grant and still sees every foreign key

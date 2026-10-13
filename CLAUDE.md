@@ -183,7 +183,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
 | Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
 | Storage engine checks, source and destination (`STORAGE_ENGINE_CHECK`, `DEST_STORAGE_ENGINE_CHECK`) | `internal/preflight/checks.go` → `checkStorageEngine`, `checkDestinationStorageEngine`, `judgeStorageEngine` |
-| Startup recovery (delete-only replay) | `internal/engine/recover.go` → `recover`, `replay` |
+| Startup recovery (delete-only replay; refused before any delete when the destination lacks a rediscovered row, GH #7) | `internal/engine/recover.go` → `recover`, `replay`, `checkHeld`; `internal/engine/errors.go` → `UncopiedError` |
 | Lock names (hashed, case-folded) and the lock set: one session, `wait_timeout` 300, keep-alive, discard on release | `internal/lock/names.go` → `TableLockName`, `JobLockName`; `internal/lock/set.go` → `Set` |
 | Startup locking: job lock, source table locks, then the unfinished-work guard (another job on the same source data, sharing a table, marked running or holding `copied`/`deleting` roots) | `internal/engine/startup.go` → `lockJob`, `OverlapError`; `internal/tracking/blockers.go` → `(*Store).Blockers`, `storedTables` |
 | Same source data: `server_uuid`, `gtid_executed`, and the database-name fallback without `gtid_mode = ON` or on a Group Replication member (dbsgomysql facts) | `internal/engine/sourcedata.go` → `sameData`, `readSourceData` |

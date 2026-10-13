@@ -146,7 +146,7 @@ bookkeeping integrity checks: no flag skips them.
 
    | Job type | Compared |
    |----------|----------|
-   | archive | source server and database, relations |
+   | archive | source server and database, relations, destination database |
    | purge | source server and database, relations, `where` |
    | copy-only | source server and database, relations, destination database |
 

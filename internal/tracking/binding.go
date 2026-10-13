@@ -32,8 +32,9 @@ const (
 func comparedParts(t jobspec.Type) []Part {
 	switch t {
 	case jobspec.Archive:
-		// Replaying copied roots is key-driven, and the copy already exists.
-		return []Part{PartSource, PartRelations}
+		// Replaying copied roots deletes against the copy in the destination database, which
+		// recovery checks (GH #7).
+		return []Part{PartSource, PartRelations, PartDestination}
 	case jobspec.Purge:
 		// Replaying deleting roots deletes with no copy behind it.
 		return []Part{PartSource, PartRelations, PartWhere}
