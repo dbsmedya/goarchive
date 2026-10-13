@@ -22,7 +22,7 @@ GoArchive is for **cold data**. It is not designed for hot, actively-transacting
 ## Contents
 
 - [Known Limits & Caution](#known-limits--caution)
-  - [Hard constraints](#hard-constraints--rejected-by-preflight)
+  - [Hard constraints](#hard-constraints)
   - [Model limitations](#model-limitations)
   - [Operational cautions](#operational-cautions)
 - [Trust model](#trust-model)
