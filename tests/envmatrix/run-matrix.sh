@@ -217,7 +217,12 @@ done < <(rows)
 [[ $n -gt 0 ]] || { echo "no row matches: $*"; exit 2; }
 for want in "$@"; do rows | cut -f1 | grep -qx "$want" || { echo "unknown row: $want"; exit 2; }; done
 
-trap 'for i in $(seq 0 $((PAIRS - 1))); do pair_down "$i"; done' EXIT
+# group_down also removes the pair's containers, and tolerates a project that never started. A
+# signal that kills the workers mid-row skips their own teardown, so the exit does it (Codex N2).
+trap 'for i in $(seq 0 $((PAIRS - 1))); do group_down "$i"; done' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 echo "environment matrix: $n row(s), $PAIRS pair(s), image $IMAGE, results $OUT"
 for i in $(seq 0 $((PAIRS - 1))); do worker "$i" & done
 wait
