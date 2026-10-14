@@ -69,6 +69,9 @@ func TestMySQLSelfReferencingDeleteRules(t *testing.T) {
 				if !errors.As(err, &me) || me.Number != 1451 {
 					t.Errorf("run error = %v, want MySQL error 1451 from the delete", err)
 				}
+				if old != 1 {
+					t.Errorf("old comment left %d, want 1: the failed delete rolls back (Fable M2)", old)
+				}
 			}
 		})
 	}

@@ -257,7 +257,11 @@ func TestSelfForeignKeys(t *testing.T) {
 				return
 			}
 			e := w.mustFail("SELF_FK_DELETE_RULE_CHECK")
-			want := fmt.Sprintf("  - orders(parent_id) -> orders(id) (constraint fk_orders_parent, ON DELETE %s)", tc.rule)
+			rendered := tc.rule
+			if rendered == "" {
+				rendered = "(not reported)" // Fable M1: never "ON DELETE )"
+			}
+			want := fmt.Sprintf("  - orders(parent_id) -> orders(id) (constraint fk_orders_parent, ON DELETE %s)", rendered)
 			if !strings.Contains(e.Message, want+"\n") {
 				t.Errorf("message does not carry %q:\n%s", want, e.Message)
 			}
