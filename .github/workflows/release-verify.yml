@@ -1,0 +1,157 @@
+# Release verification (beta.1 PR 4, spec .ayder/superpowers_20261014/specs/
+# 2026-10-14-beta1-release-verify-workflow-design.md). Manual only: a person pushes a
+# verify/<sha7> branch (or, once this file is on the default branch, dispatches it with a
+# SHA), and the operator approves the release-verify environment. Never on PRs or merges.
+name: Release verify
+
+on:
+  push:
+    branches: ['verify/**']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-character commit SHA to verify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-verify-${{ inputs.sha || github.sha }}
+  cancel-in-progress: true
+
+env:
+  MYSQLSH_DEB: mysql-shell_8.4.10-1ubuntu24.04_amd64.deb
+
+jobs:
+  target:
+    name: Target commit
+    runs-on: ubuntu-24.04
+    environment: release-verify
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      rows: ${{ steps.rows.outputs.rows }}
+    steps:
+      - id: sha
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          sha="${INPUT_SHA:-$PUSH_SHA}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::not a full commit SHA: $sha"; exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+      - id: rows
+        run: |
+          rows=$(grep -v '^#' tests/envmatrix/rows.tsv | grep -v '^[[:space:]]*$' | cut -f1 | jq -R . | jq -cs .)
+          echo "rows=$rows" >> "$GITHUB_OUTPUT"
+
+  gate:
+    name: Gate on ${{ matrix.image }}
+    needs: target
+    runs-on: ubuntu-24.04
+    environment: release-verify
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        image:
+          - mysql:8.0.40
+          - mysql:8.4
+          - mysql:9.7
+          - percona/percona-server:8.0
+          - percona/percona-server:8.4
+          - percona/percona-server:9.7
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install MySQL Shell
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
+      - name: Gate
+        env:
+          GA_ESTATE_IMAGE: ${{ matrix.image }}
+        run: |
+          cp tests/dot.env tests/.env
+          set -a; . tests/.env; set +a
+          make e2e-setup
+          make gate
+      - name: Server version
+        if: always()
+        run: docker exec db1 mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= tests/.env | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-${{ strategy.job-index }}
+          path: tests/results/gate/
+          if-no-files-found: warn
+
+  matrix:
+    name: Matrix row ${{ matrix.row }}
+    needs: target
+    runs-on: ubuntu-24.04
+    environment: release-verify
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        row: ${{ fromJSON(needs.target.outputs.rows) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Row
+        env:
+          ROW: ${{ matrix.row }}
+          MX_PAIRS: '1'
+          MX_TIMEOUT: 6m
+          MX_TAG: gh
+        run: |
+          cp tests/dot.env tests/.env
+          tests/envmatrix/run-matrix.sh "$ROW"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ matrix.row }}
+          path: tests/results/envmatrix/gh/
+          if-no-files-found: warn
+
+  summary:
+    name: Summary
+    needs: [target, gate, matrix]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/download-artifact@v5
+        with:
+          path: evidence
+      - name: Summarize
+        env:
+          TARGET_SHA: ${{ needs.target.outputs.sha }}
+          ROWS: ${{ needs.target.outputs.rows }}
+        run: |
+          set -o pipefail
+          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" "$(jq length <<<"$ROWS")" | tee release-verify.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-verify
+          path: release-verify.md

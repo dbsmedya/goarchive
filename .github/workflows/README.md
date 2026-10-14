@@ -36,6 +36,26 @@ Builds and pushes Docker images to GitHub Container Registry:
 - Tags: `main`, `v1.0.0`, `1.0`, `sha-abc123`
 - Multi-platform: linux/amd64, linux/arm64
 
+### 4. Release verify (`release-verify.yml`)
+**Triggers:** a push to a `verify/**` branch only, plus `workflow_dispatch` once this file is on
+the default branch. Never a pull request, a merge or a tag.
+
+The full verification of one commit, started by hand before a PR merges or before a release is
+tagged:
+- **Gate:** `make gate` on an estate built from each of `mysql:8.0.40`, `mysql:8.4`, `mysql:9.7`
+  and `percona/percona-server` 8.0, 8.4 and 9.7 (`GA_ESTATE_IMAGE`).
+- **Matrix:** one job per row of `tests/envmatrix/rows.tsv`.
+- **Summary:** one table of every verdict (`tests/envmatrix/gh-summary.sh`), on the run page and
+  as the `release-verify` artifact; red when any gate or row is not OK or is missing.
+
+Every job waits in the `release-verify` environment for a required reviewer's approval. One run per
+commit (a newer run on the same SHA cancels the older one), at most 16 jobs at once.
+
+```bash
+git push origin <sha>:refs/heads/verify/<sha7>     # start a run; approve it in the Actions tab
+git push origin --delete verify/<sha7>             # remove the branch after the run
+```
+
 ## How to Release a New Version
 
 ### Option 1: Using Git Tags (Recommended)
