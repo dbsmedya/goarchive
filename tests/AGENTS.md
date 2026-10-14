@@ -144,3 +144,8 @@ after the runner reports; a gate agent never edits it.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
   460 s, leaving about 140 s; record each new measurement here, since the margin shrinks as tests
   are added.
+- **Release verify on GitHub:** the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at
+  `ae06474`), took 19 minutes for 41 jobs. Gates took 15–18 min each, with integration
+  `PASS=1209 FAIL=0 SKIP=5` on all six images; that is the local inventory less
+  `TestSetupGracefulShutdown_TwoPhase`, which skips where `CI=true`. Matrix rows took 1–3 min each
+  against `MX_TIMEOUT` 6m; 33/33 OK.
