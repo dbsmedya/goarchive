@@ -151,11 +151,11 @@ through the real CLI.
 > **05 is 08's uninterrupted control** — identical config, so a failure in 08 alone
 > isolates to the interrupt. Keep them in step, as with 03 and 05.
 >
-> **09's `delete_sleep_seconds: 1.0` is the test, not tuning.** The kill has to land
+> **09's `delete_sleep_seconds: 2.0` is the test, not tuning.** The kill has to land
 > between a batch's destination commit, which logs its roots `copied`, and its
 > completion, and the only part of that interval with any duration is the throttle
 > between delete statements; a wide throttle keeps the window open. Its slice is smaller
-> (499 rows) because that throttle costs 4 s per batch. How the harness times the kill:
+> (499 rows) because that throttle costs 8 s per batch. How the harness times the kill:
 > `e2e/resume/README.md`; how it accounts for the batch the kill lands in: the comments on
 > `assert_interrupt_preconditions` in `e2e/lib/interrupt.sh`.
 
@@ -188,7 +188,7 @@ from 16.8.)
 | **06** | 8022 | 500 | 16 + 22 | 16 × 0.2 = 3.2 s | 64 × 0.2 = 12.8 s | **16.0 s** |
 | **07** | 200 | 10 | 20 + 0 | 20 × 0.5 = 10.0 s | — *(copies only)* | **10.0 s** |
 | **08** † | 1899 | 100 | 18 + 99 | 18 × 0.2 = 3.6 s | 76 × 0.2 = 15.2 s | **18.8 s** |
-| **09** † | 399 | 100 | 3 + 99 | 3 × 0.2 = 0.6 s | 16 × **1.0** = 16.0 s | **16.6 s** |
+| **09** † | 399 | 100 | 3 + 99 | 3 × 0.2 = 0.6 s | 16 × **2.0** = 32.0 s | **32.6 s** |
 | **13** | 1999 | 100 | — | 0 | 0 | **0.0 s** |
 | **14** | 180 lines | 50 | 3 + 30 | 3 × 0.2 = 0.6 s | 25 × 0.1 = 2.5 s | **3.1 s** |
 | **15** | 120 blobs | 50 | 2 + 20 | 2 × 0.2 = 0.4 s | 5 × 0.1 = 0.5 s | **0.9 s** |

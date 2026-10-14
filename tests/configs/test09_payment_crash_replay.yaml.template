@@ -7,18 +7,19 @@
 #   09  SIGKILL after batch 1's destination commit -> its roots left 'copied'
 #       -> run 2's recovery replays them DELETE-ONLY, then continues the range
 #
-# WHY THE DELETE THROTTLE IS 1.0 HERE AND 0.2 EVERYWHERE ELSE -- this is the whole
+# WHY THE DELETE THROTTLE IS 2.0 HERE AND 0.2 EVERYWHERE ELSE -- this is the whole
 # design of the test, not tuning:
 #
 # The kill has to land after batch 1's destination transaction commits (copy,
 # verification and the 'copied' log rows together) and before its completion.
 # That interval is exactly the delete phase, and the only part of it with any
 # duration is the throttle between delete statements. The harness polls the log
-# until it holds 100 roots at 'copied' (one mysqlsh call, ~0.3s, per read), so the
-# window must be wide: at 1.0 it is 4 x 1s.
+# until it holds 100 roots at 'copied' (one mysqlsh call per read: ~0.3s locally, longer
+# on a GitHub runner), so the window must be wide: at 2.0 it is 4 x 2s. At 1.0 the kill
+# missed on 1-3 of 6 release-verify gates per run (beta.1 PR 4).
 #
 # WHY THE SLICE IS SMALLER -- 499 rows, not 1999. delete_sleep_seconds multiplies
-# across every batch of the run, so the 1.0 above costs 4s per batch. 499 is
+# across every batch of the run, so the 2.0 above costs 8s per batch. 499 is
 # MEASURED (payment_id is not contiguous, so <= 500 is not 500).
 #
 # sha256 like test 08. NO sentinel_file: this run is killed, not paused.
@@ -54,7 +55,7 @@ jobs:
     root_table: payment
     primary_key: payment_id
     # 499 rows, MEASURED. Smaller than tests 03/05/08 because the wide delete
-    # throttle below costs 4s per batch.
+    # throttle below costs 8s per batch.
     where: "payment_id <= 500"
     verification: sha256
     processing:
@@ -62,4 +63,4 @@ jobs:
       batch_delete_size: 20
       sleep_seconds: 0.2
       # THE KILL WINDOW. See the header -- this is the test's mechanism.
-      delete_sleep_seconds: 1.0
+      delete_sleep_seconds: 2.0
