@@ -101,7 +101,7 @@ server's global. None is configurable.
 | `autocommit` | `1` | Tracking writes outside the copy and delete transactions must not stay open under a global `autocommit = 0` |
 | `sql_mode` | the inherited mode plus `NO_AUTO_VALUE_ON_ZERO` | An explicit zero in an AUTO_INCREMENT column stays zero ([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#auto_increment_zero_mode_check)) |
 | `sql_notes` | `1` | Notes are kept, so INSERT diagnostics see them |
-| `sql_select_limit` | `18446744073709551615` (no limit) | A server's global limit would cap every read: column lists, discovery, the copy and verification would silently see only that many rows |
+| `sql_select_limit` | `18446744073709551615` (no limit) | A server's global limit would cap every read without its own `LIMIT`: column lists and discovery would silently see only that many rows, and verification would hash only the columns read; a short copy read or row count fails loudly |
 | `wait_timeout` | `GREATEST(@@GLOBAL.wait_timeout, 28800)`; `300` on the two lock sessions | A session idle through a pause or a replication hold is not closed under the run before 8 hours. A lock session is checked every 30 seconds, and its 300 seconds bound how long a lost host keeps its locks ([The lock sessions must stay alive](README_OPERATIONS.md#the-lock-sessions-must-stay-alive)) |
 | `max_error_count` | raised from 0 to 1024 (source and destination) | GoArchive reads every statement's warnings ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 
