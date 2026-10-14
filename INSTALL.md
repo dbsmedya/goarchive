@@ -65,8 +65,8 @@ docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
 ```
 
 The image runs as root. With the default `logging.output: stdout`, the log goes to `docker logs`.
-A log file written to a mounted directory belongs to the container's root and is readable by
-root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the
+On a Linux host, a log file written to a mounted directory belongs to the container's root and
+is readable by root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the
 file first; GoArchive appends to it and keeps its owner and mode:
 
 ```bash

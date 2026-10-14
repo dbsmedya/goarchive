@@ -159,7 +159,8 @@ The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how
   | `safety.check_interval` | `replication.check_interval` |
 - **A new log file is readable by its owner only** (`0600`; 2.x created it `0644`). An existing
   file keeps its mode, so a log reader running as another user needs the file created first
-  ([logging](README_CONFIGURATION.md#logging)).
+  ([logging](README_CONFIGURATION.md#logging)), and a log 2.x created keeps `0644` until you
+  `chmod 0600` it.
 
 Every option: [Configuration](README_CONFIGURATION.md).
 

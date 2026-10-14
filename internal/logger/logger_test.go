@@ -474,7 +474,7 @@ func TestLoggingOutput(t *testing.T) {
 	logger.Warn("test warn message")
 	logger.WithJob("test-job").Info("message with job context")
 
-	_ = logger.Sync()
+	_ = logger.Close()
 
 	// Read the log file
 	content, err := os.ReadFile(tmpFile.Name())
