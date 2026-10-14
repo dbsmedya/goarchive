@@ -126,6 +126,10 @@ Use these only when a task asks for one layer; the gate runs them all in the rig
 `make e2e` is the whole E2E procedure (reset, seed, run). Run its individual steps only when a
 task says why.
 
+The full environment matrix and the gate on every supported image run on GitHub, not here
+(`tests/README.md` → *The full matrix runs on GitHub*). An agent pushes a `verify/` branch only
+with the operator's approval for that run, and reads the run's summary table.
+
 ## Measured baselines
 
 Measured by their runners, never calculated from a diff. The coordinator updates this section

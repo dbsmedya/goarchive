@@ -523,6 +523,26 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 - **Server variables:** the runner and tests may `SET GLOBAL` on these throwaway servers;
   goarchive itself never does.
 
+#### The full matrix runs on GitHub
+
+Run one row or a few locally while developing. The **full** matrix runs on GitHub, together with
+the gate on every supported image, through the *Release verify* workflow
+(`.github/workflows/release-verify.yml`). It starts only from a push to a `verify/` branch, and
+every job waits for a required reviewer's approval in the `release-verify` environment:
+
+```bash
+git push origin <sha>:refs/heads/verify/<sha7>     # start a run; approve it in the Actions tab
+git push origin --delete verify/<sha7>             # remove the branch after the run
+```
+
+- **Jobs:** `make gate` on an estate built from each of `mysql:8.0.40`, `mysql:8.4`, `mysql:9.7`
+  and `percona/percona-server` 8.0, 8.4 and 9.7 (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
+  `rows.tsv` row with one pair (`MX_PAIRS=1`); and a summary.
+- **Results:** the run page's summary is one table of every verdict, red when any gate or row is
+  not OK or is missing (`envmatrix/gh-summary.sh`). Every job's evidence directory is an artifact.
+- **When:** on a PR's final SHA for a behaviour change, and on the release PR's final SHA before
+  the tag. It replaces the local full matrix. It does not replace the local gate on the final SHA.
+
 ### Sakila E2E tests
 
 ```bash
