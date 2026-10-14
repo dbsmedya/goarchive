@@ -658,7 +658,8 @@ func acctStart(t *testing.T, src, dst *sql.DB, srcSchema, dstSchema string) <-ch
 
 // TestMySQLPrivilegeReadOnAPoolOfOne (M7-5, G6): mysqlServer.Privileges takes a
 // dedicated connection for the grant read and releases it before the next query, so a
-// pool limited to one connection (max_connections: 1) never waits on itself.
+// pool limited to one connection (max_connections: 1) never waits on itself; so does
+// mysqlServer.TriggerProof, the second dedicated-connection read (beta audit A2).
 // Pair: the source pool, then separately the destination pool, limited to one connection
 // → an archive preflight passes inside the watchdog; the same pool of one while the test
 // holds its only connection → the run is still blocked after two seconds, which is what

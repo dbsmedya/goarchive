@@ -37,7 +37,7 @@ tested against several MySQL releases instead of being rediscovered per check.
 
 | Package | GoArchive uses it for |
 |---|---|
-| `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
+| `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers and the proof that a trigger list is complete, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
 | `pkg/sqlutil` | Identifier quoting and validation. |
 | `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set and its Group Replication state, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking). |
 

@@ -75,6 +75,7 @@ type.
 | `DEST_KEY_IDENTITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_WRITE_PERMISSION_CHECK` | ✅ | ❌ | ✅ |
+| `DEST_INSERT_TRIGGER_VISIBILITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_INSERT_TRIGGER_CHECK` | ✅ | ❌ | ✅ |
 | `FK_COVERAGE_VISIBILITY_CHECK` | ✅ | ✅ | ❌ |
 | `FK_COVERAGE_CHECK` | ✅ | ✅ | ✅ |
@@ -83,15 +84,16 @@ type.
 | `SELF_FK_DELETE_RULE_CHECK` | ✅ | ✅ | ❌ |
 | `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ |
+| `DELETE_TRIGGER_VISIBILITY_CHECK` | ✅ | ✅ | ❌ |
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ |
 | `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ |
 
 - **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
   it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
-- **Copy-only** deletes nothing, so no cascade can fire: it skips the visibility proof, the
-  self-reference delete rule, the delete permission and the DELETE-trigger check. It still runs
-  `FK_COVERAGE_CHECK`, but without `PROCESS` that check sees only the foreign keys the account
-  can read, so a cross-schema one can pass unseen.
+- **Copy-only** deletes nothing, so no cascade can fire: it skips the foreign-key visibility
+  proof, the self-reference delete rule, the delete permission and the DELETE-trigger checks. It
+  still runs `FK_COVERAGE_CHECK`, but without `PROCESS` that check sees only the foreign keys the
+  account can read, so a cross-schema one can pass unseen.
 - [Connection checks](#connection-checks) run before preflight, for every command.
 
 ---
@@ -253,6 +255,17 @@ verification reads rows in. One widening is allowed: a `utf8mb3` key column copi
 Matches source and destination columns **by name** (ASCII letter case ignored, as MySQL does),
 then compares each pair. The destination may be looser than the source, never stricter: the
 [Schema compatibility rules](#schema-compatibility-rules) list every difference.
+
+### `DEST_INSERT_TRIGGER_VISIBILITY_CHECK`
+
+The destination account cannot be proven to see a job table's triggers. MySQL lists a table's
+triggers only to an account holding `TRIGGER` on it, so without that privilege an empty list does
+not mean there are none, and `DEST_INSERT_TRIGGER_CHECK` could not be trusted. The message names
+each table with its state, as the [permission checks](#permission-checks) do.
+
+**Fix:** grant `TRIGGER` directly to the account at schema or table scope
+([recipe](README_PERMISSIONS.md#grant-recipes)); a role-held `TRIGGER` stays `unconfirmed`.
+`--force-triggers` does not apply.
 
 ### `DEST_INSERT_TRIGGER_CHECK`
 
@@ -417,13 +430,24 @@ GRANT CREATE, UPDATE ON `goarchive`.* TO <user>)
 
 ## Trigger checks
 
+### `DELETE_TRIGGER_VISIBILITY_CHECK`
+
+The source account of an archive or purge job cannot be proven to see a job table's triggers, so
+an empty list of `DELETE` triggers proves nothing. The message names each table with its state, as
+the [permission checks](#permission-checks) do.
+
+**Fix:** grant `TRIGGER` directly to the account at schema or table scope
+([recipe](README_PERMISSIONS.md#grant-recipes)); a role-held `TRIGGER` stays `unconfirmed`.
+`--force-triggers` does not apply: it accepts triggers preflight can list, never a list it cannot
+trust.
+
 ### `DELETE_TRIGGER_CHECK`
 
 A source table of an archive or purge job has a `DELETE` trigger. GoArchive cannot see what it
 does, and its side effects are outside the archive and its verification.
 
-**Override:** `--force-triggers` (on `archive`, `purge`, `validate` and `dry-run`); the triggers
-then fire on every delete. Audit them first.
+**Override:** `--force-triggers` (on `archive`, `purge`, `validate` and `dry-run`), for the triggers
+this check lists; the triggers then fire on every delete. Audit them first.
 
 ---
 

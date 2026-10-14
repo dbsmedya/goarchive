@@ -84,12 +84,12 @@ func (s *fakeServer) PrimaryKeys(_ context.Context, tables []string) ([]validati
 	return out, nil
 }
 
-func (s *fakeServer) Triggers(_ context.Context, tables []string, event validations.TriggerEvent) ([]validations.TriggerInfo, error) {
-	s.call("Triggers")
+func (s *fakeServer) TriggerProof(_ context.Context, tables []string, event validations.TriggerEvent) (triggerProof, error) {
+	s.call("TriggerProof")
 	if s.proofErr != nil {
-		return nil, s.proofErr
+		return triggerProof{}, s.proofErr
 	}
-	return s.eventTriggers(tables, event), nil
+	return triggerProof{grants: s.privileges(), triggers: s.eventTriggers(tables, event)}, nil
 }
 
 // eventTriggers is the fake's trigger list for event on tables.

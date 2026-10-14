@@ -25,7 +25,9 @@ const (
 type server interface {
 	Tables(ctx context.Context, tables []string) ([]validations.TableInfo, error)
 	PrimaryKeys(ctx context.Context, tables []string) ([]validations.PKInfo, error)
-	Triggers(ctx context.Context, tables []string, event validations.TriggerEvent) ([]validations.TriggerInfo, error)
+	// TriggerProof reads the grants and the event's triggers on one dedicated connection, so
+	// the visibility proof and the list it proves come from one session.
+	TriggerProof(ctx context.Context, tables []string, event validations.TriggerEvent) (triggerProof, error)
 	ForeignKeys(ctx context.Context, sel fkSelect, tables []string) (validations.ForeignKeyResult, error)
 	// TableSpec captures one table of the server's database with its indexes.
 	TableSpec(ctx context.Context, table string) (validations.TableSpec, error)
@@ -41,6 +43,17 @@ type server interface {
 type privileges interface {
 	Tables(schema string, tables []string, p validations.Privilege) []validations.Finding
 	Schema(schema string, privs []validations.Privilege) []validations.Finding
+	// TriggerVisibility reports each table whose trigger list the account is not proven to
+	// see in full: TRIGGER is not GrantPresent on it.
+	TriggerVisibility(schema string, tables []string) []validations.Finding
+}
+
+// triggerProof is one session's grants and its trigger list for one event. The list is
+// complete only for the tables the grants prove visible: MySQL lists a table's triggers only
+// to an account holding TRIGGER on it (dbsgomysql CheckTriggerVisibility, COMPAT 34).
+type triggerProof struct {
+	grants   privileges
+	triggers []validations.TriggerInfo
 }
 
 type mysqlServer struct {
@@ -59,10 +72,6 @@ func (s *mysqlServer) Tables(ctx context.Context, tables []string) ([]validation
 
 func (s *mysqlServer) PrimaryKeys(ctx context.Context, tables []string) ([]validations.PKInfo, error) {
 	return s.insp.PrimaryKeys(ctx, tables)
-}
-
-func (s *mysqlServer) Triggers(ctx context.Context, tables []string, event validations.TriggerEvent) ([]validations.TriggerInfo, error) {
-	return s.insp.Triggers(ctx, tables, event)
 }
 
 func (s *mysqlServer) ForeignKeys(ctx context.Context, sel fkSelect, tables []string) (validations.ForeignKeyResult, error) {
@@ -98,6 +107,31 @@ func (s *mysqlServer) Privileges(ctx context.Context) (privileges, error) {
 	return grantsJudge{grants}, nil
 }
 
+// TriggerProof reads the grants and then the event's triggers on one dedicated connection and
+// releases it at once, as Privileges does: the library trusts an empty trigger list only from
+// grants read as the same account in the same session, and GoArchive never changes roles. A
+// failed trigger read fails the proof even when the grants alone would refuse; preflight then
+// reports an inspection error, which is fail-closed.
+func (s *mysqlServer) TriggerProof(ctx context.Context, tables []string, event validations.TriggerEvent) (triggerProof, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return triggerProof{}, fmt.Errorf("acquire connection for trigger inspection: %w", err)
+	}
+	insp := validations.NewInspector(conn, s.schema)
+	grants, rerr := insp.Grants(ctx)
+	var triggers []validations.TriggerInfo
+	if rerr == nil {
+		triggers, rerr = insp.Triggers(ctx, tables, event)
+	}
+	if cerr := conn.Close(); cerr != nil && rerr == nil {
+		return triggerProof{}, fmt.Errorf("release trigger-inspection connection: %w", cerr)
+	}
+	if rerr != nil {
+		return triggerProof{}, rerr
+	}
+	return triggerProof{grants: grantsJudge{grants}, triggers: triggers}, nil
+}
+
 func (s *mysqlServer) RangeOptimizerMaxMemSize(ctx context.Context) (uint64, error) {
 	var v uint64
 	if err := s.db.QueryRowContext(ctx, "SELECT @@SESSION.range_optimizer_max_mem_size").Scan(&v); err != nil {
@@ -122,6 +156,10 @@ func (j grantsJudge) Tables(schema string, tables []string, p validations.Privil
 
 func (j grantsJudge) Schema(schema string, privs []validations.Privilege) []validations.Finding {
 	return validations.CheckSchemaPrivileges(j.g, schema, privs)
+}
+
+func (j grantsJudge) TriggerVisibility(schema string, tables []string) []validations.Finding {
+	return validations.CheckTriggerVisibility(j.g, schema, tables)
 }
 
 // memo is one fact, read on first use. The error is kept too: one broken connection must
@@ -155,8 +193,8 @@ type facts struct {
 	srcPKs, dstPKs               memo[[]validations.PKInfo]
 	srcSpecs, dstSpecs           memo[map[string]validations.TableSpec]
 	srcPrivileges, dstPrivileges memo[privileges]
-	srcDeleteTriggers            memo[[]validations.TriggerInfo]
-	dstInsertTriggers            memo[[]validations.TriggerInfo]
+	srcDeleteTriggers            memo[triggerProof]
+	dstInsertTriggers            memo[triggerProof]
 	fkIn, fkOut, fkWithin        memo[validations.ForeignKeyResult]
 
 	// Results of earlier stages.
@@ -224,15 +262,15 @@ func (f *facts) destPrivileges(ctx context.Context) (privileges, error) {
 	return f.dstPrivileges.get(func() (privileges, error) { return f.dst.Privileges(ctx) })
 }
 
-func (f *facts) sourceDeleteTriggers(ctx context.Context) ([]validations.TriggerInfo, error) {
-	return f.srcDeleteTriggers.get(func() ([]validations.TriggerInfo, error) {
-		return f.src.Triggers(ctx, f.tables, validations.TriggerDelete)
+func (f *facts) sourceDeleteTriggerProof(ctx context.Context) (triggerProof, error) {
+	return f.srcDeleteTriggers.get(func() (triggerProof, error) {
+		return f.src.TriggerProof(ctx, f.tables, validations.TriggerDelete)
 	})
 }
 
-func (f *facts) destInsertTriggers(ctx context.Context) ([]validations.TriggerInfo, error) {
-	return f.dstInsertTriggers.get(func() ([]validations.TriggerInfo, error) {
-		return f.dst.Triggers(ctx, f.tables, validations.TriggerInsert)
+func (f *facts) destInsertTriggerProof(ctx context.Context) (triggerProof, error) {
+	return f.dstInsertTriggers.get(func() (triggerProof, error) {
+		return f.dst.TriggerProof(ctx, f.tables, validations.TriggerInsert)
 	})
 }
 

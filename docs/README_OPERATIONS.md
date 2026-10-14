@@ -70,7 +70,7 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 |------|---------|
 | `-j`, `--job <name>` | The job to run; required except for `validate`, which checks every job without it |
 | `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)) |
-| `--force-triggers` | Accept source DELETE triggers; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)) |
+| `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)) |
 | `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
 | `--progress[=<interval>]` | Periodic progress on stdout ([Progress display](#progress-display)) |
 

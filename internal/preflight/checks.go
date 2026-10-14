@@ -114,7 +114,7 @@ func checkJobSchemaPermissions(ctx context.Context, f *facts) error {
 		return inspectionError("job_schema", err)
 	}
 	findings := p.Schema(f.cfg.JobSchema, jobSchemaPrivileges)
-	offenders, err := privilegeOffenders("job_schema", findings)
+	offenders, err := privilegeOffenders("job_schema", findings, validations.IDSchemaPrivileges, validations.IDTablePrivileges)
 	if err != nil || len(offenders) == 0 {
 		return err
 	}
@@ -137,7 +137,7 @@ func checkJobSchemaPermissions(ctx context.Context, f *facts) error {
 
 // checkTablePrivilege needs privilege p, provably, on every job table of one server.
 func checkTablePrivilege(stage, id, message string, p privileges, schema string, tables []string, priv validations.Privilege) error {
-	offenders, err := privilegeOffenders(stage, p.Tables(schema, tables, priv))
+	offenders, err := privilegeOffenders(stage, p.Tables(schema, tables, priv), validations.IDSchemaPrivileges, validations.IDTablePrivileges)
 	if err != nil {
 		return err
 	}
@@ -180,14 +180,62 @@ func checkSourceDeletePermissions(ctx context.Context, f *facts) error {
 		p, f.cfg.SourceDatabase, f.tables, validations.PrivilegeDelete)
 }
 
+// triggerVisibilityAdvice is the remedy both trigger visibility checks give.
+const triggerVisibilityAdvice = "MySQL lists a table's triggers only to an account holding TRIGGER on it, so an " +
+	"empty list does not prove there are none. --force-triggers does not apply. Grant it directly to the account " +
+	"(GRANT TRIGGER ON <schema>.* TO <user>, or on <schema>.<table>); TRIGGER also permits creating and dropping " +
+	"triggers on those tables"
+
+// checkTriggerVisibility refuses the tables whose trigger list the account is not proven to
+// see. Every finding must be CheckTriggerVisibility's: TRIGGER, on one named table.
+func checkTriggerVisibility(stage, id, message string, p privileges, schema string, tables []string) error {
+	findings := p.TriggerVisibility(schema, tables)
+	for _, f := range findings {
+		if fact, ok := f.Facts.(validations.PrivilegeFact); ok && (fact.Privilege != validations.PrivilegeTrigger || fact.Table == "") {
+			return unexpectedFacts(stage, f, "a validations.PrivilegeFact for TRIGGER on one table")
+		}
+	}
+	offenders, err := privilegeOffenders(stage, findings, validations.IDTriggerMetadataVisibility)
+	if err != nil || len(offenders) == 0 {
+		return err
+	}
+	return &Error{Check: id, Message: message, Tables: offenders}
+}
+
+// checkDestinationInsertTriggerVisibility refuses an archive or copy-only job whose destination
+// account is not proven to see every job table's triggers: an empty list then proves nothing.
+func checkDestinationInsertTriggerVisibility(ctx context.Context, f *facts) error {
+	proof, err := f.destInsertTriggerProof(ctx)
+	if err != nil {
+		return inspectionError("destination_insert_trigger_visibility", err)
+	}
+	return checkTriggerVisibility("destination_insert_trigger_visibility", "DEST_INSERT_TRIGGER_VISIBILITY_CHECK",
+		"Destination account cannot be proven to see the INSERT triggers on required tables: "+triggerVisibilityAdvice,
+		proof.grants, f.cfg.DestinationDatabase, f.tables)
+}
+
+// checkDeleteTriggerVisibility refuses an archive or purge job whose source account is not
+// proven to see every job table's triggers. --force-triggers accepts triggers preflight can
+// list, never a list it cannot trust.
+func checkDeleteTriggerVisibility(ctx context.Context, f *facts) error {
+	proof, err := f.sourceDeleteTriggerProof(ctx)
+	if err != nil {
+		return inspectionError("delete_trigger_visibility", err)
+	}
+	return checkTriggerVisibility("delete_trigger_visibility", "DELETE_TRIGGER_VISIBILITY_CHECK",
+		"Source account cannot be proven to see the DELETE triggers on required tables: "+triggerVisibilityAdvice,
+		proof.grants, f.cfg.SourceDatabase, f.tables)
+}
+
 // checkDestinationInsertTriggers refuses destination INSERT triggers. --force-triggers
-// does not apply: a trigger would change copied rows before verification reads them.
+// does not apply: a trigger would change copied rows before verification reads them. It
+// runs after checkDestinationInsertTriggerVisibility, which proves the list complete.
 func checkDestinationInsertTriggers(ctx context.Context, f *facts) error {
-	triggers, err := f.destInsertTriggers(ctx)
+	proof, err := f.destInsertTriggerProof(ctx)
 	if err != nil {
 		return inspectionError("destination_insert_triggers", err)
 	}
-	tables, err := triggerOffenders("destination_insert_triggers", validations.CheckTriggersPresent(triggers, validations.TriggerInsert))
+	tables, err := triggerOffenders("destination_insert_triggers", validations.CheckTriggersPresent(proof.triggers, validations.TriggerInsert))
 	if err != nil || len(tables) == 0 {
 		return err
 	}
@@ -195,13 +243,14 @@ func checkDestinationInsertTriggers(ctx context.Context, f *facts) error {
 		Message: "Destination INSERT triggers detected. Disable triggers before running archive copy operations", Tables: tables}
 }
 
-// checkDeleteTriggers refuses source DELETE triggers unless --force-triggers accepts them.
+// checkDeleteTriggers refuses source DELETE triggers unless --force-triggers accepts them. It
+// runs after checkDeleteTriggerVisibility, which proves the list complete.
 func checkDeleteTriggers(ctx context.Context, f *facts, force bool) error {
-	triggers, err := f.sourceDeleteTriggers(ctx)
+	proof, err := f.sourceDeleteTriggerProof(ctx)
 	if err != nil {
 		return inspectionError("delete_triggers", err)
 	}
-	tables, err := triggerOffenders("delete_triggers", validations.CheckTriggersPresent(triggers, validations.TriggerDelete))
+	tables, err := triggerOffenders("delete_triggers", validations.CheckTriggersPresent(proof.triggers, validations.TriggerDelete))
 	if err != nil || len(tables) == 0 {
 		return err
 	}
