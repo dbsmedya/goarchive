@@ -1,8 +1,7 @@
 # Release verification (beta.1 PR 4, spec .ayder/superpowers_20261014/specs/
 # 2026-10-14-beta1-release-verify-workflow-design.md). Manual only: a person pushes a
 # verify/<sha7> branch (or, once this file is on the default branch, dispatches it with a
-# SHA), and the operator approves the release-verify environment once: only the target job uses
-# it, and every other job needs target. Never on PRs or merges.
+# SHA). Agents push one only with the operator's approval for that run. Never on PRs or merges.
 name: Release verify
 
 on:
@@ -30,7 +29,6 @@ jobs:
   target:
     name: Target commit
     runs-on: ubuntu-24.04
-    environment: release-verify
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       rows: ${{ steps.rows.outputs.rows }}

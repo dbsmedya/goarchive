@@ -78,7 +78,8 @@ passes. **Agents never create tags or releases; the operator does.** The release
   commit) → Fable's final review for behaviour changes, when available → `gate-agent` reports
   GREEN on the final SHA (`tests/AGENTS.md`; re-measure the baselines when tests change), and for
   a behaviour change a green *Release verify* run on GitHub (`tests/README.md` → *The full matrix
-  runs on GitHub*; the operator approves each run) → Codex's MR verdict on that SHA → the operator's verdict → push, open the PR, CI → merge. A
+  runs on GitHub*; started only with the operator's approval) → Codex's MR verdict on that SHA → the
+  operator's verdict → push, open the PR, CI → merge. A
   release folds its version bump into its last PR; the operator tags.
 
 ## Build & guards
