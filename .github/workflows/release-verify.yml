@@ -118,6 +118,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Install MySQL Shell
+        # run-matrix.sh waits for each server through tests/scripts/mysql-query.sh, which uses it.
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
       - name: Row
         env:
           ROW: ${{ matrix.row }}
@@ -132,6 +138,7 @@ jobs:
         with:
           name: matrix-${{ matrix.row }}
           path: tests/results/envmatrix/gh/
+          include-hidden-files: true  # .work holds the pair and group start-up logs
           if-no-files-found: warn
 
   summary:
