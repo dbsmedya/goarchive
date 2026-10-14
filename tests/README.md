@@ -151,11 +151,11 @@ through the real CLI.
 > **05 is 08's uninterrupted control** — identical config, so a failure in 08 alone
 > isolates to the interrupt. Keep them in step, as with 03 and 05.
 >
-> **09's `delete_sleep_seconds: 1.0` is the test, not tuning.** The kill has to land
+> **09's `delete_sleep_seconds: 2.0` is the test, not tuning.** The kill has to land
 > between a batch's destination commit, which logs its roots `copied`, and its
 > completion, and the only part of that interval with any duration is the throttle
 > between delete statements; a wide throttle keeps the window open. Its slice is smaller
-> (499 rows) because that throttle costs 4 s per batch. How the harness times the kill:
+> (499 rows) because that throttle costs 8 s per batch. How the harness times the kill:
 > `e2e/resume/README.md`; how it accounts for the batch the kill lands in: the comments on
 > `assert_interrupt_preconditions` in `e2e/lib/interrupt.sh`.
 
@@ -188,7 +188,7 @@ from 16.8.)
 | **06** | 8022 | 500 | 16 + 22 | 16 × 0.2 = 3.2 s | 64 × 0.2 = 12.8 s | **16.0 s** |
 | **07** | 200 | 10 | 20 + 0 | 20 × 0.5 = 10.0 s | — *(copies only)* | **10.0 s** |
 | **08** † | 1899 | 100 | 18 + 99 | 18 × 0.2 = 3.6 s | 76 × 0.2 = 15.2 s | **18.8 s** |
-| **09** † | 399 | 100 | 3 + 99 | 3 × 0.2 = 0.6 s | 16 × **1.0** = 16.0 s | **16.6 s** |
+| **09** † | 399 | 100 | 3 + 99 | 3 × 0.2 = 0.6 s | 16 × **2.0** = 32.0 s | **32.6 s** |
 | **13** | 1999 | 100 | — | 0 | 0 | **0.0 s** |
 | **14** | 180 lines | 50 | 3 + 30 | 3 × 0.2 = 0.6 s | 25 × 0.1 = 2.5 s | **3.1 s** |
 | **15** | 120 blobs | 50 | 2 + 20 | 2 × 0.2 = 0.4 s | 5 × 0.1 = 0.5 s | **0.9 s** |
@@ -522,6 +522,31 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 - **Running alone:** do not run the estate suite or lint beside it.
 - **Server variables:** the runner and tests may `SET GLOBAL` on these throwaway servers;
   goarchive itself never does.
+
+#### The full matrix runs on GitHub
+
+Run one row or a few locally while developing. The **full** matrix runs on GitHub, together with
+the gate on every supported image, through the *Release verify* workflow
+(`.github/workflows/release-verify.yml`). It starts only from a push to a `verify/` branch, which
+an agent makes only with the operator's approval for that run:
+
+```bash
+git push origin <sha>:refs/heads/verify/<sha7>     # start a run
+git push origin --delete verify/<sha7>             # remove the branch after the run
+```
+
+- **Jobs:** `make gate` on an estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and
+  `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each
+  (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
+  `rows.tsv` row with one pair (`MX_PAIRS=1`); and a summary.
+- **Results:** the run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`).
+  It is red when any job did not succeed, when any row is not OK or is missing, and when any gate
+  is missing or lacks the evidence `make gate` records for its SHA (above: `complete`, a clean
+  tree, both exits 0). Every job's evidence directory is an artifact.
+  A gate's integration count is one pass short of the local baseline, with one more skip:
+  `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
+- **When:** on a PR's final SHA for a behaviour change, and on the release PR's final SHA before
+  the tag. It replaces the local full matrix. It does not replace the local gate on the final SHA.
 
 ### Sakila E2E tests
 

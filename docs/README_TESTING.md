@@ -110,7 +110,9 @@ The same suites under one changed environment at a time: a `SET GLOBAL` (strict 
 `sql_select_limit`, character sets and more), an init option (`lower_case_table_names`) or another server (Percona and
 Oracle, 8.0.40 to 9.7). Each row states its expected outcome — the run is exact, or refused at
 startup by name — and a judge checks it from `go test -json`
-([tests/README.md → Environment matrix](../tests/README.md#environment-matrix)).
+([tests/README.md → Environment matrix](../tests/README.md#environment-matrix)). Before a merge or
+a release, the full matrix and the gate on every supported image run on GitHub
+([The full matrix runs on GitHub](../tests/README.md#the-full-matrix-runs-on-github)).
 
 ---
 

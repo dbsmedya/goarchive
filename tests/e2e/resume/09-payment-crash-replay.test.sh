@@ -26,7 +26,7 @@ command="archive"
 # roots at 'copied', and its completion -- exactly the delete phase, whose only
 # duration is the throttle between delete statements. The engine logs nothing in
 # between, so the harness polls the log until it holds the 100 roots at 'copied',
-# then kills. This is why the config sets delete_sleep_seconds: 1.0 where every
+# then kills. This is why the config sets delete_sleep_seconds: 2.0 where every
 # other config uses 0.2.
 interrupt="crash"
 interrupt_after_batches="1"
@@ -49,16 +49,16 @@ verify_method="sha256"
 # of 99, 5 delete statements each:
 #
 #   3 x 0.2           =  0.6   batch sleep (the short last batch has none)
-#   4 x 4 x 1.0       = 16.0   delete throttle
+#   4 x 4 x 2.0       = 32.0   delete throttle
 #                       ----
-#                        16.6
+#                        32.6
 #
 # That the recovery HAPPENED is proven by the discriminator instead -- run 2's log
 # must contain "Recovery: replaying 100 copied roots of payment", which test 08's
-# must not. (2.x slept after the short last batch: 16.8.)
-min_duration="16.6"
+# must not.
+min_duration="32.6"
 
 # The full slice, after BOTH runs. 499 rows, measured -- payment_id is not
 # contiguous, so <= 500 is not 500. Smaller than test 08's slice because the wide
-# delete throttle above costs 4s per batch.
+# delete throttle above costs 8s per batch.
 expected_rows="499"

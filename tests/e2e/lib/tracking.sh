@@ -85,6 +85,14 @@ tracking_status_count() {
         "SELECT COUNT(*) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id} WHERE ga_status = $status;"
 }
 
+# "<copied> <completed>" for archiver_job_log_<id>, in one query: the crash marker's poll
+# (lib/interrupt.sh) reads both every tick, and each mysqlsh call costs a process start.
+tracking_copied_completed() {
+    local job_id="$1"
+    _tracking_scalar "copied and completed counts in archiver_job_log_${job_id}" \
+        "SELECT CONCAT(COALESCE(SUM(ga_status = 1), 0), ' ', COALESCE(SUM(ga_status = 2), 0)) FROM \`$ARCHIVE_DB\`.archiver_job_log_${job_id};"
+}
+
 # Rows in archiver_job_log_<id> that recovery would replay: copied or deleting.
 #
 # This is the single most load-bearing reading in the resume pair, and it means
