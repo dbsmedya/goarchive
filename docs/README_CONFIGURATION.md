@@ -312,7 +312,8 @@ deleted: a mismatch rolls the batch back and stops the run. Purge copies nothing
   need. On Windows the file takes its folder's permissions.
 - Every entry is tagged `job=<name>`. Logs never contain credentials or DSNs.
 - A run's last entry says how it ended, with its counts: `Run completed`, `Run stopped …`, or
-  `Run failed` with the error ([the report](README_OPERATIONS.md#what-a-run-does)).
+  `Run failed` with the error ([the report](README_OPERATIONS.md#what-a-run-does)). Under
+  `level: error` only `Run failed` is written.
 - Preflight's advisories are warnings, so `level: error` hides them.
 
 **No log rotation.** Files are opened in append mode and held for the whole run, so rotate with

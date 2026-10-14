@@ -337,8 +337,10 @@ naming it, and finishes the page.
 ### Graceful shutdown
 
 The first `SIGTERM` or `SIGINT` lets the batch or recovery page in flight finish, then stops the
-run; the report says so. A second signal cancels at once: the open transaction rolls back, and
-the next run's recovery finishes what the log holds. A third terminates the process.
+run; the report says so, and the run's log ends with `Run stopped …`. A second signal cancels at
+once: the open transaction rolls back, the log ends with `Run failed`, the cancellation and the
+counts so far, and the next run's recovery finishes what the log holds. A third terminates the
+process.
 
 ---
 

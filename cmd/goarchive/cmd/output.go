@@ -116,6 +116,15 @@ func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err er
 	}
 }
 
+// endRun logs how a run ended (logOutcome). p is the value recovered from a panic, nil if
+// the run returned: a panicking run has no error and no report yet, so the panic is its error.
+func endRun(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, p any) {
+	if p != nil {
+		err = fmt.Errorf("panic: %v", p)
+	}
+	logOutcome(log, typ, rep, err)
+}
+
 func perTable(m map[string]int64) string {
 	var parts []string
 	for _, table := range sortedKeys(m) {
