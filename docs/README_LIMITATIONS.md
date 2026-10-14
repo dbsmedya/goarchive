@@ -125,8 +125,8 @@ Things the relation model cannot express, which preflight cannot always catch.
 - **Many-to-many (N:M) cannot be expressed.** A table appears once in a job, so a join table
   with two in-job parents carries only one relation; its second foreign key fails
   `INTERNAL_FK_COVERAGE`.
-- **Self-referencing hierarchies** (a table referencing its own key) pass preflight, which skips
-  self-referencing constraints, but the model cannot archive the hierarchy.
+- **Self-referencing hierarchies** (a table referencing its own key) cannot be archived. Archive
+  and purge refuse one with `ON DELETE CASCADE` or `SET NULL` (`SELF_FK_DELETE_RULE_CHECK`).
 
 #### Relations must describe ownership
 
@@ -135,7 +135,7 @@ whether another root still needs them.
 
 #### Foreign key `ON DELETE CASCADE`
 
-GoArchive deletes children before their parents itself. A cascade among the job's tables is
+GoArchive deletes children before their parents itself. A cascade between two job tables is
 redundant work that GoArchive does not account for; preflight warns about it
 ([Warnings](README_VALIDATION.md#warnings)).
 
