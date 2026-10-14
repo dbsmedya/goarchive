@@ -295,8 +295,12 @@ func checkSelfForeignKeys(ctx context.Context, f *facts) error {
 		if fk.ChildTable != fk.ParentTable || fk.OnDelete == "RESTRICT" || fk.OnDelete == "NO ACTION" {
 			continue
 		}
+		rule := fk.OnDelete
+		if rule == "" {
+			rule = "(not reported)"
+		}
 		lines = append(lines, fmt.Sprintf("  - %s%s -> %s%s (constraint %s, ON DELETE %s)", fk.ChildTable,
-			columnList(fk.ChildColumns), fk.ParentTable, columnList(fk.ParentColumns), fk.ConstraintName, fk.OnDelete))
+			columnList(fk.ChildColumns), fk.ParentTable, columnList(fk.ParentColumns), fk.ConstraintName, rule))
 		tables = append(tables, fk.ChildTable)
 	}
 	if len(lines) == 0 {
