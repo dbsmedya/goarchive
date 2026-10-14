@@ -25,12 +25,17 @@ type fakeServer struct {
 	types    map[string]string                // TABLE_TYPE overrides; default BASE TABLE
 	engines  map[string]string                // engine overrides; default InnoDB
 	triggers []validations.TriggerInfo
-	fks      []validations.ForeignKey // every constraint touching the schema
-	partial  bool                     // foreign-key metadata not proven complete
-	lacking  map[validations.Privilege][]string
-	mem      uint64
-	packet   uint64 // max_allowed_packet
-	calls    []string
+	// hidden lists the tables whose TRIGGER is not present, by state; visibility, when set, is
+	// what TriggerVisibility returns verbatim; proofErr fails the trigger read.
+	hidden     map[string]validations.GrantState
+	visibility []validations.Finding
+	proofErr   error
+	fks        []validations.ForeignKey // every constraint touching the schema
+	partial    bool                     // foreign-key metadata not proven complete
+	lacking    map[validations.Privilege][]string
+	mem        uint64
+	packet     uint64 // max_allowed_packet
+	calls      []string
 }
 
 func (s *fakeServer) call(name string) { s.calls = append(s.calls, name) }
@@ -81,13 +86,27 @@ func (s *fakeServer) PrimaryKeys(_ context.Context, tables []string) ([]validati
 
 func (s *fakeServer) Triggers(_ context.Context, tables []string, event validations.TriggerEvent) ([]validations.TriggerInfo, error) {
 	s.call("Triggers")
+	if s.proofErr != nil {
+		return nil, s.proofErr
+	}
+	return s.eventTriggers(tables, event), nil
+}
+
+// eventTriggers is the fake's trigger list for event on tables.
+func (s *fakeServer) eventTriggers(tables []string, event validations.TriggerEvent) []validations.TriggerInfo {
 	var out []validations.TriggerInfo
 	for _, tr := range s.triggers {
 		if slices.Contains(tables, tr.Table) && strings.EqualFold(tr.Event, event.String()) {
 			out = append(out, tr)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// privileges is the fake's grant answer: every privilege present except those lacking, and
+// TRIGGER except on hidden tables.
+func (s *fakeServer) privileges() fakePrivileges {
+	return fakePrivileges{lacking: s.lacking, hidden: s.hidden, visibility: s.visibility}
 }
 
 func (s *fakeServer) ForeignKeys(_ context.Context, sel fkSelect, tables []string) (validations.ForeignKeyResult, error) {
@@ -117,7 +136,7 @@ func (s *fakeServer) TableSpec(_ context.Context, table string) (validations.Tab
 
 func (s *fakeServer) Privileges(context.Context) (privileges, error) {
 	s.call("Privileges")
-	return fakePrivileges{s.lacking}, nil
+	return s.privileges(), nil
 }
 
 func (s *fakeServer) RangeOptimizerMaxMemSize(context.Context) (uint64, error) {
@@ -131,9 +150,25 @@ func (s *fakeServer) MaxAllowedPacket(context.Context) (uint64, error) {
 }
 
 // fakePrivileges holds every privilege except those listed: by table, or "*" for the
-// schema.
+// schema. TRIGGER is also missing on the hidden tables, in their state.
 type fakePrivileges struct {
-	lacking map[validations.Privilege][]string
+	lacking    map[validations.Privilege][]string
+	hidden     map[string]validations.GrantState
+	visibility []validations.Finding
+}
+
+func (p fakePrivileges) TriggerVisibility(schema string, tables []string) []validations.Finding {
+	if p.visibility != nil {
+		return p.visibility
+	}
+	var out []validations.Finding
+	for _, t := range tables {
+		if st, ok := p.hidden[t]; ok {
+			out = append(out, validations.Finding{Check: validations.IDTriggerMetadataVisibility, Tables: []string{t},
+				Facts: validations.PrivilegeFact{Schema: schema, Table: t, Privilege: validations.PrivilegeTrigger, State: st}})
+		}
+	}
+	return out
 }
 
 func (p fakePrivileges) Tables(schema string, tables []string, priv validations.Privilege) []validations.Finding {
