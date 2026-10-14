@@ -18,6 +18,12 @@ import (
 // lastLogEntry logs one run outcome to a fresh file-only JSON log and returns its last entry.
 func lastLogEntry(t *testing.T, rep *engine.Report, err error) map[string]any {
 	t.Helper()
+	return lastEndRunEntry(t, rep, err, nil)
+}
+
+// lastEndRunEntry is lastLogEntry for a run that may have panicked with p.
+func lastEndRunEntry(t *testing.T, rep *engine.Report, err error, p any) map[string]any {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "run.log")
 	log, lerr := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: path, FileOnly: true})
 	if lerr != nil {
@@ -25,7 +31,7 @@ func lastLogEntry(t *testing.T, rep *engine.Report, err error) map[string]any {
 	}
 	log = log.WithJob("archive_docs")
 	log.Info("Batch 1: 2 roots of docs (archive)")
-	logOutcome(log, jobspec.Archive, rep, err)
+	endRun(log, jobspec.Archive, rep, err, p)
 	_ = log.Close()
 	data, rerr := os.ReadFile(path)
 	if rerr != nil {
@@ -83,5 +89,14 @@ func TestLogOutcome(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEndRunAfterPanic (GH #5, Fable I1): a run that panics must not end its log with "Run
+// completed": the deferred entry sees no error and no report, so the panic itself is the error.
+func TestEndRunAfterPanic(t *testing.T) {
+	e := lastEndRunEntry(t, nil, nil, "index out of range")
+	if e["msg"] != "Run failed" || e["level"] != "error" || e["error"] != "panic: index out of range" {
+		t.Fatalf("last entry after a panic = %v, want Run failed with error \"panic: index out of range\"", e)
 	}
 }
