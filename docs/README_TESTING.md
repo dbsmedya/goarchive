@@ -97,7 +97,7 @@ package:
 | `internal/tracking` | The schema label and the refused revisions, the typed log, the log-key and binding checks, registration and leftover logs |
 | `internal/database` | The session pins, `wait_timeout`, `max_error_count`, AUTO_INCREMENT zero, the identity guard, single-statement connections, a partly failing replica fleet |
 | `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
-| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet` |
+| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, an archive under a server's finite `sql_select_limit` |
 
 `TestMySQLLiveReplicationGate` stops the real replica's applier and needs the estate to itself.
 
@@ -107,7 +107,7 @@ package:
 
 The same suites under one changed environment at a time: a `SET GLOBAL` (strict and non-strict
 `sql_mode`, `ANSI_QUOTES`, `autocommit`, `max_error_count`, `max_allowed_packet`, `wait_timeout`,
-character sets and more), an init option (`lower_case_table_names`) or another server (Percona and
+`sql_select_limit`, character sets and more), an init option (`lower_case_table_names`) or another server (Percona and
 Oracle, 8.0.40 to 9.7). Each row states its expected outcome — the run is exact, or refused at
 startup by name — and a judge checks it from `go test -json`
 ([tests/README.md → Environment matrix](../tests/README.md#environment-matrix)).

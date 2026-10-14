@@ -262,12 +262,19 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// server wait_timeout shorter than that closes the session: GET_LOCK is released while
 	// the run goes on deleting, or the next delete chunk fails with 4031. The session keeps
 	// at least 8 h (waitTimeoutExpression), never less than the server's own value.
+	// Beta audit A1: a server's global sql_select_limit is every new session's default and
+	// caps any SELECT without its own LIMIT, silently. None of GoArchive's multi-row reads
+	// carries one: under a global limit of 20 the library's column list, discovery, the copy and
+	// verification each read at most 20 rows, so a wide table lost its last columns and an
+	// order left every line past the 20th behind, while the run reported success. 2^64-1 is
+	// the server's maximum, no limit; DEFAULT would mean the global value.
 	dsnCfg.Params = map[string]string{
-		"sql_notes":    "1",
-		"time_zone":    "'+00:00'",
-		"sql_mode":     autoZeroModeExpression,
-		"autocommit":   "1",
-		"wait_timeout": waitTimeoutExpression,
+		"sql_select_limit": "18446744073709551615",
+		"sql_notes":        "1",
+		"time_zone":        "'+00:00'",
+		"sql_mode":         autoZeroModeExpression,
+		"autocommit":       "1",
+		"wait_timeout":     waitTimeoutExpression,
 	}
 
 	switch cfg.TLS {
