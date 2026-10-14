@@ -42,8 +42,8 @@ the default branch. Never a pull request, a merge or a tag.
 
 The full verification of one commit, started by hand before a PR merges or before a release is
 tagged:
-- **Gate:** `make gate` on an estate built from each of `mysql:8.0.40`, `mysql:8.4`, `mysql:9.7`
-  and `percona/percona-server` 8.0, 8.4 and 9.7 (`GA_ESTATE_IMAGE`).
+- **Gate:** `make gate` on an estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and
+  `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`).
 - **Matrix:** one job per row of `tests/envmatrix/rows.tsv`.
 - **Summary:** one table of every verdict (`tests/envmatrix/gh-summary.sh`), on the run page and
   as the `release-verify` artifact; red when any gate or row is not OK or is missing.

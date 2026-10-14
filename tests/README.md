@@ -535,8 +535,9 @@ git push origin <sha>:refs/heads/verify/<sha7>     # start a run; approve it in 
 git push origin --delete verify/<sha7>             # remove the branch after the run
 ```
 
-- **Jobs:** `make gate` on an estate built from each of `mysql:8.0.40`, `mysql:8.4`, `mysql:9.7`
-  and `percona/percona-server` 8.0, 8.4 and 9.7 (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
+- **Jobs:** `make gate` on an estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and
+  `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each
+  (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
   `rows.tsv` row with one pair (`MX_PAIRS=1`); and a summary.
 - **Results:** the run page's summary is one table of every verdict, red when any gate or row is
   not OK or is missing (`envmatrix/gh-summary.sh`). Every job's evidence directory is an artifact.

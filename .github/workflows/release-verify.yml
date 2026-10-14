@@ -23,7 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MYSQLSH_DEB: mysql-shell_8.4.10-1ubuntu24.04_amd64.deb
+  # MySQL Shell's dump refuses a server newer than itself, so it matches the newest gate image.
+  MYSQLSH_DEB: mysql-shell_9.7.1-1ubuntu24.04_amd64.deb
 
 jobs:
   target:
@@ -61,13 +62,15 @@ jobs:
       fail-fast: false
       max-parallel: 16
       matrix:
+        # Exact releases, so a run is reproducible and MySQL Shell supports each one; move them
+        # forward deliberately, with MYSQLSH_DEB. The matrix's version rows keep floating tags.
         image:
           - mysql:8.0.40
-          - mysql:8.4
-          - mysql:9.7
-          - percona/percona-server:8.0
-          - percona/percona-server:8.4
-          - percona/percona-server:9.7
+          - mysql:8.4.11
+          - mysql:9.7.1
+          - percona/percona-server:8.0.46-37
+          - percona/percona-server:8.4.11-11
+          - percona/percona-server:9.7.1-1
     steps:
       - uses: actions/checkout@v5
         with:
