@@ -1,4 +1,6 @@
 # Test MySQL topology: db1 = source (sakila), db2 = destination, db3 = replica.
+# The image is GA_ESTATE_IMAGE, default percona/percona-server:8.4; the release-verify workflow
+# (.github/workflows/release-verify.yml) builds this estate on each supported image.
 #
 # The data directories are Docker NAMED VOLUMES, not macOS bind mounts. This is
 # load-bearing, not a style choice:
@@ -21,7 +23,7 @@ services:
   db1:
     container_name: db1
     hostname: db1.local
-    image: percona/percona-server:8.4
+    image: ${GA_ESTATE_IMAGE:-percona/percona-server:8.4}
     cap_add:
       - SYS_NICE
     ports:
@@ -30,6 +32,8 @@ services:
     volumes:
       - db1_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db1.cnf:/etc/my.cnf.d/docker.cnf
+      # Oracle's image reads only /etc/mysql/conf.d (release-verify, beta.1 PR 4).
+      - ./docker_files/my.cnf.d/db1.cnf:/etc/mysql/conf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
@@ -43,7 +47,7 @@ services:
   db2:
     container_name: db2
     hostname: db2.local
-    image: percona/percona-server:8.4
+    image: ${GA_ESTATE_IMAGE:-percona/percona-server:8.4}
     cap_add:
       - SYS_NICE
     ports:
@@ -52,6 +56,8 @@ services:
     volumes:
       - db2_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db2.cnf:/etc/my.cnf.d/docker.cnf
+      # Oracle's image reads only /etc/mysql/conf.d (release-verify, beta.1 PR 4).
+      - ./docker_files/my.cnf.d/db2.cnf:/etc/mysql/conf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
@@ -61,7 +67,7 @@ services:
   db3:
     container_name: db3
     hostname: db3.local
-    image: percona/percona-server:8.4
+    image: ${GA_ESTATE_IMAGE:-percona/percona-server:8.4}
     cap_add:
       - SYS_NICE
     ports:
@@ -70,6 +76,8 @@ services:
     volumes:
       - db3_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/db3.cnf:/etc/my.cnf.d/docker.cnf
+      # Oracle's image reads only /etc/mysql/conf.d (release-verify, beta.1 PR 4).
+      - ./docker_files/my.cnf.d/db3.cnf:/etc/mysql/conf.d/docker.cnf
     env_file: .env
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
