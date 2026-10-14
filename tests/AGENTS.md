@@ -131,11 +131,12 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1183 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261014T081351Z-99545` on 2026-10-14 (the beta.1 `sql_select_limit` PR, at `bf33102`). It was
-  1179 before: that PR added `TestMySQLArchiveUnderAFiniteSelectLimit` with two subtests and
-  `TestBuildDSNPinsSelectLimit`, a unit test the integration packages also run. Re-measure after
-  adding or removing tagged tests.
+- **Integration inventory:** `PASS=1210 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261014T113340Z-87827` on 2026-10-14 (the beta.1 self-referencing delete-rule PR, at
+  `0223702`). It was 1183 before: that PR added `TestMySQLSelfReferencingDeleteRules` with eight
+  subtests (+9) and `TestSelfForeignKeys` with eighteen (+19), unit tests the integration packages
+  also run, and replaced a `TestInternalForeignKeys` subtest (−1). Re-measure after adding or
+  removing tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  469 s, leaving about 131 s; record each new measurement here, since the margin shrinks as tests
+  460 s, leaving about 140 s; record each new measurement here, since the margin shrinks as tests
   are added.
