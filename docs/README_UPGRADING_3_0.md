@@ -13,6 +13,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [The short version](#the-short-version)
 - [Moving from 2.2](#moving-from-22)
 - [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
+- [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -114,6 +115,38 @@ renamed** `--skip-dangerously-validate-preflight-allow-experimental`; the old na
 `DEST_SCHEMA_COMPATIBILITY_CHECK`; later releases log one warning per table naming the displaced
 columns, because every read and INSERT names its columns
 ([Schema compatibility rules](README_VALIDATION.md#schema-compatibility-rules)).
+
+---
+
+## Moving from 3.0 alpha.1
+
+The tracking tables are unchanged, and a job stopped under alpha.1 is recovered by its next run.
+
+**Archive recovery checks the destination before it deletes.** A `copied` root's tree is
+rediscovered from the source, and each of its rows must be in the destination before any of it
+is deleted. A row the destination lacks, typically one written into the tree after the copy,
+stops the run with `UncopiedError`, which names the rows and the remedies; nothing is deleted
+([Crash recovery](README_OPERATIONS.md#crash-recovery)). Recovery reads the destination even
+under `verification: none`, so the archive account needs `SELECT` on the destination tables
+([privileges](README_PERMISSIONS.md)); the recipes already grant it.
+
+**An archive job is bound to its destination database** while its log holds `copied` roots:
+a changed `destination.database` is refused at startup
+([Startup checks](README_JOBS_SCHEMA.md#startup-checks)). Finish the job before changing it.
+
+**Rows and INSERTs larger than `max_allowed_packet` are copied.** GoArchive reads each server's
+`max_allowed_packet` when it connects (one `SELECT @@max_allowed_packet`, no privilege needed),
+where alpha.1's driver assumed 64 MiB. A destination below 64 MiB dropped the connection over a
+large INSERT (`broken pipe`); now only one value larger than the destination's packet, or rarely
+a whole INSERT, fails, with an error naming the table and the remedy
+([the limit](README_LIMITATIONS.md#a-value-larger-than-the-destinations-max_allowed_packet-fails-its-batch)).
+[`MAX_ALLOWED_PACKET_CHECK`](README_VALIDATION.md#max_allowed_packet_check) no longer caps a key
+statement at 64 MiB: the server's value is the only limit.
+
+**Logging.** A new log file is created readable by its owner only (`0600`); an existing file
+keeps its mode. A run's log ends with one entry saying how it ended (`Run completed`,
+`Run stopped …` or `Run failed`) and its counts
+([logging](README_CONFIGURATION.md#logging)).
 
 ---
 
