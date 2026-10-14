@@ -306,7 +306,14 @@ deleted: a mismatch rolls the batch back and stops the run. Purge copies nothing
 - A **file path** in `output` logs to the file **and** tees to stdout. The file is plain text; the
   stdout tee stays coloured.
 - `file_only: true` is refused when `output` is empty, `stdout` or `stderr`.
+- **A log file GoArchive creates is readable by its owner only** (`0600`), since the log names
+  tables, keys and servers. An existing file is appended to and keeps its owner and mode: when a
+  log collector or another user must read the log, create the file first with the mode they
+  need. On Windows the file takes its folder's permissions.
 - Every entry is tagged `job=<name>`. Logs never contain credentials or DSNs.
+- A run's last entry says how it ended, with its counts: `Run completed`, `Run stopped …`, or
+  `Run failed` with the error ([the report](README_OPERATIONS.md#what-a-run-does)). Under
+  `level: error` only `Run failed` is written.
 - Preflight's advisories are warnings, so `level: error` hides them.
 
 **No log rotation.** Files are opened in append mode and held for the whole run, so rotate with

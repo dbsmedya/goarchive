@@ -41,8 +41,12 @@ func New(cfg *config.LoggingConfig) (*Logger, error) {
 	case "stderr":
 		cores = append(cores, zapcore.NewCore(buildEncoder(cfg.Format, true), nopSyncWriter{os.Stderr}, level))
 	default:
-		// File output, plain encoder (no ANSI color codes)
-		file, err := os.OpenFile(cfg.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		// File output, plain encoder (no ANSI color codes). A new file is readable by its owner
+		// only, since the log names tables, keys and servers (GH #5). OpenFile leaves an existing
+		// file's mode alone, so an operator whose log reader runs as another user creates the
+		// file first with the mode it needs. On Windows the mode decides only the read-only
+		// attribute, which 0600 leaves unset; the file takes its folder's permissions.
+		file, err := os.OpenFile(cfg.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, err
 		}

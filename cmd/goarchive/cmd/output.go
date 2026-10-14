@@ -7,8 +7,12 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 )
 
@@ -68,6 +72,57 @@ func printReport(w io.Writer, name string, typ jobspec.Type, rep *engine.Report)
 		_, _ = fmt.Fprintln(w, "  stopped before the end of the where range: run the job again to continue")
 	}
 	_, _ = fmt.Fprintf(w, "  elapsed: %.3fs\n", rep.Elapsed.Seconds())
+}
+
+// logOutcome writes a run's last log entry: how the run ended, with the report's counts when
+// the engine returned one (GH #5). printReport reaches stdout only, so without this a log file,
+// under file_only too, would end at the last batch, and a failed run would leave no entry; 2.x
+// logged "Archive complete" for the same reason. A failure is logged at error level without
+// the stack trace the logger attaches there.
+func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error) {
+	fields := []any{"job_type", string(typ)}
+	if rep != nil {
+		fields = append(fields, "roots", rep.Roots, "batches", rep.Batches)
+		if rep.Recovered > 0 {
+			fields = append(fields, "recovered", rep.Recovered)
+		}
+		if rep.Skipped > 0 {
+			fields = append(fields, "skipped", rep.Skipped)
+		}
+		for _, counts := range []struct {
+			name  string
+			table map[string]int64
+		}{{"copied", rep.Copied}, {"deleted", rep.Deleted}, {"verified", rep.Verified}} {
+			if len(counts.table) > 0 {
+				fields = append(fields, counts.name, counts.table)
+			}
+		}
+		if rep.Verification != "" {
+			fields = append(fields, "verification", string(rep.Verification))
+		}
+		if len(rep.Conversions) > 0 {
+			fields = append(fields, "conversions", rep.Conversions)
+		}
+		fields = append(fields, "elapsed_seconds", rep.Elapsed.Seconds())
+	}
+	switch {
+	case err != nil:
+		fields = append(fields, "error", err.Error())
+		log.Desugar().WithOptions(zap.AddStacktrace(zapcore.FatalLevel)).Sugar().Errorw("Run failed", fields...)
+	case rep != nil && rep.Stopped:
+		log.Infow("Run stopped before the end of the where range: run the job again to continue", fields...)
+	default:
+		log.Infow("Run completed", fields...)
+	}
+}
+
+// endRun logs how a run ended (logOutcome). p is the value recovered from a panic, nil if
+// the run returned: a panicking run has no error and no report yet, so the panic is its error.
+func endRun(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, p any) {
+	if p != nil {
+		err = fmt.Errorf("panic: %v", p)
+	}
+	logOutcome(log, typ, rep, err)
 }
 
 func perTable(m map[string]int64) string {

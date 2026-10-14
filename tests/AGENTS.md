@@ -131,11 +131,12 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1170 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261013T194218Z-8861` on 2026-10-13 (the M7c-F1 packet PR, at `383c086`). It was 1161
-  before: that PR added `TestMySQLArchiveRowsWiderThanThePacket` and three unit tests that the
-  integration packages also run (`TestBuildDSNReadsTheServersPacket`, `TestPacketError` with five
-  subtests, `TestPacketErrorMessage`). Re-measure after adding or removing tagged tests.
+- **Integration inventory:** `PASS=1179 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261014T040956Z-98473` on 2026-10-14 (the GH #5 logging PR, at `bd64f1a`). It was 1170
+  before: that PR added `TestMySQLRunLogEndsWithOutcome` and unit tests that the integration
+  packages also run (`TestLogOutcome` with four subtests, `TestEndRunAfterPanic`,
+  `TestNewCreatesLogFileOwnerOnly`, `TestNewKeepsExistingLogFileMode`). Re-measure after adding or
+  removing tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  436 s, leaving about 164 s; record each new measurement here, since the margin shrinks as tests
+  474 s, leaving about 126 s; record each new measurement here, since the margin shrinks as tests
   are added.

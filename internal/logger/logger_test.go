@@ -3,6 +3,8 @@ package logger
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -33,6 +35,7 @@ func TestParseLevel(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "test-log.json")
 	tests := []struct {
 		name    string
 		cfg     *config.LoggingConfig
@@ -61,7 +64,7 @@ func TestNew(t *testing.T) {
 			cfg: &config.LoggingConfig{
 				Level:  "warn",
 				Format: "json",
-				Output: "/tmp/test-log.json",
+				Output: logPath,
 			},
 			wantErr: false,
 		},
@@ -96,13 +99,76 @@ func TestNew(t *testing.T) {
 				t.Error("New() returned nil logger without error")
 			}
 			if logger != nil {
-				_ = logger.Sync()
+				_ = logger.Close()
 			}
 		})
 	}
+}
 
-	// Cleanup test log file
-	_ = os.Remove("/tmp/test-log.json")
+// TestNewCreatesLogFileOwnerOnly (GH #5): a log file GoArchive creates is readable by its
+// owner only, since the log names tables, keys and servers. On Windows a mode sets only the
+// read-only attribute, so there the file must stay writable.
+func TestNewCreatesLogFileOwnerOnly(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "new.log")
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	log.Info("mode check")
+	_ = log.Close()
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		if info.Mode().Perm()&0o200 == 0 {
+			t.Errorf("log file mode = %v, want a writable file", info.Mode().Perm())
+		}
+		return
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("log file mode = %#o, want 0600", got)
+	}
+}
+
+// TestNewKeepsExistingLogFileMode (GH #5): GoArchive appends to an existing log file and
+// leaves its mode alone, so an operator whose log collector needs to read the file creates it
+// first with the mode it needs.
+func TestNewKeepsExistingLogFileMode(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "existing.log")
+	if err := os.WriteFile(logPath, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(logPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	log.Info("after")
+	_ = log.Close()
+
+	after, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Errorf("log file mode = %#o, want the existing %#o", after.Mode().Perm(), before.Mode().Perm())
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(content), "before\n") || !strings.Contains(string(content), "after") {
+		t.Errorf("log file = %q, want the old line then the new entry", content)
+	}
 }
 
 func TestNewDefault(t *testing.T) {
@@ -408,7 +474,7 @@ func TestLoggingOutput(t *testing.T) {
 	logger.Warn("test warn message")
 	logger.WithJob("test-job").Info("message with job context")
 
-	_ = logger.Sync()
+	_ = logger.Close()
 
 	// Read the log file
 	content, err := os.ReadFile(tmpFile.Name())

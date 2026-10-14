@@ -64,6 +64,18 @@ docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
   ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml plan --job archive_old_orders
 ```
 
+The image runs as root. With the default `logging.output: stdout`, the log goes to `docker logs`.
+On a Linux host, a log file written to a mounted directory belongs to the container's root and
+is readable by root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the
+file first; GoArchive appends to it and keeps its owner and mode:
+
+```bash
+mkdir -p logs && touch logs/goarchive.log && chmod 0640 logs/goarchive.log
+# archiver.yaml: logging.output: /logs/goarchive.log
+docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" -v "$(pwd)/logs:/logs" \
+  ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml archive --job archive_old_orders
+```
+
 ## Installation from Source
 
 ### 1. Clone the Repository

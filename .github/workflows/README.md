@@ -7,11 +7,14 @@ This directory contains CI/CD workflows for the project.
 ### 1. CI (`ci.yml`)
 **Triggers:** Push to main/master, Pull requests
 
-Runs on every PR and push, as one **Check** job on the Go release that `go.mod`'s `toolchain`
+Runs on every PR and push, as a **Check** job on the Go release that `go.mod`'s `toolchain`
 line pins:
 - **`make check`:** format, vet, lint (golangci-lint pinned in the `Makefile`), consumer policy,
   dead code, unit tests with race detection, and build
 - **Test version output:** a separate step that builds the binary and checks its version output
+
+A second job, **Logger on Windows**, runs the logger's unit tests on `windows-latest`: a release
+ships a Windows binary, where a log file's mode sets only the read-only attribute.
 
 Database tests do not run in CI. The full gate is `make gate`, described in `tests/README.md`.
 
