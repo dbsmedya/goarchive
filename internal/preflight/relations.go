@@ -227,7 +227,7 @@ func sameSet(a, b []string) bool {
 // children.
 //
 // A self-referencing constraint (employees.manager_id -> employees.id) is not a relation
-// and is skipped, as in 2.x.
+// and is skipped here; checkSelfForeignKeys judges its delete rule.
 func checkInternalForeignKeys(ctx context.Context, f *facts) error {
 	within, err := f.foreignKeys(ctx, fkWithin)
 	if err != nil {
@@ -274,6 +274,43 @@ func checkInternalForeignKeys(ctx context.Context, f *facts) error {
 	}
 	warnDuplicateEdges(f, matched)
 	return nil
+}
+
+// checkSelfForeignKeys refuses, for archive and purge, a job table whose foreign key
+// references the same table with a delete rule other than RESTRICT or NO ACTION (beta audit
+// A3). Deleting a batch row would make InnoDB delete (CASCADE) or detach (SET NULL) rows of
+// that table outside the batch, which were never copied, and the run would report success.
+// RESTRICT and NO ACTION fail loudly with error 1451 and lose nothing. The rule is an
+// allow-list, so a rule the library reports in another spelling, or none, is refused.
+//
+// The within-job set needs no completeness proof of its own: both ends of a self-reference
+// are a job table, which the account must be able to read.
+func checkSelfForeignKeys(ctx context.Context, f *facts) error {
+	within, err := f.foreignKeys(ctx, fkWithin)
+	if err != nil {
+		return inspectionError("self_fk_delete_rule", err)
+	}
+	var lines, tables []string
+	for _, fk := range within.Keys {
+		if fk.ChildTable != fk.ParentTable || fk.OnDelete == "RESTRICT" || fk.OnDelete == "NO ACTION" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  - %s%s -> %s%s (constraint %s, ON DELETE %s)", fk.ChildTable,
+			columnList(fk.ChildColumns), fk.ParentTable, columnList(fk.ParentColumns), fk.ConstraintName, fk.OnDelete))
+		tables = append(tables, fk.ChildTable)
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	sort.Strings(lines)
+	slices.Sort(tables)
+	return &Error{Check: "SELF_FK_DELETE_RULE_CHECK", Tables: slices.Compact(tables), Message: fmt.Sprintf(
+		"A job table references itself with a delete rule that changes rows outside the batch: deleting a "+
+			"batch row would delete (CASCADE) or detach (SET NULL clears their parent column) rows of the same "+
+			"table that were never copied:\n%s\n\nFix: redefine the constraint with ON DELETE RESTRICT or NO "+
+			"ACTION, or define a separate copy-only job for the table (a job's type is fixed once it has run). "+
+			"The model cannot archive a self-referencing hierarchy (docs/README_LIMITATIONS.md, Supported "+
+			"relationship types).", strings.Join(lines, "\n"))}
 }
 
 // warnDuplicateEdges logs one advisory per relation whose edge more than one constraint

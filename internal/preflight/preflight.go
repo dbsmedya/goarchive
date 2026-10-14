@@ -47,8 +47,8 @@ const (
 	// ProfileSourceOnly is purge: no destination-table checks. The job schema permission
 	// check stays, because tracking lives there.
 	ProfileSourceOnly
-	// ProfileNonDestructive is copy-only: no delete permission, delete trigger or cascade
-	// checks, and no foreign-key visibility proof.
+	// ProfileNonDestructive is copy-only: no delete permission, delete trigger, cascade or
+	// self-reference delete-rule checks, and no foreign-key visibility proof.
 	ProfileNonDestructive
 )
 
@@ -181,6 +181,7 @@ func stages(cfg Config) []stage {
 		{"ForeignKeyMetadataVisibility", deletes, checkForeignKeyMetadataVisibility},
 		{"ForeignKeyCoverage", policy, checkForeignKeyCoverage},
 		{"InternalForeignKeys", policy, checkInternalForeignKeys},
+		{"SelfForeignKeys", deletes, checkSelfForeignKeys},
 
 		{"SourceSelectPermissions", policy, checkSourceSelectPermissions},
 		{"SourceDeletePermissions", deletes, checkSourceDeletePermissions},

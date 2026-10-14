@@ -191,7 +191,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Guarded commit (write → check → `COMMIT`) at every commit site | `internal/engine/run.go` → `(*run).commit` |
 | Final status written only on a session that holds the job lock; skipped, naming the taker, when another run holds it | `internal/engine/startup.go` → `finalStatus`; `internal/lock/set.go` → `(*Set).Do` |
 | Key definitions read from MySQL; documented `primary_key` check (R31) | `internal/preflight/keys.go` → `readKeys`, `checkPrimaryKeyColumns` |
-| Relationship pairing, `foreign_key` index, declared-FK pairing | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys` |
+| Relationship pairing, `foreign_key` index, declared-FK pairing; a self-reference's delete rule (`SELF_FK_DELETE_RULE_CHECK`) | `internal/preflight/relations.go` → `checkRelationKeys`, `checkForeignKeyIndexes`, `checkInternalForeignKeys`, `checkSelfForeignKeys` |
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
@@ -210,7 +210,9 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 > (`internal/database/identity.go`, `SRC_DEST_IDENTITY_CHECK`); *Crash recovery* in
 > `docs/README_OPERATIONS.md` (`internal/engine/errors.go`, `UncopiedError`); *A value larger than
 > the destination's `max_allowed_packet` fails its batch* in `docs/README_LIMITATIONS.md` (same
-> file, `PacketError`). Renaming one breaks that reference.
+> file, `PacketError`); *Supported relationship types* in `docs/README_LIMITATIONS.md`
+> (`internal/preflight/relations.go`, `SELF_FK_DELETE_RULE_CHECK`). Renaming one breaks that
+> reference.
 
 ## Documentation Layout (RULE)
 

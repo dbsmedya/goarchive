@@ -80,6 +80,7 @@ type.
 | `FK_COVERAGE_CHECK` | ✅ | ✅ | ✅ |
 | `INTERNAL_FK_COVERAGE` | ✅ | ✅ | ✅ |
 | `FK_PAIRING_CHECK` | ✅ | ✅ | ✅ |
+| `SELF_FK_DELETE_RULE_CHECK` | ✅ | ✅ | ❌ |
 | `SOURCE_SELECT_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `SOURCE_DELETE_PERMISSION_CHECK` | ✅ | ✅ | ❌ |
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ |
@@ -87,10 +88,10 @@ type.
 
 - **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
   it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
-- **Copy-only** deletes nothing, so no external cascade can fire: it skips the visibility proof,
-  the delete permission and the DELETE-trigger check. It still runs `FK_COVERAGE_CHECK`, but
-  without `PROCESS` that check sees only the foreign keys the account can read, so a
-  cross-schema one can pass unseen.
+- **Copy-only** deletes nothing, so no cascade can fire: it skips the visibility proof, the
+  self-reference delete rule, the delete permission and the DELETE-trigger check. It still runs
+  `FK_COVERAGE_CHECK`, but without `PROCESS` that check sees only the foreign keys the account
+  can read, so a cross-schema one can pass unseen.
 - [Connection checks](#connection-checks) run before preflight, for every command.
 
 ---
@@ -270,8 +271,9 @@ the same way. For the foreign keys the database **does** declare, these checks g
 table outside the job references a job table (`FK_COVERAGE_CHECK`) and that every one between two
 job tables is a configured relation, paired the same way (`INTERNAL_FK_COVERAGE`,
 `FK_PAIRING_CHECK`). `FK_COVERAGE_VISIBILITY_CHECK` proves GoArchive saw all of them. A
-self-referencing foreign key (`category.parent_id → category.id`) is not a relation and is
-skipped ([supported relationship types](README_LIMITATIONS.md#supported-relationship-types)).
+self-referencing foreign key (`category.parent_id → category.id`) is not a relation; archive and
+purge refuse one that cascades or sets NULL (`SELF_FK_DELETE_RULE_CHECK`,
+[supported relationship types](README_LIMITATIONS.md#supported-relationship-types)).
 
 ### `FK_INDEX_CHECK`
 
@@ -323,6 +325,24 @@ parent's key columns differently. A swapped composite pairing would select anoth
 children.
 
 **Fix:** list `references` in the order that pairs with `foreign_key`.
+
+### `SELF_FK_DELETE_RULE_CHECK`
+
+Archive and purge only. A job table, root or child, has a foreign key to itself whose rule is
+`ON DELETE CASCADE` or `SET NULL`. Deleting a batch row would make InnoDB delete (`CASCADE`) or
+clear the parent of (`SET NULL`) rows of the same table outside the batch, which were never
+copied, and the run would report success. Each line names the constraint and its rule:
+
+```
+  - comments(parent_id) -> comments(id) (constraint fk_comments_parent, ON DELETE CASCADE)
+```
+
+`RESTRICT` and `NO ACTION` pass: a delete they block fails with error 1451 and nothing is lost.
+Any other rule is refused.
+
+**Fix:** redefine the constraint with `ON DELETE RESTRICT` (`ALTER TABLE … DROP FOREIGN KEY …,
+ADD CONSTRAINT … ON DELETE RESTRICT`), or define a separate copy-only job for the table; a job's
+type is fixed once it has run.
 
 ### `FK_COVERAGE_VISIBILITY_CHECK`
 
@@ -435,7 +455,7 @@ fail them is one value larger than the destination's packet, or rarely the whole
 
 Logged, never fatal:
 
-- **`ON DELETE CASCADE`** among the job's tables, for archive and purge jobs: GoArchive deletes
+- **`ON DELETE CASCADE`** between two job tables, for archive and purge jobs: GoArchive deletes
   children first itself, so a cascade is redundant work outside its ordering. Verify it is
   intended.
 - **A relation's edge declared by several foreign keys** with the same columns and pairing: one
