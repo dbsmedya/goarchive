@@ -131,12 +131,11 @@ task says why.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1179 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261014T040956Z-98473` on 2026-10-14 (the GH #5 logging PR, at `bd64f1a`). It was 1170
-  before: that PR added `TestMySQLRunLogEndsWithOutcome` and unit tests that the integration
-  packages also run (`TestLogOutcome` with four subtests, `TestEndRunAfterPanic`,
-  `TestNewCreatesLogFileOwnerOnly`, `TestNewKeepsExistingLogFileMode`). Re-measure after adding or
-  removing tagged tests.
+- **Integration inventory:** `PASS=1183 FAIL=0 SKIP=4`, measured by the integration runner in gate
+  run `20261014T081351Z-99545` on 2026-10-14 (the beta.1 `sql_select_limit` PR, at `bf33102`). It was
+  1179 before: that PR added `TestMySQLArchiveUnderAFiniteSelectLimit` with two subtests and
+  `TestBuildDSNPinsSelectLimit`, a unit test the integration packages also run. Re-measure after
+  adding or removing tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  474 s, leaving about 126 s; record each new measurement here, since the margin shrinks as tests
+  469 s, leaving about 131 s; record each new measurement here, since the margin shrinks as tests
   are added.
