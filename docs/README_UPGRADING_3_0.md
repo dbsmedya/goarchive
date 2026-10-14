@@ -143,8 +143,8 @@ a whole INSERT, fails, with an error naming the table and the remedy
 [`MAX_ALLOWED_PACKET_CHECK`](README_VALIDATION.md#max_allowed_packet_check) no longer caps a key
 statement at 64 MiB: the server's value is the only limit.
 
-**Logging.** A new log file is created readable by its owner only (`0600`); an existing file
-keeps its mode. A run's log ends with one entry saying how it ended (`Run completed`,
+**Logging.** A new log file is created readable by its owner only (`0600`) on Unix; on Windows
+it inherits its folder's permissions. An existing file keeps its mode. A run's log ends with one entry saying how it ended (`Run completed`,
 `Run stopped …` or `Run failed`) and its counts
 ([logging](README_CONFIGURATION.md#logging)).
 
@@ -190,8 +190,9 @@ The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how
   | `replica.replication_channel: ""` | `replication.servers[].channels: [""]`, the default channel only; omitted or `[]` gates on every channel |
   | `safety.lag_threshold` | `replication.seconds_behind_source_within` |
   | `safety.check_interval` | `replication.check_interval` |
-- **A new log file is readable by its owner only** (`0600`; 2.x created it `0644`). An existing
-  file keeps its mode, so a log reader running as another user needs the file created first
+- **A new log file is readable by its owner only** on Unix (`0600`; 2.x created it `0644`); on
+  Windows it inherits its folder's permissions. An existing file keeps its mode, so a log reader
+  running as another user needs the file created first
   ([logging](README_CONFIGURATION.md#logging)), and a log 2.x created keeps `0644` until you
   `chmod 0600` it.
 
