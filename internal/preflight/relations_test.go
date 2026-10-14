@@ -1,6 +1,8 @@
 package preflight
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -219,9 +221,125 @@ func TestInternalForeignKeys(t *testing.T) {
 			t.Errorf("message = %s", e.Message)
 		}
 	})
-	t.Run("self-referencing", func(t *testing.T) {
+}
+
+// TestSelfForeignKeys (beta audit A3): deleting a batch row makes InnoDB delete (CASCADE) or
+// detach (SET NULL) rows of the same table outside the batch, uncopied. Archive and purge
+// accept a self-reference only under RESTRICT or NO ACTION, which fail loudly with 1451 and
+// lose nothing; any other rule is refused. Copy-only deletes nothing.
+func TestSelfForeignKeys(t *testing.T) {
+	self := func(name, table string, child, parent []string, rule string) validations.ForeignKey {
+		k := fk(name, table, child, table, parent)
+		k.OnDelete = rule
+		return k
+	}
+	parent := func(rule string) validations.ForeignKey {
+		return self("fk_orders_parent", "orders", []string{"parent_id"}, []string{"id"}, rule)
+	}
+	for _, tc := range []struct {
+		typ     jobspec.Type
+		rule    string
+		refused bool
+	}{
+		{jobspec.Archive, "CASCADE", true}, {jobspec.Archive, "SET NULL", true},
+		{jobspec.Purge, "CASCADE", true}, {jobspec.Purge, "SET NULL", true},
+		// Fail closed: a rule the library might report that is neither accepted one, or none.
+		{jobspec.Archive, "SET DEFAULT", true}, {jobspec.Archive, "", true},
+		{jobspec.Archive, "RESTRICT", false}, {jobspec.Archive, "NO ACTION", false},
+		{jobspec.Purge, "RESTRICT", false}, {jobspec.Purge, "NO ACTION", false},
+		{jobspec.CopyOnly, "CASCADE", false}, {jobspec.CopyOnly, "SET NULL", false},
+	} {
+		t.Run(fmt.Sprintf("%s, ON DELETE %q", tc.typ, tc.rule), func(t *testing.T) {
+			w := healthy(t, tc.typ)
+			w.src.fks = append(w.src.fks, parent(tc.rule))
+			if !tc.refused {
+				w.mustPass()
+				return
+			}
+			e := w.mustFail("SELF_FK_DELETE_RULE_CHECK")
+			want := fmt.Sprintf("  - orders(parent_id) -> orders(id) (constraint fk_orders_parent, ON DELETE %s)", tc.rule)
+			if !strings.Contains(e.Message, want+"\n") {
+				t.Errorf("message does not carry %q:\n%s", want, e.Message)
+			}
+			if !slices.Equal(e.Tables, []string{"orders"}) {
+				t.Errorf("tables = %v, want [orders]", e.Tables)
+			}
+		})
+	}
+
+	// refusedLines runs the world, requires the refusal, and returns its constraint lines.
+	refusedLines := func(w *world) ([]string, []string) {
+		t.Helper()
+		e := w.mustFail("SELF_FK_DELETE_RULE_CHECK")
+		var lines []string
+		for _, l := range strings.Split(e.Message, "\n") {
+			if strings.HasPrefix(l, "  - ") {
+				lines = append(lines, l)
+			}
+		}
+		return lines, e.Tables
+	}
+	t.Run("a child table, not the root", func(t *testing.T) {
 		w := healthy(t, jobspec.Archive)
-		w.src.fks = append(w.src.fks, fk("fk_orders_parent", "orders", []string{"id"}, "orders", []string{"id"}))
+		w.src.fks = append(w.src.fks, self("fk_notes_reply", "line_notes", []string{"reply_to"}, []string{"note_id"}, "CASCADE"))
+		lines, tables := refusedLines(w)
+		if want := []string{"  - line_notes(reply_to) -> line_notes(note_id) (constraint fk_notes_reply, ON DELETE CASCADE)"}; !slices.Equal(lines, want) {
+			t.Errorf("lines = %q, want %q", lines, want)
+		}
+		if !slices.Equal(tables, []string{"line_notes"}) {
+			t.Errorf("tables = %v", tables)
+		}
+	})
+	t.Run("a composite self-reference", func(t *testing.T) {
+		w := healthy(t, jobspec.Purge)
+		w.src.fks = append(w.src.fks, self("fk_lines_parent", "order_lines", []string{"order_id", "parent_line"},
+			[]string{"order_id", "line_no"}, "SET NULL"))
+		lines, _ := refusedLines(w)
+		if want := []string{"  - order_lines(order_id, parent_line) -> order_lines(order_id, line_no) " +
+			"(constraint fk_lines_parent, ON DELETE SET NULL)"}; !slices.Equal(lines, want) {
+			t.Errorf("lines = %q, want %q", lines, want)
+		}
+	})
+	// One accepted constraint never authorizes another, whichever the library lists first.
+	for _, order := range []string{"accepted first", "refused first"} {
+		t.Run("one accepted and one refused, "+order, func(t *testing.T) {
+			w := healthy(t, jobspec.Archive)
+			ok := self("fk_orders_a", "orders", []string{"merged_into"}, []string{"id"}, "RESTRICT")
+			bad := self("fk_orders_b", "orders", []string{"parent_id"}, []string{"id"}, "CASCADE")
+			if order == "accepted first" {
+				w.src.fks = append(w.src.fks, ok, bad)
+			} else {
+				w.src.fks = append(w.src.fks, bad, ok)
+			}
+			lines, _ := refusedLines(w)
+			if want := []string{"  - orders(parent_id) -> orders(id) (constraint fk_orders_b, ON DELETE CASCADE)"}; !slices.Equal(lines, want) {
+				t.Errorf("lines = %q, want only the CASCADE constraint %q", lines, want)
+			}
+		})
+	}
+	t.Run("several refused, every one named, sorted, each table once", func(t *testing.T) {
+		w := healthy(t, jobspec.Archive)
+		w.src.fks = append(w.src.fks,
+			self("fk_orders_z", "orders", []string{"parent_id"}, []string{"id"}, "SET NULL"),
+			self("fk_notes_reply", "line_notes", []string{"reply_to"}, []string{"note_id"}, "CASCADE"),
+			self("fk_orders_a", "orders", []string{"merged_into"}, []string{"id"}, "CASCADE"))
+		lines, tables := refusedLines(w)
+		want := []string{
+			"  - line_notes(reply_to) -> line_notes(note_id) (constraint fk_notes_reply, ON DELETE CASCADE)",
+			"  - orders(merged_into) -> orders(id) (constraint fk_orders_a, ON DELETE CASCADE)",
+			"  - orders(parent_id) -> orders(id) (constraint fk_orders_z, ON DELETE SET NULL)",
+		}
+		if !slices.Equal(lines, want) {
+			t.Errorf("lines:\n got %q\nwant %q", lines, want)
+		}
+		if !slices.Equal(tables, []string{"line_notes", "orders"}) {
+			t.Errorf("tables = %v, want [line_notes orders]", tables)
+		}
+	})
+	t.Run("the preflight bypass skips it", func(t *testing.T) {
+		w := healthy(t, jobspec.Archive)
+		w.src.fks = append(w.src.fks, parent("CASCADE"))
+		w.cfg.SkipPolicy = true
 		w.mustPass()
 	})
 }

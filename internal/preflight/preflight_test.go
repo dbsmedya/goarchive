@@ -45,9 +45,9 @@ func TestStagesByJobType(t *testing.T) {
 		want []string
 	}{
 		{jobspec.Archive, false, join(structure, destination, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
+			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
 		{jobspec.Purge, false, join(structure, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps",
+			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps",
 			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
