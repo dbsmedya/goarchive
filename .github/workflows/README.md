@@ -46,10 +46,12 @@ tagged:
   `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`).
 - **Matrix:** one job per row of `tests/envmatrix/rows.tsv`.
 - **Summary:** one table of every verdict (`tests/envmatrix/gh-summary.sh`), on the run page and
-  as the `release-verify` artifact; red when any gate or row is not OK or is missing.
+  as the `release-verify` artifact. It is red when any job did not succeed, when any row is not OK
+  or is missing, and when any gate is missing or not certified: one run record for the target
+  SHA, on a clean tree, `PASS` with both exits 0, with its completion marker and summary.
 
 Nothing else starts it: no pull request, merge or tag does. One run per commit (a newer run on the
-same SHA cancels the older one), at most 16 jobs at once.
+same SHA cancels the older one), at most 16 jobs at once: the six gates and at most ten rows.
 
 ```bash
 git push origin <sha>:refs/heads/verify/<sha7>     # start a run

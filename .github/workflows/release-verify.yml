@@ -106,7 +106,9 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 16
+      # max-parallel limits one matrix, not the run: six gates plus ten rows keep the run at 16
+      # jobs, leaving the account's other four for ordinary CI.
+      max-parallel: 10
       matrix:
         row: ${{ fromJSON(needs.target.outputs.rows) }}
     steps:
@@ -153,12 +155,18 @@ jobs:
         with:
           path: evidence
       - name: Summarize
+        # Artifacts alone cannot show that a job finished: each dependency's result goes to the
+        # summary too, and anything but success fails the run.
         env:
           TARGET_SHA: ${{ needs.target.outputs.sha }}
           ROWS: ${{ needs.target.outputs.rows }}
+          TARGET_RESULT: ${{ needs.target.result }}
+          GATE_RESULT: ${{ needs.gate.result }}
+          MATRIX_RESULT: ${{ needs.matrix.result }}
         run: |
           set -o pipefail
-          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" "$(jq length <<<"$ROWS")" | tee release-verify.md >> "$GITHUB_STEP_SUMMARY"
+          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" "$(jq length <<<"${ROWS:-[]}")" \
+            "target=$TARGET_RESULT" "gate=$GATE_RESULT" "matrix=$MATRIX_RESULT" | tee release-verify.md >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

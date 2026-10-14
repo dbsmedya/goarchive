@@ -539,8 +539,10 @@ git push origin --delete verify/<sha7>             # remove the branch after the
   `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each
   (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
   `rows.tsv` row with one pair (`MX_PAIRS=1`); and a summary.
-- **Results:** the run page's summary is one table of every verdict, red when any gate or row is
-  not OK or is missing (`envmatrix/gh-summary.sh`). Every job's evidence directory is an artifact.
+- **Results:** the run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`).
+  It is red when any job did not succeed, when any row is not OK or is missing, and when any gate
+  is missing or lacks the evidence `make gate` records for its SHA (above: `complete`, a clean
+  tree, both exits 0). Every job's evidence directory is an artifact.
   A gate's integration count is one pass short of the local baseline, with one more skip:
   `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
 - **When:** on a PR's final SHA for a behaviour change, and on the release PR's final SHA before
