@@ -60,6 +60,7 @@ func TestMySQLBlockers(t *testing.T) {
 
 	add("me", "orders", JobRunning)
 	crashed := add("crashed", "orders", JobRunning) // the same root, marked running, empty log
+	beat := time.Now()
 	if err := crashed.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +112,10 @@ func TestMySQLBlockers(t *testing.T) {
 		t.Errorf("Registered: unregistered %v, crashed %v, unreadable %v; want false, true, true",
 			m["unregistered"].Registered, m["crashed"].Registered, m["unreadable"].Registered)
 	}
-	if b := m["crashed"]; !b.Beat || b.HeartbeatAge < 0 || b.HeartbeatAge > 5*time.Second || b.Status != JobRunning {
-		t.Errorf("crashed = %+v, want running with a fresh heartbeat", b)
+	// BLK-1: the age is whole seconds between two second-truncated timestamps, so it is at most
+	// the time since the heartbeat plus one second; a fixed bound failed on a loaded host.
+	if b, limit := m["crashed"], time.Since(beat)+time.Second; !b.Beat || b.HeartbeatAge < 0 || b.HeartbeatAge > limit || b.Status != JobRunning {
+		t.Errorf("crashed = %+v, want running with a heartbeat no older than %s", b, limit)
 	}
 	if b := m["unreadable"]; b.Unreadable == nil || b.Status != JobIdle {
 		t.Errorf("unreadable = %+v, want an idle job with its fingerprint fault", b)
