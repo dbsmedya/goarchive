@@ -32,6 +32,8 @@ set -a
 # shellcheck source=/dev/null
 source "$REPO/tests/.env"
 set +a
+# Each pair's source is loaded with Sakila, which is downloaded, not committed.
+[[ -f $REPO/tests/sakila-db/sakila-schema.sql ]] || bash "$REPO/tests/scripts/get_sakila_db.sh" || exit 1
 OUT="$REPO/tests/results/envmatrix/$TAG"
 WORK="$OUT/.work"
 mkdir -p "$WORK/queue" "$WORK/claimed"
