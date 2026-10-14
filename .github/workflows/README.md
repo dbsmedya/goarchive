@@ -48,7 +48,8 @@ tagged:
 - **Summary:** one table of every verdict (`tests/envmatrix/gh-summary.sh`), on the run page and
   as the `release-verify` artifact; red when any gate or row is not OK or is missing.
 
-Every job waits in the `release-verify` environment for a required reviewer's approval. One run per
+The run waits once, in the `release-verify` environment, for a required reviewer's approval: only
+the first job uses it, and every other job needs that one. One run per
 commit (a newer run on the same SHA cancels the older one), at most 16 jobs at once.
 
 ```bash

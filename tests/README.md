@@ -528,7 +528,7 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 Run one row or a few locally while developing. The **full** matrix runs on GitHub, together with
 the gate on every supported image, through the *Release verify* workflow
 (`.github/workflows/release-verify.yml`). It starts only from a push to a `verify/` branch, and
-every job waits for a required reviewer's approval in the `release-verify` environment:
+waits once for a required reviewer's approval in the `release-verify` environment:
 
 ```bash
 git push origin <sha>:refs/heads/verify/<sha7>     # start a run; approve it in the Actions tab

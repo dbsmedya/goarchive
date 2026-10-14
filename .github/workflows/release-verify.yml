@@ -1,7 +1,8 @@
 # Release verification (beta.1 PR 4, spec .ayder/superpowers_20261014/specs/
 # 2026-10-14-beta1-release-verify-workflow-design.md). Manual only: a person pushes a
 # verify/<sha7> branch (or, once this file is on the default branch, dispatches it with a
-# SHA), and the operator approves the release-verify environment. Never on PRs or merges.
+# SHA), and the operator approves the release-verify environment once: only the target job uses
+# it, and every other job needs target. Never on PRs or merges.
 name: Release verify
 
 on:
@@ -55,7 +56,6 @@ jobs:
     name: Gate on ${{ matrix.image }}
     needs: target
     runs-on: ubuntu-24.04
-    environment: release-verify
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -102,7 +102,6 @@ jobs:
     name: Matrix row ${{ matrix.row }}
     needs: target
     runs-on: ubuntu-24.04
-    environment: release-verify
     timeout-minutes: 45
     strategy:
       fail-fast: false
