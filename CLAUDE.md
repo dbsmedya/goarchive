@@ -195,7 +195,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Check order and applicability by job type (R5) | `internal/preflight/preflight.go` → `stages`, `ProfileFor` |
 | Source/destination identity guard (`SRC_DEST_IDENTITY_CHECK`) | `internal/database/identity.go` → `assertDistinctDatabases`, called from `Manager.Connect` |
 | AUTO_INCREMENT zero connection initialization and assertion | `internal/database/database.go` → `BuildDSN`, `Manager.connectWithRetry`; `internal/database/auto_zero.go` → `assertAutoIncrementZeroMode` |
-| Session pins on every connection (UTC, `sql_notes`, `sql_mode`, `autocommit`) | `internal/database/database.go` → `BuildDSN` |
+| Session pins on every connection (UTC, `sql_notes`, `sql_mode`, `autocommit`, `sql_select_limit`) | `internal/database/database.go` → `BuildDSN` |
 | Session `max_error_count` raised from 0 on every new source and destination connection (`MAX_ERROR_COUNT_CHECK`) | `internal/database/max_error_count.go` → `ensureMaxErrorCount`, `warningsConnector`, `poolConnector`; `Manager.connect` |
 | Temporal projection and representation contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalReadContractError` |
 | INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
