@@ -159,7 +159,8 @@ jobs:
         run: |
           set -o pipefail
           bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" "$(jq length <<<"$ROWS")" | tee release-verify.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: release-verify
           path: release-verify.md
