@@ -69,6 +69,27 @@ func (e *DuplicateError) Error() string {
 	return b.String()
 }
 
+// PacketError is a destination INSERT of the copy that did not fit the destination's
+// max_allowed_packet (M7c-F1). The driver sends large values as long data, so a row or a
+// statement larger than the packet fits; what does not is one value larger than it, named by
+// Column and Bytes (the largest value of the INSERT). Without a Column, the statement as a
+// whole was refused, by the driver or the server.
+type PacketError struct {
+	Table, Column string
+	Bytes         int
+}
+
+func (e *PacketError) Error() string {
+	const done = "the batch was rolled back; of this batch, nothing was logged or deleted"
+	const see = "See docs/README_LIMITATIONS.md, \"A value larger than the destination's max_allowed_packet fails its batch\""
+	if e.Column == "" {
+		return fmt.Sprintf("engine: an INSERT into %s is larger than the destination's max_allowed_packet: %s. "+
+			"Raise max_allowed_packet on the destination, or lower batch_size, then rerun. %s", e.Table, done, see)
+	}
+	return fmt.Sprintf("engine: a value of %d bytes in %s.%s is larger than the destination's max_allowed_packet: %s. "+
+		"Raise max_allowed_packet on the destination above %d bytes, then rerun. %s", e.Bytes, e.Table, e.Column, done, e.Bytes, see)
+}
+
 // TableLockedError refuses a run because another GoArchive run holds the source lock on one
 // of its tables (source-table-locks spec §6). The run did nothing. HolderConnectionID is the
 // holding source connection, or 0 when it released the lock a moment before the lookup.

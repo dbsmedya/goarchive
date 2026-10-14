@@ -417,16 +417,17 @@ tuples, and at most `batch_size` (the source's by-key statements: the larger of 
 `batch_delete_size`). Preflight sizes each statement at that many keys, counting the prepared
 text and the bound values as they travel (character keys at four bytes a character, in the
 session's `utf8mb4`). The statements after the last key, the root fetch and recovery's log
-pages, are sized at any batch size. If one exceeds a server's `max_allowed_packet`, or the
-client's 64 MiB, the run is refused before any row is read; without the check it would fail
-mid-run with error 1153.
+pages, are sized at any batch size. If one exceeds a server's `max_allowed_packet`, which GoArchive's
+driver reads from each server, the run is refused before any row is read; without the check it
+would fail mid-run.
 
 The message names the server, the statement, the table and the bytes needed, and the remedies
 that fit: raise `max_allowed_packet` to at least that size; lower `batch_size` or
 `batch_delete_size` to the largest count that fits; or, for a statement at its cap, lower
 `range_optimizer_max_mem_size` (set it, when it is 0) to shrink the cap. INSERTs carry rows, not
-keys, and are not bounded here
-([Known Limits](README_LIMITATIONS.md#a-row-set-larger-than-max_allowed_packet-fails-its-batch)).
+keys, and are not bounded here: the driver sends their large values separately, so what can still
+fail them is one value larger than the destination's packet, or rarely the whole statement
+([Known Limits](README_LIMITATIONS.md#a-value-larger-than-the-destinations-max_allowed_packet-fails-its-batch)).
 
 ---
 

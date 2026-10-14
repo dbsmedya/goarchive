@@ -11,11 +11,6 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
-// clientMaxAllowedPacket is the driver's own packet limit: internal/database's DSN keeps
-// go-sql-driver's default, 64 MiB, so a statement above it fails in the client whatever
-// the server allows.
-const clientMaxAllowedPacket = 64 << 20
-
 // knob is a processing setting that bounds how many keys a statement carries.
 type knob struct {
 	name  string
@@ -43,8 +38,9 @@ type sized struct {
 }
 
 // checkMaxAllowedPacket (MAX_ALLOWED_PACKET_CHECK, M7c F3) refuses a run when a
-// key-addressed statement could exceed a server's max_allowed_packet: MySQL would reject it
-// with error 1153 in mid-run. It bounds the source's statements by key and by foreign_key
+// key-addressed statement could exceed a server's max_allowed_packet: it would fail in
+// mid-run. The driver reads each server's value at connect (internal/database BuildDSN,
+// M7c-F1), so the server's value is the only limit. It bounds the source's statements by key and by foreign_key
 // (binding the parent's key values), the destination's by key, and the tracking log's
 // statements on the destination: its lookups and transitions (the root key in an IN list,
 // up to two statuses) and its INSERT (the root key and a status per row, in VALUES text).
@@ -56,7 +52,9 @@ type sized struct {
 // log pages, bind every prefix of that key at any batch size and are bounded as such
 // (key.AfterBytes; Codex M7c-2 review B1). Each bound counts the prepared text and the
 // bytes the driver sends (key.StatementBytes, key.InsertBytes; Fable M7c-1 review I1). The
-// copy's INSERTs carry rows, not keys, and are not bounded here.
+// copy's INSERTs carry rows, not keys, and are not bounded here: the driver sends their
+// large values as long data, so what can still fail them is one value larger than the
+// destination's packet, or rarely the whole statement (engine PacketError).
 func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 	specs, err := f.sourceSpecs(ctx)
 	if err != nil {
@@ -126,7 +124,6 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 		if err != nil {
 			return inspectionError("max_allowed_packet", err)
 		}
-		limit := min(packet, clientMaxAllowedPacket)
 		var over []sized
 		for _, b := range bounds {
 			if b.server != side.name {
@@ -136,7 +133,7 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 			if b.continuation {
 				n = 1 // the last key
 			}
-			if bytes := b.bytes(n); bytes > limit {
+			if bytes := b.bytes(n); bytes > packet {
 				over = append(over, sized{b, n, bytes})
 			}
 		}
@@ -156,7 +153,7 @@ func checkMaxAllowedPacket(ctx context.Context, f *facts) error {
 		return &Error{Check: "MAX_ALLOWED_PACKET_CHECK", Message: fmt.Sprintf(
 			"%s max_allowed_packet is %d bytes; a %s statement on %s %s can need %d bytes. %s.",
 			side.name, packet, worst.statement, worst.table, shape, worst.size,
-			packetRemedy(side.name, packet, limit, worst.size, over)),
+			packetRemedy(side.name, packet, worst.size, over)),
 			Tables: []string{worst.table}}
 	}
 	return nil
@@ -172,28 +169,24 @@ func sendsAtMost(knobs []knob) int {
 	return n
 }
 
-// packetRemedy says how to make every statement in over fit limit: raise the server's
-// packet to the worst one's size (when the client's 64 MiB is not what binds); unless a
-// continuation is over, which only the packet helps, lower each processing setting above
-// the largest key count that fits every statement it bounds, and, when a statement is at
-// its cap, shrink the cap through range_optimizer_max_mem_size (set one at 0, which is
-// unlimited: Fable M7c-1 review M4(b)).
-func packetRemedy(server string, packet, limit, worst uint64, over []sized) string {
-	var ways []string
-	if packet < clientMaxAllowedPacket {
-		ways = append(ways, fmt.Sprintf("Raise max_allowed_packet on the %s to at least %d", server, worst))
-	}
+// packetRemedy says how to make every statement in over fit packet: raise the server's
+// packet to the worst one's size; unless a continuation is over, which only the packet
+// helps, lower each processing setting above the largest key count that fits every
+// statement it bounds, and, when a statement is at its cap, shrink the cap through
+// range_optimizer_max_mem_size (set one at 0, which is unlimited: Fable M7c-1 review M4(b)).
+func packetRemedy(server string, packet, worst uint64, over []sized) string {
+	ways := []string{fmt.Sprintf("Raise max_allowed_packet on the %s to at least %d", server, worst)}
 	// A continuation does not shrink with a batch size or the cap: only the packet helps.
 	for _, o := range over {
 		if o.continuation {
-			return clientLimited(packet, strings.Join(ways, "; or "))
+			return ways[0]
 		}
 	}
 	fits := map[string]int{} // setting → the largest key count that fits every statement it bounds
 	atCap, unlimited := false, false
 	for _, o := range over {
 		// The largest key count that fits: the size grows with the count.
-		fit := sort.Search(o.tuples, func(n int) bool { return o.bytes(n+1) > limit })
+		fit := sort.Search(o.tuples, func(n int) bool { return o.bytes(n+1) > packet })
 		for _, k := range o.knobs {
 			if f, seen := fits[k.name]; !seen || fit < f {
 				fits[k.name] = fit
@@ -224,16 +217,5 @@ func packetRemedy(server string, packet, limit, worst uint64, over []sized) stri
 		}
 		ways = append(ways, fmt.Sprintf("%s range_optimizer_max_mem_size on the %s to shrink the cap", verb, server))
 	}
-	return clientLimited(packet, strings.Join(ways, "; or "))
-}
-
-// clientLimited prefixes remedy when the client's 64 MiB, not the server, is the limit.
-func clientLimited(packet uint64, remedy string) string {
-	if packet < clientMaxAllowedPacket {
-		return remedy
-	}
-	if remedy == "" {
-		return "The statement exceeds the client's 64 MiB packet limit"
-	}
-	return "The statement exceeds the client's 64 MiB packet limit: " + remedy
+	return strings.Join(ways, "; or ")
 }

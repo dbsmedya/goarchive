@@ -273,23 +273,32 @@ func TestMaxAllowedPacket(t *testing.T) {
 		}
 	}
 
-	// Above the driver's own 64 MiB, the client's limit decides: a VARCHAR(255) utf8mb4 key
-	// at an unlimited range budget (the 65,535-placeholder cap) needs about 67 MB, and the
-	// remedy is to shrink the caps, not to raise the server's packet.
-	w = atCaps(t, jobspec.Archive)
-	w.jobYAML = withoutNotes
-	w.src.fks = w.src.fks[:1]
-	for _, s := range []*fakeServer{w.src, w.dst} {
-		setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
-		setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+	// A VARCHAR(255) utf8mb4 key at an unlimited range budget (the 65,535-placeholder cap)
+	// needs about 67 MB. The driver reads each server's max_allowed_packet at connect
+	// (M7c-F1), so the server's value is the only limit: 1 GiB passes it, and 64 MiB is
+	// refused with the server's remedies.
+	wide := func() *world {
+		w := atCaps(t, jobspec.Archive)
+		w.jobYAML = withoutNotes
+		w.src.fks = w.src.fks[:1]
+		for _, s := range []*fakeServer{w.src, w.dst} {
+			setColumn(s, "orders", col("id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+			setColumn(s, "order_lines", col("order_id", "varchar(255)", "utf8mb4 utf8mb4_0900_ai_ci"))
+		}
+		return w
 	}
+	w = wide()
 	w.dst.mem, w.dst.packet = 0, 1<<30
-	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); !strings.Contains(e.Message, "client's 64 MiB packet limit") {
-		t.Errorf("message %q does not name the client's limit", e.Message)
-	} else if !strings.Contains(e.Message, "set range_optimizer_max_mem_size on the destination") || !strings.Contains(e.Message, "batch_size") {
+	w.mustPass()
+	w = wide()
+	w.dst.mem, w.dst.packet = 0, 64<<20
+	if e := w.mustFail("MAX_ALLOWED_PACKET_CHECK"); strings.Contains(e.Message, "client") {
+		t.Errorf("message %q names a client limit; the driver uses the server's", e.Message)
+	} else if !strings.Contains(e.Message, "Raise max_allowed_packet on the destination") ||
+		!strings.Contains(e.Message, "set range_optimizer_max_mem_size on the destination") || !strings.Contains(e.Message, "batch_size") {
 		// Fable M7c-1 review M4(b): at an unlimited range budget there is nothing to lower;
 		// the DBA must set a limit, or the job must send fewer keys.
-		t.Errorf("message %q: at range_optimizer_max_mem_size = 0 the remedy must be to set a limit or lower batch_size", e.Message)
+		t.Errorf("message %q: the remedy must be to raise the packet, set a range budget or lower batch_size", e.Message)
 	}
 
 	// Codex M7c-1 review B1: a latin1 VARCHAR(255) key is read and bound in utf8mb4, up to
