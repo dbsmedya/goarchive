@@ -415,6 +415,10 @@ go build -o bin/goarchive ./cmd/goarchive
 `make test` and `make test-unit` (which adds `-race`) are unit only as well: neither passes the
 `integration` tag.
 
+CI runs the unit tests in its **Check** job, and `internal/logger`'s again on Windows (**Logger on
+Windows**, `.github/workflows/ci.yml`): a release ships a Windows binary, where a log file's mode
+behaves differently.
+
 ### Coverage on demand
 
 Coverage is generated from the current checkout instead of maintained as a percentage

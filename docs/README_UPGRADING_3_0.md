@@ -157,6 +157,9 @@ The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how
   | `replica.replication_channel: ""` | `replication.servers[].channels: [""]`, the default channel only; omitted or `[]` gates on every channel |
   | `safety.lag_threshold` | `replication.seconds_behind_source_within` |
   | `safety.check_interval` | `replication.check_interval` |
+- **A new log file is readable by its owner only** (`0600`; 2.x created it `0644`). An existing
+  file keeps its mode, so a log reader running as another user needs the file created first
+  ([logging](README_CONFIGURATION.md#logging)).
 
 Every option: [Configuration](README_CONFIGURATION.md).
 
