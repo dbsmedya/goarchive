@@ -833,6 +833,19 @@ func TestBuildDSNReadsTheServersPacket(t *testing.T) {
 	}
 }
 
+// TestBuildDSNPinsSelectLimit (beta audit A1): a server's global sql_select_limit must not
+// reach a session. Every read without its own LIMIT — the library's column lists, discovery,
+// copy, verification — would return at most that many rows, silently.
+func TestBuildDSNPinsSelectLimit(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dsn.Params["sql_select_limit"]; got != "18446744073709551615" {
+		t.Fatalf("DSN sql_select_limit = %q, want 18446744073709551615 (the server's maximum: no limit)", got)
+	}
+}
+
 // TestBuildDSNPinsAutocommit (M7c F1): every session commits each statement on its own,
 // whatever the server's global autocommit. Tracking writes outside a transaction rely on
 // it: under a global autocommit=0 they would never commit and would hold their locks.

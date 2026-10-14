@@ -26,7 +26,7 @@ PAIRS="${MX_PAIRS:-3}"
 TIMEOUT="${MX_TIMEOUT:-3m}"
 PKGS="${MX_PKGS:-./internal/... ./cmd/...}"
 TAG="${MX_TAG:-$(date +%Y%m%d-%H%M%S)}"
-VARS="sql_mode autocommit transaction_isolation character_set_server collation_server explicit_defaults_for_timestamp max_allowed_packet max_error_count sql_notes time_zone partial_revokes wait_timeout interactive_timeout default_storage_engine sql_require_primary_key sql_generate_invisible_primary_key gtid_mode"
+VARS="sql_mode sql_select_limit autocommit transaction_isolation character_set_server collation_server explicit_defaults_for_timestamp max_allowed_packet max_error_count sql_notes time_zone partial_revokes wait_timeout interactive_timeout default_storage_engine sql_require_primary_key sql_generate_invisible_primary_key gtid_mode"
 
 set -a
 # shellcheck source=/dev/null

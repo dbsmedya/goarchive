@@ -68,7 +68,9 @@ func acctOpen(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	}
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port), schema
-	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1"}
+	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
+	// reads are whole under the matrix row sql_select_limit_20.
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)

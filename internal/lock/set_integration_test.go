@@ -27,6 +27,9 @@ func pool(t *testing.T) *sql.DB {
 	}
 	cfg := mysql.NewConfig()
 	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port)
+	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
+	// reads are whole under the matrix row sql_select_limit_20.
+	cfg.Params = map[string]string{"sql_select_limit": "18446744073709551615"}
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
