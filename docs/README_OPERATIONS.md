@@ -151,6 +151,11 @@ A copy-only rerun with `resume: true` adds `skipped: <n> roots this job had alre
 under `verification: none`, accepted conversions are listed per table; a graceful stop adds
 `stopped before the end of the where range: run the job again to continue`.
 
+The report is printed to stdout. The run's log also ends with one entry saying how the run
+ended, with the same counts: `Run completed`, `Run stopped before the end of the where range:
+run the job again to continue`, or, at error level, `Run failed` with the error. A run that fails
+before its logger exists, on a configuration error, logs nothing.
+
 ---
 
 ## Tuning throughput

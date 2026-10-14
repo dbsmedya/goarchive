@@ -201,6 +201,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
 | Sticky `root_table` and job type; log-key and binding checks | `internal/tracking/job.go` → `(*Store).Attach` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
+| Log files created owner-only (`0600`); a run's closing log entry (completed, stopped, failed) | `internal/logger/logger.go` → `New`; `cmd/goarchive/cmd/output.go` → `logOutcome`, called from `runJob` (`runjob.go`) |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
 

@@ -68,8 +68,9 @@ func registerForceTriggersFlag(c *cobra.Command, forceTriggers *bool) {
 
 // runJob runs one job of type typ on the engine (spec §7.1): load and check the job, then
 // connect, then engine.Run. The first signal stops at the next batch boundary, a second one
-// cancels the run (database.SetupGracefulShutdown).
-func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
+// cancels the run (database.SetupGracefulShutdown). From the job's logger on, every return
+// logs how the run ended (logOutcome).
+func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (err error) {
 	doc, spec, err := loadJob(o.job, typ)
 	if err != nil {
 		return err
@@ -87,6 +88,8 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 		return err
 	}
 	defer syncLogger(log)
+	var rep *engine.Report
+	defer func() { logOutcome(log, typ, rep, err) }()
 	out := c.OutOrStdout()
 	for _, b := range banners(doc, typ, verification, o.skipPreflight, o.forceTriggers) {
 		_, _ = fmt.Fprintln(out, b)
@@ -111,7 +114,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 		}
 		lag = g
 	}
-	rep, err := engine.Run(ctx, engine.Config{
+	rep, err = engine.Run(ctx, engine.Config{
 		Name: o.job, Spec: spec,
 		Source: mgr.Source, Destination: mgr.Destination,
 		JobSchema:               doc.Shared.Destination.EffectiveJobSchema(),
