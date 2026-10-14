@@ -125,11 +125,14 @@ _interrupt_wait_for_copied() {
     local want="$2"
     local pid="$3"
 
-    local ticks=0 id copied completed
+    # One mysqlsh call per tick once the job's id is known: the window is one batch's delete
+    # phase (a few seconds), and three calls a tick missed it on a slower runner (release
+    # verify, beta.1 PR 4: Percona gates, test 09).
+    local ticks=0 id= counts copied completed
     while [[ $ticks -lt $INTERRUPT_MARKER_TIMEOUT_TICKS ]]; do
-        if id=$(tracking_job_id "$job" 2>/dev/null) &&
-            copied=$(tracking_status_count "$id" 1 2>/dev/null) &&
-            completed=$(tracking_status_count "$id" 2 2>/dev/null); then
+        [[ -n $id ]] || id=$(tracking_job_id "$job" 2>/dev/null) || id=
+        if [[ -n $id ]] && counts=$(tracking_copied_completed "$id" 2>/dev/null); then
+            read -r copied completed <<<"$counts"
             if [[ "$copied" -gt 0 && $((copied + completed)) -eq "$want" ]]; then
                 log_info "  the log holds $want root(s), $copied at 'copied'"
                 return 0
