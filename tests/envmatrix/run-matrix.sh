@@ -32,6 +32,16 @@ set -a
 # shellcheck source=/dev/null
 source "$REPO/tests/.env"
 set +a
+# TestMySQLLiveReplicationGate stops the estate replica's applier: it runs on the estate only.
+# MX_SKIP_FILE (the release-verify workflow: envmatrix/gh-skip.txt) adds the tests a GitHub
+# matrix job cannot run, one name per line with its reason after '#'.
+SKIP=TestMySQLLiveReplicationGate
+if [[ -n ${MX_SKIP_FILE:-} ]]; then
+    while read -r name _; do
+        [[ -z $name || $name == \#* ]] || SKIP+="|$name"
+    done <"$MX_SKIP_FILE"
+fi
+
 # Each pair's source is loaded with Sakila, which is downloaded, not committed.
 [[ -f $REPO/tests/sakila-db/sakila-schema.sql ]] || bash "$REPO/tests/scripts/get_sakila_db.sh" || exit 1
 OUT="$REPO/tests/results/envmatrix/$TAG"
@@ -100,7 +110,7 @@ run_suite() { # pair dir [run] → go-test.json, go-test.stderr; run limits the 
     [[ -n $run ]] && only=(-run "$run")
     (cd "$CODE" && TEST_SOURCE_PORT=$((3375 + 10 * i)) TEST_DEST_PORT=$((3376 + 10 * i)) \
         go test -tags=integration -json "${pkgs[@]}" -count=1 -timeout "$TIMEOUT" ${only[@]+"${only[@]}"} \
-        -skip TestMySQLLiveReplicationGate) >"$dir/go-test.json" 2>"$dir/go-test.stderr" </dev/null
+        -skip "$SKIP") >"$dir/go-test.json" 2>"$dir/go-test.stderr" </dev/null
 }
 
 # group_up: dbsgomysql's Group Replication cluster (group/README.md) with gr1 as pair i's

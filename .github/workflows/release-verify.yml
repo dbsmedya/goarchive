@@ -130,6 +130,7 @@ jobs:
           MX_PAIRS: '1'
           MX_TIMEOUT: 6m
           MX_TAG: gh
+          MX_SKIP_FILE: tests/envmatrix/gh-skip.txt
         run: |
           cp tests/dot.env tests/.env
           tests/envmatrix/run-matrix.sh "$ROW"
