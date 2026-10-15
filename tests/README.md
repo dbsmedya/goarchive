@@ -10,7 +10,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag | `make test-integration`, or `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–16) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–17) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
@@ -75,9 +75,9 @@ that is later removed leaves the containers pointing at files that no longer exi
 
 ## Sakila E2E Test Suite
 
-Sixteen focused tests: twelve working runs — five archives, three purges, two
+Seventeen focused tests: thirteen working runs — five archives, four purges, two
 copy-onlys and two interrupt/resume tests — and four preflight-guardrail
-demonstrations. Thirteen run on Sakila; three (14–16) run on the **key-matrix
+demonstrations. Fourteen run on Sakila; three (14–16) run on the **key-matrix
 fixture**, tables with the key types Sakila lacks.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
@@ -117,6 +117,7 @@ through the real CLI.
 | **14** | `test14_keymatrix_composite.yaml` | `km_line (order_id, line_no)` → `km_item` → `km_item_note` | Key matrix, **archive**: a composite root, a child on the composite key, a grandchild on a three-column foreign key; composite orphan checks |
 | **15** | `test15_keymatrix_binary.yaml` | `km_blob` (`BINARY(16)`) → `km_blob_ref` | Key matrix, **purge**: keys whose bytes are not valid UTF-8 |
 | **16** | `test16_keymatrix_latin1.yaml` | `km_name` (`latin1` `VARCHAR`) → `km_name_tag` | Key matrix, **copy-only**: non-ASCII `latin1` keys, verified by sha256 and logged in a `latin1` key column |
+| **17** | `test17_purge_replication_stop.yaml` | `payment`, the same selected slice as 13 | Stops the replica applier, observes the purge's hold, sends **one `SIGTERM`**: exit 3 within 10 s with the stop line and the stopped closing entry, the source unchanged. The hold is before the purge logs its roots, so a second purge completes with nothing to recover. |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
@@ -193,6 +194,7 @@ from 16.8.)
 | **14** | 180 lines | 50 | 3 + 30 | 3 × 0.2 = 0.6 s | 25 × 0.1 = 2.5 s | **3.1 s** |
 | **15** | 120 blobs | 50 | 2 + 20 | 2 × 0.2 = 0.4 s | 5 × 0.1 = 0.5 s | **0.9 s** |
 | **16** | 60 names | 20 | 3 + 0 | 3 × 0.3 = 0.9 s | — *(copies only)* | **0.9 s** |
+| **17** | 1999 | 100 | — | 0 | 0 | **0.0 s** |
 
 † **08 and 09 declare the floor for their *second* run, not the whole slice.** Run 1
 is interrupted and legitimately finishes below any full-slice floor, so the runner
@@ -212,7 +214,7 @@ and `batch_delete_size` are inert for it, and the configs set neither. Whenever 
 add a test, derive the floor from the phases that command actually executes, not
 from the shape of the formula.
 
-**13 sleeps nothing.** The length of its hold is the harness's, not the run's.
+**13 and 17 sleep nothing.** The length of a hold is the harness's, not the run's.
 
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
 machine can only push the measured time *up*, so it can never fail.
@@ -554,7 +556,7 @@ git push origin --delete verify/<sha7>             # remove the branch after the
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–16)
+# The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–17)
 make e2e
 
 # Validation demos (02, 10, 11, 12) — preflight MUST fail. Needs a seeded estate.

@@ -196,8 +196,7 @@ launch failures are 125–127). For a detached container, the code is the number
 [graceful stop](#graceful-shutdown): the batch in flight finishes and the run exits 3, if it gets
 there before Docker's deadline (10 seconds by default; then SIGKILL, and the next run recovers
 what the log holds). Set `docker stop --time`, or compose's `stop_grace_period`, above one batch's
-duration. A stop during a replication hold waits for the replica, so it can outlast any grace
-period.
+duration. A stop during a replication hold ends the hold without waiting for the replicas.
 
 ---
 
@@ -333,8 +332,8 @@ connection 10 minutes after it opened, or after 5 minutes idle, so a global lowe
 reaches the next replacement connection: if the account lacks `SESSION_VARIABLES_ADMIN`, the run
 stops there. Only the open transaction rolls back; committed copies and delete chunks stay, and
 the next run's [recovery](#crash-recovery) finishes the batch once the setting or grant is fixed.
-Connections the run holds throughout (the two lock sessions, a source session pinned through a
-lag wait) keep the value they started with.
+The two lock sessions, which the run holds throughout, keep the value they started with; a
+delete chunk takes a pool session like any other.
 
 ---
 
@@ -389,8 +388,13 @@ replication hold: server replica1.internal:3306 unhealthy (channel <default>: la
 Healthy servers stay silent. A recovered server logs one `INFO` line, and the last one to recover
 logs another with the total hold; with `--progress` and a log file, the hold and both recovery
 lines also reach stderr. If the reason changes while a server is still down, the held
-time keeps accumulating. A hold can outlast the source session's idle timeout
-([the limit](README_LIMITATIONS.md#the-job-lock-and-long-replication-holds)).
+time keeps accumulating. A hold keeps no source session open, so it can last as long as the
+replicas need. A first `SIGTERM` or `SIGINT` ends it without waiting for them
+([Graceful shutdown](#graceful-shutdown)), with one more `WARN` line:
+
+```
+replication hold ended by a stop request; job held 2h14m5s
+```
 
 ### `cache_ttl` and the bounded detection delay
 
@@ -445,11 +449,14 @@ naming it, and finishes the page.
 
 The first `SIGTERM` or `SIGINT` lets the batch or recovery page in flight finish, then stops the
 run with exit code 3; with `--progress` the closing block says so, and the run's log ends with
-`Run stopped …`. A first signal does not end a replication hold: the run waits for the replica,
-then stops. A second signal cancels at
-once: the open transaction rolls back, the log ends with `Run failed`, the cancellation and the
-counts so far, and the next run's recovery finishes what the log holds. A third terminates the
-process.
+`Run stopped …`. During a [replication hold](#replication-gating) the first signal ends the hold
+without waiting for the replicas: the run stops there with exit code 3, nothing is rolled back,
+and the held batch's roots stay logged for the next run's [recovery](#crash-recovery) (a purge
+held before it logs its roots leaves nothing). The closing counts then read: `roots` and
+`batches`, the work completed; `copied` and `deleted`, the rows committed, the stopped batch's
+included. A second signal cancels at once: the open transaction rolls back, the log ends with
+`Run failed`, the cancellation and the counts so far, and the next run's recovery finishes what
+the log holds. A third terminates the process.
 
 ---
 

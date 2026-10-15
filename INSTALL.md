@@ -70,7 +70,7 @@ returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another r
 for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
 exit status. `docker stop` stops a run gracefully if the batch in flight finishes before Docker's
 deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batch's duration. A stop
-during a replication hold waits for the replica
+during a replication hold ends the hold without waiting for the replicas
 ([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
 On a Linux host, a log file written to a mounted directory belongs to the container's root and
 is readable by root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the

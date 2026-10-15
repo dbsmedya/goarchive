@@ -13,7 +13,9 @@ import (
 // SetupGracefulShutdown) closes on the first signal, and the loop checks it at batch
 // boundaries only, so the batch in flight always reaches a terminal state. The context is
 // cancelled on the second signal, which aborts the batch: its destination transaction or
-// its delete chunk rolls back, and the next run's recovery finishes what was logged.
+// its delete chunk rolls back, and the next run's recovery finishes what was logged. A
+// replication hold is the exception: a first signal ends it at once, and the next run's
+// recovery finishes what the held batch logged (LAG-1).
 
 // stopRequested reports whether stop is closed. A nil channel never stops.
 func stopRequested(stop <-chan struct{}) bool {

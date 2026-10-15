@@ -257,11 +257,11 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// M7c F1: tracking writes outside an explicit transaction rely on each statement
 	// committing on its own. A server whose global autocommit is 0 would leave them open,
 	// holding their locks, so the session pins it.
-	// M7c-2 P4: the job lock lives on an idle dedicated session that the keep-alive checks
-	// only every 30 s, and a source session stays pinned, idle, through a lag wait. A
-	// server wait_timeout shorter than that closes the session: GET_LOCK is released while
-	// the run goes on deleting, or the next delete chunk fails with 4031. The session keeps
-	// at least 8 h (waitTimeoutExpression), never less than the server's own value.
+	// M7c-2 P4: a batch's source session waits while the destination copies, verifies and
+	// commits, and a server wait_timeout shorter than that closes it under the batch. The
+	// session keeps at least 8 h (waitTimeoutExpression), never less than the server's own
+	// value. The lock sessions set their own (internal/lock), and no session is held through
+	// a replication hold (LAG-1).
 	// Beta audit A1: a server's global sql_select_limit is every new session's default and
 	// caps any SELECT without its own LIMIT, silently. None of GoArchive's multi-row reads
 	// carries one: under a global limit of 20 the library's column list, discovery, the copy and

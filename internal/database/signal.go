@@ -15,7 +15,9 @@ import (
 //     closed, but the work context is LEFT ALIVE. Callers treat the closed stop
 //     channel as "finish the current batch, then stop at the boundary" — so a
 //     single Ctrl-C never tears a batch mid-flight and leaves no non-terminal
-//     (pending/copied/failed) rows behind.
+//     (pending/copied/failed) rows behind. The exception is a replication hold,
+//     which a first signal ends at once (internal/replication): the held batch's
+//     logged roots stay for the next run's recovery.
 //   - Second signal: onSecond is called and the work context is canceled,
 //     aborting any in-flight operation. Whatever state this leaves is recoverable
 //     by status-aware replay on the next run.

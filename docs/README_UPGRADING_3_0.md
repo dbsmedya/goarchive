@@ -189,7 +189,8 @@ verified and deleted only in part. Nothing to do.
 ## Moving from 3.0 beta.1 (unreleased)
 
 The tracking tables are unchanged. What changes is what goarchive prints, where, and how it exits
-([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
+([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)), and how a replication hold
+ends.
 
 **Exit codes.** A graceful stop now exits **3**, not 0; "another run holds the work" (the job,
 a source table, or unfinished work on the same data) exits **4**; a usage or configuration error
@@ -217,6 +218,14 @@ the whole range on the source.
 
 **Text logs have no colour codes.** `validate` and `dry-run` no longer log the statement caps they
 print; a run logs them.
+
+**A long replication hold no longer fails the run.** A hold that outlasted the source session's
+`wait_timeout` (8 hours or more) failed the next delete chunk with error 4031; each delete chunk
+now takes its session after the hold, so a hold of any length resumes when the replicas do.
+
+**A first `SIGTERM` or `SIGINT` ends a replication hold**, with exit code 3, instead of waiting
+for the replicas; the next run's recovery finishes the held batch. A `docker stop` grace period
+no longer has to cover a hold ([Graceful shutdown](README_OPERATIONS.md#graceful-shutdown)).
 
 ---
 
