@@ -136,6 +136,9 @@ func TestE2EVerifiedLine(t *testing.T) {
 		{"counts_not_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":[5]`, `"verified":{"payment":5}`, `"verified":[5]`).Replace(report30), "sha256", false},
 		{"reordered_equal_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":5,"rental":2}`, `"verified":{"payment":5}`, `"verified":{"rental":2,"payment":5}`).Replace(report30), "sha256", true},
 		{"none_with_malformed_verified", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":"x",`, 1), "none", false},
+		// Codex MR re-review R4: a present false or null is not an absent field.
+		{"none_with_verified_false", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":false,`, 1), "none", false},
+		{"none_with_verified_null", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":null,`, 1), "none", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -344,6 +347,9 @@ func TestE2EResumeAccounting(t *testing.T) {
 		{"crash_recovered_not_a_number", "crash", strings.Replace(crash, `"recovered":100`, `"recovered":"100"`, 1), "499", "100", "100", false},
 		{"graceful_recovered_negative", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":-1,`, 1), "1999", "100", "0", false},
 		{"crash_copied_not_an_object", "crash", strings.Replace(crash, `"copied":{"payment":399}`, `"copied":399`, 1), "499", "100", "100", false},
+		{"graceful_recovered_false", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":false,`, 1), "1999", "100", "0", false},
+		{"graceful_recovered_null", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":null,`, 1), "1999", "100", "0", false},
+		{"graceful_recovered_zero", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":0,`, 1), "1999", "100", "0", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
