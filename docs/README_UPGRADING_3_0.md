@@ -14,6 +14,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 2.2](#moving-from-22)
 - [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
+- [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -147,6 +148,40 @@ statement at 64 MiB: the server's value is the only limit.
 it inherits its folder's permissions. An existing file keeps its mode. A run's log ends with one entry saying how it ended (`Run completed`,
 `Run stopped …` or `Run failed`) and its counts
 ([logging](README_CONFIGURATION.md#logging)).
+
+---
+
+## Moving from 3.0 alpha.2
+
+The tracking tables are unchanged. A job stopped under alpha.2 is recovered by its next run once
+it passes the two checks below.
+
+**Grant `TRIGGER` directly before upgrading.** MySQL lists a table's triggers only to an account
+holding `TRIGGER` on it. An alpha.2 account set up from the old recipes saw an empty list and ran
+past triggers it could not see. Two new checks now refuse the job unless `TRIGGER` is granted
+directly on every job table, at `<schema>.*` or table scope:
+
+- `DELETE_TRIGGER_VISIBILITY_CHECK`: the source account, for archive and purge.
+- `DEST_INSERT_TRIGGER_VISIBILITY_CHECK`: the destination account, for archive and copy-only.
+
+A `TRIGGER` held only through a role, or granted globally under `partial_revokes`, cannot be
+proven and is refused; grant it directly as well. The [grant recipes](README_PERMISSIONS.md#grant-recipes)
+include it, and [the trigger checks](README_VALIDATION.md#trigger-checks) say what each refusal
+names. `--force-triggers` does not cover these checks.
+
+**Archive and purge refuse a self-referencing `CASCADE` or `SET NULL`.** A job table, root or
+child, with a foreign key to itself whose rule is `ON DELETE CASCADE` or `SET NULL` is refused
+before any row moves ([`SELF_FK_DELETE_RULE_CHECK`](README_VALIDATION.md#self_fk_delete_rule_check)).
+Deleting a batch row would have deleted, or cleared the parent of, rows of that table outside the
+batch, uncopied. alpha.2 accepted such a job. A job alpha.2 left interrupted on such a table is
+refused before recovery deletes anything, until the constraint is redefined with
+`ON DELETE RESTRICT`. Rows that InnoDB already deleted or changed under alpha.2 are not in the
+destination and cannot be recovered by GoArchive. Copy-only is unaffected.
+
+**Every session pins `sql_select_limit`** to no limit
+([session settings](README_CONFIGURATION.md#session-settings)). A server's global
+`sql_select_limit` used to cap GoArchive's reads, so a table or a tree wider than it was copied,
+verified and deleted only in part. Nothing to do.
 
 ---
 
