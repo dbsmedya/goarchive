@@ -209,15 +209,17 @@ func TestMySQLOutputStandard(t *testing.T) {
 		// Codex MR R2: validate prints the R45 banners as a run would, past level error, on
 		// stderr in stderr's format: JSON on the fixture's JSON stderr log, plain with a file log.
 		f := orderFixture(t, "std_vbanner")
-		_, errOut, code := mainStreams(t, "validate", "-c", f.config, "--job", "archive_orders", "--verification=none", "--force-triggers")
+		// The messages print stdout: validate reports a refusal there (FAILED: <check>), and an
+		// environment that refuses (the matrix's permission rows) must see it cited.
+		out, errOut, code := mainStreams(t, "validate", "-c", f.config, "--job", "archive_orders", "--verification=none", "--force-triggers")
 		if code != 0 || !jsonLines(errOut) || !strings.Contains(errOut, `"msg":"WARNING: verification: none`) ||
 			!strings.Contains(errOut, `"msg":"WARNING: --force-triggers`) {
-			t.Errorf("JSON stderr: code %d, stderr:\n%s\nwant both banners as JSON entries", code, errOut)
+			t.Errorf("JSON stderr: code %d, stdout:\n%s\nstderr:\n%s\nwant both banners as JSON entries", code, out, errOut)
 		}
 		logPath := fileLog(t, f, "json")
-		_, errOut, code = mainStreams(t, "validate", "-c", f.config, "--job", "archive_orders", "--verification=none")
+		out, errOut, code = mainStreams(t, "validate", "-c", f.config, "--job", "archive_orders", "--verification=none")
 		if code != 0 || !strings.HasPrefix(errOut, "WARNING: verification: none") || !strings.Contains(readAll(t, logPath), "WARNING: verification: none") {
-			t.Errorf("file log: code %d, stderr %q; want the plain banner on stderr and in the log", code, errOut)
+			t.Errorf("file log: code %d, stdout %q, stderr %q; want the plain banner on stderr and in the log", code, out, errOut)
 		}
 	})
 
