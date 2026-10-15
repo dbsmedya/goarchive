@@ -263,8 +263,9 @@ floor is the only one that needs no model of what the command means:
 > `expected_rows` existed, a purge of the whole table and an archive of the whole
 > table both passed every assertion in the suite.
 
-It is compared against **goarchive's own reported time** — the report's
-`elapsed: <s>s` line — not the test's elapsed time: the latter includes the source
+It is compared against **goarchive's own reported time** — the `elapsed_seconds` of the
+run's closing log entry (`Run completed`, read with jq) — not the test's elapsed time: the
+latter includes the source
 reset, `validate` and `dry-run`, which dwarf the floor and would hide a lost
 throttle.
 
@@ -317,8 +318,10 @@ cp tests/dot.env tests/.env      # optional — the runner creates it if absent
 `tests/.env` is gitignored, so a fresh clone has none. `run-tests.sh` creates it from the
 tracked `tests/dot.env` and says so; the template's defaults work against the containers
 `make test-up` starts, so nothing has to be edited. You also need **MySQL Shell**
-(`brew install mysql-shell`) — the runner checks for it up front and stops with install
-instructions if it is missing.
+(`brew install mysql-shell`) and **jq** (`brew install jq`; preinstalled on GitHub's Ubuntu
+runners) — the runner checks for both up front and stops with install instructions if one is
+missing. The E2E assertions read each run's closing JSON log entry with jq, and the harness's
+own tests (`tests/harness`) need it too.
 
 `run-tests.sh` sources `tests/.env` for you. If you invoke `go test -tags=integration`
 **directly**, load it yourself first:

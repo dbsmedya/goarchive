@@ -302,10 +302,16 @@ deleted: a mismatch rolls the batch back and stops the run. Purge copies nothing
 | `level` | `debug`, `info`, `warn`, `error` | `info` |
 | `format` | `json` or `text` | `json` |
 | `output` | `stdout`, `stderr`, or a file path | `stdout` |
-| `file_only` | Suppress the stdout tee when `output` is a file path | `false` |
+| `file_only` | Keep every log entry off the console when `output` is a file path | `false` |
 
-- A **file path** in `output` logs to the file **and** tees to stdout. The file is plain text; the
-  stdout tee stays coloured.
+- A **file path** in `output` logs every entry to the file, in `format`. A run with `--progress`
+  also tees the file's warnings, errors and live events to **stderr**, one text line each: a
+  replication hold and the replica recovering, the gate passing again, a sentinel pause and its
+  end, recovery replaying. `file_only: true` turns that tee off. Without `--progress` nothing is
+  teed, so a cron run prints only a failure (README_OPERATIONS.md,
+  [Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
+- `stdout` or `stderr` makes the log that stream, in `format`. Text has no colour codes; JSON is
+  one object per line, the container setup.
 - `file_only: true` is refused when `output` is empty, `stdout` or `stderr`.
 - **A log file GoArchive creates is readable by its owner only** (`0600`), since the log names
   tables, keys and servers. An existing file is appended to and keeps its owner and mode: when a

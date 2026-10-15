@@ -49,8 +49,9 @@ PK_COLUMN_CHECK: The configured primary_key must list the PRIMARY KEY's columns,
 key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_id, line_no))])
 ```
 
-A passing preflight logs one `Statement cap:` line per key-addressed statement, the most key
-tuples it carries; `validate` and `dry-run` print them.
+Every command computes each key-addressed statement's cap, the most key tuples it carries, and
+fails on it as before. `validate` and `dry-run` print the caps; a run logs one `Statement cap:`
+line per statement.
 
 ---
 
