@@ -18,11 +18,15 @@ func TestMySQLCommandOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{"Dry-run of archive_orders (archive): the first batch holds 2 root keys", "Root fetch on orders:",
-		"EXPLAIN FORMAT=TRADITIONAL SELECT", "Discovery of order_lines:", "Statement caps (key tuples per statement):"} {
+	for _, w := range []string{"Dry-run of archive_orders (archive). No data is changed.", "  matching roots:  3, about 2 batches of 2",
+		"Copy order (parents first)", "Root fetch on orders\n", "Discovery of order_lines (first discovery chunk: all 2 orders tuples)",
+		"Next: goarchive archive -c "} {
 		if !strings.Contains(out, w) {
 			t.Errorf("dry-run output lacks %q:\n%s", w, out)
 		}
+	}
+	if n := strings.Count(out, "Statement caps (key tuples per statement):"); n != 1 || strings.Contains(out, "Statement cap:") || strings.Contains(out, "?,") {
+		t.Errorf("dry-run output: the caps %d times, logged caps or a placeholder list:\n%s", n, out)
 	}
 
 	out, err = execute(t, "validate", "-c", f.config, "--job", "archive_orders")
@@ -34,10 +38,12 @@ func TestMySQLCommandOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range []string{"WARNING: verification: none", "progress: roots 3/~3 (100.0%) remaining=0 copied_rows=9 deleted_rows=9",
-		"Job archive_orders (archive): 3 roots in 2 batches", "copied:  order_lines=6 orders=3", "deleted: order_lines=6 orders=3"} {
+	// The fixture logs JSON on stderr (setup C): the banner is one entry there, and
+	// --progress writes its progress and closing entries past level error.
+	for _, w := range []string{`"msg":"WARNING: verification: none`, `"msg":"progress"`, `"roots_done":3`,
+		`"msg":"Run completed"`, `"copied":{"order_lines":6,"orders":3}`} {
 		if !strings.Contains(out, w) {
-			t.Errorf("archive output lacks %q:\n%s", w, out)
+			t.Errorf("archive output lacks %s:\n%s", w, out)
 		}
 	}
 }
