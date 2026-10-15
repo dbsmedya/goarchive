@@ -36,7 +36,7 @@ func newTestLogger(t *testing.T) (*logger.Logger, func() []map[string]any) {
 		Output: path,
 		// FileOnly keeps the assertions off the console stream.
 		FileOnly: true,
-	})
+	}, logger.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

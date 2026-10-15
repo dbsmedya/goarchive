@@ -83,7 +83,7 @@ func effectiveJobLogging(global config.LoggingConfig, spec *jobspec.Spec, overri
 // so runs remain attributable when jobs share an output.
 func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string) (*logger.Logger, error) {
 	logCfg := effectiveJobLogging(doc.Shared.Logging, spec, GetCLIOverrides())
-	log, err := logger.New(&logCfg)
+	log, err := logger.New(&logCfg, logger.Options{})
 	if err != nil {
 		return nil, err
 	}

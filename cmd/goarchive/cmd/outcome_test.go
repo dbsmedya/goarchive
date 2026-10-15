@@ -25,7 +25,7 @@ func lastLogEntry(t *testing.T, rep *engine.Report, err error) map[string]any {
 func lastEndRunEntry(t *testing.T, rep *engine.Report, err error, p any) map[string]any {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "run.log")
-	log, lerr := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: path, FileOnly: true})
+	log, lerr := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: path, FileOnly: true}, logger.Options{})
 	if lerr != nil {
 		t.Fatal(lerr)
 	}

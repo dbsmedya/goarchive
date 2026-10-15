@@ -304,10 +304,8 @@ func TestChaining(t *testing.T) {
 
 func TestBuildEncoder(t *testing.T) {
 	for _, format := range []string{"json", "text", "unknown"} {
-		for _, console := range []bool{true, false} {
-			if buildEncoder(format, console) == nil {
-				t.Errorf("buildEncoder(%q, %v) returned nil", format, console)
-			}
+		if buildEncoder(format) == nil {
+			t.Errorf("buildEncoder(%q) returned nil", format)
 		}
 	}
 }

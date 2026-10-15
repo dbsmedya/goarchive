@@ -177,7 +177,7 @@ func job(t *testing.T, typ jobspec.Type, body string) *jobspec.Spec {
 
 func quietLogger(t *testing.T) *logger.Logger {
 	t.Helper()
-	l, err := logger.New(&config.LoggingConfig{Level: "error", Format: "text", Output: "stderr"})
+	l, err := logger.New(&config.LoggingConfig{Level: "error", Format: "text", Output: "stderr"}, logger.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
