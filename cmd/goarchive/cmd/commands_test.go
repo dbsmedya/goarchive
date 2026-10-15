@@ -17,6 +17,7 @@ import (
 func execute(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	resetFlags(rootCmd)
+	started, diagJSON = false, nil
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -115,6 +116,9 @@ func TestCommandsCheckTheJobBeforeConnecting(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%v = %v, want %q", tc.args, err, tc.want)
 			continue
+		}
+		if code := exitCode(err); code != exitUsage {
+			t.Errorf("%v exits %d, want %d (a usage or configuration error)", tc.args, code, exitUsage)
 		}
 		if strings.Contains(err.Error(), "connect") {
 			t.Errorf("%v reached a connection: %v", tc.args, err)
