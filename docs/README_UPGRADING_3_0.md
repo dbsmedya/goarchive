@@ -205,8 +205,8 @@ closing entry, which carries the same counts.
 warnings and live events; info entries such as `Batch N` stay in the file. A script that parsed
 JSON from stdout under a file log reads the file.
 
-**The `WARNING:` banners moved to stderr** and are also recorded in the log; `dry-run` prints them
-too. `version`, `list-jobs` and the help print on stdout.
+**The `WARNING:` banners moved to stderr** and are also recorded in the log; `dry-run` and
+`validate` print them too. `version`, `list-jobs` and the help print on stdout.
 
 **The closing block** (with `--progress`) starts `Job <name> (<type>): <status> in <seconds>s`
 and lists the counts as a table; the `elapsed:` line is gone.

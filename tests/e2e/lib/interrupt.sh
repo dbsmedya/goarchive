@@ -448,6 +448,10 @@ assert_resume_copy_accounting() {
     local want=$((expect_total - expect_at_interrupt))
     local entry got rec
     entry=$(closing_entry "$assert_log" "$job" "Run completed") || return 1
+    if ! _count_table "$(jq -c '.copied' <<<"$entry")"; then
+        log_error "  the resumed run's closing entry has no table of copied row counts"
+        return 1
+    fi
     got=$(jq -r --arg t "$root" '.copied[$t] // empty' <<<"$entry")
     if ! _nonneg_number "$got"; then
         log_error "  could not read $root's copied rows from the resumed run's closing entry"
@@ -466,7 +470,11 @@ assert_resume_copy_accounting() {
     fi
     log_info "  run 2 copied exactly $got — the $expect_at_interrupt already-copied root(s) were not re-copied"
 
-    # recovered is absent when zero: logOutcome omits it.
+    # recovered is absent when zero: logOutcome omits it. Present, it is a nonnegative integer.
+    if ! jq -e '(.recovered // 0) | type == "number" and . >= 0 and . == floor' <<<"$entry" >/dev/null 2>&1; then
+        log_error "  the closing entry's recovered count is malformed: $(jq -c '.recovered' <<<"$entry")"
+        return 1
+    fi
     rec=$(jq -r '.recovered // 0' <<<"$entry")
     case "$kind" in
         crash)

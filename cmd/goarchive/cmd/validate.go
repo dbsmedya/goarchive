@@ -84,6 +84,8 @@ func runValidate(c *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
+		// The R45 banners, as a run would print them (spec §3.4a; Codex MR R2).
+		emitBanners(log, c.ErrOrStderr(), banners(doc, spec.Type, verification, false, o.forceTriggers))
 		res, err := preflight.Run(ctx, preflight.Config{
 			Source: mgr.Source, SourceDatabase: src.Schema,
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,

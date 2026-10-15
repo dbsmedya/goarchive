@@ -100,7 +100,7 @@ func New(cfg *config.LoggingConfig, opts Options) (*Logger, error) {
 		l.logFile, l.filePath = file, cfg.Output
 		add(zapcore.AddSync(file))
 		if opts.Tee && !cfg.FileOnly {
-			cores = append(cores, &teeCore{LevelEnabler: level, w: stderr})
+			cores = append(cores, &teeCore{level: level, w: stderr})
 		}
 	}
 
@@ -216,13 +216,17 @@ func (c stripCore) Write(e zapcore.Entry, f []zapcore.Field) error {
 	return c.Core.Write(e, stripMarks(f))
 }
 
-// teeCore is a file log's console tee (spec §3.3): warnings, errors and Live entries, one
-// text line each; never a FileOnly entry, never the job field.
+// teeCore is a file log's console tee (spec §3.3): warnings and errors the configured level
+// keeps, and Live entries whatever the level, one text line each; never a FileOnly entry, never
+// the job field. It takes every INFO and above for inspection, since a Live mark is a field
+// only Write can see.
 type teeCore struct {
-	zapcore.LevelEnabler
+	level  zapcore.LevelEnabler // the log's configured level, for ordinary entries
 	w      io.Writer
 	fields []zapcore.Field
 }
+
+func (t *teeCore) Enabled(l zapcore.Level) bool { return l >= zapcore.InfoLevel || t.level.Enabled(l) }
 
 func (t *teeCore) With(f []zapcore.Field) zapcore.Core {
 	c := *t
@@ -238,7 +242,11 @@ func (t *teeCore) Check(e zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.Chec
 }
 
 func (t *teeCore) Write(e zapcore.Entry, f []zapcore.Field) error {
-	if hasKey(f, fileOnlyKey) || (e.Level < zapcore.WarnLevel && !hasKey(f, liveKey)) {
+	switch {
+	case hasKey(f, fileOnlyKey):
+		return nil
+	case hasKey(f, liveKey):
+	case e.Level < zapcore.WarnLevel || !t.level.Enabled(e.Level):
 		return nil
 	}
 	_, err := io.WriteString(t.w, renderText(e, append(slices.Clip(t.fields), dropKey(stripMarks(f), "job")...)))

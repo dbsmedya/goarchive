@@ -78,7 +78,7 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 Before a run starts, each setting that weakens its checks prints one `WARNING:` line on stderr,
 whatever the log level, and records it in the log:
 `--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: none`, and
-`safety.disable_foreign_key_checks`. `dry-run` prints them too.
+`safety.disable_foreign_key_checks`. `dry-run` and `validate` print them too.
 
 ### Progress display
 
@@ -134,9 +134,10 @@ and an error always reaches stderr.
   ```
 
   A failure before the first batch says `failed before the first batch.` With `--progress`, the
-  start line, the progress lines and the closing block go to stdout, and the log's warnings and
-  live events go to stderr as text lines: a replication hold and the replica recovering, the gate
-  passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
+  start line, the progress lines and the closing block go to stdout (a failure before the first
+  batch prints its summary there instead of the block), and the log's warnings go to stderr as
+  text lines, with the live events whatever the level: a replication hold and the replica
+  recovering, the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
   log entry off the console; the banners and errors still reach stderr.
 - **The log on the console as text** (`output: stdout` or `stderr`, `format: text`): the log
   stream is plain text, with no colour codes. `--progress` adds its lines and the closing block on

@@ -248,16 +248,16 @@ func (g *Gate) transition(
 		if firstHold.IsZero() {
 			*firstHold = now
 		}
-		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s",
-			id, cause, detail, g.interval)
+		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s",
+			id, cause, detail, g.interval), logger.Live)
 
 		return
 	}
 
 	held := now.Sub(prev.since).Round(time.Second)
 	if prev.cause == cause {
-		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
-			id, cause, detail, g.interval, held)
+		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
+			id, cause, detail, g.interval, held), logger.Live)
 
 		return
 	}
@@ -265,8 +265,8 @@ func (g *Gate) transition(
 	// A cause change keeps the original entry time: the job has been held
 	// continuously, and the duration must not restart.
 	holds[id] = holdInfo{cause: cause, since: prev.since}
-	g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
-		id, cause, detail, g.interval, prev.cause, held)
+	g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
+		id, cause, detail, g.interval, prev.cause, held), logger.Live)
 }
 
 // renderChannelList spells a server's channel selection, where an empty

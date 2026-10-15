@@ -216,7 +216,7 @@ assert_min_duration() {
         log_error "  no longer checking anything."
         return 1
     fi
-    actual=$(jq -r '.elapsed_seconds // empty' <<<"$entry")
+    actual=$(jq -r '.elapsed_seconds | select(type == "number" and . >= 0)' <<<"$entry")
     if ! _nonneg_number "$actual"; then
         log_error "  the closing entry's elapsed_seconds is missing or malformed: '$actual'"
         return 1
@@ -279,7 +279,13 @@ assert_verified() {
         return 1
     fi
     copied=$(jq -c '.copied // empty' <<<"$entry")
-    if [[ "$verified" != "$copied" ]]; then
+    if ! _count_table "$copied" || ! _count_table "$verified"; then
+        log_error "  copied and verified must be tables of nonnegative row counts:"
+        log_error "    copied   $copied"
+        log_error "    verified $verified"
+        return 1
+    fi
+    if ! _json_equal "$verified" "$copied"; then
         log_error "  verification did not cover every copied row:"
         log_error "    copied   $copied"
         log_error "    verified $verified"
@@ -296,8 +302,17 @@ assert_verified() {
 closing_entry() {
     local log_file=$1 job=$2 msg_prefix=$3
     local entries n
-    entries=$(grep -E '^\{' "$log_file" | jq -c --arg job "$job" --arg p "$msg_prefix" \
-        'select(.job == $job and (.msg | startswith($p)))' 2>/dev/null)
+    # jq reads every JSON line before selecting, so a malformed line anywhere, or an entry
+    # that is not an object with a string msg, fails the read with no output: jq 1.8 would
+    # otherwise print a match and exit 0 past a per-line error. jq's status is the pipeline's.
+    if ! entries=$(grep -E '^\{' "$log_file" | jq -cn --arg job "$job" --arg p "$msg_prefix" \
+        '[inputs] as $all
+         | if ($all | all(type == "object" and (.msg | type) == "string"))
+           then $all[] | select(.job == $job and (.msg | startswith($p)))
+           else error("an entry is not an object with a string msg") end' 2>/dev/null); then
+        log_error "  $log_file holds a JSON line jq cannot read; the run's evidence is malformed"
+        return 1
+    fi
     n=$(printf '%s' "$entries" | grep -c '^{')
     if [[ "$n" -ne 1 ]]; then
         log_error "  expected exactly one \"$msg_prefix\" entry for job $job in $log_file, found $n"
@@ -309,4 +324,15 @@ closing_entry() {
 # Succeed when $1 is a nonnegative decimal number.
 _nonneg_number() {
     [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
+# Succeed when the JSON value $1 is a table of counts: an object whose every value is a
+# nonnegative integer.
+_count_table() {
+    jq -e 'type == "object" and all(.[]; type == "number" and . >= 0 and . == floor)' <<<"$1" >/dev/null 2>&1
+}
+
+# Succeed when the JSON values $1 and $2 are equal as JSON (key order aside).
+_json_equal() {
+    [[ $(jq -n --argjson a "$1" --argjson b "$2" '$a == $b' 2>/dev/null) == "true" ]]
 }

@@ -125,11 +125,16 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	default:
 		log.Infow("Run starting", "job_type", string(typ))
 	}
-	// failed prints the failure summary on stderr (setups A and B, without --progress, spec
-	// §3.4a); the Error: line follows from Main.
+	// failed prints the failure summary (setups A and B, spec §3.4a): on stderr without
+	// --progress; with it, on stdout in place of the closing block, which needs a report. The
+	// Error: line follows on stderr from Main.
 	failed := func(rep *engine.Report) {
-		if progress == 0 && !log.ConsoleJSON() {
+		switch {
+		case log.ConsoleJSON():
+		case progress == 0:
 			printFailureSummary(stderr, o.job, typ, rep, log.File())
+		case rep == nil:
+			printFailureSummary(out, o.job, typ, nil, log.File())
 		}
 	}
 
