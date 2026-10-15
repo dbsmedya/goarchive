@@ -187,24 +187,25 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			return err
 		}
 
-		holding := !firstHold.IsZero()
-		probe, release := ctx, context.CancelFunc(func() {})
-		if holding {
-			probe, release = withStop(ctx, stop)
-		}
-
 		allOK := true
 		for _, srv := range g.servers {
+			// Decided per probe: once any server has reported unhealthy, in
+			// this round or an earlier one, the call is a hold and a stop
+			// also aborts the probe.
+			holding := !firstHold.IsZero()
+			probe, release := ctx, context.CancelFunc(func() {})
+			if holding {
+				probe, release = withStop(ctx, stop)
+			}
 			snapshot, err := srv.reader.ReplicaStatus(probe)
+			release()
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
 			if cerr := ctx.Err(); cerr != nil {
-				release()
 				return cerr
 			}
 			// Nor is a probe the stop aborted.
 			if err != nil && holding && stopped(stop) {
-				release()
 				return g.endHold(firstHold)
 			}
 
@@ -225,7 +226,6 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 				allOK = false
 			}
 		}
-		release()
 
 		if allOK {
 			g.mu.Lock()
