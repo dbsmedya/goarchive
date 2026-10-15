@@ -516,9 +516,9 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 - **Servers:** the throwaway pairs (`ga-mx<i>-src`/`-dst`, ports 3375–3396) are removed with
   their volumes when the run ends; a group row's cluster (compose project `ga-mxg<i>`) takes
   the rest of its pair's block of ten ports, and is removed with its volumes after the row.
-- **The estate:** the suites still reach db3 as the replica, so
-  `TestMySQLLiveReplicationGate`, which stops db3's applier, is skipped here. Run it on the
-  estate alone.
+- **The estate:** the suites still reach db3 as the replica, so the tests that drive it through
+  the live gate are skipped here: `TestMySQLLiveReplicationGate` and `TestMySQLStopDuringHold`,
+  which stop db3's applier, and `TestMySQLStopNeverCutsAPass`. Run them on the estate alone.
 - **Results:** `tests/results/envmatrix/<tag>/` (`latest` links to the newest run): per row
   `verdict.txt`, `go-test.json` and the variable snapshots, plus `SUMMARY.txt`. The command
   exits 1 if any row is not OK.
