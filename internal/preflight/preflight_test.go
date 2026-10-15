@@ -151,3 +151,11 @@ func TestFactsAreReadOnce(t *testing.T) {
 		t.Errorf("destination TriggerProof read %d times, want 1 (calls %v)", dst["TriggerProof"], w.dst.calls)
 	}
 }
+
+// TestCapString: a cap as the run's "Statement cap:" log line names it (spec §3.7).
+func TestCapString(t *testing.T) {
+	c := Cap{Table: "order_lines", Server: "destination", Statement: "by key", Columns: []string{"order_id", "line_no"}, Tuples: 8000}
+	if got, want := c.String(), "destination by key on order_lines(order_id, line_no)"; got != want {
+		t.Errorf("String() = %q, want %q", got, want)
+	}
+}

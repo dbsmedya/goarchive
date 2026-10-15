@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
@@ -92,5 +96,27 @@ func TestSentinelPauseShowsOnProgress(t *testing.T) {
 	}
 	if got := tr.snapshot().pausedReason; got != "" {
 		t.Errorf("paused reason after resume = %q", got)
+	}
+}
+
+// TestSentinelResumeIsLive (spec §3.3): with a file log's tee, the pause's end reaches stderr
+// like its start, so the console never ends on "Paused".
+func TestSentinelResumeIsLive(t *testing.T) {
+	var errb bytes.Buffer
+	log, err := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: filepath.Join(t.TempDir(), "run.log")},
+		logger.Options{Stderr: &errb, Tee: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = log.Close() }()
+	present := 1
+	g := newSentinelGate("pause", log)
+	g.presentFn = func(string) bool { present--; return present >= 0 }
+	g.sleepFn = func(context.Context, time.Duration) error { return nil }
+	if err := g.wait(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := errb.String(); !strings.Contains(got, "WARN  Paused: sentinel file") || !strings.Contains(got, "INFO  Resumed: sentinel file") {
+		t.Errorf("tee = %q, want the pause and its end", got)
 	}
 }

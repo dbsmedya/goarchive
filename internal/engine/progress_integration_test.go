@@ -30,7 +30,7 @@ func TestMySQLProgress(t *testing.T) {
 			cfg := e.config(t, job(t, tc.typ, orderJob))
 			cfg.Progress, cfg.Out = time.Hour, &out
 			e.mustRun(t, cfg)
-			if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], tc.want) || !strings.HasSuffix(lines[0], " eta=0s") {
+			if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || !strings.HasPrefix(fields(lines[0]), tc.want) || !strings.HasSuffix(lines[0], " eta=0s") {
 				t.Errorf("progress output = %q, want one line starting %q", out.String(), tc.want)
 			}
 		})
@@ -46,7 +46,7 @@ func TestMySQLProgress(t *testing.T) {
 		cfg.Progress, cfg.Out = time.Hour, &out
 		e.mustRun(t, cfg)
 		want := "progress: roots 1/~1 (100.0%) remaining=0 copied_rows=5 deleted_rows=15 "
-		if got := strings.TrimSpace(out.String()); !strings.HasPrefix(got, want) {
+		if got := fields(out.String()); !strings.HasPrefix(got, want) {
 			t.Errorf("progress output = %q, want %q: the count follows recovery, the rows include its deletes", got, want)
 		}
 	})
@@ -65,3 +65,7 @@ func TestMySQLProgress(t *testing.T) {
 		}
 	})
 }
+
+// fields folds a progress line's padding (spec §3.5 aligns its columns), so a test compares
+// the values.
+func fields(s string) string { return strings.Join(strings.Fields(s), " ") + " " }

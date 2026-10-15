@@ -31,7 +31,7 @@ func lastEndRunEntry(t *testing.T, rep *engine.Report, err error, p any) map[str
 	}
 	log = log.WithJob("archive_docs")
 	log.Info("Batch 1: 2 roots of docs (archive)")
-	endRun(log, jobspec.Archive, rep, err, p)
+	endRun(log, jobspec.Archive, rep, err, p, false)
 	_ = log.Close()
 	data, rerr := os.ReadFile(path)
 	if rerr != nil {
@@ -98,5 +98,36 @@ func TestEndRunAfterPanic(t *testing.T) {
 	e := lastEndRunEntry(t, nil, nil, "index out of range")
 	if e["msg"] != "Run failed" || e["level"] != "error" || e["error"] != "panic: index out of range" {
 		t.Fatalf("last entry after a panic = %v, want Run failed with error \"panic: index out of range\"", e)
+	}
+}
+
+// TestLogOutcomeRouting (spec §3.3, §3.4a): a file log's closing entry never reaches the tee,
+// with its error kept in the file; under a JSON console log with --progress it is written past
+// the level, and without --progress it follows the level.
+func TestLogOutcomeRouting(t *testing.T) {
+	rep := &engine.Report{Batches: 1, Roots: 2, Elapsed: time.Second}
+	var errb strings.Builder
+	path := filepath.Join(t.TempDir(), "run.log")
+	log, err := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: path}, logger.Options{Stderr: &errb, Tee: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	endRun(log, jobspec.Archive, rep, errors.New("engine: boom"), nil, false)
+	_ = log.Close()
+	data, _ := os.ReadFile(path)
+	if errb.Len() != 0 || !strings.Contains(string(data), `"msg":"Run failed"`) || !strings.Contains(string(data), "engine: boom") {
+		t.Errorf("tee %q, file %q: want the closing entry and its error in the file only", errb.String(), data)
+	}
+
+	for _, always := range []bool{true, false} {
+		var out strings.Builder
+		log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, logger.Options{Stdout: &out})
+		if err != nil {
+			t.Fatal(err)
+		}
+		endRun(log, jobspec.Archive, rep, nil, nil, always)
+		if got := strings.Contains(out.String(), `"msg":"Run completed"`); got != always {
+			t.Errorf("always=%v: stdout %q", always, out.String())
+		}
 	}
 }

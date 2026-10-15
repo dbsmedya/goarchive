@@ -1,18 +1,22 @@
 package engine
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // The --progress reporter is 2.x's (R50), ported to the engine: the same line, the same
 // arithmetic, one line per tick and one final line.
 
 func snap(total, done, copied, deleted int64, elapsed time.Duration) progressSnapshot {
-	return progressSnapshot{total: total, done: done, copied: copied, deleted: deleted, elapsed: elapsed}
+	return progressSnapshot{total: total, done: done, copied: copied, deleted: deleted, elapsed: elapsed, running: elapsed}
 }
 
 func TestProgressSnapshotMath(t *testing.T) {
@@ -64,7 +68,7 @@ func TestFormatProgressLine(t *testing.T) {
 		typ          jobspec.Type
 		want, absent []string
 	}{
-		{jobspec.Archive, []string{"progress: roots 4000/~12000 (33.3%) remaining=8000", "copied_rows=45210", "deleted_rows=43000", "elapsed=7m10s", "eta=14m20s"}, nil},
+		{jobspec.Archive, []string{"progress: roots  4000/~12000 ( 33.3%)  remaining=8000 ", "copied_rows=45210", "deleted_rows=43000", "elapsed=7m10s", "eta=14m20s"}, nil},
 		{jobspec.CopyOnly, []string{"copied_rows=45210"}, []string{"deleted_rows"}},
 		{jobspec.Purge, []string{"deleted_rows=43000"}, []string{"copied_rows"}},
 	} {
@@ -97,7 +101,7 @@ func TestProgressTracker(t *testing.T) {
 		t.Error("a nil tracker has a snapshot")
 	}
 
-	tr := newProgressTracker(1000)
+	tr := newProgressTracker(1000, time.Now())
 	tr.nowFn = func() time.Time { return tr.startedAt.Add(30 * time.Second) }
 	tr.update(150, 2000, 1400)
 	if s := tr.snapshot(); s.total != 1000 || s.done != 150 || s.copied != 2000 || s.deleted != 1400 || s.elapsed != 30*time.Second || s.completed {
@@ -115,7 +119,7 @@ func TestProgressTracker(t *testing.T) {
 }
 
 func TestProgressReporter(t *testing.T) {
-	tr := newProgressTracker(100)
+	tr := newProgressTracker(100, time.Now())
 	tr.nowFn = func() time.Time { return tr.startedAt.Add(10 * time.Second) }
 	var out strings.Builder
 	r := newProgressReporter(tr, time.Second, jobspec.Archive, &out)
@@ -133,8 +137,87 @@ func TestProgressReporter(t *testing.T) {
 	}
 
 	var silent strings.Builder
-	newProgressReporter(newProgressTracker(1), time.Second, jobspec.Archive, &silent).stop()
+	newProgressReporter(newProgressTracker(1, time.Now()), time.Second, jobspec.Archive, &silent).stop()
 	if silent.Len() != 0 {
 		t.Errorf("a reporter stopped before it started printed %q", silent.String())
+	}
+}
+
+// TestFormatProgressLineAligned (spec §3.5): fixed-width columns, so successive lines line up.
+func TestFormatProgressLineAligned(t *testing.T) {
+	line := func(done, copied, deleted int64, completed bool) string {
+		s := progressSnapshot{total: 12000, done: done, copied: copied, deleted: deleted,
+			elapsed: 42 * time.Second, running: 30 * time.Second, completed: completed}
+		return formatProgressLine(s, jobspec.Archive)
+	}
+	got := []string{line(4000, 21640, 21640, false), line(8000, 43310, 43310, false), line(12000, 64920, 64920, true)}
+	want := []string{
+		"progress: roots  4000/~12000 ( 33.3%)  remaining=8000   copied_rows=21640      deleted_rows=21640      elapsed=42s      eta=",
+		"progress: roots  8000/~12000 ( 66.7%)  remaining=4000   copied_rows=43310      deleted_rows=43310      elapsed=42s      eta=",
+		"progress: roots 12000/~12000 (100.0%)  remaining=0      copied_rows=64920      deleted_rows=64920      elapsed=42s      eta=0s",
+	}
+	for i := range want {
+		if !strings.HasPrefix(got[i], want[i]) {
+			t.Errorf("line %d:\n got %q\nwant %q", i, got[i], want[i])
+		}
+	}
+	for _, col := range []string{"remaining=", "copied_rows=", "deleted_rows=", "elapsed=", "eta="} {
+		at := strings.Index(got[0], col)
+		for i := range got {
+			if strings.Index(got[i], col) != at {
+				t.Errorf("%s is at %d on line %d, %d on line 0", col, strings.Index(got[i], col), i, at)
+			}
+		}
+	}
+	wide := formatProgressLine(progressSnapshot{total: 9, done: 9, copied: 1234567890, completed: true}, jobspec.CopyOnly)
+	if !strings.Contains(wide, "copied_rows=1234567890  elapsed=") {
+		t.Errorf("an over-width count = %q, want it to push only its own line", wide)
+	}
+}
+
+// TestProgressClock (spec §3.5): elapsed counts from Run's start; the ETA's rate from the
+// first batch, so a slow startup and recovery do not slow the estimate.
+func TestProgressClock(t *testing.T) {
+	began := time.Unix(1000, 0)
+	tr := &progressTracker{totalRoots: 100, startedAt: began, loopAt: began.Add(20 * time.Second)}
+	tr.nowFn = func() time.Time { return began.Add(30 * time.Second) }
+	tr.update(50, 0, 0)
+	s := tr.snapshot()
+	if s.elapsed != 30*time.Second {
+		t.Errorf("elapsed = %v, want 30s (from Run's start, after a 20s startup)", s.elapsed)
+	}
+	if got := s.etaString(); got != "10s" {
+		t.Errorf("eta = %s, want 10s (50 roots in the 10s of batches)", got)
+	}
+}
+
+// TestProgressReporterEntries (spec §3.2 C): with a JSON console log the reporter writes one
+// progress entry per tick, past the level filter, with the line's numbers as fields.
+func TestProgressReporterEntries(t *testing.T) {
+	var out bytes.Buffer
+	log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, logger.Options{Stdout: &out})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := newProgressTracker(100, time.Now())
+	r := newProgressReporter(tr, time.Second, jobspec.Purge, nil)
+	r.log = log
+	ticks := make(chan time.Time)
+	r.tickCh = ticks
+	r.start()
+	tr.update(10, 0, 40)
+	ticks <- time.Time{}
+	r.stop()
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("one tick and a stop wrote %q, want two entries", out.String())
+	}
+	var e map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &e); err != nil {
+		t.Fatalf("entry %q: %v", lines[0], err)
+	}
+	if e["msg"] != "progress" || e["roots_done"] != 10.0 || e["roots_total"] != 100.0 || e["deleted_rows"] != 40.0 ||
+		e["remaining"] != 90.0 || e["copied_rows"] != nil || e["elapsed_seconds"] == nil || e["eta"] == nil {
+		t.Errorf("progress entry = %v", e)
 	}
 }

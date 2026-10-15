@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +11,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 )
 
@@ -54,63 +58,135 @@ func TestBanners(t *testing.T) {
 	}
 }
 
+// TestPrintReport (spec §3.5): the closing block leads with the status and the duration, then
+// the roots, then the counts as a table in copy order, one column per kind of count.
 func TestPrintReport(t *testing.T) {
+	order := []string{"orders", "order_details", "shipment"}
+	rep := &engine.Report{Batches: 12, Roots: 12000,
+		Copied:       map[string]int64{"orders": 12000, "order_details": 40920, "shipment": 12000},
+		Deleted:      map[string]int64{"orders": 12000, "order_details": 40920, "shipment": 12000},
+		Verification: jobspec.VerifySHA256,
+		Verified:     map[string]int64{"orders": 12000, "order_details": 40920, "shipment": 12000},
+		Elapsed:      109412 * time.Millisecond}
 	var out strings.Builder
-	printReport(&out, "archive_orders", jobspec.Archive, &engine.Report{
-		Batches: 2, Roots: 3, Recovered: 2,
-		Copied:      map[string]int64{"orders": 3, "order_lines": 6},
-		Deleted:     map[string]int64{"orders": 5, "order_lines": 10},
-		Conversions: map[string]map[uint16]uint64{"orders": {1265: 2}},
-		Stopped:     true,
-	})
-	for _, w := range []string{
-		"Job archive_orders (archive): 3 roots in 2 batches",
-		"recovered: 2 logged roots finished by replay",
-		"copied:  order_lines=6 orders=3",
-		"deleted: order_lines=10 orders=5",
-		"conversions accepted (verification: none): orders 1265=2",
-		"stopped before the end of the where range: run the job again to continue",
-	} {
-		if !strings.Contains(out.String(), w) {
-			t.Errorf("report %q lacks %q", out.String(), w)
-		}
+	printReport(&out, "archive_old_orders", jobspec.Archive, order, rep, nil)
+	want := "Job archive_old_orders (archive): completed in 109.412s\n" +
+		"  roots: 12000 in 12 batches\n" +
+		"\n" +
+		"  table          copied  deleted  verified (sha256)\n" +
+		"  orders          12000    12000              12000\n" +
+		"  order_details   40920    40920              40920\n" +
+		"  shipment        12000    12000              12000\n"
+	if got := out.String(); got != want {
+		t.Errorf("report:\n%s\nwant:\n%s", got, want)
 	}
-	out.Reset()
-	printReport(&out, "copy", jobspec.CopyOnly, &engine.Report{Batches: 1, Roots: 1, Skipped: 4, Copied: map[string]int64{"t": 1}})
-	if got := out.String(); !strings.Contains(got, "skipped: 4 roots this job had already copied (resume)") ||
-		strings.Contains(got, "deleted") || strings.Contains(got, "recovered") || strings.Contains(got, "stopped") {
-		t.Errorf("copy-only report = %q", got)
+
+	for _, tc := range []struct {
+		name       string
+		typ        jobspec.Type
+		rep        *engine.Report
+		err        error
+		want, nots []string
+	}{
+		{"stopped, recovered, conversions", jobspec.Archive, &engine.Report{Batches: 2, Roots: 3, Recovered: 2,
+			Copied: map[string]int64{"orders": 3}, Deleted: map[string]int64{"orders": 5},
+			Conversions: map[string]map[uint16]uint64{"orders": {1265: 2}}, Stopped: true, Elapsed: 20 * time.Millisecond},
+			nil, []string{"Job j (archive): stopped before the end of the where range: run the job again to continue in 0.020s\n",
+				"  recovered: 2 logged roots finished by replay\n", "conversions accepted (verification: none): orders 1265=2",
+				"  table   copied  deleted\n", "  orders       3        5\n"}, []string{"verified"}},
+		{"failed", jobspec.Archive, &engine.Report{Batches: 1, Roots: 1, Copied: map[string]int64{"orders": 1},
+			Deleted: map[string]int64{"orders": 1}, Elapsed: time.Second}, errors.New("boom"),
+			[]string{"Job j (archive): failed in 1.000s\n", "  roots: 1 in 1 batch\n"}, []string{"boom"}},
+		{"purge", jobspec.Purge, &engine.Report{Batches: 1, Roots: 1, Deleted: map[string]int64{"orders": 1}},
+			nil, []string{"  table   deleted\n", "  orders        1\n"}, []string{"copied", "verified"}},
+		{"copy-only, resume, none", jobspec.CopyOnly, &engine.Report{Batches: 1, Roots: 1, Skipped: 4,
+			Copied: map[string]int64{"orders": 1}, Verification: jobspec.VerifyNone},
+			nil, []string{"  skipped: 4 roots this job had already copied (resume)\n", "  table   copied\n"}, []string{"deleted", "verified"}},
+	} {
+		out.Reset()
+		printReport(&out, "j", tc.typ, []string{"orders"}, tc.rep, tc.err)
+		got := out.String()
+		for _, w := range tc.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: report lacks %q:\n%s", tc.name, w, got)
+			}
+		}
+		for _, n := range tc.nots {
+			if strings.Contains(got, n) {
+				t.Errorf("%s: report has %q:\n%s", tc.name, n, got)
+			}
+		}
 	}
 }
 
-// TestPrintReportVerifiedAndElapsed (M7b): the report names the verification method with
-// the rows it passed for, per table, and the run's elapsed time. A run that compared
-// nothing prints no verified line.
-func TestPrintReportVerifiedAndElapsed(t *testing.T) {
+// TestPrintFailureSummary (spec §3.4a): the stderr line before the error, with the duration
+// when the engine returned a report, and the log file when there is one.
+func TestPrintFailureSummary(t *testing.T) {
 	var out strings.Builder
-	printReport(&out, "archive_orders", jobspec.Archive, &engine.Report{
-		Batches: 2, Roots: 3,
-		Copied:       map[string]int64{"orders": 3, "order_lines": 6},
-		Deleted:      map[string]int64{"orders": 3, "order_lines": 6},
-		Verification: jobspec.VerifySHA256,
-		Verified:     map[string]int64{"orders": 3, "order_lines": 6},
-		Elapsed:      1500 * time.Millisecond,
-	})
-	for _, w := range []string{"  verified (sha256): order_lines=6 orders=3\n", "  elapsed: 1.500s\n"} {
-		if !strings.Contains(out.String(), w) {
-			t.Errorf("report %q lacks %q", out.String(), w)
-		}
+	printFailureSummary(&out, "j", jobspec.Archive, &engine.Report{Elapsed: 61240 * time.Millisecond}, "/var/log/g.log")
+	printFailureSummary(&out, "j", jobspec.Purge, nil, "")
+	want := "Job j (archive): failed in 61.240s. Log: /var/log/g.log\nJob j (purge): failed before the first batch.\n"
+	if got := out.String(); got != want {
+		t.Errorf("summaries = %q, want %q", got, want)
 	}
-	for _, tc := range []struct {
-		typ jobspec.Type
-		v   jobspec.Verification
-	}{{jobspec.Archive, jobspec.VerifyNone}, {jobspec.Purge, ""}} {
-		out.Reset()
-		printReport(&out, "j", tc.typ, &engine.Report{Batches: 1, Roots: 1, Verification: tc.v,
-			Deleted: map[string]int64{"t": 1}, Elapsed: 20 * time.Millisecond})
-		if got := out.String(); strings.Contains(got, "verified") || !strings.Contains(got, "  elapsed: 0.020s\n") {
-			t.Errorf("%s report with verification %q = %q", tc.typ, tc.v, got)
+}
+
+// TestPrintStart (spec §3.5): the start line names the log file when there is one.
+func TestPrintStart(t *testing.T) {
+	var out strings.Builder
+	printStart(&out, "j", jobspec.Archive, "/var/log/g.log")
+	printStart(&out, "j", jobspec.Archive, "")
+	if want := "Job j (archive): starting. Log: /var/log/g.log\nJob j (archive): starting.\n"; out.String() != want {
+		t.Errorf("start lines = %q, want %q", out.String(), want)
+	}
+}
+
+// TestEmitBanners (spec §3.4a, Codex R3): the banners always reach stderr in stderr's format,
+// past the level and file_only, and are recorded in the log; the tee never repeats them.
+func TestEmitBanners(t *testing.T) {
+	const b = "WARNING: verification: none: copied rows are not compared."
+	newLog := func(cfg config.LoggingConfig, tee bool) (*logger.Logger, *strings.Builder, *strings.Builder) {
+		var out, errb strings.Builder
+		l, err := logger.New(&cfg, logger.Options{Stdout: &out, Stderr: &errb, Tee: tee})
+		if err != nil {
+			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = l.Close() })
+		return l, &out, &errb
+	}
+	file := filepath.Join(t.TempDir(), "run.log")
+
+	l, out, errb := newLog(config.LoggingConfig{Level: "error", Format: "json", Output: file}, true)
+	emitBanners(l, errb, []string{b})
+	_ = l.Sync()
+	data, _ := os.ReadFile(file)
+	if out.Len() != 0 || errb.String() != b+"\n" || !strings.Contains(string(data), "verification: none") {
+		t.Errorf("file log, tee, level error: stdout %q stderr %q file %q", out, errb, data)
+	}
+
+	l, out, errb = newLog(config.LoggingConfig{Level: "error", Format: "json", Output: file, FileOnly: true}, true)
+	emitBanners(l, errb, []string{b})
+	if errb.String() != b+"\n" || out.Len() != 0 {
+		t.Errorf("file_only: stdout %q stderr %q", out, errb)
+	}
+
+	l, out, errb = newLog(config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, false)
+	emitBanners(l, errb, []string{b})
+	if errb.String() != b+"\n" {
+		t.Errorf("JSON stdout log: stderr %q, want the plain banner", errb)
+	}
+
+	l, out, errb = newLog(config.LoggingConfig{Level: "error", Format: "json", Output: "stderr"}, false)
+	emitBanners(l, errb, []string{b})
+	lines := strings.Split(strings.TrimSpace(errb.String()), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "{") || !strings.Contains(lines[0], `"level":"warn"`) || out.Len() != 0 {
+		t.Errorf("JSON stderr log at level error: stderr %q, want one JSON warn entry", errb)
+	}
+
+	l, _, errb = newLog(config.LoggingConfig{Level: "error", Format: "text", Output: "stderr"}, false)
+	emitBanners(l, errb, []string{b})
+	if n := strings.Count(errb.String(), "verification: none"); n != 1 || strings.Contains(errb.String(), "{") {
+		t.Errorf("text stderr log: stderr %q, want one text banner", errb)
 	}
 }
 

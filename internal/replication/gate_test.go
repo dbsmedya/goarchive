@@ -890,3 +890,27 @@ func TestGateInvalidStatusCancellation(t *testing.T) {
 		})
 	}
 }
+
+// TestGateRecoveryIsLive (spec §3.3): with a file log's tee, a hold's end reaches stderr like
+// the hold, so the console never ends on "held".
+func TestGateRecoveryIsLive(t *testing.T) {
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 15*time.Second, reader)
+	var errb bytes.Buffer
+	log, err := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: filepath.Join(t.TempDir(), "tee.log")},
+		logger.Options{Stderr: &errb, Tee: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	h.gate.logger = log
+	if err := h.gate.WaitForLag(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := errb.String()
+	for _, w := range []string{"WARN  replication hold:", "INFO  replication recovered: server replica1:3306 healthy", "INFO  replication gate passed:"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("tee lacks %q:\n%s", w, got)
+		}
+	}
+}
