@@ -259,9 +259,10 @@ assert_verified() {
 
     local entry verified copied
     entry=$(closing_entry "$log_file" "$job" "Run completed") || return 1
-    verified=$(jq -c '.verified // empty' <<<"$entry")
+    # Presence is has(), never //: a present false or null is malformed, not absent.
+    verified=$(jq -c 'if has("verified") then .verified else empty end' <<<"$entry")
     if [[ "$method" == "none" ]]; then
-        if [[ -n "$verified" ]]; then
+        if [[ $(jq -r 'has("verified")' <<<"$entry") == "true" ]]; then
             log_error "  verification ran, but this test declares verify_method=none: $verified"
             return 1
         fi

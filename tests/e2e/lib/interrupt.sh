@@ -471,11 +471,12 @@ assert_resume_copy_accounting() {
     log_info "  run 2 copied exactly $got — the $expect_at_interrupt already-copied root(s) were not re-copied"
 
     # recovered is absent when zero: logOutcome omits it. Present, it is a nonnegative integer.
-    if ! jq -e '(.recovered // 0) | type == "number" and . >= 0 and . == floor' <<<"$entry" >/dev/null 2>&1; then
+    # Presence is has(), never //: a present false or null is malformed, not zero.
+    if ! jq -e 'if has("recovered") then .recovered | (type == "number" and . >= 0 and . == floor) else true end' <<<"$entry" >/dev/null 2>&1; then
         log_error "  the closing entry's recovered count is malformed: $(jq -c '.recovered' <<<"$entry")"
         return 1
     fi
-    rec=$(jq -r '.recovered // 0' <<<"$entry")
+    rec=$(jq -r 'if has("recovered") then .recovered else 0 end' <<<"$entry")
     case "$kind" in
         crash)
             if ! grep -q "Recovery: replaying ${pending} copied roots of ${root}\"" "$assert_log" ||
