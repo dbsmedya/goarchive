@@ -90,7 +90,7 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			logger, err := New(tt.cfg)
+			logger, err := New(tt.cfg, Options{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -110,7 +110,7 @@ func TestNew(t *testing.T) {
 // read-only attribute, so there the file must stay writable.
 func TestNewCreatesLogFileOwnerOnly(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "new.log")
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestNewKeepsExistingLogFileMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestWithJob(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestWithBatch(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestWithTable(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestWithFields(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestChaining(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestSync(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestCloseIgnoresConsoleSyncError(t *testing.T) {
 		_ = r.Close()
 	}()
 
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: "stdout"})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: "stdout"}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestCloseIgnoresConsoleSyncError(t *testing.T) {
 func TestFileOutputTextFormatNoColorCodes(t *testing.T) {
 	logPath := t.TempDir() + "/out.log"
 
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "text", Output: logPath})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "text", Output: logPath}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestFileOnlySuppressesStdout(t *testing.T) {
 	captured := captureStdoutDuring(t, func() {
 		log, err := New(&config.LoggingConfig{
 			Level: "info", Format: "json", Output: logPath, FileOnly: true,
-		})
+		}, Options{})
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
@@ -430,13 +430,15 @@ func TestFileOnlySuppressesStdout(t *testing.T) {
 	}
 }
 
-func TestFileOutputTeesToStdoutByDefault(t *testing.T) {
+// TestFileOutputNoStdoutTee: a file log never tees to stdout; its console tee is stderr, with
+// --progress only (spec §3.3).
+func TestFileOutputNoStdoutTee(t *testing.T) {
 	logPath := t.TempDir() + "/out.log"
 
 	captured := captureStdoutDuring(t, func() {
 		log, err := New(&config.LoggingConfig{
 			Level: "info", Format: "json", Output: logPath,
-		})
+		}, Options{})
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
@@ -444,8 +446,8 @@ func TestFileOutputTeesToStdoutByDefault(t *testing.T) {
 		_ = log.Close()
 	})
 
-	if !strings.Contains(captured, "tee-marker") {
-		t.Error("file output without file_only should still write to stdout")
+	if strings.Contains(captured, "tee-marker") {
+		t.Error("a file log wrote to stdout")
 	}
 }
 
@@ -464,7 +466,7 @@ func TestLoggingOutput(t *testing.T) {
 		Output: tmpFile.Name(),
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
