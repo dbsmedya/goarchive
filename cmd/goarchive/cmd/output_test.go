@@ -210,46 +210,211 @@ func TestPrintCaps(t *testing.T) {
 	}
 }
 
-// TestPrintExplanation (spec §7.2): dry-run prints each statement and its plan under the
-// EXPLAIN FORMAT=TRADITIONAL column names, then the notes.
+// dryRunDoc and dryRunSpec are spec §3.8's example job: orders → order_details, shipment.
+func dryRunDoc() *jobspec.Document {
+	doc := &jobspec.Document{Shared: config.DefaultConfig()}
+	doc.Shared.Processing = config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500, SleepSeconds: 2,
+		SentinelFile: "/run/goarchive/orders.pause"}
+	doc.Shared.Replication = config.ReplicationConfig{Enabled: true, SecondsBehindSourceWithin: 10, CheckInterval: 5, CacheTTL: 15,
+		Servers: []config.ReplicationServerConfig{{Host: "replica1", Port: 3306, Channels: []string{""}},
+			{Host: "replica2", Port: 3306, Channels: []string{""}}}}
+	return doc
+}
+
+func dryRunSpec(typ jobspec.Type) *jobspec.Spec {
+	return &jobspec.Spec{Type: typ, RootTable: "orders", PrimaryKey: jobspec.Columns{"id"},
+		Where: "created_at < '2024-01-01'\nAND status = 'closed'",
+		Relations: []jobspec.Relation{
+			{Table: "order_details", PrimaryKey: jobspec.Columns{"id"}, ForeignKey: jobspec.Columns{"order_id"}},
+			{Table: "shipment", PrimaryKey: jobspec.Columns{"id"}, ForeignKey: jobspec.Columns{"order_id"}},
+		}}
+}
+
+func dryRunExplanation() *engine.Explanation {
+	sel := func(t string) string { return "SELECT `id` FROM `" + t + "`" }
+	return &engine.Explanation{
+		Preflight: &preflight.Result{Caps: []preflight.Cap{
+			{Table: "orders", Server: "source", Statement: "by key", Columns: []string{"id"}, Tuples: 16000},
+			{Table: "order_details", Server: "source", Statement: "discovery", Columns: []string{"order_id"}, Tuples: 16000},
+		}},
+		Count: 12000, Roots: 1000,
+		Rows: map[string]int{"orders": 1000, "order_details": 3412, "shipment": 998},
+		Fetch: engine.Plan{Table: "orders",
+			Display: engine.Display{Select: sel("orders"), Where: "created_at < '2024-01-01'\nAND status = 'closed'", Tail: "ORDER BY `id` LIMIT 1000"},
+			Rows:    []engine.ExplainRow{{ID: "1", SelectType: "SIMPLE", Table: "orders", Type: "range", Key: "PRIMARY", Rows: "6000", Filtered: "10.00", Extra: "Using where"}}},
+		Discovery: []engine.Plan{
+			{Table: "order_details", Display: engine.Display{Select: sel("order_details"), Predicate: "`order_id` IN (<1000 orders tuples>)", Tuples: 1000, Of: 1000, Parent: "orders"},
+				Rows: []engine.ExplainRow{{ID: "1", SelectType: "SIMPLE", Table: "order_details", Type: "range", Key: "idx_order_id", Rows: "3400", Filtered: "100.00", Extra: "Using where; Using index"}}},
+			{Table: "shipment", Display: engine.Display{Select: sel("shipment"), Predicate: "`order_id` IN (<1000 orders tuples>)", Tuples: 1000, Of: 1000, Parent: "orders"},
+				Rows: []engine.ExplainRow{{ID: "1", SelectType: "SIMPLE", Table: "shipment", Type: "ALL", Rows: "250000", Filtered: "0.40", Extra: "Using where"}}},
+		},
+	}
+}
+
+// dryRunGolden is spec §3.8's report for the example job.
+var dryRunGolden = strings.Join([]string{
+	"Dry-run of archive_old_orders (archive). No data is changed.",
+	"",
+	"Job",
+	"  root table:      orders, key (id)",
+	"  where:           created_at < '2024-01-01'",
+	"                   AND status = 'closed'",
+	"  matching roots:  12000, about 12 batches of 1000 (counted now; the range can change before the run)",
+	"",
+	"Copy order (parents first)     rows in the first batch",
+	"  1. orders                    1000",
+	"  2. order_details             3412",
+	"  3. shipment                  998",
+	"Delete order (children first)",
+	"  1. shipment",
+	"  2. order_details",
+	"  3. orders",
+	"",
+	"Settings",
+	"  batch_size: 1000   batch_delete_size: 500   sleep_seconds: 2   delete_sleep_seconds: 0",
+	"  sentinel_file: /run/goarchive/orders.pause",
+	"  verification: sha256",
+	"  destination foreign key checks: on",
+	"  replication lag gate: on, hold above 10s, check every 5s, cache 15s",
+	"    replica1:3306  channels: <default>",
+	"    replica2:3306  channels: <default>",
+	"",
+	"Statement caps (key tuples per statement):",
+	"  source       by key     orders (id): 16000",
+	"  source       discovery  order_details (order_id): 16000",
+	"",
+	"Plans for the first batch (EXPLAIN FORMAT=TRADITIONAL)",
+	"",
+	"Root fetch on orders",
+	"  SELECT `id` FROM `orders`",
+	"  WHERE (created_at < '2024-01-01'",
+	"         AND status = 'closed')",
+	"  ORDER BY `id` LIMIT 1000",
+	"  orders           range on PRIMARY, ~6000 rows, 10% filtered; Using where",
+	"",
+	"Discovery of order_details (first discovery chunk: all 1000 orders tuples)",
+	"  SELECT `id` FROM `order_details`",
+	"  WHERE `order_id` IN (<1000 orders tuples>)",
+	"  order_details    range on idx_order_id, ~3400 rows, 100% filtered; Using where; Using index",
+	"",
+	"Discovery of shipment (first discovery chunk: all 1000 orders tuples)",
+	"  SELECT `id` FROM `shipment`",
+	"  WHERE `order_id` IN (<1000 orders tuples>)",
+	"  shipment         full table scan, possible keys: none, ~250000 rows, 0.4% filtered; Using where",
+	"",
+	"Next: goarchive archive -c archiver.yaml -j archive_old_orders",
+	"",
+}, "\n")
+
+// TestPrintExplanation (spec §3.8): the report to 2.2.x's standard, byte for byte for the
+// spec's example: coverage, orders with the first batch's rows, settings, caps once, then one
+// readable section per statement.
 func TestPrintExplanation(t *testing.T) {
 	var out strings.Builder
-	printExplanation(&out, "archive_orders", jobspec.Archive, &engine.Explanation{
-		Preflight: &preflight.Result{},
-		Roots:     2,
-		Fetch: engine.Plan{Table: "orders", Query: "EXPLAIN FORMAT=TRADITIONAL SELECT `id` FROM `orders` WHERE (1=1\n) ORDER BY `id` LIMIT ?",
-			Rows: []engine.ExplainRow{{ID: "1", SelectType: "SIMPLE", Table: "orders", Type: "index", Key: "PRIMARY", KeyLen: "144", Rows: "3", Filtered: "100.00"}}},
-		Discovery: []engine.Plan{{Table: "order_lines", Query: "EXPLAIN FORMAT=TRADITIONAL SELECT ...",
-			Rows: []engine.ExplainRow{{ID: "1", SelectType: "SIMPLE", Table: "order_lines", Type: "range", Key: "PRIMARY", Rows: "4", Extra: "Using where; Using index"}}}},
-		Notes: []string{"A note."},
-	})
-	got := out.String()
-	for _, w := range []string{
-		"Dry-run of archive_orders (archive): the first batch holds 2 root keys",
-		"Root fetch on orders:",
-		"WHERE (1=1 ) ORDER BY", // the statement on one line
-		"Discovery of order_lines:",
-		"Using where; Using index",
-		"Note: A note.",
+	printExplanation(&out, "archive_old_orders", jobspec.Archive, "archiver.yaml", dryRunDoc(), dryRunSpec(jobspec.Archive), jobspec.VerifySHA256, dryRunExplanation())
+	if got := out.String(); got != dryRunGolden {
+		t.Errorf("report:\n%s\nwant:\n%s", got, dryRunGolden)
+	}
+}
+
+// TestPrintExplanationCases (spec §3.8): per job type, and the report's edge cases.
+func TestPrintExplanationCases(t *testing.T) {
+	render := func(typ jobspec.Type, v jobspec.Verification, doc *jobspec.Document, spec *jobspec.Spec, ex *engine.Explanation) string {
+		var out strings.Builder
+		printExplanation(&out, "j", typ, "c.yaml", doc, spec, v, ex)
+		return out.String()
+	}
+	check := func(name, got string, want, not []string) {
+		for _, w := range want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: report lacks %q:\n%s", name, w, got)
+			}
+		}
+		for _, n := range not {
+			if strings.Contains(got, n) {
+				t.Errorf("%s: report has %q:\n%s", name, n, got)
+			}
+		}
+	}
+
+	purge := render(jobspec.Purge, "", dryRunDoc(), dryRunSpec(jobspec.Purge), dryRunExplanation())
+	check("purge", purge, []string{"Delete order (children first)", "  1. shipment", "998", "Next: goarchive purge -c c.yaml -j j"},
+		[]string{"Copy order", "verification:", "foreign key checks"})
+
+	doc := dryRunDoc()
+	doc.Shared.Replication.Servers[0].Channels = []string{"a\nb"}
+	resume := true
+	cspec := dryRunSpec(jobspec.CopyOnly)
+	cspec.Resume = &resume
+	copyOnly := render(jobspec.CopyOnly, jobspec.VerifyCount, doc, cspec, dryRunExplanation())
+	check("copy-only", copyOnly, []string{"Copy order (parents first)", "replication lag gate: configured, not used (copy-only deletes nothing)",
+		"resume: on", "verification: count"}, []string{"Delete order", "replica1"})
+
+	gated := render(jobspec.Archive, jobspec.VerifySHA256, doc, dryRunSpec(jobspec.Archive), dryRunExplanation())
+	check("channel", gated, []string{"replica1:3306  channels: a b\n"}, []string{"a\nb"})
+
+	ex := dryRunExplanation()
+	ex.Discovery[0].Display.Tuples, ex.Discovery[0].Display.Of = 1000, 3412
+	ex.Discovery[1] = engine.Plan{Table: "shipment", Skipped: "the first batch has no orders rows"}
+	ex.Fetch.Notes = []string{"The root fetch on orders sorts its matching rows on every batch (Using filesort)."}
+	sp := dryRunSpec(jobspec.Archive)
+	sp.Where = "note <> '?'\n  AND id IN (SELECT id FROM keep) -- old"
+	ex.Fetch.Display.Where = sp.Where
+	got := render(jobspec.Archive, jobspec.VerifySHA256, dryRunDoc(), sp, ex)
+	check("edge", got, []string{
+		"Discovery of order_details (first discovery chunk: 1000 of 3412 orders tuples)",
+		"Discovery of shipment\n  Note: the first batch has no orders rows, so this table's discovery was not explained.\n",
+		"  ORDER BY `id` LIMIT 1000\n  orders           range on PRIMARY, ~6000 rows, 10% filtered; Using where\n  Note: The root fetch on orders sorts",
+		"  WHERE (note <> '?'\n           AND id IN (SELECT id FROM keep) -- old\n  )\n",
+	}, nil)
+
+	none := dryRunExplanation()
+	none.Count, none.Roots, none.Discovery = 0, 0, nil
+	none.Rows = map[string]int{"orders": 0}
+	check("no rows", render(jobspec.Archive, jobspec.VerifySHA256, dryRunDoc(), dryRunSpec(jobspec.Archive), none),
+		[]string{"matching roots:  0 (counted now", "Note: no rows match the where clause, so there are no keys to bind: discovery was not explained."},
+		[]string{"Discovery of"})
+}
+
+// TestDescribeRow (spec §3.8, Codex F4): one EXPLAIN row per line, by access type; a row
+// without a table is the optimizer's message, never a scan.
+func TestDescribeRow(t *testing.T) {
+	for _, tc := range []struct {
+		row  engine.ExplainRow
+		want string
+	}{
+		{engine.ExplainRow{SelectType: "SIMPLE", Table: "t", Type: "ALL", PossibleKeys: "ix_a,ix_b", Rows: "10", Filtered: "100.00"},
+			"t                full table scan, possible keys: ix_a,ix_b, ~10 rows, 100% filtered"},
+		{engine.ExplainRow{SelectType: "SIMPLE", Table: "t", Type: "index", Key: "PRIMARY", Rows: "10", Filtered: "33.33"},
+			"t                full index scan on PRIMARY, ~10 rows, 33.33% filtered"},
+		{engine.ExplainRow{SelectType: "DEPENDENT SUBQUERY", Table: "keeper", Type: "ref", Key: "ix_b", Rows: "2", Filtered: "100"},
+			"[DEPENDENT SUBQUERY] keeper           ref on ix_b, ~2 rows, 100% filtered"},
+		{engine.ExplainRow{ID: "1", SelectType: "SIMPLE", Extra: "Impossible WHERE"}, "optimizer: Impossible WHERE"},
 	} {
-		if !strings.Contains(got, w) {
-			t.Errorf("explanation lacks %q:\n%s", w, got)
+		if got := describeRow(tc.row); got != tc.want {
+			t.Errorf("describeRow(%+v) =\n %q\nwant\n %q", tc.row, got, tc.want)
 		}
 	}
-	// The plan is a table under the TRADITIONAL column names; spacing aside, the header and
-	// the fetch's row read as below.
-	header := "id select_type table partitions type possible_keys key key_len ref rows filtered Extra"
-	row := "1 SIMPLE orders index PRIMARY 144 3 100.00"
-	var sawHeader, sawRow bool
-	for _, line := range strings.Split(got, "\n") {
-		switch strings.Join(strings.Fields(line), " ") {
-		case header:
-			sawHeader = true
-		case row:
-			sawRow = true
+}
+
+// TestDescribeChannels (ported from 2.2.x's estimator test): all channels, the default
+// channel, and a name folded onto one line.
+func TestDescribeChannels(t *testing.T) {
+	for _, tc := range []struct {
+		in   []string
+		want string
+	}{{nil, "all"}, {[]string{""}, "<default>"}, {[]string{"", "ch2"}, "<default>, ch2"}, {[]string{"a\r\nb"}, "a  b"}} {
+		if got := describeChannels(tc.in); got != tc.want {
+			t.Errorf("describeChannels(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
-	if !sawHeader || !sawRow {
-		t.Errorf("no EXPLAIN table (header %v, fetch row %v):\n%s", sawHeader, sawRow, got)
+}
+
+// TestDryRunHelp (spec §3.9): the help names the whole-range count and its cost.
+func TestDryRunHelp(t *testing.T) {
+	for _, w := range []string{"counts the rows", "takes as long as that count takes", "first discovery chunk"} {
+		if !strings.Contains(dryrunCmd.Long, w) {
+			t.Errorf("dry-run help lacks %q", w)
+		}
 	}
 }

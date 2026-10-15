@@ -45,6 +45,17 @@ func TestMySQLExplain(t *testing.T) {
 	if len(ex.Preflight.Caps) == 0 {
 		t.Error("no statement caps reported")
 	}
+	// The report's coverage (spec §3.8): the where count, the first batch's rows per table,
+	// and the statement as configured.
+	if ex.Count != 3 || ex.Rows["orders"] != 2 || ex.Rows["order_lines"] == 0 || ex.Rows["line_notes"] == 0 {
+		t.Errorf("count %d, rows %v: want 3 matching roots and the first batch's rows per table", ex.Count, ex.Rows)
+	}
+	if ex.Fetch.Display.Where != "placed < '2020-01-01'" || ex.Fetch.Display.Tail != "ORDER BY `id` LIMIT 2" {
+		t.Errorf("fetch display = %+v", ex.Fetch.Display)
+	}
+	if d := ex.Discovery[0].Display; d.Parent != "orders" || d.Tuples != 2 || d.Of != 2 {
+		t.Errorf("order_lines display = %+v, want all 2 orders tuples", d)
+	}
 	if got := rows(t, e.src, "line_notes", "note_id"); !equal(got, before) {
 		t.Error("dry-run changed the source")
 	}
