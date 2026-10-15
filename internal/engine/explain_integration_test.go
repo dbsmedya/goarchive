@@ -45,6 +45,17 @@ func TestMySQLExplain(t *testing.T) {
 	if len(ex.Preflight.Caps) == 0 {
 		t.Error("no statement caps reported")
 	}
+	// The report's coverage (spec §3.8): the where count, the first batch's rows per table,
+	// and the statement as configured.
+	if ex.Count != 3 || ex.Rows["orders"] != 2 || ex.Rows["order_lines"] == 0 || ex.Rows["line_notes"] == 0 {
+		t.Errorf("count %d, rows %v: want 3 matching roots and the first batch's rows per table", ex.Count, ex.Rows)
+	}
+	if ex.Fetch.Display.Where != "placed < '2020-01-01'" || ex.Fetch.Display.Tail != "ORDER BY `id` LIMIT 2" {
+		t.Errorf("fetch display = %+v", ex.Fetch.Display)
+	}
+	if d := ex.Discovery[0].Display; d.Parent != "orders" || d.Tuples != 2 || d.Of != 2 {
+		t.Errorf("order_lines display = %+v, want all 2 orders tuples", d)
+	}
 	if got := rows(t, e.src, "line_notes", "note_id"); !equal(got, before) {
 		t.Error("dry-run changed the source")
 	}
@@ -78,7 +89,7 @@ func TestMySQLExplainOneSourceConnection(t *testing.T) {
 }
 
 // TestMySQLExplainEmptyRange: with nothing to fetch there are no keys to bind, so only the
-// fetch is explained, and a note says why discovery is not.
+// fetch is explained; the report says why discovery is not (printExplanation).
 func TestMySQLExplainEmptyRange(t *testing.T) {
 	e := newEnv(t, "explainempty")
 	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
@@ -89,8 +100,8 @@ func TestMySQLExplainEmptyRange(t *testing.T) {
 	if ex.Roots != 0 || len(ex.Fetch.Rows) == 0 || len(ex.Discovery) != 0 {
 		t.Errorf("explanation = %+v", ex)
 	}
-	if !strings.Contains(strings.Join(ex.Notes, "\n"), "No rows match") {
-		t.Errorf("notes = %q, want the empty-range note", ex.Notes)
+	if ex.Count != 0 {
+		t.Errorf("count = %d, want 0: the report's \"no rows match\" note follows from it", ex.Count)
 	}
 }
 
@@ -107,7 +118,7 @@ func TestMySQLExplainFilesort(t *testing.T) {
 	if !strings.Contains(ex.Fetch.Rows[0].Extra, "Using filesort") {
 		t.Fatalf("fetch plan = %+v, want a filesort", ex.Fetch.Rows)
 	}
-	if !strings.Contains(strings.Join(ex.Notes, "\n"), "sorts") {
-		t.Errorf("notes = %q, want the filesort note", ex.Notes)
+	if !strings.Contains(strings.Join(ex.Fetch.Notes, "\n"), "sorts") {
+		t.Errorf("fetch notes = %q, want the filesort note under the fetch", ex.Fetch.Notes)
 	}
 }

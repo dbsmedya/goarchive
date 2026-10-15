@@ -31,7 +31,7 @@ The plan shows:
 
 Example:
   goarchive plan --config archiver.yaml --job archive_old_orders`,
-	RunE: runPlan,
+	RunE: runE(runPlan),
 }
 
 func init() {

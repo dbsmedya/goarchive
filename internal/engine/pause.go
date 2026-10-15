@@ -109,7 +109,7 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 	if g == nil || g.path == "" || !g.present() || stopRequested(stop) {
 		return nil
 	}
-	g.logger.Warnf("Paused: sentinel file %q is present; remove it to resume", g.path)
+	g.logger.Warnw(fmt.Sprintf("Paused: sentinel file %q is present; remove it to resume", g.path), logger.Live)
 	g.progress.setPaused(fmt.Sprintf("sentinel file %q present", g.path))
 	defer g.progress.clearPaused()
 	for waited := 1; ; waited++ {
@@ -122,11 +122,11 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 			return nil
 		}
 		if !g.present() {
-			g.logger.Infof("Resumed: sentinel file %q removed", g.path)
+			g.logger.Infow(fmt.Sprintf("Resumed: sentinel file %q removed", g.path), logger.Live)
 			return nil
 		}
 		if waited%sentinelStillPausedEvery == 0 {
-			g.logger.Warnf("Still paused: sentinel file %q present after ~%ds", g.path, waited)
+			g.logger.Warnw(fmt.Sprintf("Still paused: sentinel file %q present after ~%ds", g.path, waited), logger.Live)
 		}
 	}
 }

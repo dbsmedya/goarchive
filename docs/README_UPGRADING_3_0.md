@@ -15,6 +15,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
+- [Moving from 3.0 beta.1 (unreleased)](#moving-from-30-beta1-unreleased)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -182,6 +183,40 @@ destination and cannot be recovered by GoArchive. Copy-only is unaffected.
 ([session settings](README_CONFIGURATION.md#session-settings)). A server's global
 `sql_select_limit` used to cap GoArchive's reads, so a table or a tree wider than it was copied,
 verified and deleted only in part. Nothing to do.
+
+---
+
+## Moving from 3.0 beta.1 (unreleased)
+
+The tracking tables are unchanged. What changes is what goarchive prints, where, and how it exits
+([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
+
+**Exit codes.** A graceful stop now exits **3**, not 0; "another run holds the work" (the job,
+a source table, or unfinished work on the same data) exits **4**; a usage or configuration error
+found before anything connected exits **2**; every other failure still exits 1. A script that
+treated any non-zero code as a failure, or a stop as success, needs the table.
+
+**A run prints to stdout only with `--progress`**, or when the log itself is on stdout. With a log
+file and no `--progress`, a run is silent unless it fails; the failure prints a summary and the
+error on stderr. A script that read the report from stdout passes `--progress`, or reads the log's
+closing entry, which carries the same counts.
+
+**A log file's console tee moved to stderr, as text, and only with `--progress`**, showing
+warnings and live events; info entries such as `Batch N` stay in the file. A script that parsed
+JSON from stdout under a file log reads the file.
+
+**The `WARNING:` banners moved to stderr** and are also recorded in the log; `dry-run` and
+`validate` print them too. `version`, `list-jobs` and the help print on stdout.
+
+**The closing block** (with `--progress`) starts `Job <name> (<type>): <status> in <seconds>s`
+and lists the counts as a table; the `elapsed:` line is gone.
+
+**`dry-run` prints a new report**: the job and its coverage, the orders with the first batch's rows,
+the settings, the caps, then one section per statement. It now counts the `where` range, a read of
+the whole range on the source.
+
+**Text logs have no colour codes.** `validate` and `dry-run` no longer log the statement caps they
+print; a run logs them.
 
 ---
 

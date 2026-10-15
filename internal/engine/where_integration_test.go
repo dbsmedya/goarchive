@@ -62,7 +62,7 @@ func TestMySQLDedupArchive(t *testing.T) {
 			if rep.Roots != 7 || rep.Batches != tc.batches {
 				t.Errorf("report = %+v, want 7 roots in %d batches", rep, tc.batches)
 			}
-			if want := "progress: roots 7/~7 (100.0%) remaining=0 copied_rows=7 deleted_rows=7 "; !strings.HasPrefix(out, want) {
+			if want := "progress: roots 7/~7 (100.0%) remaining=0 copied_rows=7 deleted_rows=7 "; !strings.HasPrefix(fields(out), want) {
 				t.Errorf("progress = %q, want the range count 7: %q", out, want)
 			}
 			if got, want := texts(t, e.src, "SELECT CAST(id AS CHAR) FROM dedup_payment ORDER BY id"), []string{"1", "4", "5", "7", "8", "10"}; !equal(got, want) {
@@ -71,7 +71,7 @@ func TestMySQLDedupArchive(t *testing.T) {
 			if got, want := texts(t, e.dst, "SELECT CAST(id AS CHAR) FROM dedup_payment ORDER BY id"), []string{"2", "3", "6", "9", "11", "12", "13"}; !equal(got, want) {
 				t.Errorf("destination ids = %v, want %v", got, want)
 			}
-			if out, rep = run(); rep.Roots != 0 || !strings.HasPrefix(out, "progress: roots 0/~0 ") {
+			if out, rep = run(); rep.Roots != 0 || !strings.HasPrefix(fields(out), "progress: roots 0/~0 ") {
 				t.Errorf("second run: progress = %q, report = %+v, want the range count 0 and no roots", out, rep)
 			}
 		})

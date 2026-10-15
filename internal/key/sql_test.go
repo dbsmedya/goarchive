@@ -3,6 +3,7 @@ package key
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -108,5 +109,38 @@ func TestIdentifiersAreQuoted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInDisplayMatchesIn (spec §3.8): the report's predicate is In's, column for column and
+// cast for cast, with a label in place of the placeholder list and no key value.
+func TestInDisplayMatchesIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cols []string
+		bind []Column
+	}{
+		{"one int", []string{"order_id"}, []Column{{Family: FamilySigned}}},
+		{"two plain", []string{"order_id", "line_no"}, []Column{{Family: FamilySigned}, {Family: FamilyString}}},
+		{"permuted, typed", []string{"parent_b", "parent_a"}, []Column{{Family: FamilyDecimal, Precision: 20}, {Family: FamilyDateTime, Fsp: 3}}},
+		{"date", []string{"d"}, []Column{{Family: FamilyDate}}},
+		{"decimal", []string{"amount"}, []Column{{Family: FamilyDecimal, Precision: 30, Scale: 10}}},
+		{"time", []string{"at"}, []Column{{Family: FamilyTime, Fsp: 2}}},
+		{"char and time", []string{"code", "at"}, []Column{{Family: FamilyString}, {Family: FamilyTime}}},
+	} {
+		sql := In(tc.cols, tc.bind, 1)
+		open := strings.Index(sql, " IN (") + len(" IN (")
+		tuple := sql[open : len(sql)-1]
+		want := sql[:open] + "<L>)"
+		if strings.Trim(tuple, "(?,)") != "" {
+			want = sql[:open] + "<L, each " + tuple + ">)"
+		}
+		got := InDisplay(tc.cols, tc.bind, "L")
+		if got != want {
+			t.Errorf("%s: InDisplay = %q, want %q", tc.name, got, want)
+		}
+		if strings.Count(got, "?") > len(tc.cols) {
+			t.Errorf("%s: %q repeats the placeholder list", tc.name, got)
+		}
 	}
 }

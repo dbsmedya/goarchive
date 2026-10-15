@@ -135,15 +135,16 @@ with the operator's approval for that run, and reads the run's summary table.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1239 FAIL=0 SKIP=4`, measured by the integration runner in gate
-  run `20261014T191331Z-28617` on 2026-10-14 (the beta.1 trigger-visibility PR, at `0bd0b22`). It
-  was 1210 before: that PR added `TestTriggerVisibility` with fourteen subtests (+15), a unit test
-  the integration packages also run, `TestMySQLTriggerVisibility` with eight (+9) and
-  `TestMySQLTriggersTheAccountCannotSee` with four (+5). Re-measure after adding or removing
-  tagged tests.
+- **Integration inventory:** `PASS=1281 FAIL=0 SKIP=4`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-15 (the beta.2 output-standard
+  PR, at `bb8fba1`). It was 1239 before: that PR added unit tests the integration packages also run
+  (the logger's streams, exit codes, the closing block, progress, the dry-run report, the key and
+  statement displays) and `TestMySQLOutputStandard` and `TestMySQLExitCodes`. Re-measure after
+  adding or removing tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
   443 s. Later gates took 450–472 s (466 s at `e4ef55d`, run `20261014T201816Z-82233`, on this
-  inventory), and one under host load 515 s, leaving about 85 s; record each new measurement
+  inventory), and one under host load 515 s, leaving about 85 s; 430 s at `8030861` (run
+  `20261015T115700Z-38140`, 1279 inventory); record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub:** the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at
   `ae06474`), took 19 minutes for 41 jobs. Gates took 15–18 min each, with integration

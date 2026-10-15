@@ -71,6 +71,11 @@ type Config struct {
 	// lines and defaults to os.Stdout.
 	Progress time.Duration
 	Out      io.Writer
+	// ProgressLog writes --progress as log entries, past the level filter, instead of lines on
+	// Out: the log is JSON on the console (spec §3.2 C).
+	ProgressLog bool
+
+	began time.Time // Run's start, for --progress's elapsed (spec §3.5)
 
 	// Test seams, nil in production. fault may rewrite a key-addressed statement before it
 	// runs (spec §10, key-set tests); at is called at each crash point.
@@ -187,6 +192,11 @@ func Run(ctx context.Context, cfg Config) (rep *Report, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// A run logs its statement caps; validate and dry-run print them instead (spec §3.7).
+	for _, c := range res.Caps {
+		cfg.Logger.Infof("Statement cap: %s: %d key tuples per statement", c, c.Tuples)
+	}
+	cfg.began = began
 	return start(ctx, cfg, tracking.Binding{
 		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
 		Fingerprint: tracking.FingerprintOf(cfg.Spec),

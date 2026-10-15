@@ -93,11 +93,11 @@ package:
 | Package | Proves |
 |---------|--------|
 | `internal/preflight` | Every check against real facts: structure, keys, relations and pairing, destination compatibility and unique indexes, triggers and their visibility proof, cascades, each permission state (role-held, `partial_revokes`, pools of one), foreign-key visibility |
-| `internal/engine` | Archive, purge and copy-only runs: the key matrix (every key type × job type), composite and permuted keys, NULL foreign keys, collations, the DST fold across the UTC pin, INSERT diagnostics, the key-set and range-warning refusals, verification detecting a changed value, recovery after a kill at every crash point, recovery stopping before any delete when the destination lacks a rediscovered row, the refusal of a self-referencing `CASCADE` or `SET NULL`, the sentinel and graceful stop, locking and concurrency, the job binding, `dry-run`'s plans |
+| `internal/engine` | Archive, purge and copy-only runs: the key matrix (every key type × job type), composite and permuted keys, NULL foreign keys, collations, the DST fold across the UTC pin, INSERT diagnostics, the key-set and range-warning refusals, verification detecting a changed value, recovery after a kill at every crash point, recovery stopping before any delete when the destination lacks a rediscovered row, the refusal of a self-referencing `CASCADE` or `SET NULL`, the sentinel and graceful stop, locking and concurrency, the job binding, `dry-run`'s count, first-batch rows and plans with their statements' display parts |
 | `internal/tracking` | The schema label and the refused revisions, the typed log, the log-key and binding checks, registration and leftover logs |
 | `internal/database` | The session pins, `wait_timeout`, `max_error_count`, AUTO_INCREMENT zero, the identity guard, single-statement connections, a partly failing replica fleet |
 | `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
-| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, an archive under a server's finite `sql_select_limit` |
+| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output per logging setup (stdout, stderr and the log; cron silence; `--progress`; JSON on the console), exit codes against held locks and refusals, the `dry-run` report, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, an archive under a server's finite `sql_select_limit` |
 
 `TestMySQLLiveReplicationGate` stops the real replica's applier and needs the estate to itself.
 

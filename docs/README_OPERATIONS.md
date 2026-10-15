@@ -13,6 +13,7 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 
 - [Commands](#commands)
 - [Flags](#flags)
+  - [Output and exit codes](#output-and-exit-codes)
 - [Recommended operator workflow](#recommended-operator-workflow)
 - [What a run does](#what-a-run-does)
 - [Tuning throughput](#tuning-throughput)
@@ -31,7 +32,7 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 | `archive` | Copy, verify, then delete each batch | **yes** |
 | `copy-only` | Copy and verify; never deletes | no |
 | `purge` | Delete without copying | **yes** |
-| `dry-run` | Preflight, then MySQL's plans for the first batch's statements; writes nothing | no |
+| `dry-run` | Preflight, the `where` count, then the job, its orders, settings, caps and the first batch's plans; writes nothing | no |
 | `validate` | Load the file and run preflight for every job, or one with `--job` | no |
 | `plan` | The relation tree, copy order and delete order, without connecting | no |
 | `list-jobs` | The jobs in the file | no |
@@ -72,11 +73,12 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)) |
 | `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)) |
 | `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
-| `--progress[=<interval>]` | Periodic progress on stdout ([Progress display](#progress-display)) |
+| `--progress[=<interval>]` | Periodic progress, a start line and a closing block ([Progress display](#progress-display), [Output and exit codes](#output-and-exit-codes)) |
 
-Before a run starts, each setting that weakens its checks prints one `WARNING:` line:
+Before a run starts, each setting that weakens its checks prints one `WARNING:` line on stderr,
+whatever the log level, and records it in the log:
 `--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: none`, and
-`safety.disable_foreign_key_checks`.
+`safety.disable_foreign_key_checks`. `dry-run` and `validate` print them too.
 
 ### Progress display
 
@@ -85,8 +87,17 @@ interval, and a bare integer is seconds (minimum one second). The value must be 
 `=`: `--progress 10s` is refused with that hint.
 
 ```text
-progress: roots 4000/~12000 (33.3%) remaining=8000 copied_rows=45210 deleted_rows=45210 elapsed=7m10s eta=14m20s
+Job archive_old_orders (archive): starting. Log: /var/log/goarchive/orders.log
+progress: roots  4000/~12000 ( 33.3%)  remaining=8000   copied_rows=21640      deleted_rows=21640      elapsed=42s      eta=1m18s
+progress: roots  8000/~12000 ( 66.7%)  remaining=4000   copied_rows=43310      deleted_rows=43310      elapsed=1m12s    eta=36s
+progress: roots 12000/~12000 (100.0%)  remaining=0      copied_rows=64920      deleted_rows=64920      elapsed=1m49s    eta=0s
 ```
+
+The columns have fixed widths, so successive lines line up; a count wider than its column
+pushes the rest of its own line. With the log as JSON on the console, each line is instead a
+`progress` log entry with the fields `roots_done`, `roots_total`, `percent`, `remaining`,
+`copied_rows`, `deleted_rows`, `elapsed_seconds` and `eta`
+([Output and exit codes](#output-and-exit-codes)).
 
 - `roots`, the percentage, `remaining` and the ETA count root rows. The total is counted once,
   after recovery, so `~` marks an estimate: rows can age into or out of the `where` range, so
@@ -95,7 +106,98 @@ progress: roots 4000/~12000 (33.3%) remaining=8000 copied_rows=45210 deleted_row
   `copied_rows`, purge `deleted_rows`.
 - While the [sentinel](#pausing-a-run-sentinel_file) pauses the run, `eta=paused` and
   `[PAUSED: sentinel file "…" present]` are shown.
+- `elapsed` counts from the run's start, so the last line agrees with the closing block's
+  duration; the ETA's rate counts from the first batch, so startup and recovery do not slow it.
 - One final line is printed on every exit; a run that ends naturally shows `remaining=0`.
+
+### Output and exit codes
+
+goarchive writes a command's **result** on stdout, **diagnostics** on stderr, and **every log
+entry** to the log, as `logging` configures it. Nothing reaches stdout that you did not ask for,
+and an error always reaches stderr.
+
+| Stream | Carries |
+|---|---|
+| stdout | The `validate`, `dry-run`, `plan` and `list-jobs` reports and `version`. For a run, only with `--progress`: the start line, the progress lines and the closing block. The log, when `logging.output` is `stdout` (or empty). |
+| stderr | Every error; the `WARNING:` banners; with `--progress` and a log file, the warnings and live events. The log, when `logging.output` is `stderr`. |
+| log | Every entry, in its `format`, at its `level`. A log file is the run's record. |
+
+**Three logging setups.**
+
+- **A log file** (`output: <path>`), the setup for cron. Without `--progress` a run is silent: it
+  prints nothing when it completes or stops, and on a failure prints a summary and the error on
+  stderr:
+
+  ```text
+  Job archive_old_orders (archive): failed in 61.240s. Log: /var/log/goarchive/orders.log
+  Error: engine: …
+  ```
+
+  A failure before the first batch says `failed before the first batch.` With `--progress`, the
+  start line, the progress lines and the closing block go to stdout (a failure before the first
+  batch prints its summary there instead of the block), and the log's warnings go to stderr as
+  text lines, with the live events whatever the level: a replication hold and the replica
+  recovering, the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
+  log entry off the console; the banners and errors still reach stderr.
+- **The log on the console as text** (`output: stdout` or `stderr`, `format: text`): the log
+  stream is plain text, with no colour codes. `--progress` adds its lines and the closing block on
+  stdout.
+- **The log on the console as JSON** (`output: stdout` or `stderr`, `format: json`), the default
+  and the setup for containers: every line of the log stream is one JSON object. `--progress`
+  writes `Run starting`, `progress` and the closing entry there, whatever the level, instead of
+  printing lines; the closing entry carries the counts. On a failure with `output: stdout`, one
+  plain `Error:` line goes to stderr; with `output: stderr` the error is the closing entry itself.
+  The one exception: an error found before the log exists (a flag, the config file, an unknown job)
+  is a plain `Error:` line. `validate` and `dry-run` print their reports as text on stdout in every
+  setup; in a container, log them to `stderr` to keep stdout JSON.
+
+The closing block of a run with `--progress`:
+
+```text
+Job archive_old_orders (archive): completed in 109.412s
+  roots: 12000 in 12 batches
+
+  table          copied  deleted  verified (sha256)
+  orders          12000    12000              12000
+  order_details   40920    40920              40920
+  shipment        12000    12000              12000
+```
+
+The status is `completed`, `stopped before the end of the where range: run the job again to
+continue`, or `failed` (the error follows on stderr). Purge shows `deleted`, copy-only `copied`
+and `verified`; `recovered`, `skipped` and accepted conversions are listed under `roots`.
+
+**Exit codes.**
+
+| Code | Meaning |
+|---|---|
+| 0 | Done: the run exhausted the `where` range, or `validate`, `dry-run`, `plan`, `list-jobs` or `version` printed its result |
+| 1 | Failed: a check refused, or the run failed part way. Read stderr and the log |
+| 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job |
+| 3 | Stopped before the end of the `where` range, without error (a graceful stop): the next run continues |
+| 4 | Not started: another run holds the job, a source table, or unfinished work on the same data. Nothing was done |
+
+```bash
+goarchive archive -c archiver.yaml -j archive_old_orders
+case $? in
+  0|3) ;;                     # done, or stopped: the next run continues
+  4)   exit 0 ;;              # another run holds the work: try later
+  *)   exit 1 ;;              # failed or misused: read stderr and the log
+esac
+```
+
+A stop that meets an error exits 1.
+
+**Containers.** Keep the default logging, JSON to stdout, and `docker logs` and log drivers read
+the run with no file or mount. A foreground `docker run` returns goarchive's code (Docker's own
+launch failures are 125–127). For a detached container, the code is the number `docker wait
+<name>` prints, or `docker inspect -f '{{.State.ExitCode}}' <name>`; the exit status of
+`docker wait` itself only says whether the wait worked. `docker stop` sends SIGTERM, a
+[graceful stop](#graceful-shutdown): the batch in flight finishes and the run exits 3, if it gets
+there before Docker's deadline (10 seconds by default; then SIGKILL, and the next run recovers
+what the log holds). Set `docker stop --time`, or compose's `stop_grace_period`, above one batch's
+duration. A stop during a replication hold waits for the replica, so it can outlast any grace
+period.
 
 ---
 
@@ -107,12 +209,26 @@ goarchive dry-run  -c archiver.yaml -j archive_old_orders   # 2. the first batch
 goarchive archive  -c archiver.yaml -j archive_old_orders   # 3. the run
 ```
 
-`dry-run` runs the job's preflight, reads the first batch of root keys, and prints
-`EXPLAIN FORMAT=TRADITIONAL` for the root fetch and for each child table's discovery query,
-bound with those keys, followed by notes (for example a fetch that sorts every batch) and the
-statement caps. It takes no lock, writes no tracking row and changes no data. Read the plans for
-full scans before a long run. `plan` shows the relation tree and both orders at any time
-without connecting.
+`dry-run` runs the job's preflight, counts the rows the `where` range matches, reads the first
+batch of root keys, and prints a report:
+
+- **Job**: the root table and key, the `where`, the matching roots and about how many batches.
+  The count reads the whole `where` range on the source, so on a large range it takes as long as
+  that count takes; the range can change before the run.
+- **Copy order** and **delete order**, with each table's rows in the first batch.
+- **Settings** the run would use: `processing`, the verification (after `--verification`), the
+  foreign-key checks, the replication gate and its servers.
+- The **statement caps**.
+- **Plans for the first batch**: the root fetch, then each child table's first discovery chunk,
+  each statement as sent (the `where` as written, the `LIMIT` and the number of parent tuples in
+  place of placeholders; no key value), then MySQL's `EXPLAIN FORMAT=TRADITIONAL` rows, one line
+  each: `full table scan`, `full index scan on <key>`, `<type> on <key>`, or the optimizer's
+  message, with the estimated rows and filter. A note sits under the statement it concerns, for
+  example a fetch that sorts every batch.
+
+It takes no lock, writes no tracking row and changes no data. Read the plans for full scans
+before a long run. `plan` shows the relation tree and both orders at any time without
+connecting.
 
 ---
 
@@ -136,25 +252,15 @@ without connecting.
    Each delete chunk is its own source transaction, committed only when it deleted exactly the
    rows asked for.
 7. **End** when a batch comes back short, on a graceful stop, or on an error; the job is marked
-   idle or failed and a report is printed:
+   idle or failed. With `--progress`, a closing block shows the status, the duration and the
+   counts per table ([Output and exit codes](#output-and-exit-codes)); without it, the outcome is
+   the exit code, the log's closing entry and, on a failure, stderr.
 
-```text
-Job archive_old_orders (archive): 12000 roots in 12 batches
-  recovered: 300 logged roots finished by replay
-  copied:  order_items=45210 orders=12000
-  deleted: order_items=45210 orders=12000
-  verified (sha256): order_items=45210 orders=12000
-  elapsed: 431.207s
-```
-
-A copy-only rerun with `resume: true` adds `skipped: <n> roots this job had already copied`;
-under `verification: none`, accepted conversions are listed per table; a graceful stop adds
-`stopped before the end of the where range: run the job again to continue`.
-
-The report is printed to stdout. The run's log also ends with one entry saying how the run
-ended, with the same counts: `Run completed`, `Run stopped before the end of the where range:
-run the job again to continue`, or, at error level, `Run failed` with the error. A run that fails
-before its logger exists, on a configuration error, logs nothing.
+The run's log ends with one entry saying how the run ended, with the report's counts:
+`Run completed`, `Run stopped before the end of the where range: run the job again to continue`,
+or, at error level, `Run failed` with the error. A run that fails before its logger exists, on a
+configuration error, logs nothing. A copy-only rerun with `resume: true` counts `skipped` roots;
+under `verification: none`, accepted conversions are listed per table.
 
 ---
 
@@ -281,7 +387,8 @@ replication hold: server replica1.internal:3306 unhealthy (channel <default>: la
 ```
 
 Healthy servers stay silent. A recovered server logs one `INFO` line, and the last one to recover
-logs another with the total hold. If the reason changes while a server is still down, the held
+logs another with the total hold; with `--progress` and a log file, the hold and both recovery
+lines also reach stderr. If the reason changes while a server is still down, the held
 time keeps accumulating. A hold can outlast the source session's idle timeout
 ([the limit](README_LIMITATIONS.md#the-job-lock-and-long-replication-holds)).
 
@@ -337,7 +444,9 @@ naming it, and finishes the page.
 ### Graceful shutdown
 
 The first `SIGTERM` or `SIGINT` lets the batch or recovery page in flight finish, then stops the
-run; the report says so, and the run's log ends with `Run stopped …`. A second signal cancels at
+run with exit code 3; with `--progress` the closing block says so, and the run's log ends with
+`Run stopped …`. A first signal does not end a replication hold: the run waits for the replica,
+then stops. A second signal cancels at
 once: the open transaction rolls back, the log ends with `Run failed`, the cancellation and the
 counts so far, and the next run's recovery finishes what the log holds. A third terminates the
 process.

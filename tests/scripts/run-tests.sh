@@ -39,6 +39,18 @@ if ! command -v mysqlsh &> /dev/null; then
     exit 1
 fi
 
+# jq reads each run's closing log entry (logOutcome) for the pacing, verification and
+# recovery assertions (tests/e2e/lib/assert.sh, closing_entry).
+if ! command -v jq &> /dev/null; then
+    echo "ERROR: jq is not installed or not in PATH."
+    echo ""
+    echo "  macOS:  brew install jq"
+    echo "  Debian: apt-get install jq"
+    echo ""
+    echo "The E2E assertions read each run's closing JSON log entry with jq."
+    exit 1
+fi
+
 # Source .env. On a fresh clone it does not exist -- tests/.env is gitignored --
 # so create it from the tracked template rather than making that a manual step.
 # tests/dot.env ships with working local defaults; nothing has to be edited.

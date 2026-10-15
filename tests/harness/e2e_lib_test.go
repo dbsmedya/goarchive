@@ -89,34 +89,61 @@ func writeLog(t *testing.T, dir, name, text string) string {
 	return p
 }
 
-// The 3.0 report of a 5-root archive of payment, verified by sha256.
+// The 3.0 log of a 5-root archive of payment, verified by sha256: a batch entry and the run's
+// closing entry (logOutcome), which the harness reads in place of the human report.
 const report30 = `{"level":"info","msg":"Batch 1: 5 roots of payment (archive)","job":"j"}
-Job j (archive): 5 roots in 1 batches
-  copied:  payment=5
-  deleted: payment=5
-  verified (sha256): payment=5
-  elapsed: 1.500s
+{"level":"info","msg":"Run completed","job":"j","job_type":"archive","roots":5,"batches":1,"copied":{"payment":5},"deleted":{"payment":5},"verified":{"payment":5},"verification":"sha256","elapsed_seconds":1.5}
 `
 
-// TestE2EVerifiedLine: STEP 3c reads the report's verified line, which must name the
+// dryRunOnly is validate's and dry-run's output: no closing entry, so no run to read.
+const dryRunOnly = `{"level":"info","msg":"Statement cap: source by key on payment(payment_id): 16000 key tuples per statement","job":"j"}
+Dry-run of j (archive). No data is changed.
+`
+
+// requireJQ: the harness reads the closing entry with jq (tests/README.md, Prerequisites).
+func requireJQ(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Fatal("jq is a prerequisite of the E2E harness (tests/README.md, Prerequisites)")
+	}
+}
+
+// TestE2EVerifiedLine: STEP 3c reads the closing entry's verified counts, which must name the
 // declared method and cover exactly the copied rows; verify_method none needs no verified
-// line at all.
+// counts at all. Only the job's single closing entry counts.
 func TestE2EVerifiedLine(t *testing.T) {
+	requireJQ(t)
+	noVerified := strings.Replace(report30, `"verified":{"payment":5},`, "", 1)
 	for _, tc := range []struct {
 		name, log, method string
 		pass              bool
 	}{
 		{"sha256", report30, "sha256", true},
 		{"other_method", report30, "count", false},
-		{"no_verified_line", strings.Replace(report30, "  verified (sha256): payment=5\n", "", 1), "sha256", false},
-		{"verified_fewer_rows", strings.Replace(report30, "verified (sha256): payment=5", "verified (sha256): payment=4", 1), "sha256", false},
-		{"none_without_line", strings.Replace(report30, "  verified (sha256): payment=5\n", "", 1), "none", true},
+		{"no_verified_counts", noVerified, "sha256", false},
+		{"verified_fewer_rows", strings.Replace(report30, `"verified":{"payment":5}`, `"verified":{"payment":4}`, 1), "sha256", false},
+		{"none_without_counts", noVerified, "none", true},
 		{"none_but_verified", report30, "none", false},
+		{"two_closing_entries", report30 + report30, "sha256", false},
+		{"another_jobs_entry", strings.Replace(report30, `"msg":"Run completed","job":"j"`, `"msg":"Run completed","job":"k"`, 1), "sha256", false},
+		// Codex MR R3, R4: malformed input fails closed; counts are tables of nonnegative
+		// integers, compared as objects.
+		{"malformed_after_valid", report30 + "{broken json\n", "sha256", false},
+		{"malformed_before_valid", "{broken json\n" + report30, "sha256", false},
+		{"msg_not_a_string", `{"level":"info","msg":5,"job":"j"}` + "\n" + report30, "sha256", false},
+		{"negative_counts", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":-5}`, `"verified":{"payment":5}`, `"verified":{"payment":-5}`).Replace(report30), "sha256", false},
+		{"string_counts", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":"5"}`, `"verified":{"payment":5}`, `"verified":{"payment":"5"}`).Replace(report30), "sha256", false},
+		{"counts_not_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":[5]`, `"verified":{"payment":5}`, `"verified":[5]`).Replace(report30), "sha256", false},
+		{"reordered_equal_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":5,"rental":2}`, `"verified":{"payment":5}`, `"verified":{"rental":2,"payment":5}`).Replace(report30), "sha256", true},
+		{"none_with_malformed_verified", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":"x",`, 1), "none", false},
+		// Codex MR re-review R4: a present false or null is not an absent field.
+		{"none_with_verified_false", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":false,`, 1), "none", false},
+		{"none_with_verified_null", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":null,`, 1), "none", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			p := writeLog(t, dir, "run.log", tc.log)
-			r := runLib(t, dir, "assert_verified \""+p+"\" "+tc.method)
+			r := runLib(t, dir, "assert_verified \""+p+"\" "+tc.method+" j")
 			if (r.rc == 0) != tc.pass {
 				t.Fatalf("assert_verified %s on %s: rc=%d, want pass=%t\n%s%s", tc.method, tc.name, r.rc, tc.pass, r.stdout, r.stderr)
 			}
@@ -124,20 +151,26 @@ func TestE2EVerifiedLine(t *testing.T) {
 	}
 }
 
-// TestE2EPacingReadsElapsed: STEP 3d compares the floor with the report's elapsed time.
+// TestE2EPacingReadsElapsed: STEP 3d compares the floor with the closing entry's
+// elapsed_seconds, the run's own wall time; a missing or malformed one fails closed.
 func TestE2EPacingReadsElapsed(t *testing.T) {
+	requireJQ(t)
 	for _, tc := range []struct {
 		name, log, floor string
 		pass             bool
 	}{
 		{"above_floor", report30, "1.0", true},
 		{"below_floor", report30, "2.0", false},
-		{"no_elapsed_line", strings.Replace(report30, "  elapsed: 1.500s\n", "", 1), "0.0", false},
+		{"no_elapsed", strings.Replace(report30, `,"elapsed_seconds":1.5`, "", 1), "0.0", false},
+		{"elapsed_not_a_number", strings.Replace(report30, `"elapsed_seconds":1.5`, `"elapsed_seconds":"x"`, 1), "0.0", false},
+		{"elapsed_negative", strings.Replace(report30, `"elapsed_seconds":1.5`, `"elapsed_seconds":-1`, 1), "0.0", false},
+		{"validate_and_dry_run_only", dryRunOnly, "0.0", false},
+		{"malformed_after_valid", report30 + "{broken json\n", "0.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			p := writeLog(t, dir, "run.log", tc.log)
-			r := runLib(t, dir, "assert_min_duration \""+p+"\" "+tc.floor)
+			r := runLib(t, dir, "assert_min_duration \""+p+"\" "+tc.floor+" j")
 			if (r.rc == 0) != tc.pass {
 				t.Fatalf("assert_min_duration %s: rc=%d, want pass=%t\n%s%s", tc.floor, r.rc, tc.pass, r.stdout, r.stderr)
 			}
@@ -286,36 +319,42 @@ echo "pending=$INTERRUPT_PENDING"`, tc.expect))
 	}
 }
 
-// TestE2EResumeAccounting: run 2 of a crash test reports the recovery of exactly the
-// roots left at 'copied' and copies only the rest; a graceful run 2 recovers nothing.
-// After a crash in batch 2 the destination already held two batches, but only the
-// second was left for recovery.
+// TestE2EResumeAccounting: run 2 of a crash test recovers exactly the roots left at
+// 'copied', by the Recovery entry and by the closing entry's recovered count, and copies only
+// the rest; a graceful run 2 recovers nothing. After a crash in batch 2 the destination
+// already held two batches, but only the second was left for recovery.
 func TestE2EResumeAccounting(t *testing.T) {
-	crash := `{"level":"info","msg":"Recovery: replaying 100 copied roots of payment"}
-Job j (archive): 399 roots in 4 batches
-  recovered: 100 logged roots finished by replay
-  copied:  payment=399
+	requireJQ(t)
+	crash := `{"level":"info","msg":"Recovery: replaying 100 copied roots of payment","job":"j"}
+{"level":"info","msg":"Run completed","job":"j","job_type":"archive","roots":399,"batches":4,"recovered":100,"copied":{"payment":399},"elapsed_seconds":2}
 `
-	crash2 := strings.Replace(crash, "payment=399", "payment=299", 1)
-	graceful := "Job j (archive): 1899 roots in 19 batches\n  copied:  payment=1899\n"
+	crash2 := strings.Replace(crash, `"payment":399`, `"payment":299`, 1)
+	graceful := `{"level":"info","msg":"Run completed","job":"j","job_type":"archive","roots":1899,"batches":19,"copied":{"payment":1899},"elapsed_seconds":9}` + "\n"
 	for _, tc := range []struct {
 		name, kind, log    string
 		total, at, pending string
 		pass               bool
 	}{
 		{"crash", "crash", crash, "499", "100", "100", true},
-		{"crash_recopied", "crash", strings.Replace(crash, "payment=399", "payment=499", 1), "499", "100", "100", false},
+		{"crash_recopied", "crash", strings.Replace(crash, `"payment":399`, `"payment":499`, 1), "499", "100", "100", false},
 		{"crash_no_recovery", "crash", strings.Replace(crash, "Recovery: replaying 100", "Recovery: replaying 80", 1), "499", "100", "100", false},
+		{"crash_recovered_field_mismatch", "crash", strings.Replace(crash, `"recovered":100`, `"recovered":80`, 1), "499", "100", "100", false},
 		{"crash_batch2", "crash", crash2, "499", "200", "100", true},
-		{"crash_batch2_cumulative", "crash", strings.NewReplacer("replaying 100", "replaying 200", "recovered: 100", "recovered: 200").Replace(crash2), "499", "200", "100", false},
+		{"crash_batch2_cumulative", "crash", strings.NewReplacer("replaying 100", "replaying 200", `"recovered":100`, `"recovered":200`).Replace(crash2), "499", "200", "100", false},
 		{"crash_without_pending", "crash", crash, "499", "100", "", false},
 		{"graceful", "graceful", graceful, "1999", "100", "0", true},
 		{"graceful_recovered", "graceful", crash, "499", "100", "0", false},
+		{"crash_recovered_not_a_number", "crash", strings.Replace(crash, `"recovered":100`, `"recovered":"100"`, 1), "499", "100", "100", false},
+		{"graceful_recovered_negative", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":-1,`, 1), "1999", "100", "0", false},
+		{"crash_copied_not_an_object", "crash", strings.Replace(crash, `"copied":{"payment":399}`, `"copied":399`, 1), "499", "100", "100", false},
+		{"graceful_recovered_false", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":false,`, 1), "1999", "100", "0", false},
+		{"graceful_recovered_null", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":null,`, 1), "1999", "100", "0", false},
+		{"graceful_recovered_zero", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":0,`, 1), "1999", "100", "0", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			p := writeLog(t, dir, "run2.log", tc.log)
-			r := runLib(t, dir, "assert_resume_copy_accounting "+tc.kind+" \""+p+"\" payment "+tc.total+" "+tc.at+" "+tc.pending)
+			r := runLib(t, dir, "assert_resume_copy_accounting "+tc.kind+" \""+p+"\" payment "+tc.total+" "+tc.at+" "+tc.pending+" j")
 			if (r.rc == 0) != tc.pass {
 				t.Fatalf("accounting %s: rc=%d, want pass=%t\n%s%s", tc.name, r.rc, tc.pass, r.stdout, r.stderr)
 			}

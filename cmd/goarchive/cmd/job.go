@@ -13,11 +13,11 @@ import (
 func loadJob(name string, typ jobspec.Type) (*jobspec.Document, *jobspec.Spec, error) {
 	doc, err := jobspec.Load(GetConfigFile())
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, usage(err)
 	}
 	spec, err := doc.Job(name, typ)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, usage(err)
 	}
 	return doc, spec, nil
 }

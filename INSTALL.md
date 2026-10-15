@@ -64,7 +64,14 @@ docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
   ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml plan --job archive_old_orders
 ```
 
-The image runs as root. With the default `logging.output: stdout`, the log goes to `docker logs`.
+The image runs as root. With the default logging (JSON to stdout), every line goes to `docker logs`
+as one JSON object; an error also prints one `Error:` line on stderr. A foreground `docker run`
+returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work);
+for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
+exit status. `docker stop` stops a run gracefully if the batch in flight finishes before Docker's
+deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batch's duration. A stop
+during a replication hold waits for the replica
+([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
 On a Linux host, a log file written to a mounted directory belongs to the container's root and
 is readable by root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the
 file first; GoArchive appends to it and keeps its owner and mode:

@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
@@ -35,6 +37,7 @@ type statement struct {
 	table       string
 	query       string
 	args        []any
+	display     Display // dry-run's view of the statement (discovery only)
 }
 
 // fetchSQL is the root fetch (spec §7.2): the next batch of root keys in ascending key
@@ -50,6 +53,36 @@ func fetchSQL(root key.Def, where string, continued bool) string {
 	}
 	b.WriteString(" ORDER BY " + key.OrderBy(root) + " LIMIT ?")
 	return b.String()
+}
+
+// Display is a statement as dry-run shows it (spec §3.8), built beside its SQL from the same
+// parts: no part is parsed back out of SQL, and the job's where is kept as written.
+type Display struct {
+	Select    string // "SELECT <projection> FROM <table>"
+	Where     string // the job's where, verbatim (the fetch)
+	Predicate string // the key predicate, key.InDisplay (a discovery)
+	Tail      string // "ORDER BY <key> LIMIT <n>" (the fetch)
+	Tuples    int    // the parent tuples this statement binds (a discovery)
+	Of        int    // the parent's tuples in the first batch (a discovery)
+	Parent    string // the parent table (a discovery)
+}
+
+// fetchDisplay is the first batch's root fetch, as fetchSQL builds it, with limit bound.
+func fetchDisplay(root key.Def, where string, limit int) Display {
+	return Display{
+		Select: "SELECT " + key.Projection(root) + " FROM " + sqlutil.QuoteIdentifier(root.Table),
+		Where:  where,
+		Tail:   "ORDER BY " + key.OrderBy(root) + " LIMIT " + strconv.Itoa(limit),
+	}
+}
+
+// discoveryDisplay is discoverySQL for tuples of the parent's of first-batch tuples.
+func discoveryDisplay(child key.Def, n *jobspec.Node, bind []key.Column, tuples, of int) Display {
+	return Display{
+		Select:    "SELECT " + key.Projection(child) + " FROM " + sqlutil.QuoteIdentifier(child.Table),
+		Predicate: key.InDisplay(n.ForeignKey, bind, fmt.Sprintf("%d %s tuples", tuples, n.Parent.Table)),
+		Tuples:    tuples, Of: of, Parent: n.Parent.Table,
+	}
 }
 
 // rangeCountSQL counts the where range, for --progress's estimate (R50). The where text sits

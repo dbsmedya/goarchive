@@ -66,41 +66,76 @@ func registerForceTriggersFlag(c *cobra.Command, forceTriggers *bool) {
 		"Accept DELETE triggers that preflight can list on source tables of archive and purge jobs; every delete fires them.")
 }
 
+// runCommand runs one job command and turns its outcome into what Main expects (spec §3.4):
+// the stop marker for a clean stop, and a reportedError when the closing entry already
+// carried the error to a JSON stderr log. A stop together with an error is the error.
+func runCommand(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
+	rep, closing, err := runJob(c, typ, o)
+	switch {
+	case err == nil && rep != nil && rep.Stopped:
+		return errStopped
+	case err != nil && closing && diagJSON != nil:
+		return &reportedError{err}
+	}
+	return err
+}
+
 // runJob runs one job of type typ on the engine (spec §7.1): load and check the job, then
 // connect, then engine.Run. The first signal stops at the next batch boundary, a second one
 // cancels the run (database.SetupGracefulShutdown). From the job's logger on, every return,
-// and a panic, logs how the run ended (endRun).
-func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (err error) {
+// and a panic, logs how the run ended (endRun); closing reports that it did.
+func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Report, closing bool, err error) {
 	doc, spec, err := loadJob(o.job, typ)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	verification, err := verificationFor(o.verification, doc, spec)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	progress, err := parseProgressInterval(c, o.progress)
 	if err != nil {
-		return err
+		return nil, false, usage(err)
 	}
-	log, err := newJobLogger(doc, spec, o.job)
+	log, err := newJobLogger(doc, spec, o.job, c, progress > 0)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	defer syncLogger(log)
-	var rep *engine.Report
+	// With --progress on a JSON console log, the start, progress and closing entries stand in
+	// for the lines the flag asks for, so they are written past the level filter (spec §3.2 C).
+	entries := progress > 0 && log.ConsoleJSON()
 	defer func() {
 		p := recover()
-		endRun(log, typ, rep, err, p)
+		endRun(log, typ, rep, err, p, entries)
+		closing = true
 		if p != nil {
 			// Re-raised from the deferred call, above the panicking frames: the traceback
 			// still shows where the run panicked.
 			panic(p)
 		}
 	}()
-	out := c.OutOrStdout()
-	for _, b := range banners(doc, typ, verification, o.skipPreflight, o.forceTriggers) {
-		_, _ = fmt.Fprintln(out, b)
+	out, stderr := c.OutOrStdout(), c.ErrOrStderr()
+	emitBanners(log, stderr, banners(doc, typ, verification, o.skipPreflight, o.forceTriggers))
+	switch {
+	case entries:
+		log.Always().Infow("Run starting", "job_type", string(typ))
+	case progress > 0:
+		printStart(out, o.job, typ, log.File())
+	default:
+		log.Infow("Run starting", "job_type", string(typ))
+	}
+	// failed prints the failure summary (setups A and B, spec §3.4a): on stderr without
+	// --progress; with it, on stdout in place of the closing block, which needs a report. The
+	// Error: line follows on stderr from Main.
+	failed := func(rep *engine.Report) {
+		switch {
+		case log.ConsoleJSON():
+		case progress == 0:
+			printFailureSummary(stderr, o.job, typ, rep, log.File())
+		case rep == nil:
+			printFailureSummary(out, o.job, typ, nil, log.File())
+		}
 	}
 
 	ctx, stop := database.SetupGracefulShutdown(
@@ -111,14 +146,16 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (err error) {
 	)
 	mgr, err := connect(ctx, doc)
 	if err != nil {
-		return err
+		failed(nil)
+		return nil, false, err
 	}
 	defer func() { _ = mgr.Close() }()
 	var lag engine.LagGate
 	if doc.Shared.Replication.Enabled {
-		g, err := replication.New(doc.Shared.Replication, mgr.Replicas, log)
-		if err != nil {
-			return err
+		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log)
+		if gerr != nil {
+			failed(nil)
+			return nil, false, gerr
 		}
 		lag = g
 	}
@@ -131,10 +168,22 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (err error) {
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Lag: lag, Stop: stop, Logger: log,
-		Progress: progress, Out: out,
+		Progress: progress, Out: out, ProgressLog: entries,
 	})
-	if rep != nil {
-		printReport(out, o.job, typ, rep)
+	switch {
+	case progress > 0 && !entries && rep != nil:
+		printReport(out, o.job, typ, copyOrder(spec), rep, err)
+	case err != nil:
+		failed(rep)
 	}
-	return err
+	return rep, false, err
+}
+
+// copyOrder is the job's tables, parents first.
+func copyOrder(spec *jobspec.Spec) []string {
+	var out []string
+	for _, n := range jobspec.NewTree(spec).CopyOrder() {
+		out = append(out, n.Table)
+	}
+	return out
 }

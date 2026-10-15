@@ -103,3 +103,45 @@ func TestKeyAddressedStatements(t *testing.T) {
 		t.Error("INSERT IGNORE does not exist in 3.0")
 	}
 }
+
+// TestFetchDisplay (spec §3.8): the report's fetch is built from the parts of the SQL sent,
+// with the job's where kept byte for byte, comments and literal question marks included.
+func TestFetchDisplay(t *testing.T) {
+	where := "created < '2020-01-01' AND note <> '?'\n  AND id IN (SELECT id FROM keep) -- old"
+	d := fetchDisplay(parentAB(), where, 1000)
+	if d.Where != where {
+		t.Errorf("where = %q, want it as written", d.Where)
+	}
+	if got := d.Select + " WHERE (" + d.Where + "\n) " + strings.Replace(d.Tail, "LIMIT 1000", "LIMIT ?", 1); got != fetchSQL(parentAB(), where, false) {
+		t.Errorf("display parts assemble to\n %q\nthe fetch is\n %q", got, fetchSQL(parentAB(), where, false))
+	}
+	if d.Tail != "ORDER BY `a`, `b` LIMIT 1000" {
+		t.Errorf("tail = %q", d.Tail)
+	}
+}
+
+// TestDiscoveryDisplay (spec §3.8): the predicate keeps references order and the parent's
+// casts; the label counts the chunk's parent tuples against the first batch's.
+func TestDiscoveryDisplay(t *testing.T) {
+	spec := &jobspec.Spec{RootTable: "p", PrimaryKey: jobspec.Columns{"a", "b"}, Relations: []jobspec.Relation{
+		{Table: "c", PrimaryKey: jobspec.Columns{"id"}, ForeignKey: jobspec.Columns{"pb", "pa"}, References: jobspec.Columns{"b", "a"}},
+	}}
+	n := jobspec.NewTree(spec).Node("c")
+	parent := parentAB()
+	idx, err := n.Projection(parent.Names())
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := key.Def{Table: "c", Columns: []key.Column{intCol("id")}}
+	bind := jobspec.ProjectColumns(parent.Columns, idx)
+	d := discoveryDisplay(child, n, bind, 1000, 3412)
+	if want := "(`pb`,`pa`) IN (<1000 p tuples, each (CAST(? AS DECIMAL(30,10)),?)>)"; d.Predicate != want {
+		t.Errorf("predicate = %q, want %q", d.Predicate, want)
+	}
+	if d.Tuples != 1000 || d.Of != 3412 || d.Parent != "p" {
+		t.Errorf("display = %+v", d)
+	}
+	if sql := discoverySQL(child, n, bind, 1); !strings.HasPrefix(sql, d.Select+" WHERE ") {
+		t.Errorf("select %q is not the SQL's %q", d.Select, sql)
+	}
+}

@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
@@ -53,7 +55,7 @@ func (r *run) recover(ctx context.Context) error {
 			return nil
 		}
 		after = roots[len(roots)-1]
-		r.log.Infof("Recovery: replaying %d %s roots of %s", len(roots), st, r.root.Table)
+		r.log.Infow(fmt.Sprintf("Recovery: replaying %d %s roots of %s", len(roots), st, r.root.Table), logger.Live)
 		if err := r.replay(ctx, st, roots); err != nil {
 			return err
 		}

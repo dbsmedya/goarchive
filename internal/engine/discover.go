@@ -68,6 +68,7 @@ func (r *run) discoveryStatements(n *jobspec.Node, parents []key.Key) ([]stateme
 		}
 		stmts = append(stmts, statement{
 			op: opDiscover, table: n.Table, query: discoverySQL(child, n, bind, len(chunk)), args: key.Args(projected),
+			display: discoveryDisplay(child, n, bind, len(chunk), len(parents)),
 		})
 	}
 	return stmts, nil

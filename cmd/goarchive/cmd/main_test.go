@@ -1,10 +1,49 @@
 package cmd
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestMain lets a test run the real Execute in a child process (GOARCHIVE_TEST_EXECUTE=1), so
+// the process exit status is tested through os.Exit (spec §3.4).
+func TestMain(m *testing.M) {
+	if os.Getenv("GOARCHIVE_TEST_EXECUTE") == "1" {
+		Execute()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// TestExecuteExitStatus: the process exit status, through Execute and os.Exit.
+func TestExecuteExitStatus(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{{[]string{"version"}, 0}, {[]string{"archive"}, 2}, {[]string{"bogus"}, 2}} {
+		cmd := exec.Command(os.Args[0], tc.args...)
+		cmd.Env = append(os.Environ(), "GOARCHIVE_TEST_EXECUTE=1")
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		code := 0
+		if e, ok := err.(*exec.ExitError); ok {
+			code = e.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if code != tc.want {
+			t.Errorf("%v: exit %d, want %d; stderr %q", tc.args, code, tc.want, stderr.String())
+		}
+		if tc.want == 0 && (stdout.Len() == 0 || stderr.Len() != 0) {
+			t.Errorf("%v: stdout %q, stderr %q; want the result on stdout only", tc.args, stdout.String(), stderr.String())
+		}
+	}
+}
 
 func TestExecute(t *testing.T) {
 	// Note: Execute() calls os.Exit(1) on error, so we can't test the error case directly

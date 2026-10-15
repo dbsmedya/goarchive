@@ -26,30 +26,39 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "goarchive",
 	Short: "MySQL Batch Archiver & Purger",
-	Long: `A CLI tool for safely archiving MySQL relational data across servers
-with automatic dependency resolution and crash recovery.
-Recommended for archival of cold data. Use with caution on
-very large or deeply nested schemas;
-see README and LIMITATIONS for known limits
+	Long: `GoArchive archives related MySQL data across servers: it copies each batch
+of a table tree to the destination, verifies it, and only then deletes it
+from the source. An interrupted run is finished by replaying the job's log.
+
+Recommended for cold data: the rows in a job's where range must not change
+while it runs. On very large or deeply nested trees, read the README and
+docs/README_LIMITATIONS.md for the known limits first.
 
 Features:
-  - Parent/child trees from the job's declared relations, with composite and
-    non-integer keys
-  - Key-ordered batches: copy, verification and the log write in one destination
-    transaction; deletes in chunks committed only on an exact row count
+  - Parent/child trees from the job's declared relations, with composite
+    and non-integer keys
+  - Key-ordered batches: copy, verification and the log write in one
+    destination transaction; deletes in chunks committed only on an exact
+    row count
   - Crash recovery by replaying the job's log
   - Replication lag gate before every delete
-  - Verification by SHA256 (default) or count`,
+  - Verification by SHA256 (default), count, or none
+
+Exit codes: 0 done, 1 failed, 2 usage or configuration error, 3 stopped
+before the end of the where range, 4 not started (another run holds the
+work). See docs/README_OPERATIONS.md, Output and exit codes.`,
 	Version: Version,
 	// Errors from RunE are already reported with command-specific context;
 	// Cobra's usage block would only add noise after the error.
 	SilenceUsage: true,
+	// Main prints every error once, on stderr in stderr's format (spec §3.4a).
+	SilenceErrors: true,
 }
 
 // Execute runs the root command
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	if code := Main(os.Args[1:], os.Stdout, os.Stderr); code != exitOK {
+		os.Exit(code)
 	}
 }
 
@@ -79,15 +88,20 @@ func effectiveJobLogging(global config.LoggingConfig, spec *jobspec.Spec, overri
 }
 
 // newJobLogger builds the logger for a job command from the effective
-// per-job logging configuration. Every entry is tagged with the job name
-// so runs remain attributable when jobs share an output.
-func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string) (*logger.Logger, error) {
+// per-job logging configuration, on the command's streams. Every entry is
+// tagged with the job name so runs remain attributable when jobs share an
+// output. tee turns on a file log's console tee (a run with --progress).
+func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string, c *cobra.Command, tee bool) (*logger.Logger, error) {
 	logCfg := effectiveJobLogging(doc.Shared.Logging, spec, GetCLIOverrides())
-	log, err := logger.New(&logCfg)
+	log, err := logger.New(&logCfg, logger.Options{Stdout: c.OutOrStdout(), Stderr: c.ErrOrStderr(), Tee: tee})
 	if err != nil {
 		return nil, err
 	}
-	return log.WithJob(jobName), nil
+	log = log.WithJob(jobName)
+	if log.ConsoleJSON() && log.ConsoleStderr() {
+		diagJSON = log
+	}
+	return log, nil
 }
 
 func syncLogger(log *logger.Logger) {

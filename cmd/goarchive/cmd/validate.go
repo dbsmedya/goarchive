@@ -30,7 +30,7 @@ the server's max_allowed_packet.
 Example:
   goarchive validate --config archiver.yaml
   goarchive validate --job archive_old_orders`,
-	RunE: runValidate,
+	RunE: runE(runValidate),
 }
 
 func init() {
@@ -44,17 +44,17 @@ func runValidate(c *cobra.Command, _ []string) error {
 	o := validateOpts
 	doc, err := jobspec.Load(GetConfigFile())
 	if err != nil {
-		return err
+		return usage(err)
 	}
 	names := doc.JobNames()
 	if o.job != "" {
 		if _, err := doc.Job(o.job, ""); err != nil {
-			return err
+			return usage(err)
 		}
 		names = []string{o.job}
 	}
 	if err := checkVerificationFlag(o.verification); err != nil {
-		return err
+		return usage(err)
 	}
 	ctx := context.Background()
 	mgr, err := connect(ctx, doc)
@@ -80,10 +80,12 @@ func runValidate(c *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		log, err := newJobLogger(doc, spec, name)
+		log, err := newJobLogger(doc, spec, name, c, false)
 		if err != nil {
 			return err
 		}
+		// The R45 banners, as a run would print them (spec §3.4a; Codex MR R2).
+		emitBanners(log, c.ErrOrStderr(), banners(doc, spec.Type, verification, false, o.forceTriggers))
 		res, err := preflight.Run(ctx, preflight.Config{
 			Source: mgr.Source, SourceDatabase: src.Schema,
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,

@@ -90,6 +90,21 @@ func (e *PacketError) Error() string {
 		"Raise max_allowed_packet on the destination above %d bytes, then rerun. %s", e.Bytes, e.Table, e.Column, done, e.Bytes, see)
 }
 
+// JobRunningError refuses a run because another run holds the job's lock (startup). The run
+// did nothing. Holder is the holding destination connection, or 0 when it released the lock a
+// moment before the lookup.
+type JobRunningError struct {
+	Job    string
+	Holder int64
+}
+
+func (e *JobRunningError) Error() string {
+	if e.Holder == 0 {
+		return fmt.Sprintf("engine: job %q is already running: its advisory lock was held by another session a moment ago", e.Job)
+	}
+	return fmt.Sprintf("engine: job %q is already running: its advisory lock is held by another session (destination connection %d)", e.Job, e.Holder)
+}
+
 // TableLockedError refuses a run because another GoArchive run holds the source lock on one
 // of its tables (source-table-locks spec §6). The run did nothing. HolderConnectionID is the
 // holding source connection, or 0 when it released the lock a moment before the lookup.

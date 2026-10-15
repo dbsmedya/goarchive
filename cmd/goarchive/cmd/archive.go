@@ -23,8 +23,10 @@ Each batch:
 A run first replays what an interrupted run logged.
 
 Example:
-  goarchive archive --config archiver.yaml --job archive_old_orders`,
-	RunE: func(c *cobra.Command, _ []string) error { return runJob(c, jobspec.Archive, &archiveOpts) },
+  goarchive archive --config archiver.yaml --job archive_old_orders
+
+Exit codes: see goarchive --help.`,
+	RunE: runE(func(c *cobra.Command, _ []string) error { return runCommand(c, jobspec.Archive, &archiveOpts) }),
 }
 
 func init() {
