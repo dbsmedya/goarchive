@@ -26,7 +26,7 @@ func checkVerificationFlag(raw string) error {
 // setting over the file's (spec §5). A purge job has none.
 func verificationFor(raw string, doc *jobspec.Document, spec *jobspec.Spec) (jobspec.Verification, error) {
 	if err := checkVerificationFlag(raw); err != nil {
-		return "", err
+		return "", usage(err)
 	}
 	if spec.Type == jobspec.Purge {
 		return "", nil

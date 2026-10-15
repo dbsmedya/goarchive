@@ -44,12 +44,14 @@ Features:
 	// Errors from RunE are already reported with command-specific context;
 	// Cobra's usage block would only add noise after the error.
 	SilenceUsage: true,
+	// Main prints every error once, on stderr in stderr's format (spec §3.4a).
+	SilenceErrors: true,
 }
 
 // Execute runs the root command
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	if code := Main(os.Args[1:], os.Stdout, os.Stderr); code != exitOK {
+		os.Exit(code)
 	}
 }
 
@@ -87,7 +89,11 @@ func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string) (*l
 	if err != nil {
 		return nil, err
 	}
-	return log.WithJob(jobName), nil
+	log = log.WithJob(jobName)
+	if log.ConsoleJSON() && log.ConsoleStderr() {
+		diagJSON = log
+	}
+	return log, nil
 }
 
 func syncLogger(log *logger.Logger) {

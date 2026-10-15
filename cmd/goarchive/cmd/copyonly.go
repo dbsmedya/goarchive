@@ -18,7 +18,7 @@ in the job, it skips the roots this job has already copied.
 
 Example:
   goarchive copy-only --config archiver.yaml --job copy_orders`,
-	RunE: func(c *cobra.Command, _ []string) error { return runJob(c, jobspec.CopyOnly, &copyOnlyOpts) },
+	RunE: runE(func(c *cobra.Command, _ []string) error { return runCommand(c, jobspec.CopyOnly, &copyOnlyOpts) }),
 }
 
 func init() {

@@ -25,7 +25,7 @@ Recommended operator workflow: validate -> dry-run -> archive.
 
 Example:
   goarchive dry-run --config archiver.yaml --job archive_old_orders`,
-	RunE: runDryrun,
+	RunE: runE(runDryrun),
 }
 
 func init() {

@@ -23,7 +23,7 @@ WARNING: This permanently deletes data. Run dry-run first.
 
 Example:
   goarchive purge --config archiver.yaml --job purge_old_logs`,
-	RunE: func(c *cobra.Command, _ []string) error { return runJob(c, jobspec.Purge, &purgeOpts) },
+	RunE: runE(func(c *cobra.Command, _ []string) error { return runCommand(c, jobspec.Purge, &purgeOpts) }),
 }
 
 func init() {

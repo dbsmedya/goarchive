@@ -163,10 +163,7 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 	if err := job.Acquire(ctx); err != nil {
 		var held *lock.HeldError
 		if errors.As(err, &held) {
-			if held.Holder == 0 {
-				return nil, fmt.Errorf("engine: job %q is already running: its advisory lock was held by another session a moment ago", cfg.Name)
-			}
-			return nil, fmt.Errorf("engine: job %q is already running: its advisory lock is held by another session (destination connection %d)", cfg.Name, held.Holder)
+			return nil, &JobRunningError{Job: cfg.Name, Holder: held.Holder}
 		}
 		return nil, fmt.Errorf("engine: job lock: %w", err)
 	}

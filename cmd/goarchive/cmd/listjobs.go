@@ -15,7 +15,7 @@ along with their type, keys and relations. It opens no connection.
 
 Example:
   goarchive list-jobs --config archiver.yaml`,
-	RunE: runListJobs,
+	RunE: runE(runListJobs),
 }
 
 func init() {
@@ -26,7 +26,7 @@ func runListJobs(c *cobra.Command, _ []string) error {
 	configFile := GetConfigFile()
 	doc, err := jobspec.Load(configFile)
 	if err != nil {
-		return err
+		return usage(err)
 	}
 	names := doc.JobNames()
 	c.Printf("Jobs defined in %s:\n\n", configFile)
