@@ -106,6 +106,10 @@ func (g *killingGate) sessions(ctx context.Context, holder int64) ([]int64, erro
 	return ids, rows.Err()
 }
 
+// The old orders are counted by the job's where, not by id: under PAD_CHAR_TO_FULL_LENGTH the
+// CHAR(36) id 'new' reads back padded, and a NO PAD collation then counts it as old (release
+// verify 38791273276, row sql_mode_pad_char).
+
 // TestMySQLLongHold (LAG-1 §3.1, §5 test 1): a hold that outlives the source sessions no
 // longer fails the run. Each gate site's first wait kills the run's idle source sessions:
 // before the fix the next delete chunk ran on the batch's (or the recovery page's) pinned,
@@ -156,7 +160,7 @@ func TestMySQLLongHold(t *testing.T) {
 			if rep.Recovered != tc.recovered {
 				t.Errorf("recovered = %d, want %d", rep.Recovered, tc.recovered)
 			}
-			if got := count(t, e.src, "SELECT COUNT(*) FROM orders WHERE id <> 'new'"); got != 0 {
+			if got := count(t, e.src, "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01'"); got != 0 {
 				t.Errorf("old orders left in the source = %d, want 0", got)
 			}
 			if got := fmt.Sprint(statuses(t, e.dst, e.dstSchema)); got != "map[2:3]" {
@@ -174,7 +178,7 @@ func TestMySQLLongHold(t *testing.T) {
 // its applier stopped, as TestMySQLLiveReplicationGate's "cancelled while held".
 func TestMySQLStopDuringHold(t *testing.T) {
 	cs := "CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci"
-	oldOrders := "SELECT COUNT(*) FROM orders WHERE id <> 'new'"
+	oldOrders := "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01'"
 	for _, tc := range []struct {
 		name      string
 		typ       jobspec.Type
@@ -291,7 +295,7 @@ func TestMySQLStopNeverCutsAPass(t *testing.T) {
 			if err != nil || rep == nil || !rep.Stopped || rep.Roots != 2 {
 				t.Fatalf("Run() stopped mid-batch with a healthy replica = %+v, %v, want batch 1 finished (2 roots) and Stopped", rep, err)
 			}
-			if got := count(t, e.src, "SELECT COUNT(*) FROM orders WHERE id <> 'new'"); got != 1 {
+			if got := count(t, e.src, "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01'"); got != 1 {
 				t.Errorf("old orders left = %d, want 1: batch 1 deleted both its roots", got)
 			}
 			if got := fmt.Sprint(statuses(t, e.dst, e.dstSchema)); got != "map[2:2]" {
