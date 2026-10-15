@@ -162,9 +162,10 @@ func (c *Config) checkPool() error {
 }
 
 // minSourceConnections and minDestinationConnections are the smallest pools a run can use.
-// The source: the table locks' session and the batch's pinned session. The destination is
-// kept at three (M5-F6, every gate since): the job lock's session, the copy's and the
-// heartbeat's, which run at the same time; the retired root lock's slot is the heartbeat's.
+// The source: the table locks' session and one working session, the batch's reads or a
+// delete chunk's (LAG-1). The destination is kept at three (M5-F6, every gate since): the
+// job lock's session, the copy's and the heartbeat's, which run at the same time; the
+// retired root lock's slot is the heartbeat's.
 const (
 	minSourceConnections      = 2
 	minDestinationConnections = 3

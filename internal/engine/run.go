@@ -239,40 +239,28 @@ func (r *run) fetch(ctx context.Context, q reader, last key.Key) ([]key.Key, err
 	return out, nil
 }
 
-// batch runs the job type's phases over one batch of root keys (spec §7.1).
+// batch runs the job type's phases over one batch of root keys (spec §7.1). Its source reads
+// run on one session that readBatch releases before the first gate wait; each delete chunk
+// takes its own (LAG-1).
 func (r *run) batch(ctx context.Context, roots []key.Key) error {
-	src, err := r.cfg.Source.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = src.Close() }()
-
 	if r.typ == jobspec.CopyOnly && r.cfg.Spec.ResumeEnabled() {
+		var err error
 		if roots, err = r.dropLogged(ctx, roots); err != nil || len(roots) == 0 {
 			return err
 		}
 	}
-	t, err := r.discover(ctx, src, roots)
+	t, err := r.readBatch(ctx, roots)
 	if err != nil {
 		return err
 	}
 	switch r.typ {
 	case jobspec.Archive:
-		if err := r.copy(ctx, src, t, tracking.StatusCopied); err != nil {
-			return err
-		}
-		r.reached(atCommitted)
-		if err := r.deleteTree(ctx, src, t); err != nil {
+		if err := r.deleteTree(ctx, t); err != nil {
 			return err
 		}
 		if err := r.complete(ctx, tracking.StatusCopied, roots); err != nil {
 			return err
 		}
-	case jobspec.CopyOnly:
-		if err := r.copy(ctx, src, t, tracking.StatusCompleted); err != nil {
-			return err
-		}
-		r.reached(atCommitted)
 	case jobspec.Purge:
 		if err := r.waitForLag(ctx); err != nil {
 			return err
@@ -281,7 +269,7 @@ func (r *run) batch(ctx context.Context, roots []key.Key) error {
 			return err
 		}
 		r.reached(atLogged)
-		if err := r.deleteTree(ctx, src, t); err != nil {
+		if err := r.deleteTree(ctx, t); err != nil {
 			return err
 		}
 		if err := r.complete(ctx, tracking.StatusDeleting, roots); err != nil {
@@ -291,6 +279,35 @@ func (r *run) batch(ctx context.Context, roots []key.Key) error {
 	r.report.Roots += int64(len(roots))
 	r.log.Infof("Batch %d: %d roots of %s (%s)", r.report.Batches+1, len(roots), r.root.Table, r.typ)
 	return nil
+}
+
+// readBatch runs a batch's source reads on one pinned session, which it closes on return,
+// before any gate wait or delete (LAG-1): a session held idle through a long replication
+// hold is closed by the server under the run. It discovers the batch's tree and, for archive
+// and copy-only, copies it.
+func (r *run) readBatch(ctx context.Context, roots []key.Key) (*tree, error) {
+	src, err := r.cfg.Source.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = src.Close() }()
+	t, err := r.discover(ctx, src, roots)
+	if err != nil {
+		return nil, err
+	}
+	switch r.typ {
+	case jobspec.Archive:
+		if err := r.copy(ctx, src, t, tracking.StatusCopied); err != nil {
+			return nil, err
+		}
+		r.reached(atCommitted)
+	case jobspec.CopyOnly:
+		if err := r.copy(ctx, src, t, tracking.StatusCompleted); err != nil {
+			return nil, err
+		}
+		r.reached(atCommitted)
+	}
+	return t, nil
 }
 
 func (r *run) reached(p point) {
