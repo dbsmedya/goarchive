@@ -126,6 +126,16 @@ func TestE2EVerifiedLine(t *testing.T) {
 		{"none_but_verified", report30, "none", false},
 		{"two_closing_entries", report30 + report30, "sha256", false},
 		{"another_jobs_entry", strings.Replace(report30, `"msg":"Run completed","job":"j"`, `"msg":"Run completed","job":"k"`, 1), "sha256", false},
+		// Codex MR R3, R4: malformed input fails closed; counts are tables of nonnegative
+		// integers, compared as objects.
+		{"malformed_after_valid", report30 + "{broken json\n", "sha256", false},
+		{"malformed_before_valid", "{broken json\n" + report30, "sha256", false},
+		{"msg_not_a_string", `{"level":"info","msg":5,"job":"j"}` + "\n" + report30, "sha256", false},
+		{"negative_counts", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":-5}`, `"verified":{"payment":5}`, `"verified":{"payment":-5}`).Replace(report30), "sha256", false},
+		{"string_counts", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":"5"}`, `"verified":{"payment":5}`, `"verified":{"payment":"5"}`).Replace(report30), "sha256", false},
+		{"counts_not_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":[5]`, `"verified":{"payment":5}`, `"verified":[5]`).Replace(report30), "sha256", false},
+		{"reordered_equal_objects", strings.NewReplacer(`"copied":{"payment":5}`, `"copied":{"payment":5,"rental":2}`, `"verified":{"payment":5}`, `"verified":{"rental":2,"payment":5}`).Replace(report30), "sha256", true},
+		{"none_with_malformed_verified", strings.Replace(report30, `"verified":{"payment":5},`, `"verified":"x",`, 1), "none", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -152,6 +162,7 @@ func TestE2EPacingReadsElapsed(t *testing.T) {
 		{"elapsed_not_a_number", strings.Replace(report30, `"elapsed_seconds":1.5`, `"elapsed_seconds":"x"`, 1), "0.0", false},
 		{"elapsed_negative", strings.Replace(report30, `"elapsed_seconds":1.5`, `"elapsed_seconds":-1`, 1), "0.0", false},
 		{"validate_and_dry_run_only", dryRunOnly, "0.0", false},
+		{"malformed_after_valid", report30 + "{broken json\n", "0.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -330,6 +341,9 @@ func TestE2EResumeAccounting(t *testing.T) {
 		{"crash_without_pending", "crash", crash, "499", "100", "", false},
 		{"graceful", "graceful", graceful, "1999", "100", "0", true},
 		{"graceful_recovered", "graceful", crash, "499", "100", "0", false},
+		{"crash_recovered_not_a_number", "crash", strings.Replace(crash, `"recovered":100`, `"recovered":"100"`, 1), "499", "100", "100", false},
+		{"graceful_recovered_negative", "graceful", strings.Replace(graceful, `"batches":19,`, `"batches":19,"recovered":-1,`, 1), "1999", "100", "0", false},
+		{"crash_copied_not_an_object", "crash", strings.Replace(crash, `"copied":{"payment":399}`, `"copied":399`, 1), "499", "100", "100", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -897,7 +897,8 @@ func TestGateRecoveryIsLive(t *testing.T) {
 	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
 	h := newGateHarness(t, 15*time.Second, reader)
 	var errb bytes.Buffer
-	log, err := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: filepath.Join(t.TempDir(), "tee.log")},
+	// At level error: the hold and its end are live, so the level hides neither (Codex MR R1).
+	log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: filepath.Join(t.TempDir(), "tee.log")},
 		logger.Options{Stderr: &errb, Tee: true})
 	if err != nil {
 		t.Fatal(err)

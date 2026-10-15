@@ -128,15 +128,26 @@ func TestConsoleJSONAndAlways(t *testing.T) {
 	}
 }
 
-// Levels drop ordinary entries on every stream, and never the Always entries.
+// Levels drop ordinary entries on the tee as in the file; a Live entry reaches the tee
+// whatever the level, so a pause or hold and its end are never hidden from a --progress run
+// (Codex MR R1).
 func TestLevelsOnTee(t *testing.T) {
-	cfg, _ := fileCfg(t, "json")
-	cfg.Level = "error"
-	l, _, errb := newCaptured(t, cfg, true)
-	l.Warnw("hold")
-	l.Infow("Resumed", Live)
-	if errb.Len() != 0 {
-		t.Errorf("level error teed %q", errb)
+	for _, level := range []string{"warn", "error"} {
+		cfg, _ := fileCfg(t, "json")
+		cfg.Level = level
+		l, _, errb := newCaptured(t, cfg, true)
+		l.Infow("Batch 1: 5 roots")
+		l.Warnw("ordinary warning")
+		l.Warnw("Paused: sentinel file present", Live)
+		l.Infow("Resumed: sentinel file removed", Live)
+		got := errb.String()
+		if strings.Contains(got, "Batch 1") || !strings.Contains(got, "WARN  Paused: sentinel file present") ||
+			!strings.Contains(got, "INFO  Resumed: sentinel file removed") {
+			t.Errorf("level %s: tee %q, want both live entries and no batch line", level, got)
+		}
+		if ordinary := strings.Contains(got, "ordinary warning"); ordinary != (level == "warn") {
+			t.Errorf("level %s: ordinary warning teed = %v", level, ordinary)
+		}
 	}
 }
 

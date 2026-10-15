@@ -103,7 +103,8 @@ func TestSentinelPauseShowsOnProgress(t *testing.T) {
 // like its start, so the console never ends on "Paused".
 func TestSentinelResumeIsLive(t *testing.T) {
 	var errb bytes.Buffer
-	log, err := logger.New(&config.LoggingConfig{Level: "info", Format: "json", Output: filepath.Join(t.TempDir(), "run.log")},
+	// At level error: the pause and its end are live, so the level hides neither (Codex MR R1).
+	log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: filepath.Join(t.TempDir(), "run.log")},
 		logger.Options{Stderr: &errb, Tee: true})
 	if err != nil {
 		t.Fatal(err)

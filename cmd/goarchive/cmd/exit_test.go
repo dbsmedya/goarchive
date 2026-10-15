@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,5 +81,23 @@ func TestMainStreams(t *testing.T) {
 	out, errOut, code := mainStreams(t)
 	if code != 0 || !strings.Contains(out, "Usage:") || errOut != "" {
 		t.Errorf("no arguments: code %d, stdout %q, stderr %q; want help on stdout and 0", code, out, errOut)
+	}
+}
+
+// TestFailureBeforeTheFirstBatch (spec §3.4a, Codex MR R5): a run that fails before the engine
+// returns a report says so: on stdout with --progress, in place of the closing block; on stderr
+// without it. Error: stays on stderr, once.
+func TestFailureBeforeTheFirstBatch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "run.log")
+	cfg := writeConfig(t, unreachable+"logging:\n  output: "+logPath+"\n")
+	summary := "Job purge_old (purge): failed before the first batch. Log: " + logPath + "\n"
+
+	out, errOut, code := mainStreams(t, "purge", "-c", cfg, "--job", "purge_old", "--progress=1h")
+	if code != 1 || !strings.Contains(out, summary) || strings.Contains(errOut, "failed before") || strings.Count(errOut, "Error:") != 1 {
+		t.Errorf("--progress: code %d, stdout %q, stderr %q; want the summary on stdout and one Error: on stderr", code, out, errOut)
+	}
+	out, errOut, code = mainStreams(t, "purge", "-c", cfg, "--job", "purge_old")
+	if code != 1 || out != "" || !strings.HasPrefix(errOut, summary+"Error: ") {
+		t.Errorf("no --progress: code %d, stdout %q, stderr %q; want the summary then Error: on stderr", code, out, errOut)
 	}
 }
