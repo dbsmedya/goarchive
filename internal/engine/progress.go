@@ -3,12 +3,15 @@ package engine
 import (
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // The --progress reporter (R50), kept from 2.x: once recovery is done, the engine counts the
@@ -20,7 +23,8 @@ import (
 // or out of the where range, so the snapshot arithmetic clamps instead of trusting it.
 type progressTracker struct {
 	totalRoots int64
-	startedAt  time.Time
+	startedAt  time.Time        // Run's start: elapsed counts from here (spec §3.5)
+	loopAt     time.Time        // the first batch: the ETA's rate counts from here
 	nowFn      func() time.Time // test seam; nil means time.Now
 
 	rootsDone   atomic.Int64
@@ -30,8 +34,9 @@ type progressTracker struct {
 	paused      atomic.Pointer[string] // nil: not paused
 }
 
-func newProgressTracker(totalRoots int64) *progressTracker {
-	return &progressTracker{totalRoots: totalRoots, startedAt: time.Now()}
+// newProgressTracker starts the counters as the first batch begins; began is Run's start.
+func newProgressTracker(totalRoots int64, began time.Time) *progressTracker {
+	return &progressTracker{totalRoots: totalRoots, startedAt: began, loopAt: time.Now()}
 }
 
 // update sets the counters to the run's totals so far.
@@ -87,6 +92,7 @@ func (t *progressTracker) snapshot() progressSnapshot {
 		copied:    t.rowsCopied.Load(),
 		deleted:   t.rowsDeleted.Load(),
 		elapsed:   t.now().Sub(t.startedAt),
+		running:   t.now().Sub(t.loopAt),
 		completed: t.completed.Load(),
 	}
 	if p := t.paused.Load(); p != nil {
@@ -99,7 +105,8 @@ func (t *progressTracker) snapshot() progressSnapshot {
 type progressSnapshot struct {
 	total, done     int64
 	copied, deleted int64
-	elapsed         time.Duration
+	elapsed         time.Duration // since Run began
+	running         time.Duration // since the first batch
 	completed       bool
 	pausedReason    string // empty: not paused
 }
@@ -130,34 +137,56 @@ func (s progressSnapshot) etaString() string {
 	case s.done == 0:
 		return "calculating"
 	}
-	rate := float64(s.done) / float64(s.elapsed)
+	// Roots per running time, so startup and recovery do not slow the estimate.
+	rate := float64(s.done) / float64(s.running)
 	return time.Duration(float64(s.remaining()) / rate).Truncate(time.Second).String()
 }
 
-// formatProgressLine renders one stdout line. Archive shows copied and deleted rows,
-// copy-only copied rows, purge deleted rows.
+// formatProgressLine renders one stdout line, its columns at fixed widths so successive lines
+// align (spec §3.5): widths are fixed, not measured, because each line is printed on its own.
+// Archive shows copied and deleted rows, copy-only copied rows, purge deleted rows.
 func formatProgressLine(s progressSnapshot, typ jobspec.Type) string {
-	line := fmt.Sprintf("progress: roots %d/~%d (%.1f%%) remaining=%d", s.done, s.total, s.percent(), s.remaining())
+	w := len(strconv.FormatInt(s.total, 10))
+	line := fmt.Sprintf("progress: roots %*d/~%d (%5.1f%%)  remaining=%-*d", w, s.done, s.total, s.percent(), w, s.remaining())
 	if typ != jobspec.Purge {
-		line += fmt.Sprintf(" copied_rows=%d", s.copied)
+		line += fmt.Sprintf("  copied_rows=%-9d", s.copied)
 	}
 	if typ != jobspec.CopyOnly {
-		line += fmt.Sprintf(" deleted_rows=%d", s.deleted)
+		line += fmt.Sprintf("  deleted_rows=%-9d", s.deleted)
 	}
-	line += fmt.Sprintf(" elapsed=%s eta=%s", s.elapsed.Truncate(time.Second), s.etaString())
+	line += fmt.Sprintf("  elapsed=%-7s  eta=%s", s.elapsed.Truncate(time.Second), s.etaString())
 	if s.pausedReason != "" {
 		line += fmt.Sprintf(" [PAUSED: %s]", s.pausedReason)
 	}
 	return line
 }
 
+// progressFields are a snapshot as one log entry's fields (a JSON console log, spec §3.2 C).
+func progressFields(s progressSnapshot, typ jobspec.Type) []any {
+	f := []any{"roots_done", s.done, "roots_total", s.total, "percent", math.Round(s.percent()*10) / 10,
+		"remaining", s.remaining()}
+	if typ != jobspec.Purge {
+		f = append(f, "copied_rows", s.copied)
+	}
+	if typ != jobspec.CopyOnly {
+		f = append(f, "deleted_rows", s.deleted)
+	}
+	f = append(f, "elapsed_seconds", s.elapsed.Seconds(), "eta", s.etaString())
+	if s.pausedReason != "" {
+		f = append(f, "paused", s.pausedReason)
+	}
+	return f
+}
+
 // progressReporter prints one line per tick and exactly one final line at stop, only if it
-// was started.
+// was started. With log set, each line is a progress entry written past the level filter
+// instead (a JSON console log).
 type progressReporter struct {
 	tracker  *progressTracker
 	interval time.Duration
 	typ      jobspec.Type
 	out      io.Writer
+	log      *logger.Logger
 
 	tickCh <-chan time.Time // test seam: replaces the ticker when non-nil
 
@@ -189,11 +218,21 @@ func (r *progressReporter) start() {
 			case <-r.stopCh:
 				return
 			case <-ticks:
-				_, _ = fmt.Fprintln(r.out, formatProgressLine(r.tracker.snapshot(), r.typ))
+				r.emit()
 			}
 		}
 	}()
 	r.started = true
+}
+
+// emit writes one snapshot: a line on out, or an entry on log.
+func (r *progressReporter) emit() {
+	s := r.tracker.snapshot()
+	if r.log != nil {
+		r.log.Always().Infow("progress", progressFields(s, r.typ)...)
+		return
+	}
+	_, _ = fmt.Fprintln(r.out, formatProgressLine(s, r.typ))
 }
 
 // stop ends the ticks and prints the final line once. After a failure the line shows the
@@ -203,7 +242,7 @@ func (r *progressReporter) stop() {
 		close(r.stopCh)
 		r.wg.Wait()
 		if r.started {
-			_, _ = fmt.Fprintln(r.out, formatProgressLine(r.tracker.snapshot(), r.typ))
+			r.emit()
 		}
 	})
 }

@@ -26,6 +26,12 @@ type Cap struct {
 	bind []key.Column
 }
 
+// String names the cap as a run's "Statement cap:" log line does: server, statement, table and
+// the addressed index's columns.
+func (c Cap) String() string {
+	return c.Server + " " + c.Statement + " on " + c.Table + columnList(c.Columns)
+}
+
 // binds are the types of the values c's statements bind.
 func (c Cap) binds() []key.Column {
 	if c.bind != nil {
@@ -88,9 +94,6 @@ func reportStatementCaps(ctx context.Context, f *facts) error {
 			caps = append(caps, Cap{Table: t, Server: "destination", Statement: "by key", Columns: def.Names(),
 				Tuples: key.MaxTuples(def.Columns, dstMem), parts: def.Columns})
 		}
-	}
-	for _, c := range caps {
-		f.cfg.Logger.Infof("Statement cap: %s %s on %s%s: %d key tuples per statement", c.Server, c.Statement, c.Table, columnList(c.Columns), c.Tuples)
 	}
 	f.caps = caps
 	return nil

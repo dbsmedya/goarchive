@@ -122,7 +122,7 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 			return nil
 		}
 		if !g.present() {
-			g.logger.Infof("Resumed: sentinel file %q removed", g.path)
+			g.logger.Infow(fmt.Sprintf("Resumed: sentinel file %q removed", g.path), logger.Live)
 			return nil
 		}
 		if waited%sentinelStillPausedEvery == 0 {

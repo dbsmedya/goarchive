@@ -81,7 +81,7 @@ func TestSentinelGate(t *testing.T) {
 // TestSentinelPauseShowsOnProgress (R50): while the sentinel pauses the run, the --progress
 // line says so and its ETA reads paused; the mark clears when the run resumes.
 func TestSentinelPauseShowsOnProgress(t *testing.T) {
-	tr := newProgressTracker(10)
+	tr := newProgressTracker(10, time.Now())
 	g := newSentinelGate("/var/run/goarchive.pause", logger.NewDefault())
 	g.progress = tr
 	present := 2

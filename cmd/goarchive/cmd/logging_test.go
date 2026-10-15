@@ -35,7 +35,7 @@ func TestNewJobLoggerTagsJobAndWritesFile(t *testing.T) {
 	fileOnly := true
 	doc := &jobspec.Document{Shared: config.DefaultConfig()}
 	job := &jobspec.Spec{Logging: &jobspec.LoggingOverrides{Format: "json", Output: logPath, FileOnly: &fileOnly}}
-	log, err := newJobLogger(doc, job, "archive_shipment_error_logs")
+	log, err := newJobLogger(doc, job, "archive_shipment_error_logs", rootCmd, false)
 	if err != nil {
 		t.Fatalf("newJobLogger failed: %v", err)
 	}

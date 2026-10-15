@@ -47,7 +47,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	log, err := newJobLogger(doc, spec, o.job)
+	log, err := newJobLogger(doc, spec, o.job, c, false)
 	if err != nil {
 		return err
 	}

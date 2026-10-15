@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
@@ -139,13 +140,20 @@ func (r *run) startProgress(ctx context.Context) (func(), error) {
 	if err := r.cfg.Source.QueryRowContext(ctx, rangeCountSQL(r.root, r.cfg.Spec.Where)).Scan(&total); err != nil {
 		return nil, fmt.Errorf("engine: --progress count on %s: %w", r.root.Table, err)
 	}
-	r.progress = newProgressTracker(total)
+	began := r.cfg.began
+	if began.IsZero() {
+		began = time.Now()
+	}
+	r.progress = newProgressTracker(total, began)
 	r.trackProgress()
 	out := r.cfg.Out
 	if out == nil {
 		out = os.Stdout
 	}
 	rep := newProgressReporter(r.progress, r.cfg.Progress, r.typ, out)
+	if r.cfg.ProgressLog {
+		rep.log = r.log
+	}
 	rep.start()
 	return rep.stop, nil
 }

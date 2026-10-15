@@ -204,8 +204,8 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 			g.mu.Unlock()
 
 			if !firstHold.IsZero() {
-				g.logger.Infof("replication gate passed: all %d servers healthy; job resuming after %s held",
-					len(g.servers), g.now().Sub(firstHold).Round(time.Second))
+				g.logger.Infow(fmt.Sprintf("replication gate passed: all %d servers healthy; job resuming after %s held",
+					len(g.servers), g.now().Sub(firstHold).Round(time.Second)), logger.Live)
 			}
 
 			return nil
@@ -237,8 +237,8 @@ func (g *Gate) transition(
 			return
 		}
 		delete(holds, id)
-		g.logger.Infof("replication recovered: server %s healthy; held %s",
-			id, now.Sub(prev.since).Round(time.Second))
+		g.logger.Infow(fmt.Sprintf("replication recovered: server %s healthy; held %s",
+			id, now.Sub(prev.since).Round(time.Second)), logger.Live)
 
 		return
 	}

@@ -81,11 +81,12 @@ func effectiveJobLogging(global config.LoggingConfig, spec *jobspec.Spec, overri
 }
 
 // newJobLogger builds the logger for a job command from the effective
-// per-job logging configuration. Every entry is tagged with the job name
-// so runs remain attributable when jobs share an output.
-func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string) (*logger.Logger, error) {
+// per-job logging configuration, on the command's streams. Every entry is
+// tagged with the job name so runs remain attributable when jobs share an
+// output. tee turns on a file log's console tee (a run with --progress).
+func newJobLogger(doc *jobspec.Document, spec *jobspec.Spec, jobName string, c *cobra.Command, tee bool) (*logger.Logger, error) {
 	logCfg := effectiveJobLogging(doc.Shared.Logging, spec, GetCLIOverrides())
-	log, err := logger.New(&logCfg, logger.Options{})
+	log, err := logger.New(&logCfg, logger.Options{Stdout: c.OutOrStdout(), Stderr: c.ErrOrStderr(), Tee: tee})
 	if err != nil {
 		return nil, err
 	}

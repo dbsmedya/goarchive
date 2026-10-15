@@ -132,7 +132,7 @@ func TestProgressReporter(t *testing.T) {
 	r.stop()
 	r.stop()
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[0], "roots 10/~100") || lines[1] != lines[0] {
+	if len(lines) != 3 || !strings.Contains(lines[0], "roots  10/~100") || lines[1] != lines[0] {
 		t.Errorf("two ticks and a stop printed %q, want three lines", lines)
 	}
 

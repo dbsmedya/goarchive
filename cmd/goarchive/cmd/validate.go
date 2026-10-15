@@ -80,7 +80,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 		if err != nil {
 			return err
 		}
-		log, err := newJobLogger(doc, spec, name)
+		log, err := newJobLogger(doc, spec, name, c, false)
 		if err != nil {
 			return err
 		}

@@ -97,14 +97,17 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	if err != nil {
 		return nil, false, usage(err)
 	}
-	log, err := newJobLogger(doc, spec, o.job)
+	log, err := newJobLogger(doc, spec, o.job, c, progress > 0)
 	if err != nil {
 		return nil, false, err
 	}
 	defer syncLogger(log)
+	// With --progress on a JSON console log, the start, progress and closing entries stand in
+	// for the lines the flag asks for, so they are written past the level filter (spec §3.2 C).
+	entries := progress > 0 && log.ConsoleJSON()
 	defer func() {
 		p := recover()
-		endRun(log, typ, rep, err, p)
+		endRun(log, typ, rep, err, p, entries)
 		closing = true
 		if p != nil {
 			// Re-raised from the deferred call, above the panicking frames: the traceback
@@ -112,9 +115,22 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 			panic(p)
 		}
 	}()
-	out := c.OutOrStdout()
-	for _, b := range banners(doc, typ, verification, o.skipPreflight, o.forceTriggers) {
-		_, _ = fmt.Fprintln(out, b)
+	out, stderr := c.OutOrStdout(), c.ErrOrStderr()
+	emitBanners(log, stderr, banners(doc, typ, verification, o.skipPreflight, o.forceTriggers))
+	switch {
+	case entries:
+		log.Always().Infow("Run starting", "job_type", string(typ))
+	case progress > 0:
+		printStart(out, o.job, typ, log.File())
+	default:
+		log.Infow("Run starting", "job_type", string(typ))
+	}
+	// failed prints the failure summary on stderr (setups A and B, without --progress, spec
+	// §3.4a); the Error: line follows from Main.
+	failed := func(rep *engine.Report) {
+		if progress == 0 && !log.ConsoleJSON() {
+			printFailureSummary(stderr, o.job, typ, rep, log.File())
+		}
 	}
 
 	ctx, stop := database.SetupGracefulShutdown(
@@ -125,6 +141,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	)
 	mgr, err := connect(ctx, doc)
 	if err != nil {
+		failed(nil)
 		return nil, false, err
 	}
 	defer func() { _ = mgr.Close() }()
@@ -132,6 +149,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	if doc.Shared.Replication.Enabled {
 		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log)
 		if gerr != nil {
+			failed(nil)
 			return nil, false, gerr
 		}
 		lag = g
@@ -145,10 +163,22 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Lag: lag, Stop: stop, Logger: log,
-		Progress: progress, Out: out,
+		Progress: progress, Out: out, ProgressLog: entries,
 	})
-	if rep != nil {
-		printReport(out, o.job, typ, rep)
+	switch {
+	case progress > 0 && !entries && rep != nil:
+		printReport(out, o.job, typ, copyOrder(spec), rep, err)
+	case err != nil:
+		failed(rep)
 	}
 	return rep, false, err
+}
+
+// copyOrder is the job's tables, parents first.
+func copyOrder(spec *jobspec.Spec) []string {
+	var out []string
+	for _, n := range jobspec.NewTree(spec).CopyOrder() {
+		out = append(out, n.Table)
+	}
+	return out
 }
