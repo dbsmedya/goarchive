@@ -225,7 +225,8 @@ now takes its session after the hold, so a hold of any length resumes when the r
 
 **A first `SIGTERM` or `SIGINT` ends a replication hold**, with exit code 3, instead of waiting
 for the replicas; the next run's recovery finishes the held batch. A `docker stop` grace period
-no longer has to cover a hold ([Graceful shutdown](README_OPERATIONS.md#graceful-shutdown)).
+no longer has to cover a hold, only a replica check in progress when the hold begins
+([Graceful shutdown](README_OPERATIONS.md#graceful-shutdown)).
 
 ---
 

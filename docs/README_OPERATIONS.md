@@ -196,7 +196,8 @@ launch failures are 125–127). For a detached container, the code is the number
 [graceful stop](#graceful-shutdown): the batch in flight finishes and the run exits 3, if it gets
 there before Docker's deadline (10 seconds by default; then SIGKILL, and the next run recovers
 what the log holds). Set `docker stop --time`, or compose's `stop_grace_period`, above one batch's
-duration. A stop during a replication hold ends the hold without waiting for the replicas.
+duration. A stop during a replication hold ends the hold without waiting for the replicas, though it
+may wait for one replica check in progress ([Graceful shutdown](#graceful-shutdown)).
 
 ---
 
@@ -389,8 +390,8 @@ Healthy servers stay silent. A recovered server logs one `INFO` line, and the la
 logs another with the total hold; with `--progress` and a log file, the hold and both recovery
 lines also reach stderr. If the reason changes while a server is still down, the held
 time keeps accumulating. A hold keeps no source session open, so it can last as long as the
-replicas need. A first `SIGTERM` or `SIGINT` ends it without waiting for them
-([Graceful shutdown](#graceful-shutdown)), with one more `WARN` line, which reaches stderr as the
+replicas need. A first `SIGTERM` or `SIGINT` ends it without waiting for them to recover
+([Graceful shutdown](#graceful-shutdown) names the one check it may wait for), with one more `WARN` line, which reaches stderr as the
 hold lines do:
 
 ```
@@ -453,7 +454,10 @@ run with exit code 3; with `--progress` the closing block says so, and the run's
 `Run stopped …`. During a [replication hold](#replication-gating) the first signal ends the hold
 without waiting for the replicas: the run stops there with exit code 3, nothing is rolled back,
 and the held batch's roots stay logged for the next run's [recovery](#crash-recovery) (a purge
-held before it logs its roots leaves nothing). The closing counts then read: `roots` and
+held before it logs its roots leaves nothing). One wait remains: a signal that lands while the
+gate is making a chunk's first check of the replicas waits for that check to return, which for an
+unreachable replica can be the connection timeout, longer than a container's grace period. Once
+the gate has seen an unhealthy replica, a signal ends the hold at once. The closing counts then read: `roots` and
 `batches`, the work completed; `copied` and `deleted`, the rows committed, the stopped batch's
 included. A second signal cancels at once: the open transaction rolls back, the log ends with
 `Run failed`, the cancellation and the counts so far, and the next run's recovery finishes what
