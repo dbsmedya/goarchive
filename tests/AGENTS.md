@@ -142,8 +142,9 @@ after the runner reports; a gate agent never edits it.
   `TestMySQLTriggersTheAccountCannotSee` with four (+5). Re-measure after adding or removing
   tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
-  443 s, leaving about 157 s; record each new measurement here, since the margin shrinks as tests
-  are added.
+  443 s. Later gates took 450–472 s (466 s at `e4ef55d`, run `20261014T201816Z-82233`, on this
+  inventory), and one under host load 515 s, leaving about 85 s; record each new measurement
+  here, since the margin shrinks as tests are added.
 - **Release verify on GitHub:** the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at
   `ae06474`), took 19 minutes for 41 jobs. Gates took 15–18 min each, with integration
   `PASS=1209 FAIL=0 SKIP=5` on all six images; that is the local inventory less
