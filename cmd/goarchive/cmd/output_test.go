@@ -170,7 +170,7 @@ func TestEmitBanners(t *testing.T) {
 		t.Errorf("file_only: stdout %q stderr %q", out, errb)
 	}
 
-	l, out, errb = newLog(config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, false)
+	l, _, errb = newLog(config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, false)
 	emitBanners(l, errb, []string{b})
 	if errb.String() != b+"\n" {
 		t.Errorf("JSON stdout log: stderr %q, want the plain banner", errb)

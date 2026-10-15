@@ -177,7 +177,7 @@ func buildEncoder(format string) zapcore.Encoder {
 // with derives a Logger carrying args on both its ordinary and its Always logger.
 func (l *Logger) with(args ...interface{}) *Logger {
 	c := *l
-	c.SugaredLogger = l.SugaredLogger.With(args...)
+	c.SugaredLogger = l.With(args...)
 	c.always = l.always.With(args...)
 	return &c
 }
