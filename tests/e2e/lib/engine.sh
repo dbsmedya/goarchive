@@ -438,11 +438,11 @@ run_e2e_test() {
             # The discriminator proves recovery ran; it does not prove what it did.
             # A 'copied' root must be promoted by delete-only replay, not re-copied.
             # A crash that deleted nothing would let a re-copy verify cleanly, and
-            # then only the report's copy counter moves. See
+            # then only the closing entry's copy counter moves. See
             # assert_resume_copy_accounting.
             log_info "[STEP 3b-v] Asserting run 2 copied only what was left to copy..."
             if ! assert_resume_copy_accounting "$interrupt" "$assert_log" "$root_table" \
-                 "${expected_arr[0]}" "$interrupt_expect_dest" "$INTERRUPT_PENDING"; then
+                 "${expected_arr[0]}" "$interrupt_expect_dest" "$INTERRUPT_PENDING" "$job_name"; then
                 end_time=$(date +%s); duration=$((end_time - start_time))
                 echo "" >> "$log_file"
                 echo "Result: FAIL (resumed run re-copied work it should have skipped)" >> "$log_file"
@@ -454,10 +454,15 @@ run_e2e_test() {
         # Step 3c: assert the verify stage actually ran, naming the method and
         # covering every copied row. Verification is what makes delete-after-copy
         # safe, and a config change or a silently skipped stage would leave every
-        # other assertion passing. The anchor is the run's report -- see
+        # other assertion passing. The anchor is the run's closing entry -- see
         # assert_verified.
+        local run_job
+        if ! run_job=$(extract_job_name "$TESTS_DIR/configs/$config_file"); then
+            echo "Result: FAIL (job name)" >> "$log_file"
+            return 1
+        fi
         log_info "[STEP 3c] Asserting the verify stage ran (expect: $verify_method)..."
-        if ! assert_verified "$assert_log" "$verify_method"; then
+        if ! assert_verified "$assert_log" "$verify_method" "$run_job"; then
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
@@ -473,7 +478,7 @@ run_e2e_test() {
         # full-slice floor, so pointing this at the combined log would either fail a
         # correct run or, with tail -1, depend on run 2 happening to be last.
         log_info "[STEP 3d] Asserting the run respected its pacing floor (${min_duration}s)..."
-        if ! assert_min_duration "$assert_log" "$min_duration"; then
+        if ! assert_min_duration "$assert_log" "$min_duration" "$run_job"; then
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"

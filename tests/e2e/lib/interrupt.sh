@@ -240,16 +240,17 @@ run_interrupted_job() {
     local rc=$?
     log_info "  run 1 exited $rc"
 
-    # A graceful stop is a SUCCESSFUL run -- it stops at a batch boundary and
-    # reports normally -- so a non-zero exit means the signal tore something.
+    # A graceful stop ends cleanly at a batch boundary and exits 3, "stopped before
+    # the end of the where range" (docs/README_OPERATIONS.md, Output and exit codes);
+    # any other exit means the signal tore something, or the run finished first (0).
     # A crash is SIGKILL, so 137 is the expected exit and 0 would mean the process
     # beat us to the finish line.
     case "$kind" in
         graceful)
-            if [[ $rc -ne 0 ]]; then
-                log_error "  a graceful stop must exit 0, got $rc"
+            if [[ $rc -ne 3 ]]; then
+                log_error "  a graceful stop must exit 3 (stopped before the end of the where range), got $rc"
                 log_error "    SIGTERM is cooperative: the loop stops at a batch boundary and the"
-                log_error "    run reports normally. A non-zero exit means it did not."
+                log_error "    run ends cleanly. 0 means it finished first; 1 means it failed."
                 return 1
             fi
             ;;
@@ -340,10 +341,10 @@ assert_interrupt_preconditions() {
             fi
             log_info "  exactly $completed root(s) at 'completed'"
 
-            if ! grep -q "stopped before the end of the where range" "$run1_log"; then
-                log_error "  run 1's report does not say it stopped before the end of the where range"
-                log_error "    A graceful stop reports it (printReport). Without the line, run 1"
-                log_error "    either finished the range or the report's wording changed."
+            if ! closing_entry "$run1_log" "$job_name" "Run stopped before the end of the where range" >/dev/null; then
+                log_error "  run 1's closing entry does not say it stopped before the end of the where range"
+                log_error "    A graceful stop logs it (logOutcome). Without it, run 1 either"
+                log_error "    finished the range or the closing entry's wording changed."
                 return 1
             fi
             log_info "  run 1 reported its stop before the end of the where range"
@@ -410,22 +411,23 @@ assert_interrupt_preconditions() {
 # Assert the resumed run copied only what it still had left to copy, by the path
 # its interrupt kind requires.
 #
-# Usage: assert_resume_copy_accounting <kind> <assert_log> <root_table> <expect_total> <expect_at_interrupt> <pending>
+# Usage: assert_resume_copy_accounting <kind> <assert_log> <root_table> <expect_total> <expect_at_interrupt> <pending> <job>
 #
 # expect_at_interrupt is every root run 1 copied; pending is the part of it left at
 # 'copied' (assert_interrupt_preconditions's INTERRUPT_PENDING), which recovery replays.
 #
 # After a crash, recovery must promote the 'copied' roots by DELETE-ONLY replay
 # (spec §6.4): their copy already committed and was verified, so it is not redone.
-# Recovery logs "Recovery: replaying <n> copied roots of <table>", and the report
-# counts them under "recovered:". Run 2 then copies only the rest of the slice.
+# Recovery logs "Recovery: replaying <n> copied roots of <table>", and the run's
+# closing entry (logOutcome) counts them as "recovered". Run 2 then copies only the
+# rest of the slice.
 #
 # After a graceful stop there is nothing to recover, and run 2 copies the rest.
 #
 # The copy counter is what this adds to the end-state checks. A crash whose kill
 # landed before any delete leaves source and destination agreeing, so a re-copy of
 # the batch would verify cleanly, the destination total would not change, and the
-# extra work would only make the one-sided pacing floor easier. The report's
+# extra work would only make the one-sided pacing floor easier. The closing entry's
 # per-table copy count is then the only number that moves.
 assert_resume_copy_accounting() {
     local kind="$1"
@@ -434,6 +436,7 @@ assert_resume_copy_accounting() {
     local expect_total="$4"
     local expect_at_interrupt="$5"
     local pending="$6"
+    local job="$7"
 
     case "$pending" in
         ''|*[!0-9]*)
@@ -443,12 +446,12 @@ assert_resume_copy_accounting() {
     esac
 
     local want=$((expect_total - expect_at_interrupt))
-    local line got
-    line=$(grep -E '^  copied:  ' "$assert_log" | tail -1)
-    got=$(printf '%s\n' "$line" | tr ' ' '\n' | sed -n "s/^${root}=\([0-9][0-9]*\)$/\1/p")
-    if [[ -z "$got" ]]; then
-        log_error "  could not read $root's copied rows from the resumed run's report"
-        log_error "    The report prints \"copied:  <table>=<n> ...\"; if that changed, this"
+    local entry got rec
+    entry=$(closing_entry "$assert_log" "$job" "Run completed") || return 1
+    got=$(jq -r --arg t "$root" '.copied[$t] // empty' <<<"$entry")
+    if ! _nonneg_number "$got"; then
+        log_error "  could not read $root's copied rows from the resumed run's closing entry"
+        log_error "    It carries \"copied\": {\"<table>\": <n>, ...}; if that changed, this"
         log_error "    assertion has stopped matching and is no longer checking anything."
         return 1
     fi
@@ -463,20 +466,22 @@ assert_resume_copy_accounting() {
     fi
     log_info "  run 2 copied exactly $got — the $expect_at_interrupt already-copied root(s) were not re-copied"
 
+    # recovered is absent when zero: logOutcome omits it.
+    rec=$(jq -r '.recovered // 0' <<<"$entry")
     case "$kind" in
         crash)
             if ! grep -q "Recovery: replaying ${pending} copied roots of ${root}\"" "$assert_log" ||
-                ! grep -q "^  recovered: ${pending} logged roots finished by replay$" "$assert_log"; then
-                log_error "  run 2 did not replay exactly the $pending copied root(s) of $root"
+                [[ "$rec" != "$pending" ]]; then
+                log_error "  run 2 did not replay exactly the $pending copied root(s) of $root (recovered=$rec)"
                 log_error "    Observed:"
-                grep -E 'Recovery: replaying|recovered: ' "$assert_log" | head -2 | sed 's/^/      /'
+                grep -E 'Recovery: replaying' "$assert_log" | head -2 | sed 's/^/      /'
                 return 1
             fi
             log_info "  recovery replayed exactly $pending copied root(s) (delete-only)"
             ;;
         graceful)
-            if grep -qE 'Recovery: replaying|^  recovered: ' "$assert_log"; then
-                log_error "  run 2 recovered roots after a GRACEFUL stop"
+            if grep -q 'Recovery: replaying' "$assert_log" || [[ "$rec" != "0" ]]; then
+                log_error "  run 2 recovered roots after a GRACEFUL stop (recovered=$rec)"
                 log_error "    A cooperative stop leaves every root terminal, so there is nothing to"
                 log_error "    replay. Recovery here means this test has quietly become the crash test."
                 return 1

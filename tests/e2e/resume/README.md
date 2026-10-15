@@ -57,10 +57,10 @@ recovery's work, so `n` below is the `copied` count, not the destination's.
 
 **The discriminator.** The engine's `"Recovery: replaying <n> copied roots of
 payment"` line must be **absent** from 08's second run and **present** in 09's, with
-`n` = 100, and 09's report must count them under `recovered:`. It is the only
+`n` = 100, and 09's closing log entry must count them as `recovered`. It is the only
 assertion that catches 08 quietly becoming a crash test or 09 quietly becoming a
 graceful one — because it asserts the path, which no end-state check can reach.
-Run 2's `copied:` count must be the slice minus the 100 already copied: a re-copy of
+Run 2's closing entry's `copied` count must be the slice minus the 100 already copied: a re-copy of
 the replayed roots would verify cleanly and change no total.
 
 **`ensure_destination_schema` runs once, before run 1, and never between the runs.**

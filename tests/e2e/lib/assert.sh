@@ -199,6 +199,7 @@ assert_postcondition() {
 assert_min_duration() {
     local log_file=$1
     local floor=$2
+    local job=$3
 
     # Fail closed: a working test with no floor configured asserts nothing.
     if [[ -z "$floor" ]]; then
@@ -206,15 +207,18 @@ assert_min_duration() {
         return 1
     fi
 
-    # The last "elapsed: <seconds>s" line in the log is the run's own wall time:
-    # archive, purge and copy-only print it as the last line of their report
-    # (printReport, cmd/goarchive/cmd/output.go; engine.Report.Elapsed).
-    local actual
-    actual=$(grep -oE '^  elapsed: [0-9.]+s$' "$log_file" | tail -1 | sed -E 's/^  elapsed: ([0-9.]+)s$/\1/')
-    if [[ -z "$actual" ]]; then
-        log_error "  could not read the run's own elapsed time from $log_file"
-        log_error "  the report prints it as \"elapsed: <seconds>s\"; if that changed,"
-        log_error "  this assertion has stopped matching and is no longer checking anything."
+    # The closing entry's elapsed_seconds is the run's own wall time (logOutcome,
+    # cmd/goarchive/cmd/output.go; engine.Report.Elapsed).
+    local entry actual
+    if ! entry=$(closing_entry "$log_file" "$job" "Run completed"); then
+        log_error "  could not read the run's own elapsed time: no single closing entry"
+        log_error "  if the closing entry changed, this assertion has stopped matching and is"
+        log_error "  no longer checking anything."
+        return 1
+    fi
+    actual=$(jq -r '.elapsed_seconds // empty' <<<"$entry")
+    if ! _nonneg_number "$actual"; then
+        log_error "  the closing entry's elapsed_seconds is missing or malformed: '$actual'"
         return 1
     fi
 
@@ -232,18 +236,18 @@ assert_min_duration() {
 
 # Assert the run verified its copies by the declared method, and all of them.
 #
-# Usage: assert_verified <log_file> <method>     method = sha256 | count | none
+# Usage: assert_verified <log_file> <method> <job>     method = sha256 | count | none
 #
-# The anchor is the run's report (printReport, cmd/goarchive/cmd/output.go):
+# The anchor is the run's closing entry (logOutcome, cmd/goarchive/cmd/output.go):
 #
-#   copied:  payment=200 rental=200
-#   verified (sha256): payment=200 rental=200
+#   {"msg":"Run completed","job":"j",...,"copied":{"payment":200},"verified":{"payment":200},
+#    "verification":"sha256",...}
 #
-# The verified line lists the rows whose verification passed, by table, for the
-# committed batches; it is printed only when something was compared. So under
-# sha256 or count the two lists must be EQUAL -- a verified line that covers fewer
-# rows than were copied means some batch committed without verification -- and
-# under none (and for purge, which copies nothing) there must be no verified line.
+# verified holds the rows whose verification passed, by table, for the committed batches;
+# it is present only when something was compared. So under sha256 or count the two objects
+# must be EQUAL -- verified covering fewer rows than were copied means some batch committed
+# without verification -- and under none (and for purge, which copies nothing) there must be
+# no verified object.
 #
 # Nothing at any layer asserted that verification ran before 2.x's E2E did, and
 # verification is what makes delete-after-copy safe; a config change or a silently
@@ -251,36 +255,58 @@ assert_min_duration() {
 assert_verified() {
     local log_file=$1
     local method=$2
+    local job=$3
 
-    local verified copied
-    verified=$(grep -E '^  verified \(' "$log_file" | tail -1)
+    local entry verified copied
+    entry=$(closing_entry "$log_file" "$job" "Run completed") || return 1
+    verified=$(jq -c '.verified // empty' <<<"$entry")
     if [[ "$method" == "none" ]]; then
         if [[ -n "$verified" ]]; then
-            log_error "  verification ran, but this test declares verify_method=none:"
-            log_error "    $verified"
+            log_error "  verification ran, but this test declares verify_method=none: $verified"
             return 1
         fi
         log_info "  confirmed: nothing was verified, as expected"
         return 0
     fi
     if [[ -z "$verified" ]]; then
-        log_error "  no verified line in the run's report (expect method=$method)"
-        log_error "    Either nothing was verified, or the report's wording changed and this"
+        log_error "  no verified counts in the run's closing entry (expect method=$method)"
+        log_error "    Either nothing was verified, or the closing entry changed and this"
         log_error "    assertion has stopped matching. Both are findings."
         return 1
     fi
-    if [[ "$verified" != "  verified ($method): "* ]]; then
-        log_error "  the run verified by another method than $method:"
-        log_error "    $verified"
+    if [[ $(jq -r '.verification // empty' <<<"$entry") != "$method" ]]; then
+        log_error "  the run verified by another method than $method: $(jq -r '.verification' <<<"$entry")"
         return 1
     fi
-    copied=$(grep -E '^  copied:  ' "$log_file" | tail -1)
-    if [[ "${verified#  verified ($method): }" != "${copied#  copied:  }" ]]; then
+    copied=$(jq -c '.copied // empty' <<<"$entry")
+    if [[ "$verified" != "$copied" ]]; then
         log_error "  verification did not cover every copied row:"
-        log_error "    $copied"
-        log_error "    $verified"
+        log_error "    copied   $copied"
+        log_error "    verified $verified"
         return 1
     fi
-    log_info "  confirmed: every copied row was verified by $method (${copied#  copied:  })"
+    log_info "  confirmed: every copied row was verified by $method ($copied)"
     return 0
+}
+
+# Print the one closing entry of <job> in <log_file> whose msg starts with <msg_prefix>, as
+# compact JSON. The closing entry is logOutcome's (cmd/goarchive/cmd/output.go). Fails
+# closed: no such entry, or more than one -- an earlier run's entry must never satisfy the
+# current run's check, so callers pass a file that holds one run.
+closing_entry() {
+    local log_file=$1 job=$2 msg_prefix=$3
+    local entries n
+    entries=$(grep -E '^\{' "$log_file" | jq -c --arg job "$job" --arg p "$msg_prefix" \
+        'select(.job == $job and (.msg | startswith($p)))' 2>/dev/null)
+    n=$(printf '%s' "$entries" | grep -c '^{')
+    if [[ "$n" -ne 1 ]]; then
+        log_error "  expected exactly one \"$msg_prefix\" entry for job $job in $log_file, found $n"
+        return 1
+    fi
+    printf '%s\n' "$entries"
+}
+
+# Succeed when $1 is a nonnegative decimal number.
+_nonneg_number() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
