@@ -935,6 +935,102 @@ func TestGateStopDuringSleep(t *testing.T) {
 	}
 }
 
+// A second signal that lands with the first during the sleep wins: with stop closed and ctx
+// cancelled when the loop resumes, the context error and no stop line, whichever the sleep
+// returned (Codex MR R1). The seam returns nil, as the production sleep does when its stop
+// arm is chosen.
+func TestGateCancelledDuringSleepWithStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := make(chan struct{})
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, reader)
+	h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
+		h.sleepCalls++
+		close(stop)
+		cancel()
+
+		return nil
+	}
+
+	err := h.gate.WaitForLag(ctx, stop)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForLag = %v, want context.Canceled: the second signal outranks the first", err)
+	}
+	if countWith(msgsAt(h.lines(), "warn"), stopLine) != 0 {
+		t.Errorf("warn lines = %#v, want no stop line", msgsAt(h.lines(), "warn"))
+	}
+}
+
+// The same through the production sleep, whose select may choose either ready arm: every
+// call returns the context error (Codex MR R1 measured 35 of 64 calls returning the stop).
+func TestGateCancelledDuringProductionSleepWithStop(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		stop := make(chan struct{})
+		reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+		h := newGateHarness(t, 0, reader)
+		h.gate.sleep = func(ctx context.Context, stop2 <-chan struct{}, d time.Duration) error {
+			close(stop)
+			cancel()
+
+			return sleepUntil(ctx, stop2, d)
+		}
+
+		err := h.gate.WaitForLag(ctx, stop)
+		cancel()
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d: WaitForLag = %v, want context.Canceled", i, err)
+		}
+	}
+}
+
+// In a hold, a stop that arrives during a probe ends the call even when the probe returns
+// healthy before the stop aborts it: no pass, no "gate passed" line, nothing cached (Codex
+// MR R2). For one server, and for the last server of a fleet.
+func TestGateStopDuringHeldHealthyProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		readers func(stop chan struct{}) []*fakeReader
+	}{
+		{"one server", func(stop chan struct{}) []*fakeReader {
+			return []*fakeReader{{responses: []readerResult{
+				okRes(stoppedSnapshot()),
+				{snapshot: healthySnapshot(), before: func() { close(stop) }},
+				okRes(healthySnapshot()),
+			}}}
+		}},
+		{"the last server of two", func(stop chan struct{}) []*fakeReader {
+			return []*fakeReader{
+				{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}},
+				{responses: []readerResult{okRes(healthySnapshot()), {snapshot: healthySnapshot(), before: func() { close(stop) }}, okRes(healthySnapshot())}},
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			readers := tc.readers(stop)
+			h := newGateHarness(t, 15*time.Second, readers...)
+
+			err := h.gate.WaitForLag(context.Background(), stop)
+
+			if !errors.Is(err, ErrStopped) {
+				t.Fatalf("WaitForLag = %v, want ErrStopped: the call was holding when the stop arrived", err)
+			}
+			if countWith(msgsAt(h.lines(), "warn"), stopLine) != 1 || countWith(msgsAt(h.lines(), "info"), "replication gate passed") != 0 {
+				t.Errorf("lines = warn %#v, info %#v; want the stop line and no gate-passed line",
+					msgsAt(h.lines(), "warn"), msgsAt(h.lines(), "info"))
+			}
+			calls := readers[0].calls
+			if err := h.gate.WaitForLag(context.Background(), nil); err != nil || readers[0].calls == calls {
+				t.Errorf("next call = %v after %d probes of the first server, want a fresh probe: the stopped call cached no pass", err, readers[0].calls-calls)
+			}
+		})
+	}
+}
+
 // A second signal wins: with ctx cancelled and stop closed, the context error.
 func TestGateCancelledAndStopped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
