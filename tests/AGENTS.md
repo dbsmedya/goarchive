@@ -135,11 +135,11 @@ with the operator's approval for that run, and reads the run's summary table.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1300 FAIL=0 SKIP=4`, measured by the integration runner
+- **Integration inventory:** `PASS=1301 FAIL=0 SKIP=4`, measured by the integration runner
   (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-15 (the beta.2 LAG-1 PR, at
-  `ce6af7e`). It was 1281 before (the beta.2 output-standard PR, at `bb8fba1`): LAG-1 added
+  `c87c6d0`). It was 1281 before (the beta.2 output-standard PR, at `bb8fba1`): LAG-1 added
   `TestMySQLLongHold` (4 rows), `TestMySQLStopDuringHold` (3), `TestMySQLStopNeverCutsAPass` (2)
-  and seven gate unit tests the integration packages also run. Re-measure after adding or removing
+  and eight gate unit tests the integration packages also run. Re-measure after adding or removing
   tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
   443 s. Later gates took 450–472 s (466 s at `e4ef55d`, run `20261014T201816Z-82233`, on this
