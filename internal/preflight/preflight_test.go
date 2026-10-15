@@ -37,7 +37,7 @@ func enabledStages(cfg Config) []string {
 func TestStagesByJobType(t *testing.T) {
 	structure := []string{"TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
 	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "DestinationKeys", "DestinationSchemaCompatibility",
-		"DestinationWritePermissions", "DestinationInsertTriggers"}
+		"DestinationWritePermissions", "DestinationInsertTriggerVisibility", "DestinationInsertTriggers"}
 	join := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	for _, tc := range []struct {
 		typ  jobspec.Type
@@ -45,9 +45,9 @@ func TestStagesByJobType(t *testing.T) {
 		want []string
 	}{
 		{jobspec.Archive, false, join(structure, destination, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
+			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggerVisibility", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
 		{jobspec.Purge, false, join(structure, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
-			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggers", "CascadeRules", "StatementCaps",
+			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggerVisibility", "DeleteTriggers", "CascadeRules", "StatementCaps",
 			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
@@ -137,10 +137,17 @@ func TestFactsAreReadOnce(t *testing.T) {
 		counts[c]++
 	}
 	want := map[string]int{"Tables": 1, "PrimaryKeys": 1, "TableSpec": 3, "ForeignKeys": 3, "Privileges": 1,
-		"Triggers": 1, "RangeOptimizerMaxMemSize": 1}
+		"TriggerProof": 1, "RangeOptimizerMaxMemSize": 1}
 	for k, n := range want {
 		if counts[k] != n {
 			t.Errorf("source %s read %d times, want %d (calls %v)", k, counts[k], n, w.src.calls)
 		}
+	}
+	dst := map[string]int{}
+	for _, c := range w.dst.calls {
+		dst[c]++
+	}
+	if dst["TriggerProof"] != 1 {
+		t.Errorf("destination TriggerProof read %d times, want 1 (calls %v)", dst["TriggerProof"], w.dst.calls)
 	}
 }

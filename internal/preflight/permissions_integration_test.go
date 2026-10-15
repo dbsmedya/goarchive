@@ -183,7 +183,7 @@ func TestMySQLJobSchemaPermission(t *testing.T) {
 		})
 	}
 	t.Run("with CREATE it passes", func(t *testing.T) {
-		as := acctCreate(t, "TEST_DEST", dst, "jscreate", dstSchema, schemaGrant("CREATE, SELECT, INSERT, UPDATE"))
+		as := acctCreate(t, "TEST_DEST", dst, "jscreate", dstSchema, schemaGrant("CREATE, SELECT, INSERT, UPDATE, TRIGGER"))
 		for _, typ := range acctTypes {
 			if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
 				t.Errorf("%s: Run() = %v, want success", typ, err)
@@ -234,7 +234,7 @@ func TestMySQLDestinationWritePermission(t *testing.T) {
 	})
 	t.Run("table-scope INSERT passes", func(t *testing.T) {
 		as := acctCreate(t, "TEST_DEST", dst, "dwtableins", dstSchema, append(base,
-			"GRANT INSERT ON `"+dstSchema+"`.`orders` TO {{A}}", "GRANT INSERT ON `"+dstSchema+"`.`order_lines` TO {{A}}")...)
+			"GRANT INSERT, TRIGGER ON `"+dstSchema+"`.`orders` TO {{A}}", "GRANT INSERT, TRIGGER ON `"+dstSchema+"`.`order_lines` TO {{A}}")...)
 		for _, typ := range acctTypes {
 			if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, jobSchema, job(t, typ, acctJob)); err != nil {
 				t.Errorf("%s: Run() = %v, want success", typ, err)
@@ -282,7 +282,7 @@ func TestMySQLSourceSelectPermission(t *testing.T) {
 	})
 	t.Run("with SELECT it passes", func(t *testing.T) {
 		as := acctCreate(t, "TEST_SOURCE", src, "ssselect", srcSchema,
-			withProcess(append(tables, "GRANT SELECT ON `"+srcSchema+"`.* TO {{A}}")...)...)
+			withProcess(append(tables, "GRANT SELECT, TRIGGER ON `"+srcSchema+"`.* TO {{A}}")...)...)
 		for _, typ := range acctTypes {
 			if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
 				t.Errorf("%s: Run() = %v, want success", typ, err)
@@ -361,7 +361,7 @@ func TestMySQLSourceDeletePermission(t *testing.T) {
 		}
 	})
 	t.Run("a global DELETE passes", func(t *testing.T) {
-		as := acctCreate(t, "TEST_SOURCE", src, "sddelete", srcSchema, append(base, "GRANT DELETE ON *.* TO {{A}}")...)
+		as := acctCreate(t, "TEST_SOURCE", src, "sddelete", srcSchema, append(base, "GRANT DELETE, TRIGGER ON *.* TO {{A}}")...)
 		for _, typ := range acctTypes {
 			if err := acctRun(ctx, t, as, dst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
 				t.Errorf("%s: Run() = %v, want success", typ, err)
@@ -416,7 +416,7 @@ func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "prole")
 	ctx := context.Background()
 	srcSelect := "GRANT SELECT ON `" + srcSchema + "`.* TO "
-	direct := []string{"GRANT PROCESS ON *.* TO {{A}}", "GRANT DELETE ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
+	direct := []string{"GRANT PROCESS ON *.* TO {{A}}", "GRANT DELETE, TRIGGER ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
 	dstAll := "GRANT CREATE, SELECT, INSERT, UPDATE ON `" + dstSchema + "`.* TO "
 
 	t.Run("source SELECT through a role is refused", func(t *testing.T) {
@@ -446,7 +446,8 @@ func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 			"Grant each missing privilege directly to the account at schema scope")
 	})
 	t.Run("job schema grants held directly pass", func(t *testing.T) {
-		as := acctCreate(t, "TEST_DEST", dst, "rldstdirect", dstSchema, acctSeesGrants, dstAll+"{{A}}")
+		as := acctCreate(t, "TEST_DEST", dst, "rldstdirect", dstSchema, acctSeesGrants, dstAll+"{{A}}",
+			"GRANT TRIGGER ON `"+dstSchema+"`.* TO {{A}}")
 		if err := acctRun(ctx, t, src, as, srcSchema, dstSchema, dstSchema, job(t, jobspec.Archive, acctJob)); err != nil {
 			t.Errorf("Run() = %v, want success", err)
 		}
@@ -473,7 +474,7 @@ func TestMySQLRoleHeldGrantsFailClosed(t *testing.T) {
 func TestMySQLForeignKeyVisibility(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "pvis")
 	ctx := context.Background()
-	base := []string{"GRANT SELECT, DELETE ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
+	base := []string{"GRANT SELECT, DELETE, TRIGGER ON `" + srcSchema + "`.* TO {{A}}", acctSeesGrants}
 	noProcess := acctCreate(t, "TEST_SOURCE", src, "visnoproc", srcSchema, base...)
 	process := acctCreate(t, "TEST_SOURCE", src, "visproc", srcSchema, append(base, "GRANT PROCESS ON *.* TO {{A}}")...)
 	probe, err := validations.NewInspector(noProcess, srcSchema).ForeignKeys(ctx, validations.IncomingTo("orders"))
@@ -550,6 +551,91 @@ func TestMySQLForeignKeyVisibility(t *testing.T) {
 	})
 }
 
+// TestMySQLTriggerVisibility (beta audit A2): MySQL lists a table's triggers only to an
+// account holding TRIGGER on it, so preflight trusts an empty list only when that privilege is
+// granted directly, at schema or table scope. The source side applies to archive and purge,
+// the destination side to archive and copy-only. Every account here can read mysql.*, so a
+// privilege granted nowhere reads absent (the engine witness covers the unconfirmed case).
+// Pair (source): the recipe without TRIGGER → archive and purge refused with
+// DELETE_TRIGGER_VISIBILITY_CHECK naming orders(absent) and order_lines(absent), copy-only
+// passes; TRIGGER through a default role → refused naming both unconfirmed, and the same role
+// beside a direct schema TRIGGER → passes (the direct grant is additive); TRIGGER at table
+// scope on orders only → refused naming order_lines(absent) alone; on both tables → passes.
+// Pair (destination): the recipe without TRIGGER → archive and copy-only refused with
+// DEST_INSERT_TRIGGER_VISIBILITY_CHECK naming both absent, purge passes.
+// Visible lists: with TRIGGER granted, a source AFTER DELETE trigger is refused by
+// DELETE_TRIGGER_CHECK and a destination AFTER INSERT trigger by DEST_INSERT_TRIGGER_CHECK, by
+// name, for a limited account as for root.
+func TestMySQLTriggerVisibility(t *testing.T) {
+	src, dst, srcSchema, dstSchema := acctFixture(t, "ptrg")
+	ctx := context.Background()
+	srcRecipe := []string{"GRANT SELECT, DELETE ON `" + srcSchema + "`.* TO {{A}}", "GRANT PROCESS ON *.* TO {{A}}", acctSeesGrants}
+	srcTrigger := "GRANT TRIGGER ON `" + srcSchema + "`.* TO {{A}}"
+	dstRecipe := []string{"GRANT SELECT, INSERT, CREATE, UPDATE ON `" + dstSchema + "`.* TO {{A}}", acctSeesGrants}
+	dstTrigger := "GRANT TRIGGER ON `" + dstSchema + "`.* TO {{A}}"
+	srcCan := acctCreate(t, "TEST_SOURCE", src, "tvsrc", srcSchema, append(srcRecipe, srcTrigger)...)
+	dstCan := acctCreate(t, "TEST_DEST", dst, "tvdst", dstSchema, append(dstRecipe, dstTrigger)...)
+
+	// each runs every job type and expects check naming tables for the types in refused, success
+	// for the others.
+	each := func(t *testing.T, as, ad *sql.DB, refused []jobspec.Type, check string, tables ...string) {
+		t.Helper()
+		for _, typ := range acctTypes {
+			err := acctRun(ctx, t, as, ad, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+			if slices.Contains(refused, typ) {
+				acctTablesAre(t, refusedWith(t, err, check), tables...)
+			} else if err != nil {
+				t.Errorf("%s: Run() = %v, want success", typ, err)
+			}
+		}
+	}
+	deletes := []jobspec.Type{jobspec.Archive, jobspec.Purge}
+	copies := []jobspec.Type{jobspec.Archive, jobspec.CopyOnly}
+
+	t.Run("source recipe without TRIGGER is refused", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "tvnosrc", srcSchema, srcRecipe...)
+		each(t, as, dstCan, deletes, "DELETE_TRIGGER_VISIBILITY_CHECK", "orders(absent)", "order_lines(absent)")
+	})
+	t.Run("destination recipe without TRIGGER is refused", func(t *testing.T) {
+		ad := acctCreate(t, "TEST_DEST", dst, "tvnodst", dstSchema, dstRecipe...)
+		each(t, srcCan, ad, copies, "DEST_INSERT_TRIGGER_VISIBILITY_CHECK", "orders(absent)", "order_lines(absent)")
+	})
+	t.Run("source TRIGGER through a role is refused", func(t *testing.T) {
+		role := acctRole(t, src, "rtrg", "GRANT TRIGGER ON `"+srcSchema+"`.* TO {{R}}")
+		as := acctCreate(t, "TEST_SOURCE", src, "tvrole", srcSchema,
+			append(srcRecipe, "GRANT "+role+" TO {{A}}", "SET DEFAULT ROLE ALL TO {{A}}")...)
+		acctRoleActive(t, as, role)
+		each(t, as, dstCan, deletes, "DELETE_TRIGGER_VISIBILITY_CHECK", "orders(unconfirmed)", "order_lines(unconfirmed)")
+	})
+	t.Run("a direct TRIGGER beside the role passes", func(t *testing.T) {
+		role := acctRole(t, src, "rtrg2", "GRANT TRIGGER ON `"+srcSchema+"`.* TO {{R}}")
+		as := acctCreate(t, "TEST_SOURCE", src, "tvroledir", srcSchema,
+			append(srcRecipe, srcTrigger, "GRANT "+role+" TO {{A}}", "SET DEFAULT ROLE ALL TO {{A}}")...)
+		acctRoleActive(t, as, role)
+		each(t, as, dstCan, nil, "")
+	})
+	t.Run("source TRIGGER on one table names the other", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "tvone", srcSchema,
+			append(srcRecipe, acctOnTables("TRIGGER", srcSchema, "orders")...)...)
+		each(t, as, dstCan, deletes, "DELETE_TRIGGER_VISIBILITY_CHECK", "order_lines(absent)")
+	})
+	t.Run("source TRIGGER at table scope on both passes", func(t *testing.T) {
+		as := acctCreate(t, "TEST_SOURCE", src, "tvboth", srcSchema,
+			append(srcRecipe, acctOnTables("TRIGGER", srcSchema, "orders", "order_lines")...)...)
+		each(t, as, dstCan, nil, "")
+	})
+	t.Run("a visible source DELETE trigger is refused by name", func(t *testing.T) {
+		execAll(t, src, "CREATE TRIGGER trg_tv_ad AFTER DELETE ON orders FOR EACH ROW SET @ga_tv = OLD.id")
+		defer execAll(t, src, "DROP TRIGGER trg_tv_ad")
+		each(t, srcCan, dstCan, deletes, "DELETE_TRIGGER_CHECK", "orders(trg_tv_ad)")
+	})
+	t.Run("a visible destination INSERT trigger is refused by name", func(t *testing.T) {
+		execAll(t, dst, "CREATE TRIGGER trg_tv_ai AFTER INSERT ON orders FOR EACH ROW SET @ga_tv = NEW.id")
+		defer execAll(t, dst, "DROP TRIGGER trg_tv_ai")
+		each(t, srcCan, dstCan, copies, "DEST_INSERT_TRIGGER_CHECK", "orders(trg_tv_ai)")
+	})
+}
+
 // acctWatchdog is how long a preflight run may take before the test calls it blocked.
 const acctWatchdog = 30 * time.Second
 
@@ -572,7 +658,8 @@ func acctStart(t *testing.T, src, dst *sql.DB, srcSchema, dstSchema string) <-ch
 
 // TestMySQLPrivilegeReadOnAPoolOfOne (M7-5, G6): mysqlServer.Privileges takes a
 // dedicated connection for the grant read and releases it before the next query, so a
-// pool limited to one connection (max_connections: 1) never waits on itself.
+// pool limited to one connection (max_connections: 1) never waits on itself; so does
+// mysqlServer.TriggerProof, the second dedicated-connection read (beta audit A2).
 // Pair: the source pool, then separately the destination pool, limited to one connection
 // → an archive preflight passes inside the watchdog; the same pool of one while the test
 // holds its only connection → the run is still blocked after two seconds, which is what
@@ -634,7 +721,10 @@ func TestMySQLPrivilegeReadOnAPoolOfOne(t *testing.T) {
 // docs/README_PERMISSIONS.md's grant recipes pass for every job type. Accounts holding the
 // same privileges only as global grants pass with it OFF, and with it ON are refused by
 // the first permission check on a server that has it: JOB_SCHEMA_PERMISSION_CHECK on the
-// destination, else SOURCE_SELECT_PERMISSION_CHECK, every state unconfirmed.
+// destination, else SOURCE_SELECT_PERMISSION_CHECK, every state unconfirmed. Accounts with
+// the recipe's schema grants but TRIGGER only globally pass with it OFF, and with it ON are
+// refused by the trigger visibility check of the side that has it, every state unconfirmed
+// (beta audit A2).
 func TestMySQLPartialRevokes(t *testing.T) {
 	src, dst, srcSchema, dstSchema := acctFixture(t, "prev")
 	ctx := context.Background()
@@ -649,11 +739,11 @@ func TestMySQLPartialRevokes(t *testing.T) {
 	t.Logf("partial_revokes: source %v, destination %v", srcOn, dstOn)
 
 	recipeSrc := acctCreate(t, "TEST_SOURCE", src, "prvrsrc", srcSchema,
-		"GRANT SELECT, DELETE ON `"+srcSchema+"`.* TO {{A}}", "GRANT PROCESS ON *.* TO {{A}}")
+		"GRANT SELECT, DELETE, TRIGGER ON `"+srcSchema+"`.* TO {{A}}", "GRANT PROCESS ON *.* TO {{A}}")
 	recipeDst := acctCreate(t, "TEST_DEST", dst, "prvrdst", dstSchema,
-		"GRANT SELECT, INSERT, CREATE, UPDATE ON `"+dstSchema+"`.* TO {{A}}")
-	globalSrc := acctCreate(t, "TEST_SOURCE", src, "prvgsrc", srcSchema, "GRANT SELECT, DELETE, PROCESS ON *.* TO {{A}}")
-	globalDst := acctCreate(t, "TEST_DEST", dst, "prvgdst", dstSchema, "GRANT SELECT, INSERT, CREATE, UPDATE ON *.* TO {{A}}")
+		"GRANT SELECT, INSERT, CREATE, UPDATE, TRIGGER ON `"+dstSchema+"`.* TO {{A}}")
+	globalSrc := acctCreate(t, "TEST_SOURCE", src, "prvgsrc", srcSchema, "GRANT SELECT, DELETE, PROCESS, TRIGGER ON *.* TO {{A}}")
+	globalDst := acctCreate(t, "TEST_DEST", dst, "prvgdst", dstSchema, "GRANT SELECT, INSERT, CREATE, UPDATE, TRIGGER ON *.* TO {{A}}")
 
 	for _, typ := range acctTypes {
 		if err := acctRun(ctx, t, recipeSrc, recipeDst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob)); err != nil {
@@ -668,6 +758,26 @@ func TestMySQLPartialRevokes(t *testing.T) {
 			acctTablesAre(t, refusedWith(t, err, "SOURCE_SELECT_PERMISSION_CHECK"), "orders(unconfirmed)", "order_lines(unconfirmed)")
 		case err != nil:
 			t.Errorf("global grants, %s: Run() = %v with partial_revokes OFF, want success", typ, err)
+		}
+	}
+	globalTrgSrc := acctCreate(t, "TEST_SOURCE", src, "prvtsrc", srcSchema,
+		"GRANT SELECT, DELETE ON `"+srcSchema+"`.* TO {{A}}", "GRANT PROCESS, TRIGGER ON *.* TO {{A}}")
+	globalTrgDst := acctCreate(t, "TEST_DEST", dst, "prvtdst", dstSchema,
+		"GRANT SELECT, INSERT, CREATE, UPDATE ON `"+dstSchema+"`.* TO {{A}}", "GRANT TRIGGER ON *.* TO {{A}}")
+	for _, typ := range acctTypes {
+		err := acctRun(ctx, t, globalTrgSrc, recipeDst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+		switch {
+		case srcOn && typ != jobspec.CopyOnly:
+			acctTablesAre(t, refusedWith(t, err, "DELETE_TRIGGER_VISIBILITY_CHECK"), "orders(unconfirmed)", "order_lines(unconfirmed)")
+		case err != nil:
+			t.Errorf("global source TRIGGER, %s: Run() = %v, want success", typ, err)
+		}
+		err = acctRun(ctx, t, recipeSrc, globalTrgDst, srcSchema, dstSchema, dstSchema, job(t, typ, acctJob))
+		switch {
+		case dstOn && typ != jobspec.Purge:
+			acctTablesAre(t, refusedWith(t, err, "DEST_INSERT_TRIGGER_VISIBILITY_CHECK"), "orders(unconfirmed)", "order_lines(unconfirmed)")
+		case err != nil:
+			t.Errorf("global destination TRIGGER, %s: Run() = %v, want success", typ, err)
 		}
 	}
 }

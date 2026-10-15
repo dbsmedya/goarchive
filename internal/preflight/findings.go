@@ -67,13 +67,12 @@ func nonBaseTables(found []validations.TableInfo) []string {
 
 // privilegeOffenders formats privilege findings: "PRIVILEGE(state)" at schema scope,
 // "table(state)" at table scope. Only GrantPresent passes; the library emits a finding for
-// every other state, and the state is shown so "absent" and "cannot prove" differ.
-func privilegeOffenders(stage string, findings []validations.Finding) ([]string, error) {
+// every other state, and the state is shown so "absent" and "cannot prove" differ. A finding
+// whose check is not one of accept fails closed.
+func privilegeOffenders(stage string, findings []validations.Finding, accept ...string) ([]string, error) {
 	var out []string
 	for _, f := range findings {
-		switch f.Check {
-		case validations.IDSchemaPrivileges, validations.IDTablePrivileges:
-		default:
+		if !slices.Contains(accept, f.Check) {
 			return nil, unexpectedFinding(stage, f)
 		}
 		fact, ok := f.Facts.(validations.PrivilegeFact)

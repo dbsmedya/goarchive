@@ -63,7 +63,7 @@ func (r renamedFlag) Set(string) error {
 // honours (archive and purge jobs).
 func registerForceTriggersFlag(c *cobra.Command, forceTriggers *bool) {
 	c.Flags().BoolVar(forceTriggers, "force-triggers", false,
-		"Accept DELETE triggers on source tables of archive and purge jobs; every delete fires them.")
+		"Accept DELETE triggers that preflight can list on source tables of archive and purge jobs; every delete fires them.")
 }
 
 // runJob runs one job of type typ on the engine (spec §7.1): load and check the job, then

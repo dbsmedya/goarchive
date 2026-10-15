@@ -1,7 +1,9 @@
 package preflight
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -130,6 +132,96 @@ func TestTriggers(t *testing.T) {
 	w.dst.triggers = []validations.TriggerInfo{{Table: "orders", Name: "trg_ins", Event: "INSERT", Timing: "AFTER"}}
 	if e := w.mustFail("DEST_INSERT_TRIGGER_CHECK"); !hasTable(e, "orders(trg_ins)") {
 		t.Errorf("tables = %v", e.Tables)
+	}
+}
+
+// TestTriggerVisibility (beta audit A2): MySQL lists a table's triggers only to an account
+// holding TRIGGER on it, so an empty list proves nothing unless that privilege is present.
+// Each side refuses under its own check before its trigger check reads the list, whatever
+// --force-triggers says, and fails closed on a finding it does not know. Purge isolates the
+// source side and copy-only the destination side; archive runs both.
+func TestTriggerVisibility(t *testing.T) {
+	for _, side := range []struct {
+		name, check, triggerCheck, event, stage, schema string
+		typ                                             jobspec.Type
+		server                                          func(*world) *fakeServer
+	}{
+		{"source", "DELETE_TRIGGER_VISIBILITY_CHECK", "DELETE_TRIGGER_CHECK", "DELETE", "delete_trigger_visibility", "src",
+			jobspec.Purge, func(w *world) *fakeServer { return w.src }},
+		{"destination", "DEST_INSERT_TRIGGER_VISIBILITY_CHECK", "DEST_INSERT_TRIGGER_CHECK", "INSERT", "destination_insert_trigger_visibility", "dst",
+			jobspec.CopyOnly, func(w *world) *fakeServer { return w.dst }},
+	} {
+		t.Run(side.name, func(t *testing.T) {
+			t.Run("each state that is not present is refused, in job order", func(t *testing.T) {
+				for _, typ := range []jobspec.Type{side.typ, jobspec.Archive} {
+					w := healthy(t, typ)
+					side.server(w).hidden = map[string]validations.GrantState{
+						"line_notes": validations.GrantUnknown, "orders": validations.GrantAbsent, "order_lines": validations.GrantUnconfirmed}
+					e := w.mustFail(side.check)
+					if want := []string{"orders(absent)", "order_lines(unconfirmed)", "line_notes(unknown)"}; !slices.Equal(e.Tables, want) {
+						t.Errorf("%s: tables = %v, want %v", typ, e.Tables, want)
+					}
+					for _, s := range []string{side.event + " triggers", "GRANT TRIGGER ON <schema>.* TO <user>",
+						"--force-triggers does not apply", "creating and dropping triggers"} {
+						if !strings.Contains(e.Message, s) {
+							t.Errorf("%s: message %q lacks %q", typ, e.Message, s)
+						}
+					}
+				}
+			})
+			t.Run("one hidden table is named alone", func(t *testing.T) {
+				w := healthy(t, side.typ)
+				side.server(w).hidden = map[string]validations.GrantState{"order_lines": validations.GrantAbsent}
+				if e := w.mustFail(side.check); !slices.Equal(e.Tables, []string{"order_lines(absent)"}) {
+					t.Errorf("tables = %v, want [order_lines(absent)]", e.Tables)
+				}
+			})
+			t.Run("--force-triggers does not lift it", func(t *testing.T) {
+				w := healthy(t, side.typ)
+				w.cfg.ForceTriggers = true
+				side.server(w).hidden = map[string]validations.GrantState{"orders": validations.GrantAbsent}
+				w.refused(side.check)
+			})
+			t.Run("a proven list reaches the trigger check", func(t *testing.T) {
+				w := healthy(t, side.typ)
+				side.server(w).triggers = []validations.TriggerInfo{{Table: "orders", Name: "trg", Event: side.event, Timing: "AFTER"}}
+				if e := w.mustFail(side.triggerCheck); !hasTable(e, "orders(trg)") {
+					t.Errorf("tables = %v, want orders(trg)", e.Tables)
+				}
+			})
+			t.Run("fails closed on a finding it does not know", func(t *testing.T) {
+				trigger := validations.PrivilegeFact{Schema: side.schema, Table: "orders", Privilege: validations.PrivilegeTrigger,
+					State: validations.GrantAbsent}
+				other, noTable := trigger, trigger
+				other.Privilege = validations.PrivilegeSelect
+				noTable.Table = ""
+				for _, tc := range []struct {
+					name, want string
+					f          validations.Finding
+				}{
+					{"another check", "PREFLIGHT_UNKNOWN_FINDING", validations.Finding{Check: validations.IDTablePrivileges, Facts: trigger}},
+					{"facts of another type", "PREFLIGHT_UNEXPECTED_FACTS", validations.Finding{Check: validations.IDTriggerMetadataVisibility, Facts: "orders"}},
+					{"another privilege", "PREFLIGHT_UNEXPECTED_FACTS", validations.Finding{Check: validations.IDTriggerMetadataVisibility, Facts: other}},
+					{"no table", "PREFLIGHT_UNEXPECTED_FACTS", validations.Finding{Check: validations.IDTriggerMetadataVisibility, Facts: noTable}},
+				} {
+					w := healthy(t, side.typ)
+					side.server(w).visibility = []validations.Finding{tc.f}
+					_, err := w.run()
+					var pe *Error
+					if err == nil || errors.As(err, &pe) || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), side.stage) {
+						t.Errorf("%s: run() = %v, want a plain %s error from stage %s", tc.name, err, tc.want, side.stage)
+					}
+				}
+			})
+			t.Run("a failed read is an inspection error", func(t *testing.T) {
+				w := healthy(t, side.typ)
+				side.server(w).proofErr = errors.New("connection refused")
+				_, err := w.run()
+				if err == nil || !strings.Contains(err.Error(), "preflight "+side.stage+" inspection failed: connection refused") {
+					t.Errorf("run() = %v, want the %s inspection error", err, side.stage)
+				}
+			})
+		})
 	}
 }
 

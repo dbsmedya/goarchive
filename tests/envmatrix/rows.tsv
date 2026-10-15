@@ -33,7 +33,7 @@ sql_select_limit_20	dynamic	SET GLOBAL sql_select_limit = 20	pass
 # expectation is the runtime backstop's, as the suites' own pools reach it: they open with
 # mysql.NewConnector, not through Manager (register row M7c-F6).
 max_error_count_0	dynamic	SET GLOBAL max_error_count = 0	refuse:INSERT_DIAGNOSTICS_UNPROVEN|raise max_error_count
-partial_revokes_on	dynamic	SET GLOBAL partial_revokes = ON	refuse:JOB_SCHEMA_PERMISSION_CHECK|SOURCE_SELECT_PERMISSION_CHECK|SOURCE_DELETE_PERMISSION_CHECK|FK_COVERAGE_VISIBILITY_CHECK
+partial_revokes_on	dynamic	SET GLOBAL partial_revokes = ON	refuse:JOB_SCHEMA_PERMISSION_CHECK|SOURCE_SELECT_PERMISSION_CHECK|SOURCE_DELETE_PERMISSION_CHECK|FK_COVERAGE_VISIBILITY_CHECK|DELETE_TRIGGER_VISIBILITY_CHECK|DEST_INSERT_TRIGGER_VISIBILITY_CHECK
 sql_mode_allow_invalid_dates	dynamic	SET GLOBAL sql_mode = 'ALLOW_INVALID_DATES'	pass
 sql_mode_ansi_quotes	dynamic	SET GLOBAL sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION,ANSI_QUOTES'	pass
 sql_mode_empty	dynamic	SET GLOBAL sql_mode = ''	pass

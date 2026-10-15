@@ -172,6 +172,8 @@ func stages(cfg Config) []stage {
 		{"DestinationKeys", destination, checkDestinationKeys},
 		{"DestinationSchemaCompatibility", destination, checkDestinationSchemaCompatibility},
 		{"DestinationWritePermissions", destination, checkDestinationWritePermissions},
+		// Visibility must be proven before the trigger check trusts an empty list (beta audit A2).
+		{"DestinationInsertTriggerVisibility", destination, checkDestinationInsertTriggerVisibility},
 		{"DestinationInsertTriggers", destination, checkDestinationInsertTriggers},
 		// Under SkipPolicy the destination keys are still read, unjudged: the destination
 		// statement caps are computed from them (spec §8.3).
@@ -185,6 +187,7 @@ func stages(cfg Config) []stage {
 
 		{"SourceSelectPermissions", policy, checkSourceSelectPermissions},
 		{"SourceDeletePermissions", deletes, checkSourceDeletePermissions},
+		{"DeleteTriggerVisibility", deletes, checkDeleteTriggerVisibility},
 		{"DeleteTriggers", deletes, func(ctx context.Context, f *facts) error {
 			return checkDeleteTriggers(ctx, f, cfg.ForceTriggers)
 		}},
