@@ -880,6 +880,33 @@ func TestGateStopDuringHeldProbe(t *testing.T) {
 	}
 }
 
+// In the first round of a call over a fleet, once one server has reported unhealthy, the
+// call is a hold: a stop during the next server's blocking probe ends it at once, not when
+// that probe returns (Fable final review F1). Each script ends in a response that lets the
+// loop terminate.
+func TestGateStopDuringFirstRoundSecondProbe(t *testing.T) {
+	stop := make(chan struct{})
+	a := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	b := &fakeReader{responses: []readerResult{{block: true, before: func() { close(stop) }}, okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, a, b)
+
+	done := make(chan error, 1)
+	go func() { done <- h.gate.WaitForLag(context.Background(), stop) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForLag still blocked 5 s after a stop during the second server's probe in a hold")
+	}
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want ErrStopped", err)
+	}
+	warns := msgsAt(h.lines(), "warn")
+	if countWith(warns, "replication hold: server replica1:3306") != 1 || countWith(warns, "replication hold: server replica2:3306") != 0 || countWith(warns, stopLine) != 1 {
+		t.Errorf("warn lines = %#v, want replica1's hold line and the stop line only", warns)
+	}
+}
+
 // A stop during the sleep ends the hold without another probe.
 func TestGateStopDuringSleep(t *testing.T) {
 	stop := make(chan struct{})
