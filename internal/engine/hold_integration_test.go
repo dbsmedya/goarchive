@@ -44,7 +44,7 @@ func newKillingGate(t *testing.T, e env, root string) *killingGate {
 	return &killingGate{admin: openServer(t, "TEST_SOURCE", "", nil), schema: e.srcSchema, lock: lock.TableLockName(e.srcSchema, root)}
 }
 
-func (g *killingGate) WaitForLag(ctx context.Context) error {
+func (g *killingGate) WaitForLag(ctx context.Context, _ <-chan struct{}) error {
 	if g.killed.Load() > 0 {
 		return nil
 	}

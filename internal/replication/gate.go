@@ -3,6 +3,7 @@ package replication
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,11 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
+
+// ErrStopped reports that a stop request ended a hold (LAG-1). A call returns
+// it only once a probe has reported a server unhealthy: a stop never cuts a
+// pass short.
+var ErrStopped = errors.New("replication: hold ended by a stop request")
 
 // statusReader is the one library behavior the gate needs, named locally so
 // the policy layer can be tested without a connection.
@@ -51,7 +57,7 @@ type Gate struct {
 	// now and sleep are seams: injected in tests so TTL expiry, tick cadence
 	// and held durations need no wall clock.
 	now   func() time.Time
-	sleep func(context.Context, time.Duration) error
+	sleep func(context.Context, <-chan struct{}, time.Duration) error
 
 	logger *logger.Logger
 }
@@ -106,15 +112,18 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger) (*Gate
 	return g, nil
 }
 
-// sleepUntil waits for d or for the context, whichever comes first. It is the
-// production seam; tests inject a deterministic replacement.
-func sleepUntil(ctx context.Context, d time.Duration) error {
+// sleepUntil waits for d, for the context or for stop, whichever comes first. A
+// stop returns nil, so the caller's check decides. It is the production seam;
+// tests inject a deterministic replacement.
+func sleepUntil(ctx context.Context, stop <-chan struct{}, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-stop:
+		return nil
 	case <-timer.C:
 		return nil
 	}
@@ -151,7 +160,14 @@ type holdInfo struct {
 // The hold state machine is scoped to this call: a hold spanning two calls
 // logs a fresh entry line in the second, because from the job's perspective it
 // is a new hold.
-func (g *Gate) WaitForLag(ctx context.Context) error {
+//
+// stop is the run's stop channel; nil never closes. A stop ends a hold, never a
+// pass: the first probe of a call runs on ctx alone, so a stop before its
+// result still lets a healthy fleet pass. Once a probe has reported a server
+// unhealthy, a stop ends the call at once with ErrStopped: during the sleep, or
+// during a later probe, which runs on a context the stop cancels, since a probe
+// of a replica whose host is down blocks for the connect timeout.
+func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
 	}
@@ -171,13 +187,25 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 			return err
 		}
 
+		holding := !firstHold.IsZero()
+		probe, release := ctx, context.CancelFunc(func() {})
+		if holding {
+			probe, release = withStop(ctx, stop)
+		}
+
 		allOK := true
 		for _, srv := range g.servers {
-			snapshot, err := srv.reader.ReplicaStatus(ctx)
+			snapshot, err := srv.reader.ReplicaStatus(probe)
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
 			if cerr := ctx.Err(); cerr != nil {
+				release()
 				return cerr
+			}
+			// Nor is a probe the stop aborted.
+			if err != nil && holding && stopped(stop) {
+				release()
+				return g.endHold(firstHold)
 			}
 
 			var cause holdCause
@@ -197,6 +225,7 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 				allOK = false
 			}
 		}
+		release()
 
 		if allOK {
 			g.mu.Lock()
@@ -211,10 +240,50 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 			return nil
 		}
 
-		if err := g.sleep(ctx, g.interval); err != nil {
+		if stopped(stop) {
+			return g.endHold(firstHold)
+		}
+		if err := g.sleep(ctx, stop, g.interval); err != nil {
 			return err
 		}
+		if stopped(stop) {
+			return g.endHold(firstHold)
+		}
 	}
+}
+
+// endHold logs that a stop ended the hold begun at firstHold and returns
+// ErrStopped. WARN and Live, like the hold lines.
+func (g *Gate) endHold(firstHold time.Time) error {
+	g.logger.Warnw(fmt.Sprintf("replication hold ended by a stop request; job held %s",
+		g.now().Sub(firstHold).Round(time.Second)), logger.Live)
+
+	return ErrStopped
+}
+
+// stopped reports whether stop is closed. A nil channel never is.
+func stopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// withStop returns a child of ctx that stop also cancels, for a probe made
+// during a hold; the returned cancel ends it and its watcher.
+func withStop(ctx context.Context, stop <-chan struct{}) (context.Context, context.CancelFunc) {
+	probe, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-probe.Done():
+		}
+	}()
+
+	return probe, cancel
 }
 
 // transition advances one server's hold state and emits exactly one log line

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -57,6 +58,10 @@ func (r *run) recover(ctx context.Context) error {
 		after = roots[len(roots)-1]
 		r.log.Infow(fmt.Sprintf("Recovery: replaying %d %s roots of %s", len(roots), st, r.root.Table), logger.Live)
 		if err := r.replay(ctx, st, roots); err != nil {
+			if errors.Is(err, errHoldStopped) {
+				r.report.Stopped = true
+				return nil
+			}
 			return err
 		}
 		r.report.Recovered += int64(len(roots))
