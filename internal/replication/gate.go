@@ -166,7 +166,8 @@ type holdInfo struct {
 // result still lets a healthy fleet pass. Once a probe has reported a server
 // unhealthy, a stop ends the call at once with ErrStopped: during the sleep, or
 // during a later probe, which runs on a context the stop cancels, since a probe
-// of a replica whose host is down blocks for the connect timeout.
+// of a replica whose host is down blocks for the connect timeout, and whatever
+// that probe returns. A cancelled ctx outranks a stop that came with it.
 func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
@@ -204,9 +205,13 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
-			// Nor is a probe the stop aborted.
-			if err != nil && holding && stopped(stop) {
-				return g.endHold(firstHold)
+			// Nor is a probe the stop aborted. Once the call holds, a stop
+			// that arrived during the probe ends it whatever the probe
+			// returned: a healthy result is not a pass to finish.
+			if holding {
+				if err := g.stopHold(ctx, stop, firstHold); err != nil {
+					return err
+				}
 			}
 
 			var cause holdCause
@@ -240,16 +245,30 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			return nil
 		}
 
-		if stopped(stop) {
-			return g.endHold(firstHold)
+		if err := g.stopHold(ctx, stop, firstHold); err != nil {
+			return err
 		}
 		if err := g.sleep(ctx, stop, g.interval); err != nil {
 			return err
 		}
-		if stopped(stop) {
-			return g.endHold(firstHold)
+		if err := g.stopHold(ctx, stop, firstHold); err != nil {
+			return err
 		}
 	}
+}
+
+// stopHold decides whether a hold ends here: the context's error once it is
+// cancelled, since a second signal outranks the first even when both arrived
+// together; else ErrStopped, through endHold, once stop is closed; else nil.
+func (g *Gate) stopHold(ctx context.Context, stop <-chan struct{}, firstHold time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if stopped(stop) {
+		return g.endHold(firstHold)
+	}
+
+	return nil
 }
 
 // endHold logs that a stop ended the hold begun at firstHold and returns
