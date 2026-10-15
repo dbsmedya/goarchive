@@ -306,7 +306,7 @@ deleted: a mismatch rolls the batch back and stops the run. Purge copies nothing
 
 - A **file path** in `output` logs every entry to the file, in `format`. A run with `--progress`
   also tees the file's warnings and errors, as `level` keeps them, to **stderr**, one text line
-  each, and the live events whatever the level: a replication hold and the replica recovering,
+  each, and the live events whatever the level: a replication hold, the replica recovering, a stop ending a hold,
   the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` turns that tee off. Without `--progress` nothing is
   teed, so a cron run prints only a failure (README_OPERATIONS.md,
   [Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).

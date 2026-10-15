@@ -136,8 +136,8 @@ and an error always reaches stderr.
   A failure before the first batch says `failed before the first batch.` With `--progress`, the
   start line, the progress lines and the closing block go to stdout (a failure before the first
   batch prints its summary there instead of the block), and the log's warnings go to stderr as
-  text lines, with the live events whatever the level: a replication hold and the replica
-  recovering, the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
+  text lines, with the live events whatever the level: a replication hold, the replica
+  recovering, a stop ending a hold, the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
   log entry off the console; the banners and errors still reach stderr.
 - **The log on the console as text** (`output: stdout` or `stderr`, `format: text`): the log
   stream is plain text, with no colour codes. `--progress` adds its lines and the closing block on
@@ -390,7 +390,8 @@ logs another with the total hold; with `--progress` and a log file, the hold and
 lines also reach stderr. If the reason changes while a server is still down, the held
 time keeps accumulating. A hold keeps no source session open, so it can last as long as the
 replicas need. A first `SIGTERM` or `SIGINT` ends it without waiting for them
-([Graceful shutdown](#graceful-shutdown)), with one more `WARN` line:
+([Graceful shutdown](#graceful-shutdown)), with one more `WARN` line, which reaches stderr as the
+hold lines do:
 
 ```
 replication hold ended by a stop request; job held 2h14m5s
