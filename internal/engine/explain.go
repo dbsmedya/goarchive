@@ -11,26 +11,35 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 )
 
-// Explanation is dry-run's report (spec §7.2): the plans MySQL chooses for the statements a
-// run sends most often. No rule acts on them; they are for the operator to read.
+// Explanation is dry-run's report (spec §7.2, §3.8 of the console-output spec): how much the
+// job covers, the first batch's rows per table, and the plans MySQL chooses for the
+// statements a run sends most often. No rule acts on them; they are for the operator to read.
 type Explanation struct {
 	// Preflight is the job's preflight result, under its type's profile (spec §8.1).
 	Preflight *preflight.Result
+	// Count is the where range's size, counted now on Explain's own source connection.
+	Count int64
 	// Roots is how many root keys the first batch holds.
 	Roots int
+	// Rows holds the first batch's rows by table, the root's included (Roots).
+	Rows map[string]int
 	// Fetch is the root fetch's plan. Discovery holds one plan per child table, in copy
-	// order, each bound with the first chunk of its parent's keys from the first batch.
+	// order, each bound with the first chunk of its parent's keys from the first batch; a
+	// table whose parent has no rows in the first batch has Skipped set and no plan.
 	Fetch     Plan
 	Discovery []Plan
-	// Notes are remarks on the plans, for example a fetch that sorts every batch.
-	Notes []string
 }
 
 // Plan is one statement's EXPLAIN FORMAT=TRADITIONAL.
 type Plan struct {
-	Table string
-	Query string // the EXPLAIN statement as sent; key values are bound parameters
-	Rows  []ExplainRow
+	Table   string
+	Query   string // the EXPLAIN statement as sent; key values are bound parameters
+	Display Display
+	Rows    []ExplainRow
+	// Notes are remarks on this statement, for example a fetch that sorts every batch.
+	Notes []string
+	// Skipped says why the table has no plan (its parent has no rows in the first batch).
+	Skipped string
 }
 
 // ExplainRow is one row of EXPLAIN FORMAT=TRADITIONAL. Each field holds the column's text,
@@ -67,24 +76,30 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 	}
 	defer func() { _ = src.Close() }()
 
-	ex := &Explanation{Preflight: res}
+	ex := &Explanation{Preflight: res, Rows: map[string]int{}}
 	if ex.Fetch, err = explainOne(ctx, src, r.root.Table, fetchSQL(r.root, cfg.Spec.Where, false), cfg.Processing.BatchSize); err != nil {
 		return nil, err
 	}
+	ex.Fetch.Display = fetchDisplay(r.root, cfg.Spec.Where, cfg.Processing.BatchSize)
 	for _, row := range ex.Fetch.Rows {
 		if strings.Contains(row.Extra, "Using filesort") {
-			ex.Notes = append(ex.Notes, fmt.Sprintf("The root fetch on %s sorts its matching rows on every batch (Using filesort). "+
+			ex.Fetch.Notes = append(ex.Fetch.Notes, fmt.Sprintf("The root fetch on %s sorts its matching rows on every batch (Using filesort). "+
 				"A descending part in the primary key, or a where clause served by a secondary index, causes this.", r.root.Table))
 			break
 		}
+	}
+	// The where range's size, on the connection Explain holds: a source pool of one
+	// connection must not wait for a second.
+	if err := src.QueryRowContext(ctx, rangeCountSQL(r.root, cfg.Spec.Where)).Scan(&ex.Count); err != nil {
+		return nil, fmt.Errorf("engine: dry-run count on %s: %w", r.root.Table, err)
 	}
 	roots, err := r.fetch(ctx, src, nil)
 	if err != nil {
 		return nil, err
 	}
 	ex.Roots = len(roots)
+	ex.Rows[r.root.Table] = len(roots)
 	if len(roots) == 0 {
-		ex.Notes = append(ex.Notes, "No rows match the where clause, so there are no keys to bind: discovery was not explained.")
 		return ex, nil
 	}
 	keys := map[string][]key.Key{r.root.Table: roots}
@@ -94,7 +109,7 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 		}
 		parents := keys[n.Parent.Table]
 		if len(parents) == 0 {
-			ex.Notes = append(ex.Notes, fmt.Sprintf("The first batch has no %s rows, so %s's discovery was not explained.", n.Parent.Table, n.Table))
+			ex.Discovery = append(ex.Discovery, Plan{Table: n.Table, Skipped: fmt.Sprintf("the first batch has no %s rows", n.Parent.Table)})
 			continue
 		}
 		stmts, err := r.discoveryStatements(n, parents)
@@ -105,10 +120,12 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 		if err != nil {
 			return nil, err
 		}
+		p.Display = stmts[0].display
 		ex.Discovery = append(ex.Discovery, p)
 		if keys[n.Table], err = r.discoverChild(ctx, src, n, parents); err != nil {
 			return nil, err
 		}
+		ex.Rows[n.Table] = len(keys[n.Table])
 	}
 	return ex, nil
 }

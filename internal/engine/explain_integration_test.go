@@ -89,7 +89,7 @@ func TestMySQLExplainOneSourceConnection(t *testing.T) {
 }
 
 // TestMySQLExplainEmptyRange: with nothing to fetch there are no keys to bind, so only the
-// fetch is explained, and a note says why discovery is not.
+// fetch is explained; the report says why discovery is not (printExplanation).
 func TestMySQLExplainEmptyRange(t *testing.T) {
 	e := newEnv(t, "explainempty")
 	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
@@ -100,8 +100,8 @@ func TestMySQLExplainEmptyRange(t *testing.T) {
 	if ex.Roots != 0 || len(ex.Fetch.Rows) == 0 || len(ex.Discovery) != 0 {
 		t.Errorf("explanation = %+v", ex)
 	}
-	if !strings.Contains(strings.Join(ex.Notes, "\n"), "No rows match") {
-		t.Errorf("notes = %q, want the empty-range note", ex.Notes)
+	if ex.Count != 0 {
+		t.Errorf("count = %d, want 0: the report's \"no rows match\" note follows from it", ex.Count)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestMySQLExplainFilesort(t *testing.T) {
 	if !strings.Contains(ex.Fetch.Rows[0].Extra, "Using filesort") {
 		t.Fatalf("fetch plan = %+v, want a filesort", ex.Fetch.Rows)
 	}
-	if !strings.Contains(strings.Join(ex.Notes, "\n"), "sorts") {
-		t.Errorf("notes = %q, want the filesort note", ex.Notes)
+	if !strings.Contains(strings.Join(ex.Fetch.Notes, "\n"), "sorts") {
+		t.Errorf("fetch notes = %q, want the filesort note under the fetch", ex.Fetch.Notes)
 	}
 }

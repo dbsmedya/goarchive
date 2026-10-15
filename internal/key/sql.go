@@ -98,6 +98,33 @@ func In(cols []string, bind []Column, n int) string {
 	return b.String()
 }
 
+// InDisplay renders In's predicate for a report (dry-run, spec §3.8): the same columns, order
+// and bind shape, with label in place of the placeholder list. A shape other than bare
+// placeholders (a typed cast) is shown once, after the label, so the report says what each
+// tuple is bound as without printing a key value.
+func InDisplay(cols []string, bind []Column, label string) string {
+	if len(cols) == 0 || len(cols) != len(bind) {
+		panic(fmt.Sprintf("key.InDisplay: %d columns, %d bind columns", len(cols), len(bind)))
+	}
+	quoted := make([]string, len(cols))
+	phs := make([]string, len(bind))
+	plain := true
+	for i := range cols {
+		quoted[i] = sqlutil.QuoteIdentifier(cols[i])
+		phs[i] = Placeholder(bind[i])
+		plain = plain && phs[i] == "?"
+	}
+	lhs, shape := quoted[0], phs[0]
+	if len(cols) > 1 {
+		lhs, shape = "("+strings.Join(quoted, ",")+")", "("+strings.Join(phs, ",")+")"
+	}
+	inner := "<" + label + ">"
+	if !plain {
+		inner = "<" + label + ", each " + shape + ">"
+	}
+	return lhs + " IN (" + inner + ")"
+}
+
 // Args flattens keys into bound arguments, key by key, column by column.
 func Args(keys []Key) []any {
 	if len(keys) == 0 {

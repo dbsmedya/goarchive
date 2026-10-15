@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -235,30 +234,193 @@ func printCaps(w io.Writer, caps []preflight.Cap) {
 	}
 }
 
-// printExplanation prints dry-run's report (spec §7.2).
-func printExplanation(w io.Writer, name string, typ jobspec.Type, ex *engine.Explanation) {
-	_, _ = fmt.Fprintf(w, "Dry-run of %s (%s): the first batch holds %d root keys\n\n", name, typ, ex.Roots)
-	printPlan(w, "Root fetch on "+ex.Fetch.Table, ex.Fetch)
-	for _, p := range ex.Discovery {
-		printPlan(w, "Discovery of "+p.Table, p)
+// printExplanation prints dry-run's report (console-output spec §3.8): what the job covers,
+// its orders with the first batch's rows, the settings the run would use, the caps, then one
+// section per statement with its plan and its notes.
+func printExplanation(w io.Writer, name string, typ jobspec.Type, file string, doc *jobspec.Document, spec *jobspec.Spec,
+	v jobspec.Verification, ex *engine.Explanation) {
+	p := func(format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
+	p("Dry-run of %s (%s). No data is changed.\n\n", name, typ)
+
+	proc := spec.EffectiveProcessing(doc.Shared.Processing)
+	p("Job\n")
+	p("  root table:      %s, key (%s)\n", spec.RootTable, strings.Join(spec.PrimaryKey, ", "))
+	p("  where:           %s\n", strings.Join(strings.Split(strings.TrimRight(spec.Where, "\n"), "\n"), "\n"+strings.Repeat(" ", 19)))
+	if ex.Count > 0 && proc.BatchSize > 0 {
+		batches := (ex.Count + int64(proc.BatchSize) - 1) / int64(proc.BatchSize)
+		p("  matching roots:  %d, about %d %s of %d (counted now; the range can change before the run)\n\n",
+			ex.Count, batches, plural(int(batches), "batch", "batches"), proc.BatchSize)
+	} else {
+		p("  matching roots:  %d (counted now; the range can change before the run)\n\n", ex.Count)
 	}
-	for _, n := range ex.Notes {
-		_, _ = fmt.Fprintf(w, "Note: %s\n", n)
+
+	var tables []string
+	for _, n := range jobspec.NewTree(spec).CopyOrder() {
+		tables = append(tables, n.Table)
 	}
-	if len(ex.Notes) > 0 {
-		_, _ = fmt.Fprintln(w)
+	reversed := slices.Clone(tables)
+	slices.Reverse(reversed)
+	printOrder := func(title string, order []string, counts bool) {
+		width := len(title)
+		for _, t := range order {
+			width = max(width, len("  1. ")+len(t))
+		}
+		width += 5
+		if counts {
+			p("%-*s%s\n", width, title, "rows in the first batch")
+		} else {
+			p("%s\n", title)
+		}
+		for i, t := range order {
+			item := fmt.Sprintf("  %d. %s", i+1, t)
+			if counts {
+				p("%-*s%d\n", width, item, ex.Rows[t])
+			} else {
+				p("%s\n", item)
+			}
+		}
 	}
+	if typ != jobspec.Purge {
+		printOrder("Copy order (parents first)", tables, true)
+	}
+	if typ != jobspec.CopyOnly {
+		printOrder("Delete order (children first)", reversed, typ == jobspec.Purge)
+	}
+	p("\n")
+
+	p("Settings\n")
+	p("  batch_size: %d   batch_delete_size: %d   sleep_seconds: %g   delete_sleep_seconds: %g\n",
+		proc.BatchSize, proc.BatchDeleteSize, proc.SleepSeconds, proc.DeleteSleepSeconds)
+	if proc.SentinelFile != "" {
+		p("  sentinel_file: %s\n", proc.SentinelFile)
+	}
+	if typ != jobspec.Purge {
+		p("  verification: %s\n", v)
+		p("  destination foreign key checks: %s\n", onOff(!doc.Shared.Safety.DisableForeignKeyChecks))
+	}
+	if typ == jobspec.CopyOnly && spec.ResumeEnabled() {
+		p("  resume: on (rows this job already copied are skipped by the run; the counts above are candidates)\n")
+	}
+	switch rc := doc.Shared.Replication; {
+	case !rc.Enabled:
+		p("  replication lag gate: off\n")
+	case typ == jobspec.CopyOnly:
+		p("  replication lag gate: configured, not used (copy-only deletes nothing)\n")
+	default:
+		p("  replication lag gate: on, hold above %ds, check every %ds, cache %ds\n", rc.SecondsBehindSourceWithin, rc.CheckInterval, rc.CacheTTL)
+		for _, sv := range rc.Servers {
+			p("    %s  channels: %s\n", sv.Addr(), describeChannels(sv.Channels))
+		}
+	}
+	p("\n")
+
 	printCaps(w, ex.Preflight.Caps)
+	p("\n")
+
+	p("Plans for the first batch (EXPLAIN FORMAT=TRADITIONAL)\n\n")
+	f := ex.Fetch.Display
+	p("Root fetch on %s\n", ex.Fetch.Table)
+	p("  %s\n", f.Select)
+	where := strings.Split(strings.TrimRight(f.Where, "\n"), "\n")
+	p("  WHERE (%s", strings.Join(where, "\n"+strings.Repeat(" ", 9)))
+	// The SQL closes the where on a new line, so a trailing -- comment cannot swallow the
+	// parenthesis; the report does the same only when it must.
+	if strings.Contains(where[len(where)-1], "--") {
+		p("\n  )\n")
+	} else {
+		p(")\n")
+	}
+	p("  %s\n", f.Tail)
+	printPlanRows(w, ex.Fetch)
+	p("\n")
+	if ex.Roots == 0 {
+		p("Note: no rows match the where clause, so there are no keys to bind: discovery was not explained.\n\n")
+	}
+	for _, d := range ex.Discovery {
+		if d.Skipped != "" {
+			p("Discovery of %s\n  Note: %s, so this table's discovery was not explained.\n\n", d.Table, d.Skipped)
+			continue
+		}
+		chunk := fmt.Sprintf("all %d %s tuples", d.Display.Of, d.Display.Parent)
+		if d.Display.Tuples != d.Display.Of {
+			chunk = fmt.Sprintf("%d of %d %s tuples", d.Display.Tuples, d.Display.Of, d.Display.Parent)
+		}
+		p("Discovery of %s (first discovery chunk: %s)\n", d.Table, chunk)
+		p("  %s\n", d.Display.Select)
+		p("  WHERE %s\n", d.Display.Predicate)
+		printPlanRows(w, d)
+		p("\n")
+	}
+	p("Next: goarchive %s -c %s -j %s\n", typ, file, name)
 }
 
-func printPlan(w io.Writer, title string, p engine.Plan) {
-	_, _ = fmt.Fprintf(w, "%s:\n  %s\n", title, strings.Join(strings.Fields(p.Query), " "))
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "  id\tselect_type\ttable\tpartitions\ttype\tpossible_keys\tkey\tkey_len\tref\trows\tfiltered\tExtra")
-	for _, r := range p.Rows {
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.ID, r.SelectType, r.Table, r.Partitions, r.Type, r.PossibleKeys, r.Key, r.KeyLen, r.Ref, r.Rows, r.Filtered, r.Extra)
+// printPlanRows prints a statement's EXPLAIN rows, one line each, then its notes.
+func printPlanRows(w io.Writer, pl engine.Plan) {
+	for _, r := range pl.Rows {
+		_, _ = fmt.Fprintf(w, "  %s\n", describeRow(r))
 	}
-	_ = tw.Flush()
-	_, _ = fmt.Fprintln(w)
+	for _, n := range pl.Notes {
+		_, _ = fmt.Fprintf(w, "  Note: %s\n", n)
+	}
+}
+
+// describeRow is one EXPLAIN row as one line, by access type (Codex F4): ALL is a full table
+// scan, index a full index scan, a row with no table the optimizer's message, never a scan.
+func describeRow(r engine.ExplainRow) string {
+	var b strings.Builder
+	if r.SelectType != "" && r.SelectType != "SIMPLE" && r.SelectType != "PRIMARY" {
+		b.WriteString("[" + r.SelectType + "] ")
+	}
+	switch {
+	case r.Table == "" && r.Type == "":
+		return b.String() + "optimizer: " + r.Extra
+	case r.Type == "ALL":
+		keys := r.PossibleKeys
+		if keys == "" {
+			keys = "none"
+		}
+		fmt.Fprintf(&b, "%-16s full table scan, possible keys: %s", r.Table, keys)
+	case r.Type == "index":
+		fmt.Fprintf(&b, "%-16s full index scan on %s", r.Table, r.Key)
+	default:
+		fmt.Fprintf(&b, "%-16s %s on %s", r.Table, r.Type, r.Key)
+	}
+	if r.Rows != "" {
+		fmt.Fprintf(&b, ", ~%s rows", r.Rows)
+	}
+	if f := r.Filtered; f != "" {
+		if strings.Contains(f, ".") {
+			f = strings.TrimSuffix(strings.TrimRight(f, "0"), ".")
+		}
+		fmt.Fprintf(&b, ", %s%% filtered", f)
+	}
+	if r.Extra != "" {
+		b.WriteString("; " + r.Extra)
+	}
+	return b.String()
+}
+
+// describeChannels renders a server's channel selection (ported from 2.2.x's estimator): no
+// entries means every channel, the default (unnamed) channel shows as <default>, and a named
+// channel is folded onto one line, so a newline in a name cannot forge a report line.
+func describeChannels(channels []string) string {
+	if len(channels) == 0 {
+		return "all"
+	}
+	names := make([]string, 0, len(channels))
+	for _, c := range channels {
+		if c == "" {
+			names = append(names, "<default>")
+			continue
+		}
+		names = append(names, strings.NewReplacer("\n", " ", "\r", " ").Replace(c))
+	}
+	return strings.Join(names, ", ")
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

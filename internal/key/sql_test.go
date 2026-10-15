@@ -139,7 +139,7 @@ func TestInDisplayMatchesIn(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: InDisplay = %q, want %q", tc.name, got, want)
 		}
-		if strings.Contains(got, "?,?") || strings.Count(got, "CAST(") > len(tc.cols) {
+		if strings.Count(got, "?") > len(tc.cols) {
 			t.Errorf("%s: %q repeats the placeholder list", tc.name, got)
 		}
 	}

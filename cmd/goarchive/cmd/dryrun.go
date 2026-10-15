@@ -15,11 +15,16 @@ var dryrunOpts struct {
 var dryrunCmd = &cobra.Command{
 	Use:   "dry-run",
 	Short: "Show how a job would run, without changing anything",
-	Long: `Dry-run runs the job's preflight under its job type's profile, reads
-the first batch of root keys, and prints MySQL's plan for the root fetch and
-for each child table's discovery query, bound with those keys:
-EXPLAIN FORMAT=TRADITIONAL. It takes no lock, writes no tracking row and
-changes no data.
+	Long: `Dry-run runs the job's preflight under its job type's profile, counts the rows
+its where range matches, reads the first batch of root keys, and prints a
+report: the job and its coverage, the copy and delete orders with the first
+batch's rows per table, the settings the run would use, the statement caps,
+and MySQL's plan (EXPLAIN FORMAT=TRADITIONAL) for the root fetch and for the
+first discovery chunk of each child table.
+
+Dry-run takes no lock, writes no tracking row and
+changes no data. Its count reads the whole where range on the source: on a
+large range it takes as long as that count takes.
 
 Recommended operator workflow: validate -> dry-run -> archive.
 
@@ -52,6 +57,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		return err
 	}
 	defer syncLogger(log)
+	emitBanners(log, c.ErrOrStderr(), banners(doc, spec.Type, verification, o.skipPreflight, o.forceTriggers))
 	ctx := context.Background()
 	mgr, err := connect(ctx, doc)
 	if err != nil {
@@ -70,6 +76,6 @@ func runDryrun(c *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	printExplanation(c.OutOrStdout(), o.job, spec.Type, ex)
+	printExplanation(c.OutOrStdout(), o.job, spec.Type, GetConfigFile(), doc, spec, verification, ex)
 	return nil
 }
