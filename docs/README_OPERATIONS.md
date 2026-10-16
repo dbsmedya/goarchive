@@ -175,7 +175,7 @@ and `verified`; `recovered`, `skipped` and accepted conversions are listed under
 | 1 | Failed: a check refused, or the run failed part way. Read stderr and the log |
 | 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job |
 | 3 | Stopped before the end of the `where` range, without error (a graceful stop): the next run continues |
-| 4 | Not started: another run holds the job, a source table, or unfinished work on the same data. Nothing was done |
+| 4 | Not started: another run holds the job, a source table, or unfinished work on the same data, or is still creating a new tracking schema. Nothing was done |
 
 ```bash
 goarchive archive -c archiver.yaml -j archive_old_orders
@@ -488,13 +488,21 @@ change ([Startup checks](README_JOBS_SCHEMA.md#startup-checks)).
 GoArchive runs [sequentially by design](README_LIMITATIONS.md#sequential-by-design): two runs
 that would touch the same source table never run together, whatever their job names, root
 tables or destinations. A run holds two sets of MySQL user-level locks (`GET_LOCK()`) for its
-whole length, each on a dedicated session. They are names in MySQL's lock registry, **not table
+whole length, each on a dedicated session, and on a new tracking schema a third lock for a
+moment before them. They are names in MySQL's lock registry, **not table
 locks**: GoArchive never runs `LOCK TABLES`, and a name locks no table or row, so the
 application's reads and writes are not blocked by it. It only stops another GoArchive run.
 
-1. **The job lock**, on the destination, beside the tracking tables. It is taken first, so a
-   second run of the same job is refused as `job "<name>" is already running: its advisory
-   lock is held by another session (destination connection <id>)`.
+**The schema lock**, on the destination, is held only while a run creates a new tracking schema
+(a `job_schema` with no `3.0` label yet). One run at a time creates the tables and the label;
+another run starting then waits for it, up to 60 seconds, finds the schema ready and goes on.
+If the lock is still held after 60 seconds the run does not start (exit code 4) and names the
+connection holding it. A schema already labelled takes no lock. Then:
+
+1. **The job lock**, on the destination, beside the tracking tables. It is taken first (after
+   the schema lock, on a new tracking schema), so a second run of the same job is refused as
+   `job "<name>" is already running: its advisory lock is held by another session
+   (destination connection <id>)`.
 2. **A lock name for every table of the job's tree**, root included, on the **source**: the
    one server every run that could conflict shares. A run whose tree shares a table with a
    running job is refused before it does anything:
@@ -539,6 +547,8 @@ limit. MySQL computes the same names, so you can find a holder from SQL:
 SELECT IS_USED_LOCK(CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'), CHAR(0), LOWER('<job_name>')), 256), 32)));
 -- the lock on database.table (run on the source)
 SELECT IS_USED_LOCK(CONCAT('goarchive:t:', LEFT(SHA2(CONCAT(LOWER('<database>'), CHAR(0), LOWER('<table>')), 256), 32)));
+-- the schema lock of a new tracking schema (run on the destination)
+SELECT IS_USED_LOCK(CONCAT('goarchive:s:', LEFT(SHA2(CONCAT(LOWER('<job_schema>'), CHAR(0), LOWER('')), 256), 32)));
 ```
 
 The result is the holding connection id (`SHOW PROCESSLIST`), or `NULL` when the lock is free.
@@ -556,6 +566,7 @@ A run needs at least two source connections and three destination connections
 | Consecutive heartbeat failures before the run stops | 3 |
 | Lock-ownership check, each lock set | 30 seconds, and before every commit |
 | Lock session `wait_timeout` | 300 seconds |
+| Schema-lock wait, new tracking schema | 60 seconds |
 
 ### The lock sessions must stay alive
 
@@ -567,7 +578,8 @@ locks. The check comes after the transaction's writes and before its `COMMIT`.
 Each lock session runs with `wait_timeout = 300`, and the 30-second check keeps it from
 idling that long. If goarchive's process dies, the server frees its locks at once. If its
 host or network is lost, the server frees them within 5 minutes: a run started before then is
-refused at once (nothing waits for a lock), and the next start after that goes through.
+refused at once (the job and table locks never wait; only the schema lock of a new tracking
+schema waits, up to 60 seconds), and the next start after that goes through.
 
 A run that lost its job lock may find the job already started again by another run. It then
 leaves the job's status to that run and its error names that run's destination connection.

@@ -228,6 +228,12 @@ for the replicas; the next run's recovery finishes the held batch. A `docker sto
 no longer has to cover a hold, only a replica check in progress when the hold begins
 ([Graceful shutdown](README_OPERATIONS.md#graceful-shutdown)).
 
+**Two runs starting together in a new tracking schema both start.** One of them could fail
+with MySQL error 1213 (deadlock) while both created the tracking tables; now one creates them
+under a schema lock and the other waits for it, up to 60 seconds. Exit code 4 has one more
+cause: that lock still held after the wait
+([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+
 ---
 
 ## Configuration changes
