@@ -136,10 +136,10 @@ on a release PR's, confirms each run started, reads its summary table and delete
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1341 FAIL=0 SKIP=5`, measured by the integration runner
+- **Integration inventory:** `PASS=1347 FAIL=0 SKIP=5`, measured by the integration runner
   (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 PRC-1 PR, at
-  `fb1f51b`). The runner counts every test the `integration` tag compiles, unit tests included:
-  PRC-1 added `TestEstimateRoots` (22 with its subtests) and
+  `51154dc`). The runner counts every test the `integration` tag compiles, unit tests included:
+  PRC-1 added `TestEstimateRoots` (28 with its subtests) and
   `TestMySQLProgress/an_estimate,_not_a_count`. It was 1318 before (the beta.2 PKT-1 PR, at
   `0b5b0f9`), and `SKIP=4` before that (the beta.2 TRK-1 PR, at `b53d157`): PKT-1 added
   `TestMySQLArchiveValueLargerThanThePacket`, which runs only under the matrix row
@@ -160,7 +160,8 @@ after the runner reports; a gate agent never edits it.
   504–547 s with the packet row's test (run `20261016T152044Z-29845`, 504 s, PKT-1's final SHA;
   `a0c2c4b` 505 s; `3225cab` 547 s under host load); 502–546 s with the verify split (run
   `20261016T162237Z-37397`, 502 s, RVG-1a+b's final SHA; run `20261016T155024Z-12353`, 546 s
-  under host load); record each new measurement
+  under host load); 518 s on the 1341 inventory (run `20261016T201612Z-86110`, PRC-1 at
+  `80e2f41`); record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub** (beta.1; split in beta.2 into *Matrix verify* and *Gate verify*):
   the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at `ae06474`), took 19 minutes for
