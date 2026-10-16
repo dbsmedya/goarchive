@@ -1,4 +1,4 @@
-# Tests the release-verify workflow's matrix jobs skip (.github/workflows/release-verify.yml,
+# Tests the Matrix verify workflow's row jobs skip (.github/workflows/matrix-verify.yml,
 # MX_SKIP_FILE). Each needs something a GitHub matrix job does not have; each still runs in the
 # local matrix and in every gate job (the estate on six images). One test name per line, then its
 # reason. Reviewed with the PR that adds the line; no automatic retries anywhere.

@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
-# The release-verify summary (beta.1 PR 4): one Markdown table of every gate and matrix verdict
-# from the run's downloaded artifacts, and of the jobs it depends on. Exit 1 unless every job
-# succeeded, every gate is certified for the target SHA, and every row is OK.
+# The summary of a Matrix verify or Gate verify run (beta.1 PR 4; split in beta.2, RVG-1a+b):
+# one Markdown table of every gate and matrix verdict from the run's downloaded artifacts, and of
+# the jobs it depends on. Exit 1 unless every job succeeded, every gate is certified for the
+# target SHA, every row is OK, and the run holds exactly the rows and gates it wants; exit 2 on
+# counts that are missing or not numbers, or that want nothing.
 #
-#   tests/envmatrix/gh-summary.sh <artifacts-dir> <sha> <rows-wanted> [<job>=<result> ...]
+#   tests/envmatrix/gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<job>=<result> ...]
 #
+# Matrix verify wants every rows.tsv row and 0 gates; Gate verify wants 0 rows and 6 gates.
 # A gate is certified only on the evidence tests/AGENTS.md requires: exactly one run.tsv, for the
 # target SHA, on a clean tree, PASS with command and recording exits 0; the completion marker of
 # that run and SHA beside it; and its summary.txt. Each <job>=<result> is a needs.<job>.result;
 # anything but success fails the run, whatever its artifacts say.
 set -uo pipefail
 
-dir=$1 sha=$2 want_rows=$3 bad=0
-shift 3
-echo "## Release verify: \`${sha:0:12}\`"
+usage="usage: gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<job>=<result> ...]"
+[[ $# -ge 4 && $3 =~ ^[0-9]+$ && $4 =~ ^[0-9]+$ ]] || { echo "$usage" >&2; exit 2; }
+(( 10#$3 + 10#$4 > 0 )) || { echo "gh-summary.sh: a summary that wants no rows and no gates verifies nothing" >&2; exit 2; }
+
+dir=$1 sha=$2 want_rows=$((10#$3)) want_gates=$((10#$4)) bad=0
+shift 4
+title="Matrix verify"
+if [[ $want_gates -gt 0 ]]; then title="Gate verify"; fi
+echo "## $title: \`${sha:0:12}\`"
 echo
 echo "| Job | Verdict | Counts | Server |"
 echo "|---|---|---|---|"
@@ -73,6 +82,6 @@ for v in "$dir"/matrix-*/*/verdict.txt; do
 done
 
 echo
-echo "Gates: $gates (want 6). Matrix rows: $rows (want $want_rows)."
-[[ $gates -eq 6 && $rows -eq $want_rows ]] || bad=1
+echo "Gates: $gates (want $want_gates). Matrix rows: $rows (want $want_rows)."
+[[ $gates -eq $want_gates && $rows -eq $want_rows ]] || bad=1
 exit "$bad"
