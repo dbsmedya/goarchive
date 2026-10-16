@@ -506,7 +506,7 @@ row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
 
 | Kind | What the runner does |
 |---|---|
-| `dynamic` | Takes a snapshot of the globals on a long-lived source/destination pair of `MX_IMAGE`, applies the row's `SET GLOBAL` to both servers, runs the suites, then restores the snapshot and compares it |
+| `dynamic` | Takes a snapshot of the globals on a long-lived source/destination pair of `MX_IMAGE`, applies the row's `SET GLOBAL` to both servers (to the destination only when the setup starts with `dst:`), runs the suites, then restores the snapshot and compares it |
 | `init` | Starts a fresh pair with an extra `my.cnf` (for example `lower_case_table_names = 1`) |
 | `version` | Starts a fresh, unchanged pair of another image (Percona and Oracle, 8.0.40 to 9.7) |
 | `group` | Starts dbsgomysql's three-member Group Replication cluster (`envmatrix/group/`, copied unchanged from the pinned library) as the source, with a fresh destination, and runs only the unfinished-work guard tests: Group Replication refuses tables without a primary key, which other suites create on purpose |
@@ -741,6 +741,7 @@ baseline is in [`AGENTS.md`](AGENTS.md).
 | `TEST_DEST_DB` | sakila_archive | Destination database name |
 | `TEST_REPLICA_HOST` | 127.0.0.1 | Replica MySQL host (replication-lag tests) |
 | `TEST_REPLICA_PORT` | 3308 | Replica MySQL port |
+| `TEST_MATRIX_ROW` | (unset) | The environment-matrix row the suites run under; `run-matrix.sh` sets it for each row. A test tied to one row reads it, so on that row it fails instead of skipping when the row's setup did not apply |
 | `REPL_USER` | repl | Replication account created on db1 and used by db3 |
 | `REPL_PASSWORD` | (from .env) | Its password. Injected into SQL as a single-quoted literal, so a value containing a single quote is **rejected**, not escaped. |
 | `REPL_POSITIONING` | gtid | `gtid` or `snapshot`. The setup script enforces the matching `Auto_Position` (1 or 0), so a snapshot estate never silently accepts a stray GTID config. |
