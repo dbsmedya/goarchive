@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
+
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 )
 
 const (
@@ -153,15 +156,62 @@ func hasColumns(spec validations.TableSpec, names []string) bool {
 	return true
 }
 
-// ensureSchema refuses a schema this binary does not recognize, before writing anything
-// to it, and otherwise creates the tracking tables and stamps the label.
+// initLockWait is how long a run waits for another run creating the same new tracking
+// schema (TRK-1). Creating it takes well under a second; a test shortens this.
+var initLockWait = 60 * time.Second
+
+// SchemaLockedError refuses a run: another session held the schema lock of a new tracking
+// schema for the whole wait (TRK-1). The run did nothing.
+type SchemaLockedError struct {
+	Schema string
+	Wait   time.Duration
+	Lock   *lock.HeldError
+}
+
+func (e *SchemaLockedError) Error() string {
+	head := fmt.Sprintf("tracking: another run held the schema lock %s on tracking schema %q for the whole %ds wait",
+		e.Lock.Name, e.Schema, int(e.Wait/time.Second))
+	if e.Lock.Holder == 0 {
+		return head + " and released it a moment ago. Nothing was done. Run again"
+	}
+	return fmt.Sprintf("%s; connection %d still holds it. Nothing was done. Run again when it finishes, "+
+		"or check that connection (SHOW PROCESSLIST)", head, e.Lock.Holder)
+}
+
+func (e *SchemaLockedError) Unwrap() error { return e.Lock }
+
+// ensureSchema refuses a schema this binary does not recognize, before writing anything to
+// it, and otherwise creates the tracking tables and stamps the label. A labelled schema is
+// judged at once, with no lock and no DDL: the label is written last and no 3.0 run changes
+// it. Anything else is judged and created under the schema lock, one run at a time (TRK-1):
+// a run reading while another is mid-way could see half of its work.
 func (s *Store) ensureSchema(ctx context.Context) error {
 	st, err := s.readState(ctx)
 	if err != nil {
 		return err
 	}
+	if st.labelled {
+		return classify(s.schema, st)
+	}
+	start := time.Now()
+	release, err := lock.Wait(ctx, s.db, lock.SchemaLockName(s.schema), initLockWait)
+	if err != nil {
+		var held *lock.HeldError
+		if errors.As(err, &held) {
+			return &SchemaLockedError{Schema: s.schema, Wait: initLockWait, Lock: held}
+		}
+		return fmt.Errorf("tracking: take the schema lock of %q: %w", s.schema, err)
+	}
+	defer release()
+	s.initWait = time.Since(start)
+	if st, err = s.readState(ctx); err != nil {
+		return err
+	}
 	if err := classify(s.schema, st); err != nil {
 		return err
+	}
+	if st.labelled {
+		return nil // another run created it while this one waited
 	}
 	for _, ddl := range []string{s.createJobTableSQL(), s.createMetaTableSQL()} {
 		if _, err := s.db.ExecContext(ctx, ddl); err != nil {
@@ -169,11 +219,9 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 				"hold CREATE, SELECT, INSERT and UPDATE on it?): %w", s.schema, err)
 		}
 	}
-	if st.labelled {
-		return nil
-	}
-	// Two runs may stamp a new schema at once; whichever row lands, the label is read
-	// back and judged. ON DUPLICATE KEY keeps the first row and changes nothing.
+	// The label is written last, so a labelled schema is complete. Under the schema lock no
+	// 3.0 run stamps at the same time; ON DUPLICATE KEY keeps the first row if a run of an
+	// earlier build, which takes no lock, stamps it too.
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf(
 		"INSERT INTO %s (id, schema_version) VALUES (1, ?) ON DUPLICATE KEY UPDATE id = id", s.metaTable), SchemaLabel); err != nil {
 		return fmt.Errorf("tracking: stamp tracking-schema label %s in %q: %w", SchemaLabel, s.schema, err)

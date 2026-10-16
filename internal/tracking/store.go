@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
@@ -36,13 +37,19 @@ type Store struct {
 	jobTable  string // quoted, qualified
 	metaTable string
 	facts     facts
-	budget    uint64 // the destination's range_optimizer_max_mem_size
+	budget    uint64        // the destination's range_optimizer_max_mem_size
+	initWait  time.Duration // how long Open waited for the schema lock; 0 on a labelled schema
 }
 
+// InitWait is how long Open waited for the schema lock: 0 when the schema was already
+// labelled, which takes no lock.
+func (s *Store) InitWait() time.Duration { return s.initWait }
+
 // Open checks the tracking schema in jobSchema on the destination pool db, refusing any
-// label but 3.0 and any 2.x schema (spec §6.1, R37), and creates and stamps a new one. It
-// is idempotent and safe for concurrent runs. db's sessions must be pinned to UTC
-// (spec §4.5), as every GoArchive pool is.
+// label but 3.0 and any 2.x schema (spec §6.1, R37), and creates and stamps a new one, one
+// run at a time under the schema lock (TRK-1): another run creating it at the same moment
+// is waited for, up to initLockWait. db's sessions must be pinned to UTC (spec §4.5), as
+// every GoArchive pool is.
 func Open(ctx context.Context, db *sql.DB, jobSchema string) (*Store, error) {
 	if db == nil {
 		return nil, fmt.Errorf("tracking: no destination connection")
