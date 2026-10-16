@@ -127,6 +127,15 @@ func TestMatrixPacketRowDeclared(t *testing.T) {
 			"gh-skip.txt skips " + packetTest},
 		{"skipped by the runner", rows, src, skips, swap(runner, `SKIP="TestMySQLLiveReplicationGate|`, `SKIP="`+packetTest+`|TestMySQLLiveReplicationGate|`),
 			"run-matrix.sh skips " + packetTest},
+		// go test -skip matches each alternative anywhere in the name, so a prefix skips the
+		// test as surely as its full name (Sonnet final review M1).
+		{"skipped on GitHub by a prefix", rows, src, skips + "TestMySQLArchiveValue # a prefix\n", runner,
+			"gh-skip.txt skips " + packetTest},
+		{"skipped by the runner on a line of its own", rows, src, skips,
+			swap(runner, "\nif [[ -n ${MX_SKIP_FILE:-} ]]; then\n", "\nSKIP+=\"|"+packetTest+"\"\nif [[ -n ${MX_SKIP_FILE:-} ]]; then\n"),
+			"run-matrix.sh skips " + packetTest},
+		{"skipped by the runner by a prefix", rows, src, skips, swap(runner, `|TestMySQLStopNeverCutsAPass"`, `|TestMySQLStopNeverCutsAPass|TestMySQLArchiveValue"`),
+			"run-matrix.sh skips " + packetTest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := packetRowProblem(tc.rows, tc.src, tc.skips, tc.runner); got != tc.says {
