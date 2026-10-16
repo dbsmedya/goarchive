@@ -136,9 +136,12 @@ on a release PR's, confirms each run started, reads its summary table and delete
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1318 FAIL=0 SKIP=5`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 PKT-1 PR, at
-  `0b5b0f9`). It was `SKIP=4` before (the beta.2 TRK-1 PR, at `b53d157`): PKT-1 added
+- **Integration inventory:** `PASS=1347 FAIL=0 SKIP=5`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 PRC-1 PR, at
+  `51154dc`). The runner counts every test the `integration` tag compiles, unit tests included:
+  PRC-1 added `TestEstimateRoots` (28 with its subtests) and
+  `TestMySQLProgress/an_estimate,_not_a_count`. It was 1318 before (the beta.2 PKT-1 PR, at
+  `0b5b0f9`), and `SKIP=4` before that (the beta.2 TRK-1 PR, at `b53d157`): PKT-1 added
   `TestMySQLArchiveValueLargerThanThePacket`, which runs only under the matrix row
   `max_allowed_packet_dst_4m` and skips on the estate, whose two servers have the same packet.
   Before TRK-1 it was 1306 (the beta.2 LAG-1 PR, at `54e7b3f`): TRK-1 added four
@@ -154,11 +157,17 @@ after the runner reports; a gate agent never edits it.
   476 s on the 1306 inventory (run `20261015T201205Z-26156`, LAG-1's final SHA); 488–498 s on the
   1318 inventory (run `20261016T102019Z-33223`, 498 s, TRK-1's final SHA); 445–452 s with the
   validation demos 18 and 19 (runs `20261016T122705Z-2588` and `20261016T123636Z-27187`, TRG-1);
-  record each new measurement
+  504–547 s with the packet row's test (run `20261016T152044Z-29845`, 504 s, PKT-1's final SHA;
+  `a0c2c4b` 505 s; `3225cab` 547 s under host load); 502–546 s with the verify split (run
+  `20261016T162237Z-37397`, 502 s, RVG-1a+b's final SHA; run `20261016T155024Z-12353`, 546 s
+  under host load); 518 s on the 1341 inventory (run `20261016T201612Z-86110`, PRC-1 at
+  `80e2f41`); record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub** (beta.1; split in beta.2 into *Matrix verify* and *Gate verify*):
   the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at `ae06474`), took 19 minutes for
   41 jobs. Gates took 15–18 min each, with integration
   `PASS=1209 FAIL=0 SKIP=5` on all six images; that is the local inventory less
   `TestSetupGracefulShutdown_TwoPhase`, which skips where `CI=true`. Matrix rows took 1–3 min each
-  against `MX_TIMEOUT` 6m; 33/33 OK.
+  against `MX_TIMEOUT` 6m; 33/33 OK. The first split runs, at `770df69` (beta.2 RVG-1a+b): *Matrix
+  verify* 38931438357, 36 jobs, 34/34 rows OK, 8 min 18 s; *Gate verify* 38931452843, 8 jobs, 6/6
+  gates certified (integration `PASS=1317 FAIL=0 SKIP=6` on each image), 21 min 32 s.

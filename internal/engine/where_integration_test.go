@@ -23,11 +23,11 @@ const dedupWhere = "dedup_payment.base_payment_id IS NOT NULL AND dedup_payment.
 // TestMySQLDedupArchive (M7-3, G26): removing duplicate rows with one job, keeping the
 // minimum id per base_payment_id (docs/README_DUPLICATE_CLEANUP.md). Thirteen rows: keepers
 // 1, 4, 5 and 10, NULL keys 7 and 8, duplicates interleaved across batch boundaries.
-// Archive under sha256 with --progress, whose range count runs the where before the first
-// batch; a second run counts what is left.
+// Archive under sha256 with --progress, whose estimate is read before the first batch and
+// whose closing line shows the done count; a second run shows what is left.
 // Pair: batch_size 2 and batch_delsize 1, so every fetch after the first reads the root
 // table through the subquery after deletes from it → the source keeps exactly [1 4 5 7 8
-// 10], the destination holds [2 3 6 9 11 12 13], the range count is 7 before and 0 after;
+// 10], the destination holds [2 3 6 9 11 12 13], the closing line is 7 before and 0 after;
 // batch_size 100, the one change, so one fetch reads the range before any delete → the same
 // id sets and counts.
 func TestMySQLDedupArchive(t *testing.T) {
@@ -63,7 +63,7 @@ func TestMySQLDedupArchive(t *testing.T) {
 				t.Errorf("report = %+v, want 7 roots in %d batches", rep, tc.batches)
 			}
 			if want := "progress: roots 7/~7 (100.0%) remaining=0 copied_rows=7 deleted_rows=7 "; !strings.HasPrefix(fields(out), want) {
-				t.Errorf("progress = %q, want the range count 7: %q", out, want)
+				t.Errorf("progress = %q, want the done count 7: %q", out, want)
 			}
 			if got, want := texts(t, e.src, "SELECT CAST(id AS CHAR) FROM dedup_payment ORDER BY id"), []string{"1", "4", "5", "7", "8", "10"}; !equal(got, want) {
 				t.Errorf("source ids = %v, want %v", got, want)
@@ -72,18 +72,18 @@ func TestMySQLDedupArchive(t *testing.T) {
 				t.Errorf("destination ids = %v, want %v", got, want)
 			}
 			if out, rep = run(); rep.Roots != 0 || !strings.HasPrefix(fields(out), "progress: roots 0/~0 ") {
-				t.Errorf("second run: progress = %q, report = %+v, want the range count 0 and no roots", out, rep)
+				t.Errorf("second run: progress = %q, report = %+v, want the done count 0 and no roots", out, rep)
 			}
 		})
 	}
 }
 
-// TestMySQLWhereAppendedStatement (M7-3, G27): --progress's range count (rangeCountSQL) is
-// the one statement sent with no arguments, as text. A where that closes its parenthesis,
+// TestMySQLWhereAppendedStatement (M7-3, G27): --progress's estimate (EXPLAIN of rangeCountSQL)
+// is the one statement sent with no arguments, as text. A where that closes its parenthesis,
 // ends the statement and appends a DELETE reaches MySQL as one statement, because no
 // connection enables multiStatements.
 // Pair: where "1=1) ; DELETE FROM victim WHERE (1=1" → MySQL 1064 from the --progress
-// count, before any batch: victim keeps its 3 rows, r its 3 rows, the destination empty,
+// estimate, before any batch: victim keeps its 3 rows, r its 3 rows, the destination empty,
 // nothing logged; where "1=1", the one change → the 3 roots archived, victim keeps its 3 rows.
 func TestMySQLWhereAppendedStatement(t *testing.T) {
 	for _, tc := range []struct{ name, where string }{
@@ -105,8 +105,8 @@ func TestMySQLWhereAppendedStatement(t *testing.T) {
 			}
 			if where != "1=1" {
 				var me *mysql.MySQLError
-				if !errors.As(err, &me) || me.Number != 1064 || !strings.Contains(err.Error(), "--progress count on r") {
-					t.Fatalf("Run = %v, want MySQL error 1064 from the --progress count", err)
+				if !errors.As(err, &me) || me.Number != 1064 || !strings.Contains(err.Error(), "--progress estimate on r") {
+					t.Fatalf("Run = %v, want MySQL error 1064 from the --progress estimate", err)
 				}
 				if rep == nil || rep.Batches != 0 {
 					t.Errorf("report = %+v, want no batch", rep)

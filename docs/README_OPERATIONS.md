@@ -99,9 +99,14 @@ pushes the rest of its own line. With the log as JSON on the console, each line 
 `copied_rows`, `deleted_rows`, `elapsed_seconds` and `eta`
 ([Output and exit codes](#output-and-exit-codes)).
 
-- `roots`, the percentage, `remaining` and the ETA count root rows. The total is counted once,
-  after recovery, so `~` marks an estimate: rows can age into or out of the `where` range, so
-  the percentage caps at 100 and `remaining` at zero.
+- `roots`, the percentage, `remaining` and the ETA count root rows. The total is MySQL's
+  optimizer estimate of the `where` range, read once after recovery from an `EXPLAIN`; nothing is
+  counted, so `--progress` adds no pass over the source. `~` marks the estimate: it is close when
+  an index serves the `where`, and can be far off in either direction when the `where` filters
+  each row with a subquery or a function. The percentage caps at 100 and `remaining` at zero; past
+  the estimate the ETA shows `unknown`, and a run that finishes shows its done count as the total.
+  `dry-run` counts the range exactly ([its report](#recommended-operator-workflow) says what that
+  count costs).
 - `copied_rows` and `deleted_rows` count rows of every table: archive shows both, copy-only
   `copied_rows`, purge `deleted_rows`.
 - While the [sentinel](#pausing-a-run-sentinel_file) pauses the run, `eta=paused` and

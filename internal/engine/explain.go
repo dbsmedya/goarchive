@@ -130,8 +130,9 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 	return ex, nil
 }
 
-// explainOne runs EXPLAIN FORMAT=TRADITIONAL of query on q.
-func explainOne(ctx context.Context, q queryer, table, query string, args ...any) (Plan, error) {
+// explainOne runs EXPLAIN FORMAT=TRADITIONAL of query on q (a connection or the pool: it reads
+// no warnings).
+func explainOne(ctx context.Context, q reader, table, query string, args ...any) (Plan, error) {
 	p := Plan{Table: table, Query: explainFormat + query}
 	rows, err := q.QueryContext(ctx, p.Query, args...)
 	if err != nil {
