@@ -102,10 +102,10 @@ preflight.
   also permits `CREATE TRIGGER` and `DROP TRIGGER` on those tables, which GoArchive never runs.
   Granting it on each job table instead of the schema narrows it to those tables.
 - **Locks need no privilege.** `GET_LOCK()`, `IS_USED_LOCK()`, `RELEASE_LOCK()` and
-  `RELEASE_ALL_LOCKS()` need no grant, nor does the `max_execution_time = 0` the schema lock's
-  session sets for its wait, on the source or the destination, and work on a `super_read_only` server. Reading
-  `performance_schema.metadata_locks` (the upgrade check in
-  [README_UPGRADING_3_0.md](README_UPGRADING_3_0.md#moving-from-30-alpha0)) needs `SELECT` on
+  `RELEASE_ALL_LOCKS()` need no grant, on the source or the destination, and work on a
+  `super_read_only` server; neither does the session `max_execution_time = 0` the schema
+  lock's session sets for its wait. Reading `performance_schema.metadata_locks` (the upgrade
+  check in [README_UPGRADING_3_0.md](README_UPGRADING_3_0.md#moving-from-30-alpha0)) needs `SELECT` on
   `performance_schema`: run it as a DBA account, not as GoArchive's.
 - **The source facts need no privilege.** The unfinished-work guard reads the source's
   `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql; neither

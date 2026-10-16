@@ -39,14 +39,14 @@ destination database):
 | `archiver_job_log_<id>` | one table per job | Each logged root key and its status |
 | `goarchive_meta` | one table, one row | The tracking schema's label, `3.0` |
 
-GoArchive creates the tables but never the schema, and its account holds no `DELETE` or `DROP`
-there ([grants](README_PERMISSIONS.md#grant-recipes)): every deletion below is a DBA's act. The
-log table is named by the job's `id`:
-
 The first run in a new schema creates the tables and the `3.0` label under the schema lock
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)), so two runs
 starting together in one new schema do not both create it: the second waits, up to 60
 seconds, and finds it ready.
+
+GoArchive creates the tables but never the schema, and its account holds no `DELETE` or `DROP`
+there ([grants](README_PERMISSIONS.md#grant-recipes)): every deletion below is a DBA's act. The
+log table is named by the job's `id`:
 
 ```sql
 SELECT id, job_name, root_table, job_type FROM goarchive.archiver_job;
