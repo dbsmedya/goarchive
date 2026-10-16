@@ -1,5 +1,6 @@
 // Package lock holds GoArchive's MySQL user-level locks: the source table locks and the
-// destination job lock of a run (source-table-locks spec §3, §4).
+// destination job lock of a run (source-table-locks spec §3, §4), and the destination
+// schema lock under which one run at a time creates a new tracking schema (TRK-1).
 package lock
 
 import (
@@ -16,8 +17,9 @@ import (
 // apart. A collision only makes a free run look busy. MySQL computes the same name with
 // CONCAT('goarchive:j:', LEFT(SHA2(CONCAT(LOWER(a), CHAR(0), LOWER(b)), 256), 32)) (probe L8).
 const (
-	tablePrefix = "goarchive:t:"
-	jobPrefix   = "goarchive:j:"
+	tablePrefix  = "goarchive:t:"
+	jobPrefix    = "goarchive:j:"
+	schemaPrefix = "goarchive:s:"
 )
 
 // TableLockName is the name of the source lock on database.table.
@@ -28,6 +30,13 @@ func TableLockName(database, table string) string {
 // JobLockName is the name of the destination lock on job in the tracking schema jobSchema.
 func JobLockName(jobSchema, job string) string {
 	return hashed(jobPrefix, jobSchema, job)
+}
+
+// SchemaLockName is the name of the destination lock under which one run at a time creates
+// the tracking schema jobSchema (TRK-1). Its second identifier is the empty string, so the
+// formula above computes it too.
+func SchemaLockName(jobSchema string) string {
+	return hashed(schemaPrefix, jobSchema, "")
 }
 
 func hashed(prefix, a, b string) string {
