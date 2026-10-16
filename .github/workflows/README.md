@@ -72,8 +72,8 @@ git push origin --delete verify-gate/<sha7>             # remove the branch afte
 ```
 
 One run per commit and workflow: a newer run on the same SHA cancels the older one, and a Matrix
-verify and a Gate verify run on one SHA do not cancel each other. `verify/**` does not match
-`verify-gate/…` (`*` stops at `/`), so each push starts one workflow. A push runs the workflow file
+verify and a Gate verify run on one SHA do not cancel each other. `verify/**` matches only names
+under `verify/`, and `verify-gate/…` is not under it, so each push starts one workflow. A push runs the workflow file
 of the pushed commit: on a commit from before these two files, `verify/` starts the old
 `release-verify.yml` and `verify-gate/` starts nothing.
 

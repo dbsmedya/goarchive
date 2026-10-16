@@ -540,13 +540,14 @@ image through the *Gate verify* workflow (`.github/workflows/gate-verify.yml`). 
 from a push of its branch:
 
 ```bash
-git push origin <sha>:refs/heads/verify/<sha7>               # Matrix verify
-git push origin <sha>:refs/heads/verify-gate/<sha7>          # Gate verify
-git push origin --delete verify/<sha7> verify-gate/<sha7>    # remove the branches after the runs
+git push origin <sha>:refs/heads/verify/<sha7>          # Matrix verify
+git push origin <sha>:refs/heads/verify-gate/<sha7>     # Gate verify
+git push origin --delete verify/<sha7>                  # remove each branch after its run
+git push origin --delete verify-gate/<sha7>
 ```
 
 - **Jobs:** *Matrix verify* runs one job per `rows.tsv` row with one pair (`MX_PAIRS=1`), at most
-  14 at once, and a summary: 36 jobs for 34 rows. *Gate verify* runs `make gate` on an estate
+  14 at once, a target job and a summary: the rows plus two. *Gate verify* runs `make gate` on an estate
   built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server` 8.0.46-37,
   8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
   `compose.yml`), and a summary: 8 jobs.
@@ -572,7 +573,8 @@ git push origin --delete verify/<sha7> verify-gate/<sha7>    # remove the branch
   job count. Delete the branch after the run. A red run goes to the operator with its summary
   table and is never re-run to get a green one; a red version row caused by a floating image tag
   is reported as such, and the operator decides whether it blocks the PR.
-- They replace the local full matrix. They do not replace the local gate on the final SHA.
+- *Matrix verify* replaces the local full matrix. Neither replaces the local gate on the final
+  SHA.
 
 ### Sakila E2E tests
 
