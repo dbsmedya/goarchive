@@ -135,9 +135,12 @@ with the operator's approval for that run, and reads the run's summary table.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1318 FAIL=0 SKIP=4`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 TRK-1 PR, at
-  `b53d157`). It was 1306 before (the beta.2 LAG-1 PR, at `54e7b3f`): TRK-1 added four
+- **Integration inventory:** `PASS=1318 FAIL=0 SKIP=5`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 PKT-1 PR, at
+  `0b5b0f9`). It was `SKIP=4` before (the beta.2 TRK-1 PR, at `b53d157`): PKT-1 added
+  `TestMySQLArchiveValueLargerThanThePacket`, which runs only under the matrix row
+  `max_allowed_packet_dst_4m` and skips on the estate, whose two servers have the same packet.
+  Before TRK-1 it was 1306 (the beta.2 LAG-1 PR, at `54e7b3f`): TRK-1 added four
   `internal/tracking` schema-lock tests and `TestSchemaLockedErrorMessage`, and in
   `internal/lock` `TestMySQLWait` (5 rows) and `TestMySQLWaitUnderAStatementTimer`. Re-measure
   after adding or removing tagged tests.
@@ -147,7 +150,9 @@ after the runner reports; a gate agent never edits it.
   `20261015T115700Z-38140`, 1279 inventory); 416–421 s on the 1281 inventory (runs
   `20261015T122959Z-91592` and `20261015T140444Z-16700`, PR #136); 453–482 s on the 1301 inventory
   (runs `20261015T175855Z-14594`, `20261015T183440Z-34044`, `20261015T193313Z-64295`, the LAG-1 PR);
-  476 s on the 1306 inventory (run `20261015T201205Z-26156`, LAG-1's final SHA);
+  476 s on the 1306 inventory (run `20261015T201205Z-26156`, LAG-1's final SHA); 488–498 s on the
+  1318 inventory (run `20261016T102019Z-33223`, 498 s, TRK-1's final SHA); 445–452 s with the
+  validation demos 18 and 19 (runs `20261016T122705Z-2588` and `20261016T123636Z-27187`, TRG-1);
   record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub:** the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at

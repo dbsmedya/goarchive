@@ -6,16 +6,17 @@
 #
 # MX_PAIRS throwaway source/destination pairs work through a shared queue. A dynamic row
 # snapshots the globals in VARS on both servers of a long-lived MX_IMAGE pair, applies its
-# SET GLOBAL statements, runs the suites, restores the snapshot and compares it; a pair
-# whose restore differs is recreated. Init and version rows run on a fresh pair, removed
+# SET GLOBAL statements (to the destination only when the setup starts with "dst:"), runs
+# the suites, restores the snapshot and compares it; a pair whose restore differs is
+# recreated. Init and version rows run on a fresh pair, removed
 # after the row. A group row runs the unfinished-work guard tests with dbsgomysql's Group
 # Replication cluster (group/) as the source and a fresh server as the destination. TestMySQLLiveReplicationGate is skipped: it changes the estate's replica
 # db3, which every pair shares and no row mutates; it runs on the estate only.
 #
 # Environment: MX_IMAGE (percona/percona-server:8.4), MX_PAIRS (3), MX_TIMEOUT (3m, per
 # test binary), MX_PKGS (./internal/... ./cmd/...), MX_TAG (a timestamp), MX_CODE (this
-# checkout). Results: tests/results/envmatrix/<tag>/<row>/ and <tag>/SUMMARY.txt. Exit 1
-# when any row is not OK.
+# checkout). Each row's suites receive the row's name as TEST_MATRIX_ROW. Results:
+# tests/results/envmatrix/<tag>/<row>/ and <tag>/SUMMARY.txt. Exit 1 when any row is not OK.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -111,6 +112,7 @@ run_suite() { # pair dir [run] → go-test.json, go-test.stderr; run limits the 
     read -ra pkgs <<<"$PKGS"
     [[ -n $run ]] && only=(-run "$run")
     (cd "$CODE" && TEST_SOURCE_PORT=$((3375 + 10 * i)) TEST_DEST_PORT=$((3376 + 10 * i)) \
+        TEST_MATRIX_ROW="$(basename "$dir")" \
         go test -tags=integration -json "${pkgs[@]}" -count=1 -timeout "$TIMEOUT" ${only[@]+"${only[@]}"} \
         -skip "$SKIP") >"$dir/go-test.json" 2>"$dir/go-test.stderr" </dev/null
 }
@@ -146,10 +148,13 @@ run_row() { # pair name kind setup expect
     rm -rf "$dir"; mkdir -p "$dir"
     case $kind in
     dynamic)
+        # A setup starting "dst:" runs on the destination only (PKT-1); otherwise on both.
+        local on="src dst" sql=$setup
+        if [[ $setup == dst:* ]]; then on=dst sql=${setup#dst:}; fi
         for c in src dst; do snapshot "ga-mx$i-$c" >"$dir/before-$c.tsv"; done
         if [[ $setup != "-" ]]; then
-            for c in src dst; do
-                sqlc "ga-mx$i-$c" "$setup" 2>>"$dir/apply.err" || note+="apply failed on $c; "
+            for c in $on; do
+                sqlc "ga-mx$i-$c" "$sql" 2>>"$dir/apply.err" || note+="apply failed on $c; "
             done
         fi
         for c in src dst; do snapshot "ga-mx$i-$c" >"$dir/during-$c.tsv"; done
