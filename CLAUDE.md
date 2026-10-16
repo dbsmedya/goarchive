@@ -75,12 +75,14 @@ passes. **Agents never create tags or releases; the operator does.** The release
 - **Branches and PRs.** 3.0 PRs target `v3` on origin; 2.x stays frozen on `main` until `v3` is
   merged onto it by its own PR. The 3.0-alpha PR is the first.
 - **Merge order for every PR into `v3`:** work on a branch (a `test` commit, then a `fix`
-  commit) → Fable's final review for behaviour changes, when available → `gate-agent` reports
-  GREEN on the final SHA (`tests/AGENTS.md`; re-measure the baselines when tests change), and for
-  a behaviour change a green *Release verify* run on GitHub (`tests/README.md` → *The full matrix
-  runs on GitHub*; started only with the operator's approval) → Codex's MR verdict on that SHA → the
-  operator's verdict → push, open the PR, CI → merge. A
-  release folds its version bump into its last PR; the operator tags.
+  commit) → Fable's or Sonnet's final review for behaviour changes → `gate-agent` reports GREEN on
+  the final SHA (`tests/AGENTS.md`; re-measure the baselines when tests change) → a green *Matrix
+  verify* run on that SHA (`verify/<sha7>`), and for a release PR (the one that folds the version
+  bump) also a green *Gate verify* run (`verify-gate/<sha7>`): the coordinating agent pushes each,
+  for the final SHA only, reads its summary and deletes the branch, and never re-runs a red run on
+  its own (`tests/README.md` → *The full matrix runs on GitHub*) → Codex's MR verdict on that SHA
+  → the operator's verdict → push, open the PR, CI → merge. A release folds its version bump into
+  its last PR; the operator tags.
 
 ## Build & guards
 

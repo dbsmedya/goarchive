@@ -1,6 +1,6 @@
 # Test MySQL topology: db1 = source (sakila), db2 = destination, db3 = replica.
-# The image is GA_ESTATE_IMAGE, default percona/percona-server:8.4; the release-verify workflow
-# (.github/workflows/release-verify.yml) builds this estate on each supported image.
+# The image is GA_ESTATE_IMAGE, default percona/percona-server:8.4; the Gate verify workflow
+# (.github/workflows/gate-verify.yml) builds this estate on each supported image.
 #
 # The data directories are Docker NAMED VOLUMES, not macOS bind mounts. This is
 # load-bearing, not a style choice:

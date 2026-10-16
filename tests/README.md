@@ -534,28 +534,45 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 
 #### The full matrix runs on GitHub
 
-Run one row or a few locally while developing. The **full** matrix runs on GitHub, together with
-the gate on every supported image, through the *Release verify* workflow
-(`.github/workflows/release-verify.yml`). It starts only from a push to a `verify/` branch, which
-an agent makes only with the operator's approval for that run:
+Run one row or a few locally while developing. The **full** matrix runs on GitHub through the
+*Matrix verify* workflow (`.github/workflows/matrix-verify.yml`), and the gate on every supported
+image through the *Gate verify* workflow (`.github/workflows/gate-verify.yml`). Each starts only
+from a push of its branch:
 
 ```bash
-git push origin <sha>:refs/heads/verify/<sha7>     # start a run
-git push origin --delete verify/<sha7>             # remove the branch after the run
+git push origin <sha>:refs/heads/verify/<sha7>               # Matrix verify
+git push origin <sha>:refs/heads/verify-gate/<sha7>          # Gate verify
+git push origin --delete verify/<sha7> verify-gate/<sha7>    # remove the branches after the runs
 ```
 
-- **Jobs:** `make gate` on an estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and
-  `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each
-  (`GA_ESTATE_IMAGE` in `compose.yml`); one job per
-  `rows.tsv` row with one pair (`MX_PAIRS=1`); and a summary.
-- **Results:** the run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`).
-  It is red when any job did not succeed, when any row is not OK or is missing, and when any gate
-  is missing or lacks the evidence `make gate` records for its SHA (above: `complete`, a clean
-  tree, both exits 0). Every job's evidence directory is an artifact.
+- **Jobs:** *Matrix verify* runs one job per `rows.tsv` row with one pair (`MX_PAIRS=1`), at most
+  14 at once, and a summary: 36 jobs for 34 rows. *Gate verify* runs `make gate` on an estate
+  built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server` 8.0.46-37,
+  8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
+  `compose.yml`), and a summary: 8 jobs.
+- **Results:** each run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`),
+  headed *Matrix verify* or *Gate verify* and the SHA. It is red when any job did not succeed,
+  when any row is not OK or is missing, when any gate is missing or lacks the evidence `make gate`
+  records for its SHA (above: `complete`, a clean tree, both exits 0), and when a run holds the
+  other workflow's jobs. Every job's evidence directory is an artifact.
   A gate's integration count is one pass short of the local baseline, with one more skip:
   `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
-- **When:** on a PR's final SHA for a behaviour change, and on the release PR's final SHA before
-  the tag. It replaces the local full matrix. It does not replace the local gate on the final SHA.
+- **When, and who:**
+
+  | Branch | When | Pushed by |
+  |---|---|---|
+  | `verify/<sha7>` | Every PR's final SHA, after the local gate is GREEN, before Codex's and the operator's verdicts | the coordinating agent |
+  | `verify-gate/<sha7>` | The release PR's final SHA (the PR that folds the version bump); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
+
+  The repository is public: a push publishes the PR's commits before the verdicts, and deleting
+  the branch does not unpublish them. This standing authorization covers these two branches for
+  the PR's final SHA only; every other push waits for the operator's verdict. After each push,
+  confirm the run started (`gh run list --workflow matrix-verify.yml --branch verify/<sha7>`, or
+  `gate-verify.yml` and `verify-gate/<sha7>`), and on its summary check the heading's SHA and the
+  job count. Delete the branch after the run. A red run goes to the operator with its summary
+  table and is never re-run to get a green one; a red version row caused by a floating image tag
+  is reported as such, and the operator decides whether it blocks the PR.
+- They replace the local full matrix. They do not replace the local gate on the final SHA.
 
 ### Sakila E2E tests
 
