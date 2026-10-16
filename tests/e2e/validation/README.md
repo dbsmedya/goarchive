@@ -27,7 +27,7 @@ leakage check like every other, serve tests 18 and 19:
 
 | Declaration | Values | Effect |
 |---|---|---|
-| `source_account` | `recipe` \| `recipe-trigger` | Before `validate`, the engine creates `ga3e2e_recipe` on the source as root, with exactly the documented source recipe (`SELECT, DELETE` on the source database, `PROCESS`; `recipe-trigger` adds `TRIGGER`) and the estate's root password; after `validate` it drops the account on every path, and a failed drop fails the demo. The config's `source.user` must be `ga3e2e_recipe`, or the test is refused before it runs. |
+| `source_account` | `recipe` \| `recipe-trigger` | Before `validate`, the engine creates `ga3e2e_recipe` on the source as root, with exactly the documented source recipe (`SELECT, DELETE` on the source database, `PROCESS`; `recipe-trigger` adds `TRIGGER`) and the estate's root password; after `validate`, or after a setup that failed part-way, it drops the account, and a failed drop fails the demo. The config's `source.user` must be `ga3e2e_recipe`, or the test is refused before it runs. |
 | `force_triggers` | `yes` (default) \| `no` | `no` runs `validate` without `--force-triggers`. |
 | `expected_detail` | a literal string | A second substring the failure must hold, for a category whose subject still needs pinning (`film(del_film)`). Matched literally, unlike `expected_error`. Quote it in the file when it holds parentheses. |
 

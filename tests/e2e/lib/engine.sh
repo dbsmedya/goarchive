@@ -78,6 +78,7 @@ DEMO_ACCOUNT="ga3e2e_recipe"
 # account with exactly the documented source recipe (README_PERMISSIONS.md ->
 # Source), TRIGGER only for recipe-trigger. DROP first: a killed run's leftover is
 # replaced, never reused.
+# The statements are not atomic: on failure the caller drops the account.
 create_source_account() {
     local schema_privs="SELECT, DELETE"
     [[ "$1" == recipe-trigger ]] && schema_privs="SELECT, DELETE, TRIGGER"
@@ -565,6 +566,11 @@ run_e2e_test() {
         [[ "$force_triggers" == no ]] && trigger_flag=""
         if [[ -n "$source_account" ]] && ! create_source_account "$source_account" >> "$log_file" 2>&1; then
             log_error "Could not create the demo account $DEMO_ACCOUNT ($source_account)"
+            # Setup is several statements: CREATE USER may have succeeded before a
+            # GRANT failed, so the account is dropped here too.
+            if ! drop_source_account >> "$log_file" 2>&1; then
+                log_error "Could not drop the demo account $DEMO_ACCOUNT either: it may remain on the source"
+            fi
             end_time=$(date +%s)
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
