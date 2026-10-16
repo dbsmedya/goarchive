@@ -143,7 +143,7 @@ func TestMySQLForeignKeyChecksReset(t *testing.T) {
 // the context ends.
 type failingGate struct{}
 
-func (failingGate) WaitForLag(context.Context) error {
+func (failingGate) WaitForLag(context.Context, <-chan struct{}) error {
 	return errors.New("replica lag 900s exceeds 10s")
 }
 

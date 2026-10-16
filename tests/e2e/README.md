@@ -97,8 +97,8 @@ behind it as defence in depth.
 
 ### The replication hold declaration
 
-Test13 declares `replication_hold="stopped-applier"` with `mode="working"` and
-`command="purge"`. Unknown values, other modes/commands and combinations with
+Test13 declares `replication_hold="stopped-applier"` and Test17
+`replication_hold="stop-signal"`, each with `mode="working"` and `command="purge"`. Unknown values, other modes/commands and combinations with
 `interrupt` are refused before fixture reset. The variable is local to each test
 and included in the suite's leakage check.
 
@@ -109,6 +109,11 @@ restarts the applier and waits for the same process. Its scoped cleanup terminat
 an unfinished child and restores replication on failure. A failed precondition,
 query, hold/release assertion or cleanup fails the test. All ordinary working-test
 postconditions still apply; `replication_hold` is not a separate mode.
+
+With `stop-signal` it sends one SIGTERM once the hold is observed and requires exit 3
+within 10 seconds, the stop line, the stopped closing entry and an unchanged source; it
+then restores the applier and runs a second purge, which must complete without
+recovery.
 
 ## Adding a test
 

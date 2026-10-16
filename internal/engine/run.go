@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
+	"github.com/dbsmedya/goarchive/v3/internal/replication"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
@@ -198,6 +200,11 @@ func (r *run) loop(ctx context.Context) error {
 		}
 		last = roots[len(roots)-1]
 		if err := r.batch(ctx, roots); err != nil {
+			if errors.Is(err, errHoldStopped) {
+				r.trackProgress()
+				r.report.Stopped = true
+				return nil
+			}
 			return fmt.Errorf("engine: batch %d: %w", r.report.Batches+1, err)
 		}
 		r.report.Batches++
@@ -239,40 +246,28 @@ func (r *run) fetch(ctx context.Context, q reader, last key.Key) ([]key.Key, err
 	return out, nil
 }
 
-// batch runs the job type's phases over one batch of root keys (spec §7.1).
+// batch runs the job type's phases over one batch of root keys (spec §7.1). Its source reads
+// run on one session that readBatch releases before the first gate wait; each delete chunk
+// takes its own (LAG-1).
 func (r *run) batch(ctx context.Context, roots []key.Key) error {
-	src, err := r.cfg.Source.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = src.Close() }()
-
 	if r.typ == jobspec.CopyOnly && r.cfg.Spec.ResumeEnabled() {
+		var err error
 		if roots, err = r.dropLogged(ctx, roots); err != nil || len(roots) == 0 {
 			return err
 		}
 	}
-	t, err := r.discover(ctx, src, roots)
+	t, err := r.readBatch(ctx, roots)
 	if err != nil {
 		return err
 	}
 	switch r.typ {
 	case jobspec.Archive:
-		if err := r.copy(ctx, src, t, tracking.StatusCopied); err != nil {
-			return err
-		}
-		r.reached(atCommitted)
-		if err := r.deleteTree(ctx, src, t); err != nil {
+		if err := r.deleteTree(ctx, t); err != nil {
 			return err
 		}
 		if err := r.complete(ctx, tracking.StatusCopied, roots); err != nil {
 			return err
 		}
-	case jobspec.CopyOnly:
-		if err := r.copy(ctx, src, t, tracking.StatusCompleted); err != nil {
-			return err
-		}
-		r.reached(atCommitted)
 	case jobspec.Purge:
 		if err := r.waitForLag(ctx); err != nil {
 			return err
@@ -281,7 +276,7 @@ func (r *run) batch(ctx context.Context, roots []key.Key) error {
 			return err
 		}
 		r.reached(atLogged)
-		if err := r.deleteTree(ctx, src, t); err != nil {
+		if err := r.deleteTree(ctx, t); err != nil {
 			return err
 		}
 		if err := r.complete(ctx, tracking.StatusDeleting, roots); err != nil {
@@ -293,20 +288,58 @@ func (r *run) batch(ctx context.Context, roots []key.Key) error {
 	return nil
 }
 
+// readBatch runs a batch's source reads on one pinned session, which it closes on return,
+// before any gate wait or delete (LAG-1): a session held idle through a long replication
+// hold is closed by the server under the run. It discovers the batch's tree and, for archive
+// and copy-only, copies it.
+func (r *run) readBatch(ctx context.Context, roots []key.Key) (*tree, error) {
+	src, err := r.cfg.Source.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = src.Close() }()
+	t, err := r.discover(ctx, src, roots)
+	if err != nil {
+		return nil, err
+	}
+	switch r.typ {
+	case jobspec.Archive:
+		if err := r.copy(ctx, src, t, tracking.StatusCopied); err != nil {
+			return nil, err
+		}
+		r.reached(atCommitted)
+	case jobspec.CopyOnly:
+		if err := r.copy(ctx, src, t, tracking.StatusCompleted); err != nil {
+			return nil, err
+		}
+		r.reached(atCommitted)
+	}
+	return t, nil
+}
+
 func (r *run) reached(p point) {
 	if r.cfg.at != nil {
 		r.cfg.at(p)
 	}
 }
 
+// errHoldStopped is a first signal that ended a replication hold (LAG-1). loop and recover
+// map it to a stopped run: what the batch or page committed stays logged, and the next run's
+// recovery finishes it.
+var errHoldStopped = errors.New("engine: replication hold ended by a stop request")
+
 func (r *run) waitForLag(ctx context.Context) error {
 	if r.cfg.Lag == nil || r.typ == jobspec.CopyOnly {
 		return nil
 	}
-	if err := r.cfg.Lag.WaitForLag(ctx); err != nil {
-		return fmt.Errorf("engine: replication lag gate: %w", err)
+	err := r.cfg.Lag.WaitForLag(ctx, r.cfg.Stop)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, replication.ErrStopped):
+		return errHoldStopped
 	}
-	return nil
+	return fmt.Errorf("engine: replication lag gate: %w", err)
 }
 
 // inDestinationTx runs f in a destination transaction and commits it through the guard.

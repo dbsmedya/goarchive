@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -57,6 +58,10 @@ func (r *run) recover(ctx context.Context) error {
 		after = roots[len(roots)-1]
 		r.log.Infow(fmt.Sprintf("Recovery: replaying %d %s roots of %s", len(roots), st, r.root.Table), logger.Live)
 		if err := r.replay(ctx, st, roots); err != nil {
+			if errors.Is(err, errHoldStopped) {
+				r.report.Stopped = true
+				return nil
+			}
 			return err
 		}
 		r.report.Recovered += int64(len(roots))
@@ -78,14 +83,28 @@ func (r *run) loggedPage(ctx context.Context, st tracking.Status, after key.Key)
 }
 
 func (r *run) replay(ctx context.Context, st tracking.Status, roots []key.Key) error {
-	src, err := r.cfg.Source.Conn(ctx)
+	t, err := r.readPage(ctx, roots)
 	if err != nil {
 		return err
+	}
+	if err := r.deleteTree(ctx, t); err != nil {
+		return err
+	}
+	return r.complete(ctx, st, roots)
+}
+
+// readPage reads a recovery page's trees on one pinned session, which it closes on return,
+// before the page's gate waits and deletes (LAG-1): which logged roots are still in the
+// source, their trees, and for archive the check that the destination holds every row.
+func (r *run) readPage(ctx context.Context, roots []key.Key) (*tree, error) {
+	src, err := r.cfg.Source.Conn(ctx)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = src.Close() }()
 	present, err := r.present(ctx, src, roots)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	gone := without(roots, present)
 	if len(gone) > 0 {
@@ -95,20 +114,17 @@ func (r *run) replay(ctx context.Context, st tracking.Status, roots []key.Key) e
 	}
 	t, err := r.discover(ctx, src, roots)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	t.keys[r.root.Table] = present
 	if r.typ == jobspec.Archive {
 		// Recovery deletes only what the destination holds (GH #7): every table is read
 		// before the first delete, and a page with a missing row is refused whole.
 		if err := r.checkHeld(ctx, t, gone); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if err := r.deleteTree(ctx, src, t); err != nil {
-		return err
-	}
-	return r.complete(ctx, st, roots)
+	return t, nil
 }
 
 // present returns the logged roots still in the source, in the order logged.

@@ -136,8 +136,8 @@ run_e2e_test() {
     # A declared live hold must never degrade to an ordinary working test.
     # Check it before any fixture reset, including on example declarations.
     if [[ -n "$replication_hold" ]]; then
-        if [[ "$replication_hold" != "stopped-applier" || "$mode" != "working" || "$command" != "purge" || -n "$interrupt" ]]; then
-            log_error "Test $test_num: replication_hold requires stopped-applier, mode=working, command=purge and no interrupt"
+        if [[ ( "$replication_hold" != "stopped-applier" && "$replication_hold" != "stop-signal" ) || "$mode" != "working" || "$command" != "purge" || -n "$interrupt" ]]; then
+            log_error "Test $test_num: replication_hold requires stopped-applier or stop-signal, mode=working, command=purge and no interrupt"
             return 1
         fi
     fi
@@ -324,7 +324,7 @@ run_e2e_test() {
 
         if [[ -n "$replication_hold" ]]; then
             log_info "[STEP 3b] Running purge with an observed replica hold..."
-            if ! run_replication_hold_job "$config_file" "$log_file"; then
+            if ! run_replication_hold_job "$config_file" "$log_file" "$replication_hold"; then
                 log_error "purge replication hold/release witness failed"
                 echo "Result: FAIL (replication hold/release)" >> "$log_file"
                 return 1

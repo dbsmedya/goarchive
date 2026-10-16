@@ -135,16 +135,19 @@ with the operator's approval for that run, and reads the run's summary table.
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1281 FAIL=0 SKIP=4`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-15 (the beta.2 output-standard
-  PR, at `bb8fba1`). It was 1239 before: that PR added unit tests the integration packages also run
-  (the logger's streams, exit codes, the closing block, progress, the dry-run report, the key and
-  statement displays) and `TestMySQLOutputStandard` and `TestMySQLExitCodes`. Re-measure after
-  adding or removing tagged tests.
+- **Integration inventory:** `PASS=1306 FAIL=0 SKIP=4`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-15 (the beta.2 LAG-1 PR, at
+  `54e7b3f`). It was 1281 before (the beta.2 output-standard PR, at `bb8fba1`): LAG-1 added
+  `TestMySQLLongHold` (4 rows), `TestMySQLStopDuringHold` (3), `TestMySQLStopNeverCutsAPass` (2)
+  and eleven gate unit tests (one with two rows) the integration packages also run. Re-measure after adding or removing
+  tagged tests.
 - **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
   443 s. Later gates took 450–472 s (466 s at `e4ef55d`, run `20261014T201816Z-82233`, on this
   inventory), and one under host load 515 s, leaving about 85 s; 430 s at `8030861` (run
-  `20261015T115700Z-38140`, 1279 inventory); record each new measurement
+  `20261015T115700Z-38140`, 1279 inventory); 416–421 s on the 1281 inventory (runs
+  `20261015T122959Z-91592` and `20261015T140444Z-16700`, PR #136); 453–482 s on the 1301 inventory
+  (runs `20261015T175855Z-14594`, `20261015T183440Z-34044`, `20261015T193313Z-64295`, the LAG-1 PR);
+  record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub:** the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at
   `ae06474`), took 19 minutes for 41 jobs. Gates took 15–18 min each, with integration

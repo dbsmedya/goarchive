@@ -110,7 +110,7 @@ func (e env) killAt(t *testing.T, typ jobspec.Type, body string, p point, nth in
 // countingGate is a lag gate that counts its waits.
 type countingGate struct{ waits atomic.Int64 }
 
-func (g *countingGate) WaitForLag(context.Context) error { g.waits.Add(1); return nil }
+func (g *countingGate) WaitForLag(context.Context, <-chan struct{}) error { g.waits.Add(1); return nil }
 
 // TestMySQLKillRecovery: each crash point of each type, then a restart. Archive and purge
 // finish the logged roots by delete-only replay, each replay chunk behind the lag gate,

@@ -31,10 +31,11 @@ import (
 )
 
 // LagGate is the replication lag gate (internal/replication's *Gate). It applies to archive
-// and purge: the engine waits on it before every source delete chunk, in the batch loop
-// and in recovery (spec §6.4, §7.1).
+// and purge: the engine waits on it before every source delete chunk, in the batch loop and
+// in recovery, and before a purge batch logs its roots (spec §6.4, §7.1). stop is the run's
+// stop channel: a stop ends a hold, never a pass (LAG-1).
 type LagGate interface {
-	WaitForLag(ctx context.Context) error
+	WaitForLag(ctx context.Context, stop <-chan struct{}) error
 }
 
 // Config is one run of one job.
@@ -63,7 +64,8 @@ type Config struct {
 
 	// Lag is the replication lag gate; nil means none.
 	Lag LagGate
-	// Stop closes on the first signal: the run stops at the next batch boundary.
+	// Stop closes on the first signal: the run stops at the next batch boundary, or at once
+	// during a replication hold (LAG-1).
 	Stop <-chan struct{}
 	// Logger defaults to logger.NewDefault().
 	Logger *logger.Logger
@@ -162,9 +164,10 @@ func (c *Config) checkPool() error {
 }
 
 // minSourceConnections and minDestinationConnections are the smallest pools a run can use.
-// The source: the table locks' session and the batch's pinned session. The destination is
-// kept at three (M5-F6, every gate since): the job lock's session, the copy's and the
-// heartbeat's, which run at the same time; the retired root lock's slot is the heartbeat's.
+// The source: the table locks' session and one working session, the batch's reads or a
+// delete chunk's (LAG-1). The destination is kept at three (M5-F6, every gate since): the
+// job lock's session, the copy's and the heartbeat's, which run at the same time; the
+// retired root lock's slot is the heartbeat's.
 const (
 	minSourceConnections      = 2
 	minDestinationConnections = 3

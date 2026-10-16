@@ -32,10 +32,12 @@ set -a
 # shellcheck source=/dev/null
 source "$REPO/tests/.env"
 set +a
-# TestMySQLLiveReplicationGate stops the estate replica's applier: it runs on the estate only.
+# TestMySQLLiveReplicationGate, TestMySQLStopDuringHold and TestMySQLStopNeverCutsAPass drive
+# the estate replica (db3) through the live gate, and the first two stop its applier: they run on
+# the estate only.
 # MX_SKIP_FILE (the release-verify workflow: envmatrix/gh-skip.txt) adds the tests a GitHub
 # matrix job cannot run, one name per line with its reason after '#'.
-SKIP=TestMySQLLiveReplicationGate
+SKIP="TestMySQLLiveReplicationGate|TestMySQLStopDuringHold|TestMySQLStopNeverCutsAPass"
 if [[ -n ${MX_SKIP_FILE:-} ]]; then
     while read -r name _; do
         [[ -z $name || $name == \#* ]] || SKIP+="|$name"

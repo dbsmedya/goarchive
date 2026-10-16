@@ -201,14 +201,6 @@ serialized; the [run contract](#no-ddl-and-no-concurrent-writes-during-a-run-con
 that case. On Group Replication in multi-primary mode, locks are local to a member, so runs
 connected to different members are not serialized.
 
-#### The job lock and long replication holds
-
-The run's locks live on dedicated sessions, and losing either set stops the run. During a
-replication-lag hold the batch's source session sits idle; once the hold outlasts that session's
-`wait_timeout` — the server's global, or 8 hours if that is lower
-([Session settings](README_CONFIGURATION.md#session-settings)) — the server closes it, and the
-next delete chunk fails with error 4031. The next start's recovery finishes the batch.
-
 #### Partial deletes after an interruption
 
 Delete chunks commit separately, to avoid long source locks. A run stopped between child and

@@ -99,7 +99,8 @@ package:
 | `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
 | `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output per logging setup (stdout, stderr and the log; cron silence; `--progress`; JSON on the console), exit codes against held locks and refusals, the `dry-run` report, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, an archive under a server's finite `sql_select_limit` |
 
-`TestMySQLLiveReplicationGate` stops the real replica's applier and needs the estate to itself.
+`TestMySQLLiveReplicationGate` and `TestMySQLStopDuringHold` stop the real replica's applier, and
+`TestMySQLStopNeverCutsAPass` reads it through the live gate; they need the estate to itself.
 
 ---
 

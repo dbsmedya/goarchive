@@ -11,9 +11,10 @@ import (
 // deleteTree deletes a batch's discovered rows from the source, children first (spec
 // §7.5). Each chunk of batch_delete_size keys is one statement in its own transaction,
 // which commits only when the rows affected equal the chunk size and MySQL kept range
-// access (spec §7.1a). Every chunk first passes the replication lag gate, and
+// access (spec §7.1a). Every chunk first passes the replication lag gate, then takes a
+// session of its own, so no session sits idle through a hold (LAG-1);
 // delete_sleep_seconds separates consecutive statements.
-func (r *run) deleteTree(ctx context.Context, src connTx, t *tree) error {
+func (r *run) deleteTree(ctx context.Context, t *tree) error {
 	issued := false
 	for _, n := range r.tree.DeleteOrder() {
 		for _, chunk := range key.Chunks(t.keys[n.Table], r.deleteChunk(n.Table)) {
@@ -25,7 +26,7 @@ func (r *run) deleteTree(ctx context.Context, src connTx, t *tree) error {
 					return err
 				}
 			}
-			if err := r.deleteOne(ctx, src, n.Table, chunk); err != nil {
+			if err := r.deleteOnSession(ctx, n.Table, chunk); err != nil {
 				return err
 			}
 			issued = true
@@ -34,6 +35,18 @@ func (r *run) deleteTree(ctx context.Context, src connTx, t *tree) error {
 		}
 	}
 	return nil
+}
+
+// deleteOnSession runs one chunk's delete on a source session taken for it from the pool:
+// the pool retires a session idle for 5 minutes, and the driver's liveness check refuses
+// one the server closed sooner, so a hold of any length leaves the chunk a live session.
+func (r *run) deleteOnSession(ctx context.Context, table string, chunk []key.Key) error {
+	conn, err := r.cfg.Source.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	return r.deleteOne(ctx, conn, table, chunk)
 }
 
 func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []key.Key) error {
@@ -68,8 +81,8 @@ func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []k
 	return nil
 }
 
-// connTx is a pinned source connection: deletes run in their own transactions on it, and
-// the reads of the same batch run on it too.
+// connTx is a source session a delete runs on, in its own transaction: a chunk's own
+// session (deleteOnSession).
 type connTx interface {
 	queryer
 	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)

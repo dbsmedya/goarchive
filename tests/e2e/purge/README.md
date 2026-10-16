@@ -30,7 +30,8 @@ test file states the count it asserts.
 
 Test13 adds a live hold/release witness to these exact outcome checks. Its helper
 restores the applier and confirms the replica is caught up even when a test fails.
-Test06 remains the ordinary purge control. The suite catalogue owns the selected
+Test17 is the stop during a hold: one SIGTERM ends it with exit 3, nothing logged,
+and a second purge completes. Test06 remains the ordinary purge control. The suite catalogue owns the selected
 counts; `../README.md` owns the declaration and cleanup mechanics.
 
 15 declares an orphan check because every multi-table test must; purge copies
