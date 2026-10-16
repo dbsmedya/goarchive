@@ -15,7 +15,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
-- [Moving from 3.0 beta.1 (unreleased)](#moving-from-30-beta1-unreleased)
+- [Moving from 3.0 beta.1](#moving-from-30-beta1)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -186,7 +186,7 @@ verified and deleted only in part. Nothing to do.
 
 ---
 
-## Moving from 3.0 beta.1 (unreleased)
+## Moving from 3.0 beta.1
 
 The tracking tables are unchanged. What changes is what goarchive prints, where, and how it exits
 ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)), and how a replication hold
@@ -215,6 +215,12 @@ and lists the counts as a table; the `elapsed:` line is gone.
 **`dry-run` prints a new report**: the job and its coverage, the orders with the first batch's rows,
 the settings, the caps, then one section per statement. It now counts the `where` range, a read of
 the whole range on the source.
+
+**`--progress`'s total is MySQL's estimate, not a count.** beta.1 counted the whole `where` range
+before batch 1, a read of the range on the source that could outlast the copy. The total after `~`
+is now the optimizer's estimate from one `EXPLAIN` and can be off in either direction: past it the
+ETA shows `unknown`, and a run that finishes shows its done count as the total
+([Progress display](README_OPERATIONS.md#progress-display)).
 
 **Text logs have no colour codes.** `validate` and `dry-run` no longer log the statement caps they
 print; a run logs them.
