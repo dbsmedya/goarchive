@@ -165,6 +165,15 @@ than it cannot be sent: nothing of the batch is logged or deleted, and the error
 table, column and size; raise the destination's `max_allowed_packet` above it. An INSERT of many
 values each just under the driver's long-data threshold can be refused whole: lower `batch_size`.
 
+#### A transaction over Group Replication's size limit fails its commit
+
+On a Group Replication source, a delete chunk larger than
+`group_replication_transaction_size_limit` (default 150 MB) fails its commit with MySQL's
+`Error 3100 … replication hook 'before_commit'`, which names neither the limit nor the remedy.
+Nothing is lost: the roots stay `copied`; lower `batch_delete_size` and rerun, and recovery finishes
+them. On a Group Replication destination, the copy transaction can fail the same way: lower
+`batch_size`.
+
 #### The copy transaction spans all tables
 
 One destination transaction copies, verifies and logs a batch across every table, holding row
