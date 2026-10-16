@@ -23,6 +23,13 @@ type demoResult struct {
 // with code, and a config whose source user is user.
 func runDemo(t *testing.T, decl, user, out string, code int) demoResult {
 	t.Helper()
+	return runDemoEnv(t, nil, decl, user, out, code)
+}
+
+// runDemoEnv is runDemo with extra environment: DEMO_CREATE_RC and DEMO_DROP_RC set the
+// account helpers' exit codes.
+func runDemoEnv(t *testing.T, env []string, decl, user, out string, code int) demoResult {
+	t.Helper()
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -49,8 +56,8 @@ log_header() { :; }
 reset_source_database() { echo reset >> "$TESTS_DIR/calls"; }
 get_row_count() { echo 1; }
 ensure_goarchive_bin() { return 0; }
-create_source_account() { echo "create $1" >> "$TESTS_DIR/calls"; }
-drop_source_account() { echo drop >> "$TESTS_DIR/calls"; }
+create_source_account() { echo "create $1" >> "$TESTS_DIR/calls"; return "${DEMO_CREATE_RC:-0}"; }
+drop_source_account() { echo drop >> "$TESTS_DIR/calls"; return "${DEMO_DROP_RC:-0}"; }
 run_e2e_test 18
 rc=$?
 if [ -n "${source_account:-}${force_triggers:-}${expected_detail:-}" ]; then echo DEMO_VARIABLE_LEAK >&2; exit 91; fi
@@ -59,7 +66,7 @@ exit "$rc"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", script)
-	cmd.Env = append(os.Environ(), "DEMO_ROOT="+root, "DEMO_DIR="+dir)
+	cmd.Env = append(append(os.Environ(), "DEMO_ROOT="+root, "DEMO_DIR="+dir), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err = cmd.Run()
@@ -123,6 +130,39 @@ func TestE2EDemoSourceAccount(t *testing.T) {
 			drop := strings.Index(r.calls, "drop\n")
 			if create < 0 || validate < create || drop < validate {
 				t.Errorf("calls = %q, want create recipe-trigger, validate, drop in that order", r.calls)
+			}
+		})
+	}
+}
+
+// TestE2EDemoSourceAccountCleanup (TRG-1, Codex R1): once its creation is attempted, the
+// account is dropped on every path. A setup that fails part-way (CREATE USER ran, a GRANT
+// did not) is dropped without running validate; a drop that fails fails the demo, and after
+// a failed setup the log says the account may remain.
+func TestE2EDemoSourceAccountCleanup(t *testing.T) {
+	decl := demoDecl + "source_account=recipe\n"
+	for _, tc := range []struct {
+		name, stderr string
+		env          []string
+		validate     bool
+	}{
+		{"setup failed", "Could not create the demo account", []string{"DEMO_CREATE_RC=1"}, false},
+		{"setup and drop failed", "may remain", []string{"DEMO_CREATE_RC=1", "DEMO_DROP_RC=1"}, false},
+		{"drop after validate failed", "Could not drop the demo account", []string{"DEMO_DROP_RC=1"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := runDemoEnv(t, tc.env, decl, "ga3e2e_recipe", "FAILED: THE_CHECK", 1)
+			if r.rc != 1 {
+				t.Fatalf("rc=%d, want 1\n%s\n%s", r.rc, r.calls, r.stderr)
+			}
+			if !strings.HasSuffix(r.calls, "drop\n") {
+				t.Errorf("calls = %q, want the drop last", r.calls)
+			}
+			if got := strings.Contains(r.calls, "goarchive validate"); got != tc.validate {
+				t.Errorf("calls = %q: validate ran = %t, want %t", r.calls, got, tc.validate)
+			}
+			if !strings.Contains(r.stderr, tc.stderr) {
+				t.Errorf("stderr = %q, want %q", r.stderr, tc.stderr)
 			}
 		})
 	}
