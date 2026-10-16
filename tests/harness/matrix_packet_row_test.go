@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,16 +79,36 @@ func packetRowProblem(rows, src, skips, runner string) string {
 		return "no row " + name + " in rows.tsv"
 	}
 	for _, line := range strings.Split(skips, "\n") {
-		if f := strings.Fields(line); len(f) > 0 && f[0] == packetTest {
+		if f := strings.Fields(line); len(f) > 0 && !strings.HasPrefix(f[0], "#") && skipsPacketTest(f[0]) {
 			return "gh-skip.txt skips " + packetTest
 		}
 	}
 	for _, line := range strings.Split(runner, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "SKIP=") && strings.Contains(line, packetTest) {
-			return "run-matrix.sh skips " + packetTest
+		line = strings.TrimSpace(line)
+		for _, assign := range []string{"SKIP=", "SKIP+="} {
+			if v, ok := strings.CutPrefix(line, assign); ok && skipsPacketTest(strings.Trim(v, `"'`)) {
+				return "run-matrix.sh skips " + packetTest
+			}
 		}
 	}
 	return ""
+}
+
+// skipsPacketTest says whether a go test -skip pattern skips packetTest. The runner joins its
+// SKIP= value and every gh-skip.txt name with "|", and go test matches each alternative
+// anywhere in the name, so a prefix skips the test as surely as its full name. An
+// alternative holding a shell expansion ($name) is not a literal pattern and is left out; one
+// that does not compile counts as a skip (fail closed).
+func skipsPacketTest(pattern string) bool {
+	for _, alt := range strings.Split(pattern, "|") {
+		if alt == "" || strings.Contains(alt, "$") {
+			continue
+		}
+		if re, err := regexp.Compile(alt); err != nil || re.MatchString(packetTest) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestMatrixPacketRowDeclared (PKT-1, Sonnet F2 and R2-2): the packet test skips everywhere but
