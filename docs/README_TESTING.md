@@ -97,7 +97,7 @@ package:
 | `internal/tracking` | The schema label and the refused revisions, the typed log, the log-key and binding checks, registration and leftover logs |
 | `internal/database` | The session pins, `wait_timeout`, `max_error_count`, AUTO_INCREMENT zero, the identity guard, single-statement connections, a partly failing replica fleet |
 | `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
-| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output per logging setup (stdout, stderr and the log; cron silence; `--progress`; JSON on the console), exit codes against held locks and refusals, the `dry-run` report, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, a value larger than the destination's `max_allowed_packet`, refused under the destination-only matrix row, an archive under a server's finite `sql_select_limit` |
+| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output per logging setup (stdout, stderr and the log; cron silence; `--progress`; JSON on the console), exit codes against held locks and refusals, the `dry-run` report, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, a value larger than the destination's `max_allowed_packet` (refused; run under the destination-only matrix row), an archive under a server's finite `sql_select_limit` |
 
 `TestMySQLLiveReplicationGate` and `TestMySQLStopDuringHold` stop the real replica's applier, and
 `TestMySQLStopNeverCutsAPass` reads it through the live gate; they need the estate to itself.

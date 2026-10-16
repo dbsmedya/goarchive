@@ -5,11 +5,11 @@
 #           version: a fresh, unmutated pair of another image
 #           group:   dbsgomysql's Group Replication cluster as the source, with a fresh
 #                    destination; the unfinished-work guard tests only
-#   setup   dynamic: the SQL, run on both servers ("-" for none); init: the cnf, relative to
-#           this directory; version: the image; group: the image of dbsgomysql's Group
-#           Replication cluster (group/README.md), whose primary is the source; only the
-#           unfinished-work guard tests run
-#           A dynamic setup starting "dst:" runs on the destination only (PKT-1).
+#   setup   dynamic: the SQL, run on both servers ("-" for none), or on the destination only
+#           when it starts with "dst:" (PKT-1); init: the cnf, relative to this directory;
+#           version: the image; group: the image of dbsgomysql's Group Replication cluster
+#           (group/README.md), whose primary is the source; only the unfinished-work guard
+#           tests run
 #   expect  pass, or refuse:CODE[|CODE...] (tests/envmatrix/judge): every failing test must
 #           cite one of the codes, the M7-8 rule that a run is exact or refused by name
 baseline	dynamic	-	pass
