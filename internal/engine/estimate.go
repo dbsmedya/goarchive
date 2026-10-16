@@ -49,11 +49,12 @@ func estimateRoots(plan []ExplainRow, table string) (int64, error) {
 		}
 	}
 	if !root {
-		return 0, fmt.Errorf("the plan has no row for %s", table)
+		return 0, fmt.Errorf("the plan has no row for %s (select 1: %s)", table, selectOne(plan))
 	}
-	if est > 0 && est < 0.5 {
-		// A positive estimate never rounds to the 0 reserved for a proven-empty range (Fable
-		// plan review F2).
+	if est < 0.5 {
+		// Only a table-less plan proves the range empty: filtered prints with two decimals, so
+		// 0.00 can be a positive selectivity, and a small estimate never rounds to the 0 reserved
+		// for a proven-empty range (Fable plan review F2, Codex MR review R1).
 		return 1, nil
 	}
 	return int64(math.Round(est)), nil
@@ -77,7 +78,7 @@ func planOutput(plan []ExplainRow, row ExplainRow) (float64, error) {
 			found = true
 		}
 		if !found {
-			return 0, fmt.Errorf("the plan has no select %s for %s", id, row.Table)
+			return 0, fmt.Errorf("the plan has no select %s for %s (Extra %q)", id, row.Table, row.Extra)
 		}
 		return out, nil
 	}
@@ -88,13 +89,28 @@ func planOutput(plan []ExplainRow, row ExplainRow) (float64, error) {
 func rowFactor(row ExplainRow) (float64, error) {
 	rows, err := strconv.ParseFloat(row.Rows, 64)
 	if err != nil {
-		return 0, fmt.Errorf("the plan's rows for %s is %q", row.Table, row.Rows)
+		return 0, fmt.Errorf("the plan's rows for %s is %q (Extra %q)", row.Table, row.Rows, row.Extra)
 	}
 	filtered := 100.0
 	if row.Filtered != "" {
 		if filtered, err = strconv.ParseFloat(row.Filtered, 64); err != nil {
-			return 0, fmt.Errorf("the plan's filtered for %s is %q", row.Table, row.Filtered)
+			return 0, fmt.Errorf("the plan's filtered for %s is %q (Extra %q)", row.Table, row.Filtered, row.Extra)
 		}
 	}
 	return rows * filtered / 100, nil
+}
+
+// selectOne names select 1's rows with their Extra, for an error about a plan estimateRoots does
+// not understand (Codex MR review R2).
+func selectOne(plan []ExplainRow) string {
+	var rows []string
+	for _, row := range plan {
+		if row.ID == "1" {
+			rows = append(rows, fmt.Sprintf("%s (Extra %q)", row.Table, row.Extra))
+		}
+	}
+	if len(rows) == 0 {
+		return "no rows"
+	}
+	return strings.Join(rows, ", ")
 }
