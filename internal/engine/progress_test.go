@@ -52,7 +52,9 @@ func TestProgressETAPrecedence(t *testing.T) {
 	}{
 		{"paused", paused, "paused"},
 		{"completed", completed, "0s"},
-		{"all done", snap(100, 100, 0, 0, time.Minute), "0s"},
+		{"at the estimate, still running", snap(100, 100, 0, 0, time.Minute), "unknown"},
+		{"past the estimate, still running", snap(100, 130, 0, 0, time.Minute), "unknown"},
+		{"nothing estimated, some done", snap(0, 37, 0, 0, time.Minute), "unknown"},
 		{"nothing done yet", snap(100, 0, 0, 0, time.Minute), "calculating"},
 		{"a third in 7m10s", snap(12000, 4000, 0, 0, 7*time.Minute+10*time.Second), "14m20s"},
 	} {
@@ -115,6 +117,19 @@ func TestProgressTracker(t *testing.T) {
 	tr.markComplete()
 	if s := tr.snapshot(); !s.completed || s.remaining() != 0 || s.etaString() != "0s" || s.pausedReason != "" {
 		t.Errorf("completed snapshot = %+v", s)
+	}
+
+	// A naturally completed run's total is its done count (PRC-1, spec rev 3 §3.4): the closing
+	// line must not read 2567/~15420 at 100%. A stop keeps the estimate (it never marks complete).
+	over := newProgressTracker(15420, time.Now())
+	over.update(2567, 0, 0)
+	if s := over.snapshot(); s.total != 15420 || s.etaString() == "unknown" {
+		t.Errorf("running snapshot = %+v, want the estimate 15420", s)
+	}
+	over.markComplete()
+	if s := over.snapshot(); s.total != 2567 || s.remaining() != 0 || s.etaString() != "0s" ||
+		!strings.HasPrefix(formatProgressLine(s, jobspec.Archive), "progress: roots 2567/~2567 (100.0%)") {
+		t.Errorf("completed snapshot = %+v, line %q; want the done count 2567 as the total", s, formatProgressLine(s, jobspec.Archive))
 	}
 }
 
