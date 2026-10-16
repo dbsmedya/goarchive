@@ -14,13 +14,15 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
-// The --progress reporter (R50), kept from 2.x: once recovery is done, the engine counts the
-// where range, then prints one line at each interval and one at the end of the run.
+// The --progress reporter (R50), kept from 2.x: once recovery is done, the engine reads the
+// optimizer's estimate of the where range (PRC-1), then prints one line at each interval and
+// one at the end of the run.
 
 // progressTracker holds a run's progress counters. The batch loop writes them at batch
 // boundaries and the reporter reads snapshots concurrently. A nil tracker (progress off)
-// makes every method a no-op. totalRoots is an estimate taken at startup: rows can age into
-// or out of the where range, so the snapshot arithmetic clamps instead of trusting it.
+// makes every method a no-op. totalRoots is the optimizer's estimate taken at startup
+// (estimateRoots), off in either direction, and rows can age into or out of the where range,
+// so the snapshot arithmetic clamps instead of trusting it.
 type progressTracker struct {
 	totalRoots int64
 	startedAt  time.Time        // Run's start: elapsed counts from here (spec §3.5)
@@ -95,6 +97,10 @@ func (t *progressTracker) snapshot() progressSnapshot {
 		running:   t.now().Sub(t.loopAt),
 		completed: t.completed.Load(),
 	}
+	if s.completed {
+		// A finished run's total is what it did: the estimate was only ever a guide (PRC-1).
+		s.total = s.done
+	}
 	if p := t.paused.Load(); p != nil {
 		s.pausedReason = *p
 	}
@@ -127,15 +133,19 @@ func (s progressSnapshot) percent() float64 {
 	return float64(s.done) / float64(s.total) * 100
 }
 
-// etaString: paused, then nothing remaining, then calculating, then the estimate.
+// etaString: paused, then completed, then calculating, then unknown past the estimate, then the
+// estimate.
 func (s progressSnapshot) etaString() string {
 	switch {
 	case s.pausedReason != "":
 		return "paused"
-	case s.completed || s.remaining() == 0:
+	case s.completed:
 		return "0s"
 	case s.done == 0:
 		return "calculating"
+	case s.done >= s.total:
+		// Past the estimate, the run is not done: no time can be told (PRC-1).
+		return "unknown"
 	}
 	// Roots per running time, so startup and recovery do not slow the estimate.
 	rate := float64(s.done) / float64(s.running)

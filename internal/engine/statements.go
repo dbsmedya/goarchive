@@ -85,8 +85,9 @@ func discoveryDisplay(child key.Def, n *jobspec.Node, bind []key.Column, tuples,
 	}
 }
 
-// rangeCountSQL counts the where range, for --progress's estimate (R50). The where text sits
-// between parentheses exactly as in the fetch.
+// rangeCountSQL is the where range's count: dry-run runs it, and --progress reads the
+// optimizer's estimate of it with EXPLAIN (PRC-1). The where text sits between parentheses
+// exactly as in the fetch.
 func rangeCountSQL(root key.Def, where string) string {
 	return "SELECT COUNT(*) FROM " + sqlutil.QuoteIdentifier(root.Table) + " WHERE (" + where + "\n)"
 }

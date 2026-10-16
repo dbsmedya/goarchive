@@ -34,7 +34,8 @@ func TestFetchSQL(t *testing.T) {
 	}
 }
 
-// TestRangeCountSQL: --progress counts the where range once, with the fetch's own predicate.
+// TestRangeCountSQL: the where range's count (dry-run runs it, --progress EXPLAINs it), with the
+// fetch's own predicate.
 func TestRangeCountSQL(t *testing.T) {
 	got := rangeCountSQL(parentAB(), "created < '2020-01-01' -- old")
 	want := "SELECT COUNT(*) FROM `p` WHERE (created < '2020-01-01' -- old\n)"

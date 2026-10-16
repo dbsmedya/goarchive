@@ -135,12 +135,17 @@ func (r *run) execute(ctx context.Context) error {
 	return r.loop(ctx)
 }
 
-// startProgress counts the where range, now that recovery is done, and starts the
-// --progress reporter (R50). The returned stop prints the final line.
+// startProgress reads the optimizer's estimate of the where range, now that recovery is done,
+// and starts the --progress reporter (R50, PRC-1): an EXPLAIN of the count, never the count.
+// The returned stop prints the final line.
 func (r *run) startProgress(ctx context.Context) (func(), error) {
-	var total int64
-	if err := r.cfg.Source.QueryRowContext(ctx, rangeCountSQL(r.root, r.cfg.Spec.Where)).Scan(&total); err != nil {
-		return nil, fmt.Errorf("engine: --progress count on %s: %w", r.root.Table, err)
+	p, err := explainOne(ctx, r.cfg.Source, r.root.Table, rangeCountSQL(r.root, r.cfg.Spec.Where))
+	if err != nil {
+		return nil, fmt.Errorf("engine: --progress estimate on %s: %w", r.root.Table, err)
+	}
+	total, err := estimateRoots(p.Rows, r.root.Table)
+	if err != nil {
+		return nil, fmt.Errorf("engine: --progress estimate on %s: %w", r.root.Table, err)
 	}
 	began := r.cfg.began
 	if began.IsZero() {
