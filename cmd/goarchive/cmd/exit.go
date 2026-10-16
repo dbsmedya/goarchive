@@ -9,6 +9,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
 // Exit codes (spec §3.4; docs/README_OPERATIONS.md, Output and exit codes).
@@ -74,7 +75,8 @@ func exitCode(err error) int {
 	var running *engine.JobRunningError
 	var table *engine.TableLockedError
 	var overlap *engine.OverlapError
-	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &overlap) {
+	var schema *tracking.SchemaLockedError
+	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &overlap) || errors.As(err, &schema) {
 		return exitNotStarted
 	}
 	var u *usageError

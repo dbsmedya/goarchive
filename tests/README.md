@@ -474,9 +474,11 @@ Three more seams sit between a commit's writes and its `COMMIT` (`delete-written
 the transaction rolls back. Tests that touch locks follow three rules:
 
 - A test that needs a silent lock holder shortens `sessionWaitTimeout` (`internal/lock`) and
-  restores it; none waits out the 300-second lock-session timeout.
-- Lock names come from `lock.TableLockName` and `lock.JobLockName`, never a literal: they are
-  hashes.
+  restores it; a test of the schema lock's wait shortens `initLockWait` (`internal/tracking`)
+  the same way. None waits out the 300-second lock-session timeout or the 60-second
+  schema-lock wait.
+- Lock names come from `lock.TableLockName`, `lock.JobLockName` and `lock.SchemaLockName`, or
+  from the SQL formula the docs publish, never a literal: they are hashes.
 - Every engine test runs through its `env` (`e.run`, `e.runContext`), which records the run's
   lock names; when the test ends, a guard fails it if any is still held. The helper child of
   `TestMySQLKillRecovery` exits when its parent goes, so a timed-out parent cannot leave its

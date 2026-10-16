@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
+	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
 // TestExitCode: each outcome's code and their precedence (spec §3.4).
@@ -27,6 +29,7 @@ func TestExitCode(t *testing.T) {
 		{"job running, holder known", true, &engine.JobRunningError{Job: "j", Holder: 7}, 4},
 		{"table locked", true, fmt.Errorf("x: %w", &engine.TableLockedError{Table: "t"}), 4},
 		{"overlap", true, &engine.OverlapError{Job: "j"}, 4},
+		{"schema locked", true, fmt.Errorf("x: %w", &tracking.SchemaLockedError{Schema: "s", Lock: &lock.HeldError{Name: "n", Holder: 7}}), 4},
 		{"usage", true, usage(errors.New("bad")), 2},
 		{"cobra before RunE", false, errors.New("unknown flag: --x"), 2},
 		{"contention beats usage", true, usage(&engine.JobRunningError{Job: "j"}), 4},

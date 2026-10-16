@@ -268,6 +268,9 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	if err != nil {
 		return nil, err
 	}
+	if w := store.InitWait(); w > 0 {
+		log.Debugf("Tracking schema %s: opened under the schema lock after %s", cfg.JobSchema, w.Round(time.Millisecond))
+	}
 	// runCtx is cancelled with the reason when a lock set is lost or the heartbeat fails,
 	// from the moment the first lock is held (spec §4 step 3).
 	runCtx, cancel := context.WithCancelCause(ctx)

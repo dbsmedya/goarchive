@@ -39,6 +39,11 @@ destination database):
 | `archiver_job_log_<id>` | one table per job | Each logged root key and its status |
 | `goarchive_meta` | one table, one row | The tracking schema's label, `3.0` |
 
+The first run in a new schema creates the tables and the `3.0` label under the schema lock
+([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)), so two runs
+starting together in one new schema do not both create it: the second waits, up to 60
+seconds, and finds it ready.
+
 GoArchive creates the tables but never the schema, and its account holds no `DELETE` or `DROP`
 there ([grants](README_PERMISSIONS.md#grant-recipes)): every deletion below is a DBA's act. The
 log table is named by the job's `id`:
@@ -166,8 +171,8 @@ drops that table (after confirming no job uses it) or restores `archiver_job`.
 
 ## Lifecycle
 
-1. **First run in the schema** — `goarchive_meta` and `archiver_job` are created; a fresh schema
-   is labelled `3.0` ([version marker](#tracking-schema-version-marker)).
+1. **First run in the schema** — `goarchive_meta` and `archiver_job` are created under the
+   schema lock; a fresh schema is labelled `3.0` ([version marker](#tracking-schema-version-marker)).
 2. **First run of a job** — the job is registered and its log created.
 3. **During a run** — `job_status = 1`, the heartbeat refreshes, log rows are written per batch.
 4. **The end of a run** — `job_status` returns to `0`, or `3` after an error. A crash or kill
