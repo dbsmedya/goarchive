@@ -11,7 +11,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag | `make test-integration`, or `./scripts/run-tests.sh --setup --integration-only` |
 | **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–17) | `make e2e` (reset + seed + run) |
-| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12) | `make e2e-examples` |
+| **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12, 18, 19) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
 
@@ -283,6 +283,8 @@ regression. (`EXPECTED FAILURE matched` in the log = good.)
 | **10** | `test10_view_not_base_table.yaml` | `TABLE_EXISTENCE_CHECK` | `root_table` is `customer_list`, one of Sakila's seven **views**. Only base tables can be archived — a view has no primary key to delete by. Pins the **non-base-table policy**, and is the one demo that asserts an *improvement*: 1.8.0 reported `PRIMARY_KEY_CHECK` here, telling the operator to fix a primary key a view cannot have. **This test therefore fails on a 1.8 binary by design.** |
 | **11** | `test11_internal_fk_undeclared.yaml` | `INTERNAL_FK_COVERAGE` | The `customer → rental → payment` GDPR diamond — see the note below. `payment` has two parents in the job, so one foreign key is never a relation. |
 | **12** | `test12_same_database.yaml` | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are both `127.0.0.1:3305/sakila`. Every command that opens both connections refuses at connection time, before preflight and before any tracking row is written: an archive into itself would verify the table against itself and delete the only copy (issue #13). The demo runs `validate`; `TestConnectRefusesSameDatabase_Integration` is the integration witness. |
+| **18** | `test18_film_tree_recipe.yaml` | `DELETE_TRIGGER_VISIBILITY_CHECK`, naming `film(unconfirmed)` | Test01's `film` tree, run as `ga3e2e_recipe`, an account the engine creates with exactly the documented source recipe (`SELECT, DELETE` on `sakila.*`, `PROCESS`) and drops after `validate`. MySQL lists a table's triggers only to an account holding `TRIGGER`, so this account cannot prove `film` has no DELETE trigger. The refusal arrives although `validate` runs with `--force-triggers`, which does not apply to it. |
+| **19** | `test18_film_tree_recipe.yaml` | `DELETE_TRIGGER_CHECK`, naming `film(del_film)` | The same tree and account, with `TRIGGER` added, and `validate` **without** `--force-triggers`: the account sees Sakila's DELETE trigger `del_film` and the job is refused. Every other E2E run passes `--force-triggers`, so this is the one place the refusal is shown on real data. The same account with `--force-triggers` passes (probed), so the trigger alone refuses it. |
 
 Test 01 was the fifth demo in 2.x, refused by `COMPOSITE_PK_CHECK`; 3.0 archives
 composite keys, so it is now a working archive.
@@ -561,7 +563,7 @@ git push origin --delete verify/<sha7>             # remove the branch after the
 # The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–17)
 make e2e
 
-# Validation demos (02, 10, 11, 12) — preflight MUST fail. Needs a seeded estate.
+# Validation demos (02, 10, 11, 12, 18, 19) — preflight MUST fail. Needs a seeded estate.
 make e2e-examples
 
 # The individual steps, if you know why you want one
@@ -628,7 +630,7 @@ category (`FK_COVERAGE_CHECK`).
 ## Preflight Checks
 
 Every check, what it means and how to fix it: [Validation & Preflight](../docs/README_VALIDATION.md).
-The demos above pin four of them through the CLI; the rest are pinned by the `internal/preflight`
+The demos above pin six of them through the CLI; the rest are pinned by the `internal/preflight`
 integration tests on real facts.
 
 ## Test Output

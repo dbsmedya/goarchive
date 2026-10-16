@@ -1,0 +1,64 @@
+# Tests 18 and 19: Test01's film tree, validated as a limited source account (validation demos)
+#
+# The source connects as ga3e2e_recipe, an account the engine creates for the demo
+# (source_account) with exactly the documented source recipe, SELECT and DELETE on
+# sakila.* and PROCESS, and for Test19 TRIGGER too, then drops. Its password is the
+# estate's root password, so this template needs no placeholder but the one
+# run-tests.sh already fills. Sakila's film carries a DELETE trigger, del_film.
+#
+# This template is the tracked source of truth; the rendered .yaml is gitignored.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: ga3e2e_recipe
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-film-tree-recipe:
+    job_type: archive
+    root_table: film
+    primary_key: film_id
+    where: "film_id <= 50"
+    processing:
+      batch_size: 25
+      sleep_seconds: 0.5
+    relations:
+      # film_text extends film, one row per film. Sakila declares no foreign key
+      # for it; the relation alone makes it part of the tree.
+      - table: film_text
+        primary_key: film_id
+        foreign_key: film_id
+      # The composite-key association tables. foreign_key names the column that
+      # references film's one-column key, so references may be omitted.
+      - table: film_actor
+        primary_key: [actor_id, film_id]
+        foreign_key: film_id
+      - table: film_category
+        primary_key: [film_id, category_id]
+        foreign_key: film_id
+      - table: inventory
+        primary_key: inventory_id
+        foreign_key: film_id
+        relations:
+          - table: rental
+            primary_key: rental_id
+            foreign_key: inventory_id
+            relations:
+              - table: payment
+                primary_key: payment_id
+                foreign_key: rental_id

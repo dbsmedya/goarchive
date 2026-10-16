@@ -9,7 +9,7 @@
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
 #   --sakila            Run the working E2E tests (01, 03-09, 13-17)
-#   --sakila-examples   Run the validation-demo tests (02, 10, 11, 12)
+#   --sakila-examples   Run the validation-demo tests (02, 10, 11, 12, 18, 19)
 #   -t, --test NUM      Run only specific E2E test (1-17)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
@@ -121,7 +121,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
             echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold, 14-16 key matrix, 17 purge stop during a hold)"
-            echo "  --sakila-examples   Run the validation-demonstration tests (02, 10, 11, 12)"
+            echo "  --sakila-examples   Run the validation-demonstration tests (02, 10, 11, 12, 18, 19)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
             echo "  -t, --test NUM      Run only the specified test number (works with"
@@ -135,7 +135,7 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --setup                    # Full setup: docker + databases"
             echo "  $0 --setup --sakila           # Setup and run working Sakila tests"
             echo "  $0 --sakila-examples -t 2     # Run only the FK-coverage demo (test 02)"
-            echo "  $0 --sakila-examples          # Run validation demos (02, 10, 11, 12)"
+            echo "  $0 --sakila-examples          # Run validation demos (02, 10, 11, 12, 18, 19)"
             echo "  $0 --integration-only         # Run Go integration tests only"
             echo "  $0 --unit-only                # Run Go unit tests only"
             echo "  $0 --fmt                      # Check Go code formatting"
@@ -257,7 +257,7 @@ main() {
     # because renumbering silently invalidates other phases' `Passed: N` counts.
     # 01 moved to the working suite in M7b: 3.0 archives its composite keys.
     if [ "$SAKILA_EXAMPLES" = true ]; then
-        run_e2e_suite "2 10 11 12" "validation demos"
+        run_e2e_suite "2 10 11 12 18 19" "validation demos"
         exit 0
     fi
     

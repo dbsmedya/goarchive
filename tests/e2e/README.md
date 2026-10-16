@@ -17,7 +17,7 @@ the file.
 ```
 tests/e2e/
 ├── lib/                    the harness: shared, written once
-├── validation/    02 10 11 12     configs that MUST fail preflight
+├── validation/    02 10 11 12 18 19  configs that MUST fail preflight
 ├── archive/       01 03 04 05 14  copy → verify → delete
 ├── purge/         06 13 15        exact deletion and live replication hold
 ├── copy-only/     07 16           copy without deleting
@@ -57,6 +57,9 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `tables` | tables to count, in source order |
 | `mode` | `working` — runs to completion · `example` — must fail preflight |
 | `expected_error` | `example` only: the error category the failure must name |
+| `source_account` | `example` only: `recipe` \| `recipe-trigger` — `validate` runs as `ga3e2e_recipe`, created with the documented source recipe and dropped after; see `validation/README.md` |
+| `force_triggers` | `example` only: `yes` (default) \| `no` — `no` runs `validate` without `--force-triggers` |
+| `expected_detail` | `example` only: a second, **literal** substring the failure must hold |
 | `command` | `working` only: `archive` \| `purge` \| `copy-only` |
 | `verify_method` | the method the run must report, or `none` to assert none ran |
 | `min_duration` | pacing floor in seconds — formula in `../README.md` |
@@ -68,7 +71,9 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `replication_hold` | `stopped-applier` for the working purge replication witness; cannot be combined with `interrupt` |
 
 Do **not** put `--force-triggers` anywhere. `run_archive_job` applies it per
-command, and `copy-only` does not accept the flag at all.
+command, and `copy-only` does not accept the flag at all. A validation demo's
+`validate` takes it too, unless the demo declares `force_triggers="no"` (test 19,
+the one place the trigger refusal itself is shown).
 
 ### Four variables fail closed — and the resume group makes seven
 
@@ -141,7 +146,7 @@ recovery.
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
    - working → `run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 NN" "working"`
-   - demos → `run_e2e_suite "2 10 11 12 NN" "validation demos"`
+   - demos → `run_e2e_suite "2 10 11 12 18 19 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
 

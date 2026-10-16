@@ -12,6 +12,11 @@
 #   tables          space-separated tables to count, source order
 #   mode            "working" (runs to completion) or "example" (must fail preflight)
 #   expected_error  mode=example only: substring required in the failure
+#   source_account  mode=example only: "" (root) | recipe | recipe-trigger -- the demo
+#                   runs as ga3e2e_recipe, created before validate with the documented
+#                   source recipe (recipe-trigger adds TRIGGER) and dropped after it
+#   force_triggers  mode=example only: "" or yes (validate takes --force-triggers) | no
+#   expected_detail mode=example only: a second, literal substring the failure must hold
 #   command         mode=working only: archive | purge | copy-only
 #   verify_method   the method the run must report, or "none" to assert none ran
 #   min_duration    pacing floor in seconds
@@ -64,6 +69,33 @@ load_test_vars() {
     . "$_test_file"
 }
 
+# The limited source account a validation demo runs as (source_account). Its
+# password is the estate's root password, so the demo's config template needs no
+# placeholder but the one render_test_configs fills.
+DEMO_ACCOUNT="ga3e2e_recipe"
+
+# create_source_account recipe|recipe-trigger: as root on the source, (re)create the
+# account with exactly the documented source recipe (README_PERMISSIONS.md ->
+# Source), TRIGGER only for recipe-trigger. DROP first: a killed run's leftover is
+# replaced, never reused.
+# The statements are not atomic: on failure the caller drops the account.
+create_source_account() {
+    local schema_privs="SELECT, DELETE"
+    [[ "$1" == recipe-trigger ]] && schema_privs="SELECT, DELETE, TRIGGER"
+    case "$MYSQL_ROOT_PASSWORD" in
+        *"'"*|*"\\"*) log_error "create_source_account: the root password holds a quote or backslash"; return 1 ;;
+    esac
+    "$SCRIPT_DIR/mysql-query.sh" "$SOURCE_PORT" "DROP USER IF EXISTS '$DEMO_ACCOUNT'@'%'; \
+CREATE USER '$DEMO_ACCOUNT'@'%' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD'; \
+GRANT $schema_privs ON \`$SOURCE_DB\`.* TO '$DEMO_ACCOUNT'@'%'; \
+GRANT PROCESS ON *.* TO '$DEMO_ACCOUNT'@'%';"
+}
+
+# drop_source_account: remove the demo account; a failure fails the demo.
+drop_source_account() {
+    "$SCRIPT_DIR/mysql-query.sh" "$SOURCE_PORT" "DROP USER IF EXISTS '$DEMO_ACCOUNT'@'%';"
+}
+
 run_e2e_test() {
     local test_num=$1
     local test_name=""
@@ -72,6 +104,9 @@ run_e2e_test() {
     local tables=""
     local mode=""                 # "working" or "example"
     local expected_error=""       # substring required in error when mode=example
+    local source_account=""       # mode=example: "" | recipe | recipe-trigger
+    local force_triggers=""       # mode=example: "" or yes | no
+    local expected_detail=""      # mode=example: literal substring, second to expected_error
     local command="archive"       # archive | purge | copy-only (mode=working)
     local verify_method=""        # verification method the run must report, or
                                   # "none" to assert no verification ran at all
@@ -138,6 +173,31 @@ run_e2e_test() {
     if [[ -n "$replication_hold" ]]; then
         if [[ ( "$replication_hold" != "stopped-applier" && "$replication_hold" != "stop-signal" ) || "$mode" != "working" || "$command" != "purge" || -n "$interrupt" ]]; then
             log_error "Test $test_num: replication_hold requires stopped-applier or stop-signal, mode=working, command=purge and no interrupt"
+            return 1
+        fi
+    fi
+
+    # The demo declarations shape a validate run and nothing else: on a working test
+    # they would be ignored, and a test that declared them would assert less than it
+    # says. A source_account demo must also connect as the account it creates, or a
+    # config still on root would pass without ever being the limited account.
+    if [[ "$mode" != "example" && -n "$source_account$force_triggers$expected_detail" ]]; then
+        log_error "Test $test_num: source_account, force_triggers and expected_detail require mode=example"
+        return 1
+    fi
+    if [[ -n "$source_account" && "$source_account" != recipe && "$source_account" != recipe-trigger ]]; then
+        log_error "Test $test_num: source_account must be recipe or recipe-trigger, not '$source_account'"
+        return 1
+    fi
+    if [[ -n "$force_triggers" && "$force_triggers" != yes && "$force_triggers" != no ]]; then
+        log_error "Test $test_num: force_triggers must be yes or no, not '$force_triggers'"
+        return 1
+    fi
+    if [[ -n "$source_account" ]]; then
+        local config_user
+        config_user=$(awk '/^source:/{s=1; next} /^[^ #]/{s=0} s && $1=="user:"{print $2; exit}' "$TESTS_DIR/configs/$config_file")
+        if [[ "$config_user" != "$DEMO_ACCOUNT" ]]; then
+            log_error "Test $test_num: source_account needs $config_file's source.user to be $DEMO_ACCOUNT, not '$config_user'"
             return 1
         fi
     fi
@@ -501,7 +561,38 @@ run_e2e_test() {
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
         fi
-        validate_out=$("$GOARCHIVE_BIN" validate --config "$full_config_path" --force-triggers 2>&1) && {
+        # $trigger_flag stays unquoted below: empty must add no argument.
+        local trigger_flag="--force-triggers"
+        [[ "$force_triggers" == no ]] && trigger_flag=""
+        if [[ -n "$source_account" ]] && ! create_source_account "$source_account" >> "$log_file" 2>&1; then
+            log_error "Could not create the demo account $DEMO_ACCOUNT ($source_account)"
+            # Setup is several statements: CREATE USER may have succeeded before a
+            # GRANT failed, so the account is dropped here too.
+            if ! drop_source_account >> "$log_file" 2>&1; then
+                log_error "Could not drop the demo account $DEMO_ACCOUNT either: it may remain on the source"
+            fi
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (demo account)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        local validate_rc=0
+        # shellcheck disable=SC2086
+        validate_out=$("$GOARCHIVE_BIN" validate --config "$full_config_path" $trigger_flag 2>&1) || validate_rc=$?
+        # The account goes on every path, before validate's outcome is judged.
+        if [[ -n "$source_account" ]] && ! drop_source_account >> "$log_file" 2>&1; then
+            log_error "Could not drop the demo account $DEMO_ACCOUNT"
+            echo "$validate_out" >> "$log_file"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (demo account left behind)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        if [[ $validate_rc -eq 0 ]]; then
             log_error "Validate unexpectedly PASSED — validation demo no longer demonstrates failure"
             echo "$validate_out" >> "$log_file"
             end_time=$(date +%s)
@@ -510,7 +601,7 @@ run_e2e_test() {
             echo "Result: FAIL (validate passed)" >> "$log_file"
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
-        }
+        fi
         echo "$validate_out" >> "$log_file"
         if ! echo "$validate_out" | grep -q "$expected_error"; then
             log_error "Validate failed but with unexpected category (expected: $expected_error)"
@@ -518,6 +609,15 @@ run_e2e_test() {
             duration=$((end_time - start_time))
             echo "" >> "$log_file"
             echo "Result: FAIL (wrong error category)" >> "$log_file"
+            echo "Duration: ${duration}s" >> "$log_file"
+            return 1
+        fi
+        if [[ -n "$expected_detail" ]] && ! printf '%s\n' "$validate_out" | grep -qF -- "$expected_detail"; then
+            log_error "Validate failed with $expected_error but without '$expected_detail'"
+            end_time=$(date +%s)
+            duration=$((end_time - start_time))
+            echo "" >> "$log_file"
+            echo "Result: FAIL (missing detail)" >> "$log_file"
             echo "Duration: ${duration}s" >> "$log_file"
             return 1
         fi
@@ -739,13 +839,14 @@ run_e2e_suite() {
         # That breakage has no other symptom. Every test would inherit the
         # previous one's values, every fail-closed guard would stop firing, and
         # the suite would keep reporting a pass.
-        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${replication_hold:-}" ]]; then
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${replication_hold:-}${source_account:-}${force_triggers:-}${expected_detail:-}" ]]; then
             log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
             log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
             log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
             log_error "  interrupt='${interrupt:-}' interrupt_after_batches='${interrupt_after_batches:-}'"
             log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}'"
             log_error "  replication_hold='${replication_hold:-}'"
+            log_error "  source_account='${source_account:-}' force_triggers='${force_triggers:-}' expected_detail='${expected_detail:-}'"
             log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
             log_error "  the next test and every fail-closed guard in the engine stops firing."
             exit 1
