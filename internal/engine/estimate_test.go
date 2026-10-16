@@ -50,6 +50,16 @@ func TestEstimateRoots(t *testing.T) {
 		{"no filtered column", []ExplainRow{planRow("1", "rental", "38", "", "")}, 38},
 		{"rounded at the end", []ExplainRow{planRow("1", "rental", "3", "33.33", "")}, 1},
 		{"a positive estimate is never 0", []ExplainRow{planRow("1", "rental", "1", "10.00", "")}, 1},
+		// filtered prints with two decimals, so 0.00 can be a positive selectivity: only a
+		// table-less plan proves the range empty (Codex MR review R1).
+		{"a filtered printed as 0.00 on the root", []ExplainRow{planRow("1", "rental", "1000000", "0.00", "Using where")}, 1},
+		{"a filtered printed as 0.00 inside a materialized scan", []ExplainRow{
+			planRow("1", "<subquery2>", "", "100.00", "Using where"),
+			planRow("1", "rental", "1", "100.00", "Using index"),
+			planRow("2", "p", "16500", "0.00", "Using where")}, 1},
+		{"a filtered printed as 0.00 after the root", []ExplainRow{
+			planRow("1", "rental", "1156", "100.00", "Using where"),
+			planRow("1", "p", "1", "0.00", "Using where; FirstMatch(rental)")}, 1},
 		{"Impossible WHERE", []ExplainRow{planRow("1", "", "", "", "Impossible WHERE")}, 0},
 		{"Impossible WHERE after const tables", []ExplainRow{planRow("1", "", "", "", "Impossible WHERE noticed after reading const tables")}, 0},
 		{"no matching row in a const table", []ExplainRow{planRow("1", "", "", "", "no matching row in const table")}, 0},
@@ -77,6 +87,12 @@ func TestEstimateRoots(t *testing.T) {
 			planRow("1", "<subquery3>", "", "100.00", ""),
 			planRow("1", "rental", "1", "100.00", "")}, "<subquery3>"},
 		{"an empty plan", nil, "no row for rental"},
+		// The error names the rejected shape's Extra (Codex MR review R2).
+		{"no root row names the plan's Extra", []ExplainRow{planRow("1", "<derived2>", "50", "100.00", "Using temporary")}, "Using temporary"},
+		{"rows that do not parse name the row's Extra", []ExplainRow{planRow("1", "rental", "many", "100.00", "Using filesort")}, "Using filesort"},
+		{"a materialized scan with no select names its Extra", []ExplainRow{
+			planRow("1", "<subquery3>", "", "100.00", "Start temporary"),
+			planRow("1", "rental", "1", "100.00", "")}, "Start temporary"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got, err := estimateRoots(tc.plan, "rental"); err == nil || !strings.Contains(err.Error(), tc.says) {
