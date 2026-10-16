@@ -12,8 +12,8 @@ import (
 
 const summarySHA = "0123456789abcdef0123456789abcdef01234567"
 
-// summaryGate writes one gate artifact as the release-verify gate job uploads it: the gate
-// run's directory (run.tsv, summary.txt, complete) and the server version beside it.
+// summaryGate writes one gate artifact as the Gate verify workflow's gate job uploads it: the
+// gate run's directory (run.tsv, summary.txt, complete) and the server version beside it.
 func summaryGate(t *testing.T, dir string, n int) string {
 	t.Helper()
 	runID := fmt.Sprintf("20261014T16590%dZ-100%d", n, n)
@@ -50,62 +50,110 @@ func replaceIn(t *testing.T, path, old, new string) {
 	writeFixture(t, path, strings.Replace(string(b), old, new, 1))
 }
 
-// TestGHSummaryFailsClosed (beta.1 PR 4, Codex R1 and R2): the release-verify summary is the
-// run's certificate, so it accepts a gate only on the evidence tests/AGENTS.md requires (one
-// run record for the target SHA, clean, PASS, both exits 0, its completion marker for the same
-// run and SHA, and its summary), and it accepts the run only when every job it depends on
-// succeeded, whatever the artifacts say.
+// TestGHSummaryFailsClosed (beta.1 PR 4, Codex R1 and R2; beta.2 RVG-1a+b, Sonnet F1, F2 and F5):
+// the summary is a Matrix verify or Gate verify run's certificate, so it accepts a gate only on
+// the evidence tests/AGENTS.md requires (one run record for the target SHA, clean, PASS, both
+// exits 0, its completion marker for the same run and SHA, and its summary), it accepts the run
+// only when every job it depends on succeeded, whatever the artifacts say, and only when the
+// run holds exactly the gates and rows it wants: a gate in a matrix run, or a row in a gate run,
+// fails it. Counts that are missing or not numbers, or a summary that wants nothing, exit 2
+// before anything is read.
 func TestGHSummaryFailsClosed(t *testing.T) {
 	script, err := filepath.Abs(filepath.Join("..", "envmatrix", "gh-summary.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	ok := []string{"target=success", "gate=success", "matrix=success"}
+	matrixOK := []string{"target=success", "matrix=success"}
+	gateOK := []string{"target=success", "gate=success"}
+	notCertified := []string{"| gate-0 | NOT CERTIFIED"}
 	for _, tc := range []struct {
 		name  string
+		build string // the artifacts: "" six gates and two rows, "matrix" the rows only, "gate" the gates only
 		mut   func(t *testing.T, dir string, gate0 string)
+		args  []string // <rows-wanted> <gates-wanted>; nil means 2 6
 		needs []string
 		want  int
-		says  string
+		says  []string // every one must appear in the output
 	}{
-		{"every gate and row certified", nil, ok, 0, "Gates: 6 (want 6). Matrix rows: 2 (want 2)."},
-		{"a missing gate", func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "gate-5")) }, ok, 1, ""},
-		{"a missing row", func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "matrix-v97")) }, ok, 1, ""},
-		{"a failed row", func(t *testing.T, dir, _ string) {
+		{name: "every gate and row certified", needs: ok,
+			says: []string{"## Gate verify: `0123456789ab`", "Gates: 6 (want 6). Matrix rows: 2 (want 2)."}},
+		{name: "a missing gate", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "gate-5")) }, needs: ok, want: 1,
+			says: []string{"Gates: 5 (want 6)."}},
+		{name: "a missing row", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "matrix-v97")) }, needs: ok, want: 1,
+			says: []string{"Matrix rows: 1 (want 2)."}},
+		{name: "a failed row", mut: func(t *testing.T, dir, _ string) {
 			replaceIn(t, filepath.Join(dir, "matrix-v97", "v97", "verdict.txt"), "verdict: OK", "verdict: FAIL")
-		}, ok, 1, ""},
-		{"a failed gate", func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "\tPASS\t", "\tFAIL\t") }, ok, 1, ""},
-		{"no completion marker", func(t *testing.T, _, g string) { _ = os.Remove(filepath.Join(g, "complete")) }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a completion marker for another SHA", func(t *testing.T, _, g string) {
+		}, needs: ok, want: 1, says: []string{"| matrix v97 | FAIL |"}},
+		{name: "a failed gate", mut: func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "\tPASS\t", "\tFAIL\t") }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "no completion marker", mut: func(t *testing.T, _, g string) { _ = os.Remove(filepath.Join(g, "complete")) }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "a completion marker for another SHA", mut: func(t *testing.T, _, g string) {
 			replaceIn(t, filepath.Join(g, "complete"), "sha="+summarySHA, "sha=fedcba9876543210fedcba9876543210fedcba98")
-		}, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a completion marker for another run", func(t *testing.T, _, g string) {
+		}, needs: ok, want: 1, says: notCertified},
+		{name: "a completion marker for another run", mut: func(t *testing.T, _, g string) {
 			replaceIn(t, filepath.Join(g, "complete"), "run_id=", "run_id=x")
-		}, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a run of another SHA", func(t *testing.T, _, g string) {
+		}, needs: ok, want: 1, says: notCertified},
+		{name: "a run of another SHA", mut: func(t *testing.T, _, g string) {
 			replaceIn(t, filepath.Join(g, "run.tsv"), "\t"+summarySHA+"\t", "\tfedcba9876543210fedcba9876543210fedcba98\t")
-		}, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a dirty tree", func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "\tclean\t", "\tdirty\t") }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a nonzero command exit", func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "PASS\t0\t0", "PASS\t1\t0") }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a nonzero recording exit", func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "PASS\t0\t0", "PASS\t0\t1") }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"no gate summary", func(t *testing.T, _, g string) { _ = os.Remove(filepath.Join(g, "summary.txt")) }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"two run records in one gate", func(t *testing.T, dir, _ string) { summaryGate(t, filepath.Join(dir, "gate-0", "again"), 0) }, ok, 1, "| gate-0 | NOT CERTIFIED"},
-		{"a failed gate job", nil, []string{"target=success", "gate=failure", "matrix=success"}, 1, "| job gate | failure |"},
-		{"a cancelled matrix job", nil, []string{"target=success", "gate=success", "matrix=cancelled"}, 1, "| job matrix | cancelled |"},
-		{"a skipped target job", nil, []string{"target=skipped", "gate=success", "matrix=success"}, 1, "| job target | skipped |"},
+		}, needs: ok, want: 1, says: notCertified},
+		{name: "a dirty tree", mut: func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "\tclean\t", "\tdirty\t") }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "a nonzero command exit", mut: func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "PASS\t0\t0", "PASS\t1\t0") }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "a nonzero recording exit", mut: func(t *testing.T, _, g string) { replaceIn(t, filepath.Join(g, "run.tsv"), "PASS\t0\t0", "PASS\t0\t1") }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "no gate summary", mut: func(t *testing.T, _, g string) { _ = os.Remove(filepath.Join(g, "summary.txt")) }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "two run records in one gate", mut: func(t *testing.T, dir, _ string) { summaryGate(t, filepath.Join(dir, "gate-0", "again"), 0) }, needs: ok, want: 1,
+			says: notCertified},
+		{name: "a failed gate job", needs: []string{"target=success", "gate=failure", "matrix=success"}, want: 1, says: []string{"| job gate | failure |"}},
+		{name: "a cancelled matrix job", needs: []string{"target=success", "gate=success", "matrix=cancelled"}, want: 1, says: []string{"| job matrix | cancelled |"}},
+		{name: "a skipped target job", needs: []string{"target=skipped", "gate=success", "matrix=success"}, want: 1, says: []string{"| job target | skipped |"}},
+
+		// The two workflows (RVG-1a+b): each run holds only its own jobs.
+		{name: "a matrix-only run", build: "matrix", args: []string{"2", "0"}, needs: matrixOK,
+			says: []string{"## Matrix verify: `0123456789ab`", "Gates: 0 (want 0). Matrix rows: 2 (want 2)."}},
+		{name: "a gate-only run", build: "gate", args: []string{"0", "6"}, needs: gateOK,
+			says: []string{"## Gate verify: `0123456789ab`", "Gates: 6 (want 6). Matrix rows: 0 (want 0)."}},
+		{name: "a gate artifact in a matrix run", args: []string{"2", "0"}, needs: matrixOK, want: 1,
+			says: []string{"## Matrix verify: ", "Gates: 6 (want 0)."}},
+		{name: "a row in a gate run", args: []string{"0", "6"}, needs: gateOK, want: 1,
+			says: []string{"## Gate verify: ", "Matrix rows: 2 (want 0)."}},
+		// A re-run summary job downloads the previous attempt's summary artifact too (F5): its
+		// name must match neither gate-* nor matrix-*.
+		{name: "an earlier summary artifact", mut: func(t *testing.T, dir, _ string) {
+			writeFixture(t, filepath.Join(dir, "summary-gate", "gate-verify.md"), "## Gate verify\n")
+			writeFixture(t, filepath.Join(dir, "summary-matrix", "matrix-verify.md"), "## Matrix verify\n")
+		}, needs: ok, says: []string{"Gates: 6 (want 6). Matrix rows: 2 (want 2)."}},
+
+		// The counts are checked before anything is read (F1): exit 2, never a pass.
+		{name: "a missing gate count", args: []string{"2"}, needs: ok, want: 2, says: []string{"usage: gh-summary.sh"}},
+		{name: "a gate count that is not a number", args: []string{"2", "six"}, needs: ok, want: 2, says: []string{"usage: gh-summary.sh"}},
+		{name: "a summary that wants nothing", args: []string{"0", "0"}, needs: ok, want: 2, says: []string{"verifies nothing"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			gate0 := summaryGate(t, dir, 0)
-			for n := 1; n < 6; n++ {
-				summaryGate(t, dir, n)
+			gate0 := ""
+			if tc.build != "matrix" {
+				gate0 = summaryGate(t, dir, 0)
+				for n := 1; n < 6; n++ {
+					summaryGate(t, dir, n)
+				}
 			}
-			summaryRow(t, dir, "v84", "OK")
-			summaryRow(t, dir, "v97", "OK")
+			if tc.build != "gate" {
+				summaryRow(t, dir, "v84", "OK")
+				summaryRow(t, dir, "v97", "OK")
+			}
 			if tc.mut != nil {
 				tc.mut(t, dir, gate0)
 			}
-			cmd := exec.Command("bash", append([]string{script, dir, summarySHA, "2"}, tc.needs...)...)
+			args := tc.args
+			if args == nil {
+				args = []string{"2", "6"}
+			}
+			cmd := exec.Command("bash", append(append([]string{script, dir, summarySHA}, args...), tc.needs...)...)
 			out, err := cmd.CombinedOutput()
 			code := 0
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -116,8 +164,10 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 			if code != tc.want {
 				t.Errorf("exit %d, want %d; output:\n%s", code, tc.want, out)
 			}
-			if tc.says != "" && !strings.Contains(string(out), tc.says) {
-				t.Errorf("output does not name %q:\n%s", tc.says, out)
+			for _, s := range tc.says {
+				if !strings.Contains(string(out), s) {
+					t.Errorf("output does not name %q:\n%s", s, out)
+				}
 			}
 		})
 	}
