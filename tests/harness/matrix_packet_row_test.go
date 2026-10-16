@@ -157,6 +157,19 @@ func TestMatrixPacketRowDeclared(t *testing.T) {
 			"run-matrix.sh skips " + packetTest},
 		{"skipped by the runner by a prefix", rows, src, skips, swap(runner, `|TestMySQLStopNeverCutsAPass"`, `|TestMySQLStopNeverCutsAPass|TestMySQLArchiveValue"`),
 			"run-matrix.sh skips " + packetTest},
+		// An anchored pattern and an empty alternative are ordinary regexps to go test -skip:
+		// the first names the test, the second matches every test (Codex review R1).
+		{"skipped on GitHub by an anchored pattern", rows, src, skips + "^" + packetTest + "$ # anchored\n", runner,
+			"gh-skip.txt skips " + packetTest},
+		{"skipped by the runner by an anchored pattern", rows, src, skips, swap(runner, `|TestMySQLStopNeverCutsAPass"`, `|TestMySQLStopNeverCutsAPass|^`+packetTest+`$"`),
+			"run-matrix.sh skips " + packetTest},
+		{"skipped on GitHub by an empty alternative", rows, src, skips + "DoesNotMatch| # every test\n", runner,
+			"gh-skip.txt skips " + packetTest},
+		{"skipped by the runner by an empty alternative", rows, src, skips, swap(runner, `|TestMySQLStopNeverCutsAPass"`, `|TestMySQLStopNeverCutsAPass|"`),
+			"run-matrix.sh skips " + packetTest},
+		{"a runner skip that the harness cannot read", rows, src, skips,
+			swap(runner, "\nif [[ -n ${MX_SKIP_FILE:-} ]]; then\n", "\nSKIP+=\"|$MORE_SKIPS\"\nif [[ -n ${MX_SKIP_FILE:-} ]]; then\n"),
+			"run-matrix.sh builds SKIP from a shell expansion"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := packetRowProblem(tc.rows, tc.src, tc.skips, tc.runner); got != tc.says {
