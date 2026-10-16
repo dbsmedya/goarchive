@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 )
 
 // TestClassify is spec §6.1 and R37 as a table: only a 3.0 label, or a schema that is new,
@@ -63,5 +66,21 @@ func TestSchemaErrorMessage(t *testing.T) {
 	msg = classify("goarchive", schemaState{job: true, jobIs30: true, jobHasRow: true}).Error()
 	if strings.Contains(msg, "2.x binary") || !strings.Contains(msg, "INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.0')") {
 		t.Errorf("unlabelled 3.0 refusal:\n%s", msg)
+	}
+}
+
+// TestSchemaLockedErrorMessage (TRK-1, Fable F5): the message states what the wait knows,
+// with a form for a holder that released between the wait's end and the lookup.
+func TestSchemaLockedErrorMessage(t *testing.T) {
+	held := &SchemaLockedError{Schema: "goarchive", Wait: 60 * time.Second, Lock: &lock.HeldError{Name: "goarchive:s:x", Holder: 812}}
+	for _, want := range []string{`schema lock goarchive:s:x on tracking schema "goarchive" for the whole 60s wait`,
+		"connection 812 still holds it", "Nothing was done", "SHOW PROCESSLIST"} {
+		if !strings.Contains(held.Error(), want) {
+			t.Errorf("%q lacks %q", held.Error(), want)
+		}
+	}
+	gone := &SchemaLockedError{Schema: "goarchive", Wait: 60 * time.Second, Lock: &lock.HeldError{Name: "goarchive:s:x"}}
+	if msg := gone.Error(); !strings.Contains(msg, "released it a moment ago") || strings.Contains(msg, "connection 0") {
+		t.Errorf("holder-0 message = %q", msg)
 	}
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
 )
 
 // These tests run the tracking store on TEST_DEST_* (db2), whose global time_zone is not
@@ -141,6 +142,80 @@ func countTables(t *testing.T, db *sql.DB) int {
 	return n
 }
 
+// schemaLockName is the schema lock's name by the SQL formula the docs publish
+// (README_OPERATIONS.md), so these tests also pin the formula against Open's lock.
+func schemaLockName(t *testing.T, db *sql.DB, schema string) string {
+	t.Helper()
+	var name string
+	if err := db.QueryRowContext(context.Background(),
+		"SELECT CONCAT('goarchive:s:', LEFT(SHA2(CONCAT(LOWER(?), CHAR(0), LOWER('')), 256), 32))", schema).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+// holdLock takes name on a session of its own and returns that session's connection id and
+// a release, which the test's cleanup also runs.
+func holdLock(t *testing.T, db *sql.DB, name string) (int64, func()) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got sql.NullInt64
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", name).Scan(&got); err != nil || got.Int64 != 1 {
+		t.Fatalf("GET_LOCK(%s) = %v, %v", name, got, err)
+	}
+	var id int64
+	if err := conn.QueryRowContext(ctx, "SELECT CONNECTION_ID()").Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	release := sync.OnceFunc(func() {
+		_, _ = conn.ExecContext(ctx, "DO RELEASE_LOCK(?)", name)
+		_ = conn.Close()
+	})
+	t.Cleanup(release)
+	return id, release
+}
+
+// lockHolder returns the connection id holding name, or 0 when it is free.
+func lockHolder(t *testing.T, db *sql.DB, name string) int64 {
+	t.Helper()
+	var id sql.NullInt64
+	if err := db.QueryRowContext(context.Background(), "SELECT IS_USED_LOCK(?)", name).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id.Int64
+}
+
+// lockPending reports whether a session waits for name (Fable's probe B: the waiter's
+// USER LEVEL LOCK row is PENDING while it waits, and gone when it is gone).
+func lockPending(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM performance_schema.metadata_locks "+
+		"WHERE OBJECT_TYPE = 'USER LEVEL LOCK' AND OBJECT_NAME = ? AND LOCK_STATUS = 'PENDING'", name).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
+}
+
+// finishingFacts is the library's facts with one interleaving forced: the first Tables
+// call returns the list, then lets another run finish creating the schema before it
+// returns (Fable F1).
+type finishingFacts struct {
+	facts
+	finish func()
+	once   sync.Once
+}
+
+func (f *finishingFacts) Tables(ctx context.Context, tables []string) ([]validations.TableInfo, error) {
+	infos, err := f.facts.Tables(ctx, tables)
+	f.once.Do(f.finish)
+	return infos, err
+}
+
 func binding(where string) Binding {
 	return Binding{SourceServerUUID: "11111111-1111-1111-1111-111111111111", SourceDatabase: "src",
 		DestinationDatabase: "dst", Fingerprint: Fingerprint{Relations: []Edge{}, Where: where}}
@@ -198,11 +273,11 @@ func TestMySQLSchemaLabel(t *testing.T) {
 		t.Errorf("goarchive_meta rows = %d, %v", rows, err)
 	}
 
-	// Eight runs stamping one new schema at once.
+	// Sixteen runs stamping one new schema at once.
 	schema2, db2 := scratch(t, "race")
 	var wg2 sync.WaitGroup
-	errs2 := make(chan error, 8)
-	for i := 0; i < 8; i++ {
+	errs2 := make(chan error, 16)
+	for i := 0; i < 16; i++ {
 		wg2.Add(1)
 		go func() { defer wg2.Done(); _, err := Open(context.Background(), db2, schema2); errs2 <- err }()
 	}
@@ -212,6 +287,121 @@ func TestMySQLSchemaLabel(t *testing.T) {
 		if err != nil {
 			t.Errorf("racing Open() = %v", err)
 		}
+	}
+}
+
+// TestMySQLSchemaCreationWaitsForTheLock (TRK-1): while another session holds the schema
+// lock, Open on a new schema waits for it and creates nothing; once it is released, Open
+// creates and labels the schema and leaves the lock free. Open runs on a pool of two
+// sessions: the lock's and one working session are all it takes (spec §3.3).
+func TestMySQLSchemaCreationWaitsForTheLock(t *testing.T) {
+	schema, db := scratch(t, "lockwait")
+	name := schemaLockName(t, db, schema)
+	_, release := holdLock(t, db, name)
+	two := openDest(t, schema)
+	two.SetMaxOpenConns(2)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := Open(ctx, two, schema); done <- err }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !lockPending(t, db, name) {
+		select {
+		case err := <-done:
+			t.Fatalf("Open() = %v while another session held the schema lock; want it to wait", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Open did not wait for the schema lock within 5 s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if n := countTables(t, db); n != 0 {
+		t.Fatalf("tables while waiting = %d: Open created the schema without the lock", n)
+	}
+
+	release()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Open() after the release = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Open did not return within 5 s of the release")
+	}
+	var label string
+	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.0" {
+		t.Fatalf("label = %q, %v", label, err)
+	}
+	if h := lockHolder(t, db, name); h != 0 {
+		t.Errorf("the schema lock is held by connection %d after Open returned", h)
+	}
+}
+
+// TestMySQLSchemaCreationLockTimeout (TRK-1): a schema lock held for the whole wait ends
+// Open with SchemaLockedError naming the holder, and nothing is created. initLockWait is
+// shortened to 1 s and restored; this package's tests do not run in parallel.
+func TestMySQLSchemaCreationLockTimeout(t *testing.T) {
+	defer func(w time.Duration) { initLockWait = w }(initLockWait)
+	initLockWait = time.Second
+	schema, db := scratch(t, "locktimeout")
+	name := schemaLockName(t, db, schema)
+	id, _ := holdLock(t, db, name)
+	start := time.Now()
+	_, err := Open(context.Background(), db, schema)
+	var locked *SchemaLockedError
+	var held *lock.HeldError
+	if !errors.As(err, &locked) || !errors.As(err, &held) || locked.Schema != schema || held.Holder != id || held.Name != name {
+		t.Fatalf("Open() = %v, want a SchemaLockedError on %s held by connection %d", err, name, id)
+	}
+	if d := time.Since(start); d < time.Second {
+		t.Errorf("Open() refused after %s, before the 1 s wait ran out", d)
+	}
+	if n := countTables(t, db); n != 0 {
+		t.Errorf("tables after the refusal = %d", n)
+	}
+	if h := lockHolder(t, db, name); h != id {
+		t.Errorf("the schema lock is held by %d, want the test's %d", h, id)
+	}
+}
+
+// TestMySQLSchemaCreationMeetsAFinishingRun (TRK-1, Fable F1): a run that reads a new
+// schema while another run finishes creating it starts. Its first table list shows
+// archiver_job alone; the other run then creates goarchive_meta, stamps 3.0 and registers a
+// job. Judged before the lock, that read was "job rows but no schema_version label".
+func TestMySQLSchemaCreationMeetsAFinishingRun(t *testing.T) {
+	schema, db := scratch(t, "finishing")
+	s := mustOpen(t, db, schema)
+	exec(t, db, "DROP TABLE goarchive_meta")
+	f := &finishingFacts{facts: inspectorFacts{schema: schema, insp: validations.NewInspector(db, schema)}, finish: func() {
+		exec(t, db, s.createMetaTableSQL(), "INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.0')",
+			"INSERT INTO archiver_job (job_name, root_table, job_type, source_server_uuid, source_database, "+
+				"destination_database, config_fingerprint, root_key_columns) VALUES ('j','t','archive','u','s','d','{}','[]')")
+	}}
+	if _, err := open(context.Background(), db, schema, f); err != nil {
+		t.Fatalf("Open() while another run finished the schema = %v", err)
+	}
+	var label string
+	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.0" {
+		t.Fatalf("label = %q, %v", label, err)
+	}
+}
+
+// TestMySQLLabelledSchemaTakesNoLock (TRK-1, goal 2): a labelled schema is opened at once
+// while another session holds its schema lock. A guard: it passes before the change.
+func TestMySQLLabelledSchemaTakesNoLock(t *testing.T) {
+	schema, db := scratch(t, "labelled")
+	mustOpen(t, db, schema)
+	holdLock(t, db, schemaLockName(t, db, schema))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := Open(ctx, db, schema); err != nil {
+		t.Fatalf("Open() on a labelled schema = %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Open() on a labelled schema took %s: it waited for the schema lock", d)
 	}
 }
 
@@ -296,6 +486,9 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 			}
 			if n := countTables(t, db); n != strings.Count(strings.Join(tc.setup, ";"), "CREATE TABLE") {
 				t.Errorf("tables after the refusal = %d: Open wrote to a refused schema", n)
+			}
+			if h := lockHolder(t, db, schemaLockName(t, db, schema)); h != 0 {
+				t.Errorf("the schema lock is held by connection %d after the refusal", h)
 			}
 		})
 	}

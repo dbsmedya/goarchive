@@ -12,6 +12,7 @@ func TestLockNames(t *testing.T) {
 	for _, n := range []string{
 		TableLockName(long64, strings.Repeat("t", 64)),
 		JobLockName(long64, long255),
+		SchemaLockName(long64),
 	} {
 		if len(n) > 64 {
 			t.Errorf("%q is %d characters; MySQL allows 64", n, len(n))
@@ -21,6 +22,7 @@ func TestLockNames(t *testing.T) {
 	same := []struct{ a, b string }{
 		{TableLockName("Shop", "Orders"), TableLockName("shop", "orders")},
 		{JobLockName("GoArchive", "Archive_Old"), JobLockName("goarchive", "archive_old")},
+		{SchemaLockName("GoArchive"), SchemaLockName("goarchive")},
 	}
 	for _, p := range same {
 		if p.a != p.b {
@@ -33,6 +35,7 @@ func TestLockNames(t *testing.T) {
 		{TableLockName("ab", "c"), TableLockName("a", "bc")},                 // the NUL separator
 		{TableLockName("shop1", "orders"), TableLockName("shop2", "orders")}, // G3
 		{TableLockName("s", "x"), JobLockName("s", "x")},                     // the prefix
+		{SchemaLockName("s"), JobLockName("s", "")},                          // the prefix
 	}
 	for _, p := range differ {
 		if p.a == p.b {
@@ -43,5 +46,9 @@ func TestLockNames(t *testing.T) {
 	// The documented SQL formula (probe L8) computes this same name.
 	if got, want := JobLockName("goarchive", "archive_old_orders"), "goarchive:j:8dc6d9835d69244341908c2bd02168ed"; got != want {
 		t.Errorf("JobLockName = %q, want %q", got, want)
+	}
+
+	if got, want := SchemaLockName("goarchive"), "goarchive:s:5c9cf21547ac5fca3af03b2b36e329d7"; got != want {
+		t.Errorf("SchemaLockName = %q, want %q", got, want)
 	}
 }

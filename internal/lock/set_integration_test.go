@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -18,7 +19,11 @@ import (
 
 // These tests run on TEST_SOURCE_* (db1). Each pool is the test's own, so its connection
 // counts are the set's alone.
-func pool(t *testing.T) *sql.DB {
+func pool(t *testing.T) *sql.DB { return poolWith(t, nil) }
+
+// poolWith is pool with more session variables set on every new session, as a server's
+// globals would be.
+func poolWith(t *testing.T, params map[string]string) *sql.DB {
 	t.Helper()
 	host, user, pass := os.Getenv("TEST_SOURCE_HOST"), os.Getenv("TEST_SOURCE_USER"), os.Getenv("TEST_SOURCE_PASSWORD")
 	port, _ := strconv.Atoi(os.Getenv("TEST_SOURCE_PORT"))
@@ -30,6 +35,7 @@ func pool(t *testing.T) *sql.DB {
 	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
 	// reads are whole under the matrix row sql_select_limit_20.
 	cfg.Params = map[string]string{"sql_select_limit": "18446744073709551615"}
+	maps.Copy(cfg.Params, params)
 	connector, err := mysql.NewConnector(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -199,6 +205,7 @@ func TestMySQLLockNameFormula(t *testing.T) {
 	for _, tc := range []struct{ prefix, a, b, want string }{
 		{"goarchive:j:", "GoArchive", "Archive_Old_Orders", JobLockName("GoArchive", "Archive_Old_Orders")},
 		{"goarchive:t:", "Sakila", "Payment", TableLockName("Sakila", "Payment")},
+		{"goarchive:s:", "GoArchive", "", SchemaLockName("GoArchive")},
 	} {
 		var got string
 		if err := db.QueryRowContext(context.Background(),
