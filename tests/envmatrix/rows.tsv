@@ -9,6 +9,7 @@
 #           this directory; version: the image; group: the image of dbsgomysql's Group
 #           Replication cluster (group/README.md), whose primary is the source; only the
 #           unfinished-work guard tests run
+#           A dynamic setup starting "dst:" runs on the destination only (PKT-1).
 #   expect  pass, or refuse:CODE[|CODE...] (tests/envmatrix/judge): every failing test must
 #           cite one of the codes, the M7-8 rule that a run is exact or refused by name
 baseline	dynamic	-	pass
@@ -25,6 +26,10 @@ max_allowed_packet_64k	dynamic	SET GLOBAL max_allowed_packet = 65536	refuse:MAX_
 # max_allowed_packet_4m: MySQL 5.7's default. One batch's INSERT in
 # TestMySQLArchiveRowsWiderThanThePacket is four times it (M7c-F1).
 max_allowed_packet_4m	dynamic	SET GLOBAL max_allowed_packet = 4194304	pass
+# max_allowed_packet_dst_4m: the destination's packet only (PKT-1). A value larger than
+# it exists in the source, so the copy's one remaining packet failure, PacketError, is
+# reachable: TestMySQLArchiveValueLargerThanThePacket runs only here.
+max_allowed_packet_dst_4m	dynamic	dst: SET GLOBAL max_allowed_packet = 4194304	pass
 # sql_select_limit_20: a global limit new sessions inherit. TestMySQLArchiveUnderAFiniteSelectLimit
 # reads a 25-column table and an order's 30 lines through the CLI (beta audit A1).
 sql_select_limit_20	dynamic	SET GLOBAL sql_select_limit = 20	pass
