@@ -78,37 +78,51 @@ func packetRowProblem(rows, src, skips, runner string) string {
 	if !found {
 		return "no row " + name + " in rows.tsv"
 	}
+	// Each gh-skip.txt name is appended to the runner's pattern as read, never shell-expanded,
+	// so each is a whole regexp alternative of its own.
 	for _, line := range strings.Split(skips, "\n") {
 		if f := strings.Fields(line); len(f) > 0 && !strings.HasPrefix(f[0], "#") && skipsPacketTest(f[0]) {
 			return "gh-skip.txt skips " + packetTest
 		}
 	}
+	// The runner's own pattern, built as bash builds it: SKIP= sets it, SKIP+= appends. A value
+	// holding a shell expansion cannot be read here, so it fails closed.
+	pattern := ""
 	for _, line := range strings.Split(runner, "\n") {
 		line = strings.TrimSpace(line)
 		for _, assign := range []string{"SKIP=", "SKIP+="} {
-			if v, ok := strings.CutPrefix(line, assign); ok && skipsPacketTest(strings.Trim(v, `"'`)) {
-				return "run-matrix.sh skips " + packetTest
+			v, ok := strings.CutPrefix(line, assign)
+			if !ok {
+				continue
+			}
+			v = strings.Trim(v, `"'`)
+			if shellExpansion.MatchString(v) {
+				return "run-matrix.sh builds SKIP from a shell expansion"
+			}
+			if assign == "SKIP=" {
+				pattern = v
+			} else {
+				pattern += v
 			}
 		}
+	}
+	if pattern != "" && skipsPacketTest(pattern) {
+		return "run-matrix.sh skips " + packetTest
 	}
 	return ""
 }
 
-// skipsPacketTest says whether a go test -skip pattern skips packetTest. The runner joins its
-// SKIP= value and every gh-skip.txt name with "|", and go test matches each alternative
-// anywhere in the name, so a prefix skips the test as surely as its full name. An
-// alternative holding a shell expansion ($name) is not a literal pattern and is left out; one
-// that does not compile counts as a skip (fail closed).
+// shellExpansion finds $name, ${...} and $(...) in a SKIP value; a "$" anchor is not one.
+var shellExpansion = regexp.MustCompile(`\$[A-Za-z_{(]`)
+
+// skipsPacketTest says whether a go test -skip pattern skips packetTest. go test matches the
+// pattern anywhere in the name, so a prefix skips the test as surely as its full name, an
+// anchored ^name$ skips it, and an empty alternative ("a|") skips every test. The pattern is
+// compiled whole, as go test compiles it; one that does not compile counts as a skip (fail
+// closed).
 func skipsPacketTest(pattern string) bool {
-	for _, alt := range strings.Split(pattern, "|") {
-		if alt == "" || strings.Contains(alt, "$") {
-			continue
-		}
-		if re, err := regexp.Compile(alt); err != nil || re.MatchString(packetTest) {
-			return true
-		}
-	}
-	return false
+	re, err := regexp.Compile(pattern)
+	return err != nil || re.MatchString(packetTest)
 }
 
 // TestMatrixPacketRowDeclared (PKT-1, Sonnet F2 and R2-2): the packet test skips everywhere but
