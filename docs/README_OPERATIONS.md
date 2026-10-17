@@ -194,8 +194,11 @@ esac
 A stop that meets an error exits 1.
 
 **Containers.** Keep the default logging, JSON to stdout, and `docker logs` and log drivers read
-the run with no file or mount. A foreground `docker run` returns goarchive's code (Docker's own
-launch failures are 125–127). For a detached container, the code is the number `docker wait
+the run with no file or mount. On a Linux host, a log file on a mounted directory belongs to the
+user the container runs as, and the container reads a mounted config only if that user may: pass
+`--user "$(id -u):$(id -g)"` to run as yourself
+([INSTALL.md](../INSTALL.md#run-the-published-image)). A foreground `docker run` returns
+goarchive's code (Docker's own launch failures are 125–127). For a detached container, the code is the number `docker wait
 <name>` prints, or `docker inspect -f '{{.State.ExitCode}}' <name>`; the exit status of
 `docker wait` itself only says whether the wait worked. `docker stop` sends SIGTERM, a
 [graceful stop](#graceful-shutdown): the batch in flight finishes and the run exits 3, if it gets
@@ -229,7 +232,7 @@ batch of root keys, and prints a report:
   place of placeholders; no key value), then MySQL's `EXPLAIN FORMAT=TRADITIONAL` rows, one line
   each: `full table scan`, `full index scan on <key>`, `<type> on <key>`, or the optimizer's
   message, with the estimated rows and filter. A note sits under the statement it concerns, for
-  example a fetch that sorts every batch.
+  example a fetch that sorts every batch, or a `where` subquery that sorts.
 
 It takes no lock, writes no tracking row and changes no data. Read the plans for full scans
 before a long run. `plan` shows the relation tree and both orders at any time without
