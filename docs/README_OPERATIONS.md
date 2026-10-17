@@ -475,10 +475,12 @@ the log holds. A third terminates the process.
 What a rerun does with work already done:
 
 - **archive and purge** — recovery finishes the logged roots, then the scan starts over; the
-  rows already archived or purged are no longer in the source.
+  rows already archived or purged are no longer in the source. A root key that returns to the
+  `where` range after its job finished it fails its batch, naming the root: that is outside the
+  run contract, and the error names the log row to delete to process it again.
 - **copy-only, `resume: false`** (the default) — a plain copy. A root already in the destination
-  fails its batch on the duplicate key, the batch rolls back, the run stops, and the error
-  suggests `resume: true`.
+  fails its batch on the duplicate key (or, when its destination rows are gone, on its completed
+  log row), the batch rolls back, the run stops, and the error suggests `resume: true`.
 - **copy-only, `resume: true`** — each batch drops the roots this job logged as copied before,
   and copies the rest. Every run rescans the whole `where` range.
 

@@ -242,6 +242,7 @@ FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 | Operation | Safe? | Condition and consequence |
 |-----------|:-----:|---------------------------|
 | `DELETE … WHERE ga_status = 2` (archive, purge) | ✅ | Audit history only: there is no checkpoint, and completed roots are gone from the source |
+| `DELETE … WHERE ga_status = 2 AND k1 = <value>` (one root; archive, purge) | ✅ | To archive or purge again a root that returned to the `where` range (the error names it): only that root's record goes. The key columns are `k1…kN`, in the root key's order |
 | `DELETE … WHERE ga_status = 2` (copy-only) | ⚠️ | Those roots are no longer skipped by `resume: true`; a rerun re-copies them and fails on the duplicates unless their destination rows are removed too |
 | `DELETE … WHERE ga_status IN (1, 4)` | ⚠️ | Abandons recovery: [Abandoning logged roots](#abandoning-logged-roots) |
 | `DROP TABLE archiver_job_log_<id>` and `DELETE` its job row | ✅ only without pending work | [Retiring the job](#retiring-a-job-completely); with `copied` or `deleting` roots it is abandonment |

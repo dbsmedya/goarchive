@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 )
 
@@ -68,6 +69,36 @@ func (e *DuplicateError) Error() string {
 	}
 	return b.String()
 }
+
+// RecurringRootError is a log INSERT that met a root the job completed before (RKP-1, RKP-2). In
+// the loop the log holds only completed roots, since recovery finished or refused the rest. Root
+// is the value as MySQL reports it (a composite key joined by '-'). MySQL names only the first
+// duplicate of the statement.
+type RecurringRootError struct {
+	Job  string
+	Type jobspec.Type
+	Root string
+	Err  error // the *mysql.MySQLError
+}
+
+func (e *RecurringRootError) Error() string {
+	if e.Type == jobspec.CopyOnly {
+		return fmt.Sprintf("engine: the root '%s' is already completed in job %q's log: the job copied it before. "+
+			"Of this batch, nothing was copied or logged. To skip the roots it copied, set resume: true on the job (%v)",
+			e.Root, e.Job, e.Err)
+	}
+	verb := "archive"
+	if e.Type == jobspec.Purge {
+		verb = "purge"
+	}
+	return fmt.Sprintf("engine: the root '%s' is already completed in job %q's log: a root it %sd before is back in its where range, "+
+		"outside the run contract (docs/README_LIMITATIONS.md, \"No DDL and no concurrent writes during a run (contract)\"). "+
+		"Of this batch, nothing was logged or deleted. To %s it again, delete its completed log row "+
+		"(docs/README_JOBS_SCHEMA.md, \"Maintenance: what is safe to delete\"), then rerun (%v)",
+		e.Root, e.Job, verb, verb, e.Err)
+}
+
+func (e *RecurringRootError) Unwrap() error { return e.Err }
 
 // PacketError is a destination INSERT of the copy that did not fit the destination's
 // max_allowed_packet (M7c-F1). The driver sends large values as long data, so a row or a

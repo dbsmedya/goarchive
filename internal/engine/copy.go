@@ -102,12 +102,13 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	return nil
 }
 
-// logInsertError explains a log INSERT that met a key the log already holds: a copy-only
-// root copied before, whose destination rows a retention job has pruned since.
+// logInsertError explains a log INSERT that met a key the log already holds (RKP-2): a root this
+// job finished before. For archive or purge it is a root back in the where range; for copy-only,
+// a root copied before whose destination rows are gone. Any other error passes through.
 func (r *run) logInsertError(err error) error {
 	var me *mysql.MySQLError
-	if r.typ == jobspec.CopyOnly && errors.As(err, &me) && me.Number == mysqlDuplicateEntry {
-		return fmt.Errorf("%w. The job copied this root before; to skip the roots it copied, set resume: true on the job", err)
+	if errors.As(err, &me) && me.Number == mysqlDuplicateEntry {
+		return &RecurringRootError{Job: r.job.Name, Type: r.typ, Root: duplicateKey(me.Message), Err: me}
 	}
 	return err
 }
