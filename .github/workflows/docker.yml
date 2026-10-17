@@ -51,6 +51,29 @@ jobs:
         with:
           buildkitd-flags: --debug
 
+      # IMG-1: on a PR, the image is also built for amd64 into the local daemon and run as an
+      # arbitrary user. A PR only: no test runs on a tag (CLAUDE.md, .ayder/RELEASING.md).
+      - name: Build the image for the run test
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: goarchive:test
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ steps.version.outputs.COMMIT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the image as an arbitrary user
+        if: github.event_name == 'pull_request'
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: bash tests/scripts/image-run-test.sh goarchive:test "$VERSION"
+
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
