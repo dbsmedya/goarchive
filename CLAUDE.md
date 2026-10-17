@@ -182,7 +182,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Destination key identity and the utf8mb3→utf8mb4 twin (R32) | same file → `checkDestinationKeys`, `twinCollation` |
 | Key-value binding per type, including the TIME compatibility path (`docs/README_COMPAT.md`, R46) | `internal/key/sql.go` → `Placeholder` |
 | The run loop and its in-memory cursor; phases per job type | `internal/engine/run.go` → `(*run).loop`, `(*run).batch` |
-| Log status writes, inside the transaction that does the work | `internal/engine/run.go` → `logDeleting`, `complete`; `internal/engine/copy.go` → `(*run).copy`; `internal/tracking/log.go` → `(*Job).Insert`, `Transition` |
+| Log status writes, inside the transaction that does the work | `internal/engine/run.go` → `logDeleting`, `complete`; `internal/engine/copy.go` → `(*run).copy`, `logInsertError` (a root the log already holds: `internal/engine/errors.go` → `RecurringRootError`); `internal/tracking/log.go` → `(*Job).Insert`, `Transition` |
 | Key-set checks: copy-read identity, verification counts, delete row counts, warning 3170 | `internal/engine/copy.go` → `read`; `verify.go` → `verifyCount`, `verifyHash`; `delete.go` → `deleteOne` |
 | Warning 3170 and warnings the session did not keep (`max_error_count`) | `internal/key/chunk.go` → `CheckRangeWarning` |
 | Packet bound of each statement cap (`MAX_ALLOWED_PACKET_CHECK`) | `internal/preflight/packet.go` → `checkMaxAllowedPacket`; `internal/key/chunk.go` → `StatementBytes` |
@@ -192,6 +192,7 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Startup recovery (delete-only replay; refused before any delete when the destination lacks a rediscovered row, GH #7) | `internal/engine/recover.go` → `recover`, `replay`, `checkHeld`; `internal/engine/errors.go` → `UncopiedError` |
 | Lock names (hashed, case-folded) and the lock set: one session, `wait_timeout` 300, keep-alive, discard on release; a waiting lock on its own session, `max_execution_time` 0 | `internal/lock/names.go` → `TableLockName`, `JobLockName`, `SchemaLockName`; `internal/lock/set.go` → `Set`; `internal/lock/wait.go` → `Wait` |
 | Startup locking: on a new tracking schema the schema lock, for its creation only; then job lock, source table locks, then the unfinished-work guard (another job on the same source data, sharing a table, marked running or holding `copied`/`deleting` roots) | `internal/engine/startup.go` → `lockJob`, `OverlapError`; `internal/tracking/blockers.go` → `(*Store).Blockers`, `storedTables` |
+| Exit codes; an unfinished-work refusal exits 4 only while every blocker is live (EXC-1) | `cmd/goarchive/cmd/exit.go` → `exitCode`; `internal/engine/startup.go` → `live`, `(*OverlapError).Live` |
 | Tracking schema creation, one run at a time under the schema lock; a labelled schema takes no lock (TRK-1) | `internal/tracking/schema.go` → `ensureSchema`, `SchemaLockedError` |
 | Same source data: `server_uuid`, `gtid_executed`, and the database-name fallback without `gtid_mode = ON` or on a Group Replication member (dbsgomysql facts) | `internal/engine/sourcedata.go` → `sameData`, `readSourceData` |
 | Guarded commit (write → check → `COMMIT`) at every commit site | `internal/engine/run.go` → `(*run).commit` |
@@ -217,8 +218,10 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 > `docs/README_OPERATIONS.md` (`internal/engine/errors.go`, `UncopiedError`); *A value larger than
 > the destination's `max_allowed_packet` fails its batch* in `docs/README_LIMITATIONS.md` (same
 > file, `PacketError`); *Supported relationship types* in `docs/README_LIMITATIONS.md`
-> (`internal/preflight/relations.go`, `SELF_FK_DELETE_RULE_CHECK`). Renaming one breaks that
-> reference.
+> (`internal/preflight/relations.go`, `SELF_FK_DELETE_RULE_CHECK`); *No DDL and no concurrent
+> writes during a run (contract)* in `docs/README_LIMITATIONS.md` and *Maintenance: what is safe
+> to delete* in `docs/README_JOBS_SCHEMA.md` (`internal/engine/errors.go`, `RecurringRootError`).
+> Renaming one breaks that reference.
 
 ## Documentation Layout (RULE)
 

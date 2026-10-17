@@ -3,6 +3,7 @@ package engine
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
+	"github.com/go-sql-driver/mysql"
 )
 
 // TestChunkSizes: a key-addressed statement carries at most its index's cap (M5-1) and the
@@ -179,7 +181,86 @@ func TestDuplicateError(t *testing.T) {
 	if msg := (&DuplicateError{Table: "t", Key: "7"}).Error(); strings.Contains(msg, "resume") {
 		t.Errorf("an archive duplicate suggests resume: %s", msg)
 	}
-	if got := duplicateKey("Duplicate entry 'a-1' for key 't.PRIMARY'"); got != "a-1" {
-		t.Errorf("duplicateKey = %q", got)
+	for msg, want := range map[string]string{
+		"Duplicate entry 'a-1' for key 't.PRIMARY'":        "a-1",
+		"Duplicate entry 'O'Reilly' for key 't.PRIMARY'":   "O'Reilly", // MySQL does not escape the value
+		"Duplicate entry 'O'Reilly-5' for key 't.PRIMARY'": "O'Reilly-5",
+		"Duplicate entry '' for key 't.uk'":                "",
+		"not a duplicate-entry message":                    "not a duplicate-entry message",
+	} {
+		if got := duplicateKey(msg); got != want {
+			t.Errorf("duplicateKey(%q) = %q, want %q", msg, got, want)
+		}
+	}
+}
+
+// TestRecurringRootError (RKP-2): the log collision names the root, the job and its type's
+// remedy, and keeps MySQL's error.
+func TestRecurringRootError(t *testing.T) {
+	me := &mysql.MySQLError{Number: 1062, Message: "Duplicate entry '7' for key 'archiver_job_log_3.PRIMARY'"}
+	const contract = `docs/README_LIMITATIONS.md, "No DDL and no concurrent writes during a run (contract)"`
+	const remedy = `docs/README_JOBS_SCHEMA.md, "Maintenance: what is safe to delete"`
+	for _, tc := range []struct {
+		typ       jobspec.Type
+		want, not []string
+	}{
+		{jobspec.Archive, []string{"the root '7'", `job "j"`, "archived before", contract,
+			"nothing was logged or deleted", "To archive it again", remedy, "Duplicate entry '7'"}, []string{"resume"}},
+		{jobspec.Purge, []string{"the root '7'", `job "j"`, "purged before", contract,
+			"nothing was logged or deleted", "To purge it again", remedy, "Duplicate entry '7'"}, []string{"resume"}},
+		{jobspec.CopyOnly, []string{"the root '7'", `job "j"`, "copied it before",
+			"nothing was copied or logged", "set resume: true on the job", "Duplicate entry '7'"}, []string{contract, remedy}},
+	} {
+		err := error(&RecurringRootError{Job: "j", Type: tc.typ, Root: "7", Err: me})
+		msg := err.Error()
+		for _, w := range tc.want {
+			if !strings.Contains(msg, w) {
+				t.Errorf("%s: lacks %q:\n%s", tc.typ, w, msg)
+			}
+		}
+		for _, w := range tc.not {
+			if strings.Contains(msg, w) {
+				t.Errorf("%s: holds %q:\n%s", tc.typ, w, msg)
+			}
+		}
+		var got *mysql.MySQLError
+		if !errors.As(err, &got) || got != me {
+			t.Errorf("%s: errors.As does not reach the MySQL error", tc.typ)
+		}
+	}
+}
+
+// TestLogInsertError (RKP-2): a 1062 on this job's log primary key becomes a RecurringRootError
+// for every job type, naming the root as MySQL reports it; any other error passes through
+// unchanged, a 1062 on another key or table included (final review R1).
+func TestLogInsertError(t *testing.T) {
+	job := &tracking.Job{ID: 3, Name: "j"}
+	for msg, root := range map[string]string{
+		"Duplicate entry '5-7' for key 'archiver_job_log_3.PRIMARY'":        "5-7",
+		"Duplicate entry 'O'Reilly-5' for key 'archiver_job_log_3.PRIMARY'": "O'Reilly-5",
+	} {
+		me := &mysql.MySQLError{Number: 1062, Message: msg}
+		wrapped := fmt.Errorf("tracking: log 2 root(s) as deleting for job %q: %w", "j", me)
+		for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
+			r := &run{typ: typ, job: job}
+			var rr *RecurringRootError
+			if err := r.logInsertError(wrapped); !errors.As(err, &rr) || rr.Root != root || rr.Type != typ || rr.Job != "j" || rr.Err != me {
+				t.Errorf("%s: %v, want a RecurringRootError for the root %s", typ, err, root)
+			}
+		}
+	}
+	for _, other := range []error{
+		fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1213, Message: "Deadlock found"}),
+		fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1062, Message: "Duplicate entry '4' for key 'archiver_job_log_3.accidental_status'"}),
+		fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1062, Message: "Duplicate entry '7' for key 'archiver_job_log_4.PRIMARY'"}),
+		fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1062, Message: "Duplicate entry '7' for key 'audit.PRIMARY'"}),
+		fmt.Errorf("x: %w", &mysql.MySQLError{Number: 1062, Message: "Duplicate entry '7'"}),
+	} {
+		if err := (&run{typ: jobspec.Purge, job: job}).logInsertError(other); err != other {
+			t.Errorf("%v changed: %v", other, err)
+		}
+	}
+	if err := (&run{typ: jobspec.Purge, job: job}).logInsertError(nil); err != nil {
+		t.Errorf("nil became %v", err)
 	}
 }

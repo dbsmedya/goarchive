@@ -377,10 +377,10 @@ func (r *run) commit(ctx context.Context, tx *sql.Tx, at point) error {
 }
 
 // logDeleting logs purge roots as deleting, in their own transaction, before any delete
-// (spec §6.3).
+// (spec §6.3). A root the log already holds fails as RecurringRootError (RKP-2).
 func (r *run) logDeleting(ctx context.Context, roots []key.Key) error {
 	return r.inDestinationTx(ctx, func(tx *sql.Tx) error {
-		return r.job.Insert(ctx, tx, tracking.StatusDeleting, roots)
+		return r.logInsertError(r.job.Insert(ctx, tx, tracking.StatusDeleting, roots))
 	})
 }
 

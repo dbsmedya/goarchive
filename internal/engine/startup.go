@@ -66,7 +66,7 @@ func (e *OverlapError) Error() string {
 		}
 		pending = pending || j.Pending
 		if j.Status == tracking.JobRunning {
-			if j.Beat && j.HeartbeatAge <= staleAfter {
+			if live(j) {
 				recent = true
 			} else {
 				stopped = true
@@ -120,6 +120,25 @@ func blockerState(j tracking.Blocker) string {
 		return st + ", unregistered, no log yet"
 	}
 	return st + ", no unfinished roots in its log"
+}
+
+// live reports whether a blocker is a run in progress: marked running, with a heartbeat at most
+// staleAfter old (EXC-1). Any other blocker waits for its job's rerun, by its schedule or by an
+// operator.
+func live(j tracking.Blocker) bool {
+	return j.Status == tracking.JobRunning && j.Beat && j.HeartbeatAge <= staleAfter
+}
+
+// Live reports whether every blocker is live, so that the refusal ends without anyone acting:
+// the run exits 4 (not started) and is retried; otherwise it exits 1 (EXC-1). A refusal with no
+// blockers is not live.
+func (e *OverlapError) Live() bool {
+	for _, j := range e.Blockers {
+		if !live(j) {
+			return false
+		}
+	}
+	return len(e.Blockers) > 0
 }
 
 // locks are a run's two lock sets and the identities of the table locks, for refusals.

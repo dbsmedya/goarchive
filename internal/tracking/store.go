@@ -75,6 +75,6 @@ func open(ctx context.Context, db *sql.DB, jobSchema string, f facts) (*Store, e
 }
 
 func (s *Store) logTable(id int64) (name, qualified string) {
-	name = fmt.Sprintf("archiver_job_log_%d", id)
+	name = logTableName(id)
 	return name, sqlutil.QuoteIdentifier(s.schema) + "." + sqlutil.QuoteIdentifier(name)
 }
