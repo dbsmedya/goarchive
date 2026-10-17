@@ -136,10 +136,12 @@ on a release PR's, confirms each run started, reads its summary table and delete
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1347 FAIL=0 SKIP=5`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-16 (the beta.2 PRC-1 PR, at
-  `51154dc`). The runner counts every test the `integration` tag compiles, unit tests included:
-  PRC-1 added `TestEstimateRoots` (28 with its subtests) and
+- **Integration inventory:** `PASS=1355 FAIL=0 SKIP=5`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-17 (the beta.3
+  audit-review-1 PR, at `c9ab01a`). The runner counts every test the `integration` tag compiles,
+  unit tests included: that PR added `TestRecurringRootError`, `TestLogInsertError`,
+  `TestMySQLRecurringRoot` (4 with its subtests) and two `TestMySQLExitCodes` subtests. It was
+  1347 before (the beta.2 PRC-1 PR, at `51154dc`): PRC-1 added `TestEstimateRoots` (28 with its subtests) and
   `TestMySQLProgress/an_estimate,_not_a_count`. It was 1318 before (the beta.2 PKT-1 PR, at
   `0b5b0f9`), and `SKIP=4` before that (the beta.2 TRK-1 PR, at `b53d157`): PKT-1 added
   `TestMySQLArchiveValueLargerThanThePacket`, which runs only under the matrix row
