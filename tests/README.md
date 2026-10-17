@@ -81,6 +81,41 @@ that is later removed leaves the containers pointing at files that no longer exi
 > integration tests create and drop their own schemas; a few read the seeded Sakila estate, so
 > run `./scripts/run-tests.sh --setup` once before running them with `go test` directly.
 
+### Which checks a change needs
+
+A full gate takes about nine minutes of the dedicated estate, and a GitHub verify run fifteen.
+Each runs where it tests something the change touched, once, on the commit that survives review.
+
+**Reviews come first.** A branch's reviews (Fable for a behaviour change, Codex's MR verdict) and
+their fixes come before the gate and the verify runs. A fix changes the commit, and a gate run
+before the review is spent on a commit that does not ship. A finding from the gate or a verify run
+is fixed in the same way and goes back to Codex as a re-review of the fix alone.
+
+**The change decides the checks.** A PR needs every row that its diff from `v3` touches, on its
+final commit:
+
+| The PR changes | Paths | Its final commit needs |
+|---|---|---|
+| Documentation only | `docs/`, `*.md`, comments | `make check` (its harness checks the links and the version sites) |
+| Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` against the estate; the integration inventory re-measured when test names change |
+| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/` | `make check`; a full gate only when `run-gate.sh` or a command it runs changed; a *Gate verify* run only when `gate-verify.yml` or `run-gate.sh` changed |
+| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` | a full gate and a *Matrix verify* run |
+| A release | the version bump | a full gate, a *Matrix verify* and a *Gate verify* run |
+
+A change to the E2E setup (`tests/e2e/`, `compose.yml`) is product-grade for this table: a full
+gate, and a *Gate verify* run when the operator asks.
+
+**A green gate carries across a small fix.** A full gate GREEN on commit X stands for a later
+commit Y of the same branch when every change from X to Y is documentation, tests, or test tooling
+that does not touch `run-gate.sh`, and the checks those changes need (above) pass on Y. A
+*Matrix verify* or *Gate verify* run carries in the same way when the change touches nothing it
+runs: *Matrix verify* runs `./internal/...` and `./cmd/...`, so a change outside them carries it.
+The record names both commits: "gate GREEN at X, carried to Y; checks on Y: …". A red run never
+carries; it goes to the operator.
+
+**Each plan carries a gate plan.** It names, for each task, the check that exercises the task's
+change, and the PR's final checks from the table, so the gate runs are planned with the work.
+
 ## Sakila E2E Test Suite
 
 Seventeen focused tests: thirteen working runs — five archives, four purges, two
@@ -573,8 +608,8 @@ git push origin --delete verify-gate/<sha7>
 
   | Branch | When | Pushed by |
   |---|---|---|
-  | `verify/<sha7>` | Every PR's final SHA, after the local gate is GREEN, before Codex's and the operator's verdicts | the coordinating agent |
-  | `verify-gate/<sha7>` | The release PR's final SHA (the PR that folds the version bump); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
+  | `verify/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs)), after the reviews and the local gate, before the operator's verdict | the coordinating agent |
+  | `verify-gate/<sha7>` | The release PR's final SHA (the PR that folds the version bump), or a PR's final SHA that changes `gate-verify.yml` or `run-gate.sh`; any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
 
   The repository is public: a push publishes the PR's commits before the verdicts, and deleting
   the branch does not unpublish them. This standing authorization covers these two branches for

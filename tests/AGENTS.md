@@ -142,8 +142,10 @@ task says why.
 
 The full environment matrix and the gate on every supported image run on GitHub, not here
 (`tests/README.md` → *The full matrix runs on GitHub*, which says when each runs). The coordinating
-agent, not the gate agent, pushes `verify/<sha7>` on every PR's final SHA and `verify-gate/<sha7>`
-on a release PR's, confirms each run started, reads its summary table and deletes the branch.
+agent, not the gate agent, pushes `verify/<sha7>` and `verify-gate/<sha7>` on the final SHA of a PR
+whose change needs them (`tests/README.md` → *Which checks a change needs*), confirms each run
+started, reads its summary table and deletes the branch. The same section says when a gate runs at
+all, and when a green gate carries to a later commit; a gate agent is given a SHA only when one must.
 
 ## Measured baselines
 

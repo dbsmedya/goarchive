@@ -40,8 +40,8 @@ Builds and pushes Docker images to GitHub Container Registry:
 **Triggers:** a push to a `verify/**` branch only, plus `workflow_dispatch` once this file is on
 the default branch. Never a pull request, a merge or a tag.
 
-The environment matrix on one commit, on every PR's final SHA
-(`tests/README.md` → *The full matrix runs on GitHub*):
+The environment matrix on one commit, on the final SHA of a PR whose change needs it
+(`tests/README.md` → *Which checks a change needs*, and *The full matrix runs on GitHub*):
 - **Matrix:** one job per row of `tests/envmatrix/rows.tsv`, at most 14 at once.
 - **Summary:** one table of every row's verdict (`tests/envmatrix/gh-summary.sh`), on the run page
   and as the `summary-matrix` artifact. It is red when any job did not succeed, when any row is

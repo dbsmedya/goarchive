@@ -2,7 +2,7 @@
 # 2026-10-16-beta2-verify-split-design.md; the beta.1 release-verify workflow less its image
 # gates): every rows.tsv row of the environment matrix on one commit. Started by a push of a
 # verify/<sha7> branch (or, once this file is on the default branch, a dispatch with a SHA), on
-# every PR's final SHA (tests/README.md → "The full matrix runs on GitHub"). Never on PRs or
+# the final SHA of a PR whose change needs it (tests/README.md → "Which checks a change needs"). Never on PRs or
 # merges. The gate on every supported image is gate-verify.yml (verify-gate/<sha7>).
 name: Matrix verify
 
