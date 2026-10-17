@@ -12,8 +12,9 @@
 # it counts only when both are certified. A part is certified only on the evidence
 # tests/AGENTS.md requires of a gate: exactly one run.tsv, for the target SHA, on a clean tree,
 # PASS with command and recording exits 0, naming the artifact's part; the completion marker of
-# that run, SHA and part beside it; and its summary.txt. Any other gate-* artifact, and an image
-# with one part, fails the run. Each <job>=<result> is a needs.<job>.result; anything but success
+# that run, SHA and part beside it; and its summary.txt. The wanted images are 0 to
+# <gates-wanted> - 1, named in decimal without leading zeros; any other gate-* artifact, and a
+# wanted image without both parts, fails the run. Each <job>=<result> is a needs.<job>.result; anything but success
 # fails the run, whatever its artifacts say.
 set -uo pipefail
 
@@ -70,18 +71,19 @@ counts() {
     [[ $# -eq 4 ]] && echo "E2E $1/$2, examples $3/$4"
 }
 
-# ok_integration[n] and ok_e2e[n] mark image n's certified parts; seen[n] an image with any part.
-ok_integration=() ok_e2e=() seen=() last=-1
+# ok_integration[n] and ok_e2e[n] mark wanted image n's certified parts.
+ok_integration=() ok_e2e=()
 for g in "$dir"/gate-*; do
     [[ -d $g ]] || continue
     name=$(basename "$g")
     version=$(cat "$g/server-version.txt" 2>/dev/null || echo "?")
-    if ! [[ $name =~ ^gate-(integration|e2e)-([0-9]+)$ ]]; then
+    if ! [[ $name =~ ^gate-(integration|e2e)-(0|[1-9][0-9]{0,2})$ ]]; then
         echo "| $name | NOT CERTIFIED: not a part artifact | | $version |"; bad=1; continue
     fi
-    part=${BASH_REMATCH[1]} n=$((10#${BASH_REMATCH[2]}))
-    seen[n]=1
-    [[ $n -gt $last ]] && last=$n
+    part=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]}
+    if [[ $n -ge $want_gates ]]; then
+        echo "| gate-$n $part | NOT CERTIFIED: unexpected image | | $version |"; bad=1; continue
+    fi
     runs=()
     while IFS= read -r r; do runs+=("$r"); done < <(find "$g" -name run.tsv)
     if [[ ${#runs[@]} -ne 1 ]]; then
@@ -97,8 +99,7 @@ for g in "$dir"/gate-*; do
 done
 
 gates=0
-for ((n=0; n<=last; n++)); do
-    [[ -n ${seen[n]:-} ]] || continue
+for ((n=0; n<want_gates; n++)); do
     for part in integration e2e; do
         if [[ ! -d $dir/gate-$part-$n ]]; then echo "| gate-$n $part | MISSING | | |"; bad=1; fi
     done
