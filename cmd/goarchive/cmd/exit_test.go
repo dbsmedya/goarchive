@@ -51,6 +51,7 @@ func TestExitCode(t *testing.T) {
 		{"overlap, idle with unfinished roots", true, overlap(idle), 1},
 		{"overlap, unreadable fingerprint", true, overlap(unreadable), 1},
 		{"overlap, live beside stopped", true, overlap(live, idle), 1},
+		{"overlap, live with an unreadable fingerprint", true, overlap(tracking.Blocker{Name: "b", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: 5 * time.Second, Unreadable: errors.New("bad json")}), 4},
 		{"overlap, no blockers", true, overlap(), 1},
 		{"overlap, wrapped live", true, fmt.Errorf("x: %w", overlap(live)), 4},
 		{"overlap, wrapped stopped", true, fmt.Errorf("x: %w", overlap(failed)), 1},

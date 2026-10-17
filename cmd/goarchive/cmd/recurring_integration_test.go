@@ -15,6 +15,9 @@ import (
 // firstOrder is seed's first order, the smallest root key of the where range.
 const firstOrder = "00000000-0000-0000-0000-000000000000"
 
+// newOrder is a root the fixture never seeds, in the where range and in firstOrder's batch.
+const newOrder = "00000000-0000-0000-0000-000000000009"
+
 // recurring checks that err is the log collision of firstOrder for typ, and that it exits 1.
 func recurring(t *testing.T, err error, typ jobspec.Type) {
 	t.Helper()
@@ -50,11 +53,16 @@ func TestMySQLRecurringRoot(t *testing.T) {
 			t.Fatalf("purge: %v\n%s", err, out)
 		}
 		before := logRows(t, f, "purge_orders")
-		mustExec(t, f.src, order)
+		// Beside the recurring root, a new one in the same batch (batch_size 2): the log INSERT
+		// fails on the first, and the new root is not deleted either.
+		mustExec(t, f.src, order, "INSERT INTO orders VALUES ('"+newOrder+"', '2019-04-01')")
 		_, err := execute(t, "purge", "-c", f.config, "--job", "purge_orders")
 		recurring(t, err, jobspec.Purge)
 		if got := scalar(t, f.src, one("orders", "id")); got != 1 {
 			t.Errorf("source holds %d of the root, want it kept", got)
+		}
+		if got := scalar(t, f.src, "SELECT COUNT(*) FROM orders WHERE id = '"+newOrder+"'"); got != 1 {
+			t.Errorf("source holds %d of the new root, want it kept", got)
 		}
 		if got := logRows(t, f, "purge_orders"); got != before {
 			t.Errorf("log rows %d, want %d unchanged", got, before)
