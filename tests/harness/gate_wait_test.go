@@ -136,7 +136,7 @@ func TestGateWait(t *testing.T) {
 	})
 	t.Run("running, no gate process", func(t *testing.T) {
 		root := waitFixture(t)
-		gone := exec.Command("/bin/true")
+		gone := exec.Command("/bin/sh", "-c", "exit 0")
 		if err := gone.Run(); err != nil {
 			t.Fatal(err)
 		}

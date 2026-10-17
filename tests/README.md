@@ -30,11 +30,11 @@ results remain available beside the runner summary.
 
 | File in the run directory | What it records |
 |---|---|
-| `run.tsv` | Run ID, source revision, tracked-tree state, start/end and outcome/exit information |
+| `run.tsv` | Run ID, source revision, tracked-tree state, start/end, outcome/exit information and the part (`all` for `make gate`) |
 | `summary.tsv` | All ten stages, their status, command/capture exits and current log paths |
 | `summary.txt` | The same stage verdicts in a readable form |
 | `<stage>.log` | Output from a stage that actually started in this invocation |
-| `complete` | Success marker with run ID, revision and `GATE COMPLETE - every stage above exited 0` |
+| `complete` | Success marker with run ID, revision, part and `GATE COMPLETE - every stage above exited 0` |
 
 A failed gate stops at the failing stage. Later stages are explicitly `NOT RUN`;
 they cannot inherit a previous run's PASS or log. A live stage is `RUNNING`; an
@@ -48,6 +48,14 @@ nonzero process exit report the failure; no successful record is promised.
 
 Read the current run's summary and completion record together with its process
 exit. A console line or an older stage log alone does not certify the checkout.
+
+`make gate` runs every stage. *Gate verify* runs each image's gate as two parts on two runners,
+`bash tests/scripts/run-gate.sh --part integration` (estate, static checks, unit, integration)
+and `--part e2e` (estate, `e2e`, `e2e-examples`). A part's other stages are `NOT RUN`, its
+`run.tsv` and `complete` name the part, and `complete` reads `GATE PART COMPLETE - every stage
+of part <part> exited 0`: a part is never a gate. Locally only `make gate` certifies a checkout.
+`tests/scripts/gate-start.sh` and `gate-wait.sh` start `make gate` detached and wait for it,
+for an agent whose tool calls are shorter than the gate (`tests/AGENTS.md`).
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
 destroys the estate; run it before integration and that fails for reasons
@@ -547,15 +555,18 @@ git push origin --delete verify-gate/<sha7>
 ```
 
 - **Jobs:** *Matrix verify* runs one job per `rows.tsv` row with one pair (`MX_PAIRS=1`), at most
-  14 at once, a target job and a summary: the rows plus two. *Gate verify* runs `make gate` on an estate
-  built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server` 8.0.46-37,
-  8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
-  `compose.yml`), and a summary: 8 jobs.
+  14 at once, a target job and a summary: the rows plus two. *Gate verify* runs the gate on an
+  estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server`
+  8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
+  `compose.yml`), as two jobs per image that start together, its integration part and its e2e
+  part (`run-gate.sh --part`, above), and a target and a summary job: 14 jobs.
 - **Results:** each run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`),
   headed *Matrix verify* or *Gate verify* and the SHA. It is red when any job did not succeed,
   when any row is not OK or is missing, when any gate is missing or lacks the evidence `make gate`
   records for its SHA (above: `complete`, a clean tree, both exits 0), and when a run holds the
-  other workflow's jobs. Every job's evidence directory is an artifact.
+  other workflow's jobs. A Gate verify image counts as a gate only when both its parts carry that
+  evidence, each naming its own part; an image with one part fails the run. Every job's evidence
+  directory is an artifact.
   A gate's integration count is one pass short of the local baseline, with one more skip:
   `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
 - **When, and who:**

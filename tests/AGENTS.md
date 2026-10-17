@@ -43,9 +43,10 @@ The schema, the replica topology and the `+03:00` destination are described in
 You are given one SHA. Run these steps in order from the repository root. Where a step says
 stop, report `OVERALL: BLOCKED` with the reason and do nothing further.
 
-**Run `make gate` exactly once, and run no command other than the ones below.** Never run
-`make test-up`, `docker`, another `make` target or a second `make gate`, even when the gate
-fails because a server is down. A failed gate is the result: report it as `RED`.
+**Start the gate exactly once, and run no command other than the ones below.** Never run
+`make test-up`, `docker`, another `make` target, `make gate` itself or a second
+`gate-start.sh`, even when the gate fails because a server is down. A failed gate is the result:
+report it as `RED`.
 
 1. **Check the tree.** Run:
 
@@ -67,21 +68,31 @@ fails because a server is down. A failed gate is the result: report it as `RED`.
    Stop if it prints anything, and name what is running. The estate is shared, and two test
    runs on it fail each other.
 
-3. **Load the credentials and run the gate, in one command.** Give the command the Bash tool's
-   maximum timeout (600000 ms). Do not add `2>&1`, and run it only once:
+3. **Start the gate, once.** It runs detached, with `tests/.env` loaded, so it does not have
+   to fit one tool call. Run only once:
 
    ```bash
-   test -f tests/.env && { set -a; . tests/.env; set +a; make gate; }
+   bash tests/scripts/gate-start.sh
    ```
 
-   If `tests/.env` is missing, the command exits 1 with no output: stop. Create no file.
-   Otherwise, whatever the gate prints and however it exits, go to step 4. What
+   If it exits 1 naming `tests/.env`, stop: create no file. If it exits 1 otherwise, stop and
+   report its output. On exit 0, its output names the run: `Gate evidence directory: <dir>`
+   (and the console file). Never use any other directory under `tests/results/gate/`. What
    `make gate` runs is described in `tests/README.md` → *`make gate` — use this rather than
    assembling the steps*.
 
-4. **Find this run's evidence directory.** It is the path on the first output line,
-   `Gate evidence directory: <dir>`. Never use any other directory under
-   `tests/results/gate/`.
+4. **Wait for it.** Give each call a 600000 ms timeout:
+
+   ```bash
+   bash tests/scripts/gate-wait.sh <dir>
+   ```
+
+   - Exit 3: still running. Run the same command again, unless it printed `elapsed:` of 1800 s
+     or more: then stop with `BLOCKED (gate still running)`, naming `<dir>`, and start nothing.
+   - Exit 4: `run.tsv` says `RUNNING` but no gate process is alive. Stop with
+     `BLOCKED (hung run)`.
+   - Exit 2: stop with `BLOCKED` and its output.
+   - Exit 0: the run has finished; go to step 5 with its `outcome:` and `duration:` lines.
 
 5. **Read the verdict.** Run:
 
@@ -90,15 +101,18 @@ fails because a server is down. A failed gate is the result: report it as `RED`.
    test -f <dir>/complete
    ```
 
-   The verdict is `GREEN` only if all of these hold: the step 3 command exited 0; in
-   `run.tsv`, `outcome` is `PASS`, `recording_exit` is `0`, `source_sha` is the given SHA and
-   `dirty` is `clean`; and `test -f <dir>/complete` exits 0. Anything else is `RED`.
+   The verdict is `GREEN` only if all of these hold: in `run.tsv`, `outcome` is `PASS`,
+   `command_exit` and `recording_exit` are `0`, `source_sha` is the given SHA, `dirty` is `clean`
+   and `part` is `all`; `test -f <dir>/complete` exits 0; and step 4's duration is at most 900 s.
+   A run that is green except for its duration is `RED (over the 900 s ceiling)`. Anything else
+   is `RED`.
 
 6. **Report**, in this form:
 
    ```text
    SHA: <given SHA>
    Run: <run_id from run.tsv>
+   Duration: <seconds from step 4> s (ceiling 900 s)
    <each stage line from summary.txt, as printed>
    OVERALL: GREEN | RED | BLOCKED (<reason>)
    ```
@@ -148,7 +162,9 @@ after the runner reports; a gate agent never edits it.
   `internal/tracking` schema-lock tests and `TestSchemaLockedErrorMessage`, and in
   `internal/lock` `TestMySQLWait` (5 rows) and `TestMySQLWaitUnderAStatementTimer`. Re-measure
   after adding or removing tagged tests.
-- **Gate duration:** the whole gate must finish inside one 600-second Bash call. That run took
+- **Gate duration:** the whole gate must finish within 900 s (15 min), a ceiling the verdict
+  checks from `run.tsv` (step 5; RVG-3, beta.3). Until then it had to fit one 600-second Bash call,
+  a limit set by the tool, not the gate. The first measured run took
   443 s. Later gates took 450–472 s (466 s at `e4ef55d`, run `20261014T201816Z-82233`, on this
   inventory), and one under host load 515 s, leaving about 85 s; 430 s at `8030861` (run
   `20261015T115700Z-38140`, 1279 inventory); 416–421 s on the 1281 inventory (runs
