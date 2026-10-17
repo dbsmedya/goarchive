@@ -106,8 +106,10 @@ func TestGateWait(t *testing.T) {
 		root := waitFixture(t)
 		pid := standIn(t, root, "run-gate.sh")
 		dir := waitRun(t, root, pid, "RUNNING", time.Now().UTC().Format(time.RFC3339), "-")
+		// A 2 s budget: the deadline is whole seconds, so a 1 s budget can end at once near a
+		// second's boundary (Gate verify run 39045038492).
 		start := time.Now()
-		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=1"}, "gate-wait.sh", dir)
+		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=2"}, "gate-wait.sh", dir)
 		if code != 3 || !strings.Contains(out, "still running") || !strings.Contains(out, "elapsed: ") {
 			t.Errorf("exit %d:\n%s", code, out)
 		}
@@ -133,6 +135,21 @@ func TestGateWait(t *testing.T) {
 		out, code = runScript(t, root, []string{"GATE_WAIT_SECONDS=15"}, "gate-wait.sh", dir)
 		if code != 0 || !strings.Contains(out, "outcome: PASS") || !strings.Contains(out, "duration: 480 s") {
 			t.Errorf("exit %d:\n%s", code, out)
+		}
+	})
+	// MR re-review R3: the gate publishes its outcome and exits between the waiter's read of
+	// RUNNING and its process check. A ps stand-in makes that order certain: it publishes PASS,
+	// then reports no process. The waiter must read the record again, not call the run hung.
+	t.Run("outcome published as the process exits", func(t *testing.T) {
+		root := waitFixture(t)
+		dir := waitRun(t, root, 4242, "RUNNING", "2026-10-17T14:00:00Z", "-")
+		finished := strings.Replace(readFixture(t, filepath.Join(dir, "run.tsv")), "\t-\tRUNNING\t", "\t2026-10-17T14:08:00Z\tPASS\t", 1)
+		writeFixture(t, filepath.Join(dir, ".finished"), finished)
+		writeFixture(t, filepath.Join(root, "fakebin/ps"), "#!/bin/bash\n/bin/mv \"$FIXTURE_RUN/.finished\" \"$FIXTURE_RUN/run.tsv\" 2>/dev/null\nexit 1\n")
+		env := []string{"PATH=" + filepath.Join(root, "fakebin") + ":/usr/bin:/bin:/usr/sbin:/sbin", "FIXTURE_RUN=" + dir, "GATE_WAIT_SECONDS=1"}
+		out, code := runScript(t, root, env, "gate-wait.sh", dir)
+		if code != 0 || !strings.Contains(out, "outcome: PASS") || !strings.Contains(out, "duration: 480 s") {
+			t.Errorf("exit %d, want the published PASS:\n%s", code, out)
 		}
 	})
 	// MR review R4: no wait runs past started_utc + 1800 s.
