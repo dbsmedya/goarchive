@@ -105,7 +105,7 @@ func TestGateWait(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		root := waitFixture(t)
 		pid := standIn(t, root, "run-gate.sh")
-		dir := waitRun(t, root, pid, "RUNNING", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339), "-")
+		dir := waitRun(t, root, pid, "RUNNING", time.Now().UTC().Format(time.RFC3339), "-")
 		start := time.Now()
 		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=1"}, "gate-wait.sh", dir)
 		if code != 3 || !strings.Contains(out, "still running") || !strings.Contains(out, "elapsed: ") {
@@ -115,23 +115,44 @@ func TestGateWait(t *testing.T) {
 			t.Errorf("returned before its wait: %v", time.Since(start))
 		}
 	})
-	t.Run("running, then finished", func(t *testing.T) {
+	// MR review R3: a final outcome is final only once the gate's process has exited, after its
+	// last publication (the completion marker, or a failure record that replaces PASS).
+	t.Run("PASS published, process still finishing, then exited", func(t *testing.T) {
 		root := waitFixture(t)
 		pid := standIn(t, root, "run-gate.sh")
-		dir := waitRun(t, root, pid, "RUNNING", "2026-10-17T14:00:00Z", "-")
-		running := readFixture(t, filepath.Join(dir, "run.tsv"))
-		finished := strings.Replace(running, "\t-\tRUNNING\t", "\t2026-10-17T14:08:00Z\tPASS\t", 1)
+		now := time.Now().UTC()
+		dir := waitRun(t, root, pid, "PASS", now.Format(time.RFC3339), now.Add(480*time.Second).Format(time.RFC3339))
+		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=1"}, "gate-wait.sh", dir)
+		if code != 3 || !strings.Contains(out, "still running") {
+			t.Errorf("a live gate's PASS was final: exit %d:\n%s", code, out)
+		}
 		go func() {
-			// As run-gate.sh publishes it: a whole file renamed into place.
 			time.Sleep(time.Second)
-			tmp := filepath.Join(dir, ".run.tsv.tmp")
-			if os.WriteFile(tmp, []byte(finished), 0o644) == nil {
-				_ = os.Rename(tmp, filepath.Join(dir, "run.tsv"))
-			}
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}()
-		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=15"}, "gate-wait.sh", dir)
+		out, code = runScript(t, root, []string{"GATE_WAIT_SECONDS=15"}, "gate-wait.sh", dir)
 		if code != 0 || !strings.Contains(out, "outcome: PASS") || !strings.Contains(out, "duration: 480 s") {
 			t.Errorf("exit %d:\n%s", code, out)
+		}
+	})
+	// MR review R4: no wait runs past started_utc + 1800 s.
+	t.Run("running, at the 1800 s stop", func(t *testing.T) {
+		root := waitFixture(t)
+		pid := standIn(t, root, "run-gate.sh")
+		dir := waitRun(t, root, pid, "RUNNING", time.Now().UTC().Add(-1799*time.Second).Format(time.RFC3339), "-")
+		start := time.Now()
+		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=10", "GATE_PROCESS_SLACK=2000"}, "gate-wait.sh", dir)
+		if code != 3 || time.Since(start) > 4*time.Second {
+			t.Errorf("exit %d after %v, want 3 at the stop:\n%s", code, time.Since(start), out)
+		}
+		var elapsed int
+		for line := range strings.SplitSeq(out, "\n") {
+			if e, ok := strings.CutPrefix(line, "elapsed: "); ok {
+				_, _ = fmt.Sscanf(e, "%d", &elapsed)
+			}
+		}
+		if elapsed < 1800 || elapsed > 1802 {
+			t.Errorf("elapsed %d, want 1800–1802:\n%s", elapsed, out)
 		}
 	})
 	t.Run("running, no gate process", func(t *testing.T) {
@@ -155,6 +176,17 @@ func TestGateWait(t *testing.T) {
 			t.Errorf("exit %d:\n%s", code, out)
 		}
 	})
+	// MR review R5: a live run-gate.sh that started after this run did is another invocation.
+	t.Run("running, the PID is another gate run", func(t *testing.T) {
+		root := waitFixture(t)
+		other := waitFixture(t)
+		pid := standIn(t, other, "run-gate.sh")
+		dir := waitRun(t, root, pid, "RUNNING", time.Now().UTC().Add(-10*time.Minute).Format(time.RFC3339), "-")
+		out, code := runScript(t, root, []string{"GATE_WAIT_SECONDS=1"}, "gate-wait.sh", dir)
+		if code != 4 || !strings.Contains(out, "no gate process") {
+			t.Errorf("exit %d:\n%s", code, out)
+		}
+	})
 	t.Run("bad directories", func(t *testing.T) {
 		root := waitFixture(t)
 		foreign := filepath.Join(t.TempDir(), "20261017T140000Z-1")
@@ -173,12 +205,18 @@ func TestGateWait(t *testing.T) {
 // starts nothing.
 func TestGateStart(t *testing.T) {
 	root := waitFixture(t)
+	// The stand-in announces its directory, then takes 2 s to publish run.tsv (MR review R2), or,
+	// with FIXTURE_DIE, dies before it does.
 	writeFixture(t, filepath.Join(root, "fakebin/make"), `#!/bin/bash
 [[ "$1" == gate ]] || exit 9
 echo $$ > "$PWD/standin.pid"
-mkdir -p "$PWD/tests/results/gate/20261017T140000Z-$$"
-echo "Gate evidence directory: $PWD/tests/results/gate/20261017T140000Z-$$"
+d="$PWD/tests/results/gate/20261017T140000Z-$$"
+mkdir -p "$d"
+echo "Gate evidence directory: $d"
 echo "credentials: ${FIXTURE_CREDENTIAL:-none}"
+/bin/sleep 2
+[[ -f "$PWD/die" ]] && exit 1
+printf 'run_id\n20261017T140000Z-%s\n' $$ > "$d/run.tsv"
 exec /bin/sleep 30
 `)
 	env := []string{"PATH=" + filepath.Join(root, "fakebin") + ":/usr/bin:/bin:/usr/sbin:/sbin"}
@@ -197,6 +235,9 @@ exec /bin/sleep 30
 	if time.Since(start) > 10*time.Second {
 		t.Errorf("waited for the gate: %v", time.Since(start))
 	}
+	if _, err := os.Stat(filepath.Join(root, "tests/results/gate", "20261017T140000Z-"+strings.TrimSpace(readFixture(t, filepath.Join(root, "standin.pid"))), "run.tsv")); err != nil {
+		t.Errorf("gate-start.sh returned before run.tsv was published: %v", err)
+	}
 	pidText := strings.TrimSpace(readFixture(t, filepath.Join(root, "standin.pid")))
 	var pid int
 	if _, err := fmt.Sscan(pidText, &pid); err != nil {
@@ -214,5 +255,24 @@ exec /bin/sleep 30
 	}
 	if filepath.Dir(console) != filepath.Join(root, "tests/results/gate") || !strings.Contains(readFixture(t, console), "credentials: loaded") {
 		t.Errorf("console %q does not hold the gate's output with tests/.env loaded", console)
+	}
+}
+
+// TestGateStartEarlyDeath (MR review R2): a gate that names its directory and dies before it
+// publishes run.tsv is a failed start, reported with its console.
+func TestGateStartEarlyDeath(t *testing.T) {
+	root := waitFixture(t)
+	writeFixture(t, filepath.Join(root, "fakebin/make"), `#!/bin/bash
+d="$PWD/tests/results/gate/20261017T140000Z-$$"
+mkdir -p "$d"
+echo "Gate evidence directory: $d"
+echo "dying early"
+exit 1
+`)
+	writeFixture(t, filepath.Join(root, "tests/.env"), "X=1\n")
+	env := []string{"PATH=" + filepath.Join(root, "fakebin") + ":/usr/bin:/bin:/usr/sbin:/sbin"}
+	out, code := runScript(t, root, env, "gate-start.sh")
+	if code != 1 || !strings.Contains(out, "dying early") || !strings.Contains(out, "Gate evidence directory: ") {
+		t.Errorf("exit %d, want 1 with the directory and the console:\n%s", code, out)
 	}
 }

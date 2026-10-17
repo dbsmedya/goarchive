@@ -117,7 +117,20 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 			writeFixture(t, filepath.Join(dir, "gate-6", "server-version.txt"), "8.4.11\n")
 		}, needs: ok, want: 1, says: []string{"| gate-6 | NOT CERTIFIED: not a part artifact |"}},
 		{name: "a part artifact in a matrix run", build: "matrix", mut: func(t *testing.T, dir, _ string) { summaryPart(t, dir, 0, "integration") },
-			args: []string{"2", "0"}, needs: matrixOK, want: 1, says: []string{"| gate-0 e2e | MISSING |"}},
+			args: []string{"2", "0"}, needs: matrixOK, want: 1, says: []string{"| gate-0 integration | NOT CERTIFIED: unexpected image |"}},
+		// MR review R1: the wanted images are 0..5, each named once, canonically.
+		{name: "an unexpected image in place of a missing one", mut: func(t *testing.T, dir, _ string) {
+			_ = os.RemoveAll(filepath.Join(dir, "gate-integration-5"))
+			_ = os.RemoveAll(filepath.Join(dir, "gate-e2e-5"))
+			summaryGate(t, dir, 6)
+		}, needs: ok, want: 1, says: []string{"| gate-6 integration | NOT CERTIFIED: unexpected image |", "| gate-5 integration | MISSING |", "Gates: 5 (want 6)."}},
+		{name: "a part named with a leading zero", mut: func(t *testing.T, dir, _ string) {
+			src := summaryPart(t, filepath.Join(dir, "alias"), 0, "integration")
+			if err := os.Rename(filepath.Dir(src), filepath.Join(dir, "gate-integration-00")); err != nil {
+				t.Fatal(err)
+			}
+			_ = os.RemoveAll(filepath.Join(dir, "alias"))
+		}, needs: ok, want: 1, says: []string{"| gate-integration-00 | NOT CERTIFIED: not a part artifact |", "Gates: 6 (want 6)."}},
 		{name: "a failed e2e job", needs: []string{"target=success", "integration=success", "e2e=failure", "matrix=success"}, want: 1,
 			says: []string{"| job e2e | failure |"}},
 		{name: "a missing row", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "matrix-v97")) }, needs: ok, want: 1,
@@ -161,7 +174,7 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 		{name: "a gate-only run", build: "gate", args: []string{"0", "6"}, needs: gateOK,
 			says: []string{"## Gate verify: `0123456789ab`", "Gates: 6 (want 6). Matrix rows: 0 (want 0)."}},
 		{name: "a gate artifact in a matrix run", args: []string{"2", "0"}, needs: matrixOK, want: 1,
-			says: []string{"## Matrix verify: ", "Gates: 6 (want 0)."}},
+			says: []string{"## Matrix verify: ", "| gate-0 integration | NOT CERTIFIED: unexpected image |", "Gates: 0 (want 0)."}},
 		{name: "a row in a gate run", args: []string{"0", "6"}, needs: gateOK, want: 1,
 			says: []string{"## Gate verify: ", "Matrix rows: 2 (want 0)."}},
 		// A re-run summary job downloads the previous attempt's summary artifact too (F5): its
