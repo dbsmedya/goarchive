@@ -12,21 +12,33 @@ import (
 
 const summarySHA = "0123456789abcdef0123456789abcdef01234567"
 
-// summaryGate writes one gate artifact as the Gate verify workflow's gate job uploads it: the
-// gate run's directory (run.tsv, summary.txt, complete) and the server version beside it.
+// summaryPart writes one part artifact as the Gate verify workflow's integration or e2e job
+// uploads it (RVG-3): the part run's directory (run.tsv, summary.txt, complete) and the server
+// version beside it.
+func summaryPart(t *testing.T, dir string, n int, part string) string {
+	t.Helper()
+	runID := fmt.Sprintf("20261014T16590%dZ-%d%d", n, len(part), n)
+	art := filepath.Join(dir, fmt.Sprintf("gate-%s-%d", part, n))
+	run := filepath.Join(art, runID)
+	writeFixture(t, filepath.Join(run, "run.tsv"),
+		"run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\tpart\n"+
+			runID+"\t"+summarySHA+"\tclean\t2026-10-14T16:59:07Z\t2026-10-14T17:05:50Z\tPASS\t0\t0\t"+part+"\n")
+	stages := "  integration        PASS    PASS=1239 FAIL=0 SKIP=5\n  e2e                NOT RUN -\n  e2e-examples       NOT RUN -\n"
+	if part == "e2e" {
+		stages = "  integration        NOT RUN -\n  e2e                PASS    Passed: 13  Failed: 0\n  e2e-examples       PASS    Passed: 6  Failed: 0\n"
+	}
+	writeFixture(t, filepath.Join(run, "summary.txt"), "GATE SUMMARY ("+runID+")\n"+stages)
+	writeFixture(t, filepath.Join(run, "complete"),
+		"GATE PART COMPLETE - every stage of part "+part+" exited 0\nrun_id="+runID+"\nsha="+summarySHA+"\npart="+part+"\n")
+	writeFixture(t, filepath.Join(art, "server-version.txt"), "8.4.11\n")
+	return run
+}
+
+// summaryGate writes both parts of image n and returns the integration part's run directory.
 func summaryGate(t *testing.T, dir string, n int) string {
 	t.Helper()
-	runID := fmt.Sprintf("20261014T16590%dZ-100%d", n, n)
-	run := filepath.Join(dir, fmt.Sprintf("gate-%d", n), runID)
-	writeFixture(t, filepath.Join(run, "run.tsv"),
-		"run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\n"+
-			runID+"\t"+summarySHA+"\tclean\t2026-10-14T16:59:07Z\t2026-10-14T17:15:50Z\tPASS\t0\t0\n")
-	writeFixture(t, filepath.Join(run, "summary.txt"),
-		"GATE SUMMARY ("+runID+")\n  integration        PASS    PASS=1239 FAIL=0 SKIP=5\n")
-	writeFixture(t, filepath.Join(run, "complete"),
-		"GATE COMPLETE - every stage above exited 0\nrun_id="+runID+"\nsha="+summarySHA+"\n")
-	writeFixture(t, filepath.Join(dir, fmt.Sprintf("gate-%d", n), "server-version.txt"), "8.4.11\n")
-	return run
+	summaryPart(t, dir, n, "e2e")
+	return summaryPart(t, dir, n, "integration")
 }
 
 // summaryRow writes one matrix row artifact with its verdict.
@@ -57,16 +69,17 @@ func replaceIn(t *testing.T, path, old, new string) {
 // only when every job it depends on succeeded, whatever the artifacts say, and only when the
 // run holds exactly the gates and rows it wants: a gate in a matrix run, or a row in a gate run,
 // fails it. Counts that are missing or not numbers, or a summary that wants nothing, exit 2
-// before anything is read.
+// before anything is read. Since RVG-3 a Gate verify image is two part artifacts, integration
+// and e2e, and counts as a gate only when both are certified, each for its own part.
 func TestGHSummaryFailsClosed(t *testing.T) {
 	script, err := filepath.Abs(filepath.Join("..", "envmatrix", "gh-summary.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ok := []string{"target=success", "gate=success", "matrix=success"}
+	ok := []string{"target=success", "integration=success", "e2e=success", "matrix=success"}
 	matrixOK := []string{"target=success", "matrix=success"}
-	gateOK := []string{"target=success", "gate=success"}
-	notCertified := []string{"| gate-0 | NOT CERTIFIED"}
+	gateOK := []string{"target=success", "integration=success", "e2e=success"}
+	notCertified := []string{"| gate-0 integration | NOT CERTIFIED"}
 	for _, tc := range []struct {
 		name  string
 		build string // the artifacts: "" six gates and two rows, "matrix" the rows only, "gate" the gates only
@@ -77,9 +90,36 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 		says  []string // every one must appear in the output
 	}{
 		{name: "every gate and row certified", needs: ok,
-			says: []string{"## Gate verify: `0123456789ab`", "Gates: 6 (want 6). Matrix rows: 2 (want 2)."}},
-		{name: "a missing gate", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "gate-5")) }, needs: ok, want: 1,
-			says: []string{"Gates: 5 (want 6)."}},
+			says: []string{"## Gate verify: `0123456789ab`", "Gates: 6 (want 6). Matrix rows: 2 (want 2).",
+				"| gate-0 integration | PASS | PASS=1239 FAIL=0 SKIP=5 | 8.4.11 |", "| gate-0 e2e | PASS | E2E 13/0, examples 6/0 | 8.4.11 |"}},
+		{name: "a missing gate", mut: func(t *testing.T, dir, _ string) {
+			_ = os.RemoveAll(filepath.Join(dir, "gate-integration-5"))
+			_ = os.RemoveAll(filepath.Join(dir, "gate-e2e-5"))
+		}, needs: ok, want: 1, says: []string{"Gates: 5 (want 6)."}},
+
+		// The two parts of an image (RVG-3): an image counts as a gate only with both certified.
+		{name: "an image without its e2e part", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "gate-e2e-3")) }, needs: ok, want: 1,
+			says: []string{"| gate-3 e2e | MISSING |", "Gates: 5 (want 6)."}},
+		{name: "an image without its integration part", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "gate-integration-3")) }, needs: ok, want: 1,
+			says: []string{"| gate-3 integration | MISSING |", "Gates: 5 (want 6)."}},
+		{name: "a part whose run.tsv names the other part", mut: func(t *testing.T, _, g string) {
+			replaceIn(t, filepath.Join(g, "run.tsv"), "\tintegration\n", "\te2e\n")
+		}, needs: ok, want: 1, says: append(notCertified, "Gates: 5 (want 6).")},
+		{name: "a part whose completion marker names another part", mut: func(t *testing.T, _, g string) {
+			replaceIn(t, filepath.Join(g, "complete"), "part=integration", "part=e2e")
+		}, needs: ok, want: 1, says: notCertified},
+		{name: "a whole gate in a part artifact", mut: func(t *testing.T, _, g string) {
+			replaceIn(t, filepath.Join(g, "run.tsv"), "\tintegration\n", "\tall\n")
+			replaceIn(t, filepath.Join(g, "complete"), "GATE PART COMPLETE - every stage of part integration exited 0", "GATE COMPLETE - every stage above exited 0")
+			replaceIn(t, filepath.Join(g, "complete"), "part=integration", "part=all")
+		}, needs: ok, want: 1, says: notCertified},
+		{name: "an old whole-gate artifact", mut: func(t *testing.T, dir, _ string) {
+			writeFixture(t, filepath.Join(dir, "gate-6", "server-version.txt"), "8.4.11\n")
+		}, needs: ok, want: 1, says: []string{"| gate-6 | NOT CERTIFIED: not a part artifact |"}},
+		{name: "a part artifact in a matrix run", build: "matrix", mut: func(t *testing.T, dir, _ string) { summaryPart(t, dir, 0, "integration") },
+			args: []string{"2", "0"}, needs: matrixOK, want: 1, says: []string{"| gate-0 e2e | MISSING |"}},
+		{name: "a failed e2e job", needs: []string{"target=success", "integration=success", "e2e=failure", "matrix=success"}, want: 1,
+			says: []string{"| job e2e | failure |"}},
 		{name: "a missing row", mut: func(t *testing.T, dir, _ string) { _ = os.RemoveAll(filepath.Join(dir, "matrix-v97")) }, needs: ok, want: 1,
 			says: []string{"Matrix rows: 1 (want 2)."}},
 		{name: "a failed row", mut: func(t *testing.T, dir, _ string) {
@@ -106,11 +146,14 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 			says: notCertified},
 		{name: "no gate summary", mut: func(t *testing.T, _, g string) { _ = os.Remove(filepath.Join(g, "summary.txt")) }, needs: ok, want: 1,
 			says: notCertified},
-		{name: "two run records in one gate", mut: func(t *testing.T, dir, _ string) { summaryGate(t, filepath.Join(dir, "gate-0", "again"), 0) }, needs: ok, want: 1,
-			says: notCertified},
-		{name: "a failed gate job", needs: []string{"target=success", "gate=failure", "matrix=success"}, want: 1, says: []string{"| job gate | failure |"}},
-		{name: "a cancelled matrix job", needs: []string{"target=success", "gate=success", "matrix=cancelled"}, want: 1, says: []string{"| job matrix | cancelled |"}},
-		{name: "a skipped target job", needs: []string{"target=skipped", "gate=success", "matrix=success"}, want: 1, says: []string{"| job target | skipped |"}},
+		{name: "two run records in one part", mut: func(t *testing.T, dir, _ string) {
+			summaryPart(t, filepath.Join(dir, "gate-integration-0", "again"), 0, "integration")
+		},
+			needs: ok, want: 1, says: notCertified},
+		{name: "a failed integration job", needs: []string{"target=success", "integration=failure", "e2e=success", "matrix=success"}, want: 1,
+			says: []string{"| job integration | failure |"}},
+		{name: "a cancelled matrix job", needs: []string{"target=success", "integration=success", "e2e=success", "matrix=cancelled"}, want: 1, says: []string{"| job matrix | cancelled |"}},
+		{name: "a skipped target job", needs: []string{"target=skipped", "integration=success", "e2e=success", "matrix=success"}, want: 1, says: []string{"| job target | skipped |"}},
 
 		// The two workflows (RVG-1a+b): each run holds only its own jobs.
 		{name: "a matrix-only run", build: "matrix", args: []string{"2", "0"}, needs: matrixOK,
