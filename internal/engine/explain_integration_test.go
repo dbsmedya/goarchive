@@ -122,3 +122,24 @@ func TestMySQLExplainFilesort(t *testing.T) {
 		t.Errorf("fetch notes = %q, want the filesort note under the fetch", ex.Fetch.Notes)
 	}
 }
+
+// TestMySQLExplainSubquerySort (FSN-1): a where with a dependent subquery that sorts, on a clean
+// PRIMARY root. The subquery's sort is named as its own, and never blamed on the root fetch.
+func TestMySQLExplainSubquerySort(t *testing.T) {
+	e := newEnv(t, "explainsubsort")
+	e.both(t, "CREATE TABLE r (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+		"CREATE TABLE s (id INT NOT NULL, r_id INT NOT NULL, v INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+	execAll(t, e.src, "INSERT INTO r VALUES (1), (2), (3)", "INSERT INTO s VALUES (1, 1, 5), (2, 1, 7), (3, 2, 1)")
+	where := "id = (SELECT s.r_id FROM s WHERE s.r_id = r.id ORDER BY s.v DESC LIMIT 1)"
+	ex, err := Explain(context.Background(), e.config(t, job(t, jobspec.Purge, "\n    root_table: r\n    primary_key: [id]\n    where: \""+where+"\"\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := strings.Join(ex.Fetch.Notes, "\n")
+	if strings.Contains(notes, "The root fetch on r sorts") {
+		t.Errorf("the subquery's sort is blamed on the root fetch: notes %q, plan %+v", ex.Fetch.Notes, ex.Fetch.Rows)
+	}
+	if !strings.Contains(notes, "DEPENDENT SUBQUERY step on s") {
+		t.Errorf("notes %q, want the subquery's sort named; plan %+v", ex.Fetch.Notes, ex.Fetch.Rows)
+	}
+}
