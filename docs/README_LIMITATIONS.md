@@ -247,6 +247,8 @@ configuration file is trusted input: whoever writes it already holds the credent
 - When the person writing the configuration is not the credential holder, the boundary is the
   privileges of the accounts it names: grant only what the
   [privilege matrix](README_PERMISSIONS.md#privilege-matrix) lists.
+- Once a batch's source rows are deleted, the archived rows exist only on the destination;
+  keeping them safe (durability, replication, backups) is not GoArchive's concern.
 
 **Do not expose config editing to untrusted users or untrusted automation pipelines.**
 
