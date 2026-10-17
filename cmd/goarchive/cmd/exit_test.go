@@ -8,15 +8,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/lock"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
-// TestExitCode: each outcome's code and their precedence (spec §3.4).
+// TestExitCode: each outcome's code and their precedence (spec §3.4). A refusal exits 4 only
+// while every job it names is live: marked running, heartbeat at most 60 s old (EXC-1).
 func TestExitCode(t *testing.T) {
 	defer func() { started = false }()
+	overlap := func(blockers ...tracking.Blocker) *engine.OverlapError {
+		return &engine.OverlapError{Job: "j", Blockers: blockers}
+	}
+	beat := func(age time.Duration, pending bool) tracking.Blocker {
+		return tracking.Blocker{Name: "b", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: age, Pending: pending}
+	}
+	live := beat(5*time.Second, false)
+	never := tracking.Blocker{Name: "never", Status: tracking.JobRunning, Registered: true}
+	failed := tracking.Blocker{Name: "failed", Status: tracking.JobFailed, Registered: true, Pending: true}
+	idle := tracking.Blocker{Name: "idle", Status: tracking.JobIdle, Registered: true, Pending: true}
+	unreadable := tracking.Blocker{Name: "unreadable", Status: tracking.JobIdle, Registered: true, Pending: true, Unreadable: errors.New("bad json")}
 	for _, tc := range []struct {
 		name    string
 		started bool
@@ -28,8 +41,19 @@ func TestExitCode(t *testing.T) {
 		{"job running", true, fmt.Errorf("x: %w", &engine.JobRunningError{Job: "j"}), 4},
 		{"job running, holder known", true, &engine.JobRunningError{Job: "j", Holder: 7}, 4},
 		{"table locked", true, fmt.Errorf("x: %w", &engine.TableLockedError{Table: "t"}), 4},
-		{"overlap", true, &engine.OverlapError{Job: "j"}, 4},
 		{"schema locked", true, fmt.Errorf("x: %w", &tracking.SchemaLockedError{Schema: "s", Lock: &lock.HeldError{Name: "n", Holder: 7}}), 4},
+		{"overlap, live", true, overlap(live), 4},
+		{"overlap, two live, one with unfinished roots", true, overlap(live, beat(10*time.Second, true)), 4},
+		{"overlap, heartbeat 60s", true, overlap(beat(60*time.Second, false)), 4},
+		{"overlap, heartbeat 61s", true, overlap(beat(61*time.Second, false)), 1},
+		{"overlap, never beat", true, overlap(never), 1},
+		{"overlap, failed with unfinished roots", true, overlap(failed), 1},
+		{"overlap, idle with unfinished roots", true, overlap(idle), 1},
+		{"overlap, unreadable fingerprint", true, overlap(unreadable), 1},
+		{"overlap, live beside stopped", true, overlap(live, idle), 1},
+		{"overlap, no blockers", true, overlap(), 1},
+		{"overlap, wrapped live", true, fmt.Errorf("x: %w", overlap(live)), 4},
+		{"overlap, wrapped stopped", true, fmt.Errorf("x: %w", overlap(failed)), 1},
 		{"usage", true, usage(errors.New("bad")), 2},
 		{"cobra before RunE", false, errors.New("unknown flag: --x"), 2},
 		{"contention beats usage", true, usage(&engine.JobRunningError{Job: "j"}), 4},

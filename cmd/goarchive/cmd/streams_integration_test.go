@@ -233,7 +233,8 @@ func TestMySQLOutputStandard(t *testing.T) {
 	})
 }
 
-// TestMySQLExitCodes (console-output spec §3.4): contention exits 4, a refusal 1.
+// TestMySQLExitCodes (console-output spec §3.4): contention exits 4, a refusal 1. A refusal by
+// the unfinished-work guard exits 4 only while its blocker is live (EXC-1).
 func TestMySQLExitCodes(t *testing.T) {
 	ctx := context.Background()
 	t.Run("job running", func(t *testing.T) {
@@ -258,6 +259,31 @@ func TestMySQLExitCodes(t *testing.T) {
 		_, errOut, code := mainStreams(t, "archive", "-c", f.config, "--job", "archive_orders")
 		if code != 4 || !strings.Contains(errOut, "in use by another GoArchive run") {
 			t.Errorf("code %d, stderr %q: want 4 naming the locked table", code, errOut)
+		}
+	})
+	// The blocker is copy_orders, which shares the tree: a real run registers it, then its row is
+	// marked running, the state a crash leaves, on the clock Blockers reads (UTC_TIMESTAMP()).
+	// The copy run's table locks end with it, so the archive run reaches the guard.
+	blocked := func(t *testing.T, name, heartbeat string) (string, int) {
+		t.Helper()
+		f := orderFixture(t, name)
+		if out, err := execute(t, "copy-only", "-c", f.config, "--job", "copy_orders", "--verification=count"); err != nil {
+			t.Fatalf("copy-only: %v\n%s", err, out)
+		}
+		mustExec(t, f.dst, "UPDATE archiver_job SET job_status = 1, last_heartbeat_at = "+heartbeat+" WHERE job_name = 'copy_orders'")
+		_, errOut, code := mainStreams(t, "archive", "-c", f.config, "--job", "archive_orders")
+		return errOut, code
+	}
+	t.Run("overlap, live blocker", func(t *testing.T) {
+		errOut, code := blocked(t, "exit_live", "UTC_TIMESTAMP()")
+		if code != 4 || !strings.Contains(errOut, "copy_orders: marked running, heartbeat") {
+			t.Errorf("code %d, stderr %q: want 4 naming the live job", code, errOut)
+		}
+	})
+	t.Run("overlap, stopped blocker", func(t *testing.T) {
+		errOut, code := blocked(t, "exit_stale", "UTC_TIMESTAMP() - INTERVAL 2 MINUTE")
+		if code != 1 || !strings.Contains(errOut, "Clearing a stale running job") {
+			t.Errorf("code %d, stderr %q: want 1 with the stale-heartbeat remedy", code, errOut)
 		}
 	})
 	t.Run("preflight refusal", func(t *testing.T) {
