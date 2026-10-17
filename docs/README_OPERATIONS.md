@@ -194,9 +194,11 @@ esac
 A stop that meets an error exits 1.
 
 **Containers.** Keep the default logging, JSON to stdout, and `docker logs` and log drivers read
-the run with no file or mount. A log file on a mounted directory belongs to the user the container
-runs as: pass `--user "$(id -u):$(id -g)"` to own it ([INSTALL.md](../INSTALL.md#run-the-published-image)). A foreground `docker run` returns goarchive's code (Docker's own
-launch failures are 125–127). For a detached container, the code is the number `docker wait
+the run with no file or mount. On a Linux host, a log file on a mounted directory belongs to the
+user the container runs as, and the container reads a mounted config only if that user may: pass
+`--user "$(id -u):$(id -g)"` to run as yourself
+([INSTALL.md](../INSTALL.md#run-the-published-image)). A foreground `docker run` returns
+goarchive's code (Docker's own launch failures are 125–127). For a detached container, the code is the number `docker wait
 <name>` prints, or `docker inspect -f '{{.State.ExitCode}}' <name>`; the exit status of
 `docker wait` itself only says whether the wait worked. `docker stop` sends SIGTERM, a
 [graceful stop](#graceful-shutdown): the batch in flight finishes and the run exits 3, if it gets

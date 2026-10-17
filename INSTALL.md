@@ -64,7 +64,11 @@ docker run --rm -v "$(pwd)/archiver.yaml:/work/archiver.yaml" \
   ghcr.io/dbsmedya/goarchive:<version> -c /work/archiver.yaml plan --job archive_old_orders
 ```
 
-The image runs as UID 65532 from `/work`, a directory any user can write. With the default logging (JSON to stdout), every line goes to `docker logs`
+The image runs as UID 65532 from `/work`, a directory any user can write. On a Linux host, a
+mounted file keeps its host owner and mode, so a config readable by you alone (`chmod 600`, the
+usual mode for a file holding passwords) needs `--user "$(id -u):$(id -g)"` too, or a
+group-readable mode; a host directory mounted over `/work` keeps its own permissions, not the
+image's. With the default logging (JSON to stdout), every line goes to `docker logs`
 as one JSON object; an error also prints one `Error:` line on stderr. A foreground `docker run`
 returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work);
 for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
@@ -73,7 +77,7 @@ deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batc
 during a replication hold ends the hold without waiting for the replicas, though it may wait for one
 replica check in progress
 ([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
-A log file is created with mode `0600`, owned by the user the container runs as
+On a Linux host, a log file is created with mode `0600`, owned by the user the container runs as
 ([log files](docs/README_CONFIGURATION.md#logging)). To write one to a mounted directory and
 read it as yourself, run the container as yourself. Create the directory first: Docker creates
 a missing one as root's, where your user cannot write.
