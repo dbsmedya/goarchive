@@ -60,11 +60,11 @@ version without the leading `v`. Use a version tag:
 docker run --rm ghcr.io/dbsmedya/goarchive:<version> --version
 
 # With a config file mounted
-docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
-  ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml plan --job archive_old_orders
+docker run --rm -v "$(pwd)/archiver.yaml:/work/archiver.yaml" \
+  ghcr.io/dbsmedya/goarchive:<version> -c /work/archiver.yaml plan --job archive_old_orders
 ```
 
-The image runs as root. With the default logging (JSON to stdout), every line goes to `docker logs`
+The image runs as UID 65532 from `/work`, a directory any user can write. With the default logging (JSON to stdout), every line goes to `docker logs`
 as one JSON object; an error also prints one `Error:` line on stderr. A foreground `docker run`
 returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work);
 for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
@@ -73,15 +73,16 @@ deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batc
 during a replication hold ends the hold without waiting for the replicas, though it may wait for one
 replica check in progress
 ([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
-On a Linux host, a log file written to a mounted directory belongs to the container's root and
-is readable by root only ([log files](docs/README_CONFIGURATION.md#logging)). To read it as yourself, create the
-file first; GoArchive appends to it and keeps its owner and mode:
+A log file is created with mode `0600`, owned by the user the container runs as
+([log files](docs/README_CONFIGURATION.md#logging)). To write one to a mounted directory and
+read it as yourself, run the container as yourself. Create the directory first: Docker creates
+a missing one as root's, where your user cannot write.
 
 ```bash
-mkdir -p logs && touch logs/goarchive.log && chmod 0640 logs/goarchive.log
+mkdir -p logs
 # archiver.yaml: logging.output: /logs/goarchive.log
-docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" -v "$(pwd)/logs:/logs" \
-  ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml archive --job archive_old_orders
+docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd)/archiver.yaml:/work/archiver.yaml" \
+  -v "$(pwd)/logs:/logs" ghcr.io/dbsmedya/goarchive:<version> -c /work/archiver.yaml archive --job archive_old_orders
 ```
 
 ## Installation from Source

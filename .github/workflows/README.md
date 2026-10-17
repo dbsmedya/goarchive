@@ -35,6 +35,8 @@ Automatically builds and releases:
 Builds and pushes Docker images to GitHub Container Registry:
 - Tags: `main`, `v1.0.0`, `1.0`, `sha-abc123`
 - Multi-platform: linux/amd64, linux/arm64
+- On a pull request, also built for linux/amd64 and run as an arbitrary user
+  (`tests/scripts/image-run-test.sh`): `--version`, and a config read from `/work` (IMG-1)
 
 ### 4. Matrix verify (`matrix-verify.yml`)
 **Triggers:** a push to a `verify/**` branch only, plus `workflow_dispatch` once this file is on

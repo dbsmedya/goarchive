@@ -251,6 +251,13 @@ block waits for the stopped job's rerun, by its schedule or by an operator, and 
 the remedy. A script that treats 4 as "try later" now sees these as failures
 ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
 
+**The image runs non-root, on a supported Alpine base.** The published image runs as UID 65532
+from `/work`, on `alpine:3.24.2` (was 3.19, no longer supported), and the binary moves to
+`/usr/local/bin`. A config mounted under `/root/` is no longer readable: mount it at `/work/`,
+or anywhere readable and enterable by the user the container runs as. To own a log file written
+to a mounted directory, run with `--user "$(id -u):$(id -g)"`
+([Run the published image](../INSTALL.md#run-the-published-image)).
+
 ---
 
 ## Configuration changes
