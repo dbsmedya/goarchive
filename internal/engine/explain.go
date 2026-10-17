@@ -81,13 +81,7 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 		return nil, err
 	}
 	ex.Fetch.Display = fetchDisplay(r.root, cfg.Spec.Where, cfg.Processing.BatchSize)
-	for _, row := range ex.Fetch.Rows {
-		if strings.Contains(row.Extra, "Using filesort") {
-			ex.Fetch.Notes = append(ex.Fetch.Notes, fmt.Sprintf("The root fetch on %s sorts its matching rows on every batch (Using filesort). "+
-				"A descending part in the primary key, or a where clause served by a secondary index, causes this.", r.root.Table))
-			break
-		}
-	}
+	ex.Fetch.Notes = append(ex.Fetch.Notes, fetchNotes(r.root.Table, ex.Fetch.Rows)...)
 	// The where range's size, on the connection Explain holds: a source pool of one
 	// connection must not wait for a second.
 	if err := src.QueryRowContext(ctx, rangeCountSQL(r.root, cfg.Spec.Where)).Scan(&ex.Count); err != nil {
@@ -128,6 +122,34 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 		ex.Rows[n.Table] = len(keys[n.Table])
 	}
 	return ex, nil
+}
+
+// fetchNotes are the root fetch's notes from its plan (FSN-1). The fetch's outer select (id 1)
+// has one ORDER BY, the root's own: a where adds no outer sort, and an IN-subquery cannot carry a
+// LIMIT. MySQL prints that sort on the first row of select 1, whatever table the row names (a
+// subquery's table the optimizer joins first, a materialized <subquery2>), so any filesort in
+// select 1 is the root fetch's. A filesort in another select is that subquery's own, named per
+// row. The root's note comes first.
+func fetchNotes(root string, rows []ExplainRow) []string {
+	var own bool
+	var subs []string
+	for _, row := range rows {
+		if !strings.Contains(row.Extra, "Using filesort") {
+			continue
+		}
+		if row.ID == "1" {
+			own = true
+			continue
+		}
+		subs = append(subs, fmt.Sprintf("The root fetch's statement also sorts in its %s step on %s (Using filesort), "+
+			"on every batch's fetch: the where clause's subquery, not the root's own order.", row.SelectType, row.Table))
+	}
+	if !own {
+		return subs
+	}
+	return append([]string{fmt.Sprintf("The root fetch on %s sorts its matching rows on every batch (Using filesort). "+
+		"A descending part in the primary key, a where clause served by a secondary index, or a where subquery "+
+		"the optimizer joins before the root causes this.", root)}, subs...)
 }
 
 // explainOne runs EXPLAIN FORMAT=TRADITIONAL of query on q (a connection or the pool: it reads

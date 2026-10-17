@@ -230,7 +230,7 @@ batch of root keys, and prints a report:
   place of placeholders; no key value), then MySQL's `EXPLAIN FORMAT=TRADITIONAL` rows, one line
   each: `full table scan`, `full index scan on <key>`, `<type> on <key>`, or the optimizer's
   message, with the estimated rows and filter. A note sits under the statement it concerns, for
-  example a fetch that sorts every batch.
+  example a fetch that sorts every batch, or a `where` subquery that sorts.
 
 It takes no lock, writes no tracking row and changes no data. Read the plans for full scans
 before a long run. `plan` shows the relation tree and both orders at any time without
