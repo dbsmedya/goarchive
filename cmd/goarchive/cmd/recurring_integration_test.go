@@ -111,11 +111,13 @@ func TestMySQLRecurringRoot(t *testing.T) {
 			t.Errorf("log rows %d, want %d unchanged", got, before)
 		}
 	})
-	// MySQL does not escape the value in its duplicate-entry message (final review R2).
+	// MySQL does not escape the value in its duplicate-entry message (final review R2). The key
+	// fills CHAR(36), so the message is the same under PAD_CHAR_TO_FULL_LENGTH (matrix row
+	// sql_mode_pad_char), where MySQL reports a shorter value padded with spaces.
 	t.Run("purge, a quoted root", func(t *testing.T) {
-		const quoted = "O'Reilly"
+		const quoted = "O'Reilly-0000-0000-0000-000000000000"
 		f := orderFixture(t, "recur_quote")
-		ins := "INSERT INTO orders VALUES ('O''Reilly', '2019-05-01')"
+		ins := "INSERT INTO orders VALUES ('" + strings.ReplaceAll(quoted, "'", "''") + "', '2019-05-01')"
 		mustExec(t, f.src, ins)
 		if out, err := execute(t, "purge", "-c", f.config, "--job", "purge_orders"); err != nil {
 			t.Fatalf("purge: %v\n%s", err, out)
