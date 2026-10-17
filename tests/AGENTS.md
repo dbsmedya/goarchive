@@ -136,10 +136,11 @@ on a release PR's, confirms each run started, reads its summary table and delete
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1357 FAIL=0 SKIP=5`, measured by the integration runner
+- **Integration inventory:** `PASS=1359 FAIL=0 SKIP=5`, measured by the integration runner
   (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-17 (the beta.3
-  audit-review-1 PR, at `97a8046`). The runner counts every test the `integration` tag compiles,
-  unit tests included: that PR added `TestRecurringRootError`, `TestLogInsertError`,
+  image-nonroot PR, at `7eb8017`). The runner counts every test the `integration` tag compiles,
+  unit tests included: that PR added `TestFetchNotes` and `TestMySQLExplainSubquerySort`. It was
+  1357 before (the beta.3 audit-review-1 PR, at `97a8046`): that PR added `TestRecurringRootError`, `TestLogInsertError`,
   `TestMySQLRecurringRoot` (6 with its subtests) and two `TestMySQLExitCodes` subtests. It was
   1347 before (the beta.2 PRC-1 PR, at `51154dc`): PRC-1 added `TestEstimateRoots` (28 with its subtests) and
   `TestMySQLProgress/an_estimate,_not_a_count`. It was 1318 before (the beta.2 PKT-1 PR, at
