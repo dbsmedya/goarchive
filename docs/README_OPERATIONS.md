@@ -177,10 +177,10 @@ and `verified`; `recovered`, `skipped` and accepted conversions are listed under
 | Code | Meaning |
 |---|---|
 | 0 | Done: the run exhausted the `where` range, or `validate`, `dry-run`, `plan`, `list-jobs` or `version` printed its result |
-| 1 | Failed: a check refused, or the run failed part way. Read stderr and the log |
+| 1 | Failed: a check refused, a stopped job's unfinished work holds this run's tables, or the run failed part way. Read stderr and the log |
 | 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job |
 | 3 | Stopped before the end of the `where` range, without error (a graceful stop): the next run continues |
-| 4 | Not started: another run holds the job, a source table, or unfinished work on the same data, or is still creating a new tracking schema. Nothing was done |
+| 4 | Not started: another live run holds the job, a source table, or work on the same data, or is still creating a new tracking schema. Nothing was done |
 
 ```bash
 goarchive archive -c archiver.yaml -j archive_old_orders
@@ -475,10 +475,12 @@ the log holds. A third terminates the process.
 What a rerun does with work already done:
 
 - **archive and purge** — recovery finishes the logged roots, then the scan starts over; the
-  rows already archived or purged are no longer in the source.
+  rows already archived or purged are no longer in the source. A root key that returns to the
+  `where` range after its job finished it fails its batch, naming the root: that is outside the
+  run contract, and the error names the log row to delete to process it again.
 - **copy-only, `resume: false`** (the default) — a plain copy. A root already in the destination
-  fails its batch on the duplicate key, the batch rolls back, the run stops, and the error
-  suggests `resume: true`.
+  fails its batch on the duplicate key (or, when its destination rows are gone, on its completed
+  log row), the batch rolls back, the run stops, and the error suggests `resume: true`.
 - **copy-only, `resume: true`** — each batch drops the roots this job logged as copied before,
   and copies the rest. Every run rescans the whole `where` range.
 
@@ -542,7 +544,10 @@ connection holding it. A schema already labelled takes no lock. Then:
    The refusal lists each job with its state and the tables it shares, and the way out: rerun
    that job so its recovery finishes its work. A job marked running with nothing in its log,
    whose process is gone, is cleared as before
-   ([Clearing a stale running job](README_JOBS_SCHEMA.md#clearing-a-stale-running-job)).
+   ([Clearing a stale running job](README_JOBS_SCHEMA.md#clearing-a-stale-running-job)). The
+   refusal exits 4 while every job it names is live (marked running, heartbeat within the last
+   60 seconds), and 1 otherwise: a stopped job's work waits for that job's rerun, by its
+   schedule or by an operator.
 
 Every lock name is a prefix and a hash, so any table or job name fits MySQL's 64-character
 limit. MySQL computes the same names, so you can find a holder from SQL:

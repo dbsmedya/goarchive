@@ -64,7 +64,9 @@ func runE(f func(c *cobra.Command, args []string) error) func(*cobra.Command, []
 }
 
 // exitCode maps an outcome to its exit code. Precedence: a clean stop (only ever returned
-// without an error), then contention, then usage, then failure.
+// without an error), then contention, then usage, then failure. Contention is a lock another
+// session holds, or an unfinished-work refusal whose every blocker is live; a refusal held by a
+// stopped job waits for that job's rerun, so it is a failure (EXC-1).
 func exitCode(err error) int {
 	if err == nil {
 		return exitOK
@@ -74,10 +76,16 @@ func exitCode(err error) int {
 	}
 	var running *engine.JobRunningError
 	var table *engine.TableLockedError
-	var overlap *engine.OverlapError
 	var schema *tracking.SchemaLockedError
-	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &overlap) || errors.As(err, &schema) {
+	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &schema) {
 		return exitNotStarted
+	}
+	var overlap *engine.OverlapError
+	if errors.As(err, &overlap) {
+		if overlap.Live() {
+			return exitNotStarted
+		}
+		return exitFailed
 	}
 	var u *usageError
 	if !started || errors.As(err, &u) {

@@ -16,6 +16,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Moving from 3.0 beta.1](#moving-from-30-beta1)
+- [Moving from 3.0 beta.2 (unreleased)](#moving-from-30-beta2-unreleased)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -239,6 +240,16 @@ with MySQL error 1213 (deadlock) while both created the tracking tables; now one
 under a schema lock and the other waits for it, up to 60 seconds. Exit code 4 has one more
 cause: that lock still held after the wait
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+
+## Moving from 3.0 beta.2 (unreleased)
+
+The tracking tables are unchanged.
+
+**Exit code 4 now means a live run only.** A run refused because a stopped job's unfinished
+work, or a job marked running whose heartbeat stopped, holds its tables now exits 1, not 4: that
+block waits for the stopped job's rerun, by its schedule or by an operator, and the error names
+the remedy. A script that treats 4 as "try later" now sees these as failures
+([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
 
 ---
 
