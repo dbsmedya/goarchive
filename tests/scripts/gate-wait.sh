@@ -58,6 +58,9 @@ while :; do
     if alive "$pid" "$start"; then
         :
     else
+        # The process may have published its outcome and exited after the read above: once it
+        # is gone, its record is final, so read it again.
+        IFS=$'\t' read -r _ _ _ _ ended outcome _ < <(awk 'NR==2' "$dir/run.tsv")
         case "$outcome" in
             PASS|FAIL)
                 duration=$(($(epoch "$ended") - start))
