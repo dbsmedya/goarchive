@@ -104,11 +104,14 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 
 // logInsertError explains a log INSERT that met a key the log already holds (RKP-2): a root this
 // job finished before. For archive or purge it is a root back in the where range; for copy-only,
-// a root copied before whose destination rows are gone. Any other error passes through.
+// a root copied before whose destination rows are gone. Any other error passes through, a
+// duplicate on another key or table included: only the log's primary key is a root.
 func (r *run) logInsertError(err error) error {
 	var me *mysql.MySQLError
 	if errors.As(err, &me) && me.Number == mysqlDuplicateEntry {
-		return &RecurringRootError{Job: r.job.Name, Type: r.typ, Root: duplicateKey(me.Message), Err: me}
+		if value, key, ok := duplicateEntry(me.Message); ok && key == r.job.PrimaryKeyName() {
+			return &RecurringRootError{Job: r.job.Name, Type: r.typ, Root: value, Err: me}
+		}
 	}
 	return err
 }
@@ -236,17 +239,25 @@ func (r *run) insert(ctx context.Context, tx *sql.Tx, session diagnosticSession,
 	return nil
 }
 
-// duplicateKey extracts the quoted value from MySQL's "Duplicate entry 'x' for key 'y'".
+// duplicateKey extracts the value from MySQL's "Duplicate entry 'x' for key 'y'", or returns msg
+// when it has another form.
 func duplicateKey(msg string) string {
-	first := strings.IndexByte(msg, '\'')
-	if first < 0 {
-		return msg
+	if value, _, ok := duplicateEntry(msg); ok {
+		return value
 	}
-	last := strings.IndexByte(msg[first+1:], '\'')
-	if last < 0 {
-		return msg
+	return msg
+}
+
+// duplicateEntry splits MySQL's "Duplicate entry 'x' for key 'y'" into x and y. MySQL does not
+// escape x, which may hold quotes (O'Reilly), so x ends at the last "' for key '"; a key name
+// holds none.
+func duplicateEntry(msg string) (value, key string, ok bool) {
+	const head, mid = "Duplicate entry '", "' for key '"
+	i := strings.LastIndex(msg, mid)
+	if !strings.HasPrefix(msg, head) || i < len(head) || !strings.HasSuffix(msg, "'") || len(msg) < i+len(mid)+1 {
+		return "", "", false
 	}
-	return msg[first+1 : first+1+last]
+	return msg[len(head):i], msg[i+len(mid) : len(msg)-1], true
 }
 
 // packetError names an INSERT of table that did not fit the destination's max_allowed_packet

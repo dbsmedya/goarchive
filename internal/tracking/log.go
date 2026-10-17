@@ -22,6 +22,12 @@ type Tx interface {
 
 func (j *Job) keyColumns() []string { return j.log.Names() }
 
+func logTableName(id int64) string { return fmt.Sprintf("archiver_job_log_%d", id) }
+
+// PrimaryKeyName is the log's primary key as MySQL names it in a duplicate-entry error
+// (table.key, MySQL 8.0.19 and later): a 1062 that names it is a root the log already holds.
+func (j *Job) PrimaryKeyName() string { return logTableName(j.ID) + ".PRIMARY" }
+
 func (j *Job) quotedKeyColumns() string {
 	cols := j.keyColumns()
 	for i, c := range cols {
