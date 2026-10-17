@@ -56,8 +56,9 @@ git push origin --delete verify/<sha7>             # remove the branch after the
 **Triggers:** a push to a `verify-gate/**` branch only, plus `workflow_dispatch` once this file
 is on the default branch. Never a pull request, a merge or a tag.
 
-The gate on every supported image, on a release PR's final SHA, or another SHA when the
-operator asks:
+The gate on every supported image, on the final SHA of a PR whose change needs it (a release
+PR, or a change to `gate-verify.yml` or `run-gate.sh`; `tests/README.md` → *Which checks a change
+needs*), or another SHA when the operator asks:
 - **Integration and E2E:** the gate on an estate built from each of `mysql` 8.0.40, 8.4.11 and
   9.7.1 and `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`),
   as two jobs per image, all twelve at once (RVG-3): `run-gate.sh --part integration` (estate,

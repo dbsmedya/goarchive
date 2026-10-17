@@ -92,26 +92,30 @@ before the review is spent on a commit that does not ship. A finding from the ga
 is fixed in the same way and goes back to Codex as a re-review of the fix alone.
 
 **The change decides the checks.** A PR needs every row that its diff from `v3` touches, on its
-final commit:
+final commit; a mixed change needs the union:
 
 | The PR changes | Paths | Its final commit needs |
 |---|---|---|
 | Documentation only | `docs/`, `*.md`, comments | `make check` (its harness checks the links and the version sites) |
+| Static-check configuration | `.golangci.yml` | `make check` |
 | Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` against the estate; the integration inventory re-measured when test names change |
-| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/` | `make check`; a full gate only when `run-gate.sh` or a command it runs changed; a *Gate verify* run only when `gate-verify.yml` or `run-gate.sh` changed |
-| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` | a full gate and a *Matrix verify* run |
+| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/workflows/ci.yml`, `matrix-verify.yml`, `gate-verify.yml`, the `Makefile`'s test targets | `make check`; a full gate when `run-gate.sh` or a command it runs changed; a *Matrix verify* run when `tests/envmatrix/` or `matrix-verify.yml` changed; a *Gate verify* run when `gate-verify.yml` or `run-gate.sh` changed |
+| The estate and E2E | `tests/compose.yml`, `tests/dot.env`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | a full gate; a *Matrix verify* run when the change reaches what the matrix reads (`tests/dot.env`, `tests/docker_files/`); a *Gate verify* run when the operator asks |
+| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` (dependencies and the toolchain line) | a full gate and a *Matrix verify* run |
+| Build and packaging | the `Makefile`'s build and release targets, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml`, `docker.yml` | a full gate and a *Matrix verify* run, and the release procedure's artifact checks |
 | A release | the version bump | a full gate, a *Matrix verify* and a *Gate verify* run |
+| Any other path | | no exemption: the gate plan classifies it into a row above before the work goes on, and a review that finds a path the plan left out treats it as a finding |
 
-A change to the E2E setup (`tests/e2e/`, `compose.yml`) is product-grade for this table: a full
-gate, and a *Gate verify* run when the operator asks.
-
-**A green gate carries across a small fix.** A full gate GREEN on commit X stands for a later
-commit Y of the same branch when every change from X to Y is documentation, tests, or test tooling
-that does not touch `run-gate.sh`, and the checks those changes need (above) pass on Y. A
-*Matrix verify* or *Gate verify* run carries in the same way when the change touches nothing it
-runs: *Matrix verify* runs `./internal/...` and `./cmd/...`, so a change outside them carries it.
-The record names both commits: "gate GREEN at X, carried to Y; checks on Y: …". A red run never
-carries; it goes to the operator.
+**A green run carries across a change it does not test.** A full gate GREEN on commit X stands
+for a later commit Y of the same branch when every change from X to Y falls in a row whose checks
+include no full gate (documentation, static-check configuration, tests, or test tooling that
+leaves `run-gate.sh` and its commands alone), and those rows' checks pass on Y. A *Matrix verify*
+run carries only when no change from X to Y reaches what it runs or reads: `./internal/...` and
+`./cmd/...` with their tests, `go.mod` and `go.sum`, `tests/envmatrix/`, `tests/dot.env`,
+`tests/docker_files/` and `matrix-verify.yml`. A *Gate verify* run carries only when no change
+from X to Y needs a full gate or touches `gate-verify.yml` or `run-gate.sh`. A check a row
+requires is never met by a carry across that row's own change. The record names both commits:
+"gate GREEN at X, carried to Y; checks on Y: …". A red run never carries; it goes to the operator.
 
 **Each plan carries a gate plan.** It names, for each task, the check that exercises the task's
 change, and the PR's final checks from the table, so the gate runs are planned with the work.
@@ -609,7 +613,7 @@ git push origin --delete verify-gate/<sha7>
   | Branch | When | Pushed by |
   |---|---|---|
   | `verify/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs)), after the reviews and the local gate, before the operator's verdict | the coordinating agent |
-  | `verify-gate/<sha7>` | The release PR's final SHA (the PR that folds the version bump), or a PR's final SHA that changes `gate-verify.yml` or `run-gate.sh`; any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
+  | `verify-gate/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs): a release PR, or a change to `gate-verify.yml` or `run-gate.sh`); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
 
   The repository is public: a push publishes the PR's commits before the verdicts, and deleting
   the branch does not unpublish them. This standing authorization covers these two branches for
@@ -620,7 +624,7 @@ git push origin --delete verify-gate/<sha7>
   table and is never re-run to get a green one; a red version row caused by a floating image tag
   is reported as such, and the operator decides whether it blocks the PR.
 - *Matrix verify* replaces the local full matrix. Neither replaces the local gate on the final
-  SHA.
+  SHA, or a green gate carried to it ([Which checks a change needs](#which-checks-a-change-needs)).
 
 ### Sakila E2E tests
 

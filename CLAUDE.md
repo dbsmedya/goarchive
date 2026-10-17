@@ -79,9 +79,10 @@ passes. **Agents never create tags or releases; the operator does.** The release
   then Codex's MR verdict → the checks the change needs on the final SHA, and only those
   (`tests/README.md` → *Which checks a change needs*): `gate-agent` GREEN (`tests/AGENTS.md`;
   re-measure the baselines when tests change), or a green gate carried from an earlier commit; a
-  green *Matrix verify* run (`verify/<sha7>`) for a product change; a green *Gate verify* run
-  (`verify-gate/<sha7>`) for a release PR (the one that folds the version bump) or a change to the
-  gate verify workflow. The coordinating agent pushes each, for the final SHA only, reads its
+  green *Matrix verify* run (`verify/<sha7>`) and a green *Gate verify* run (`verify-gate/<sha7>`)
+  when that section's table asks for them (a product change needs Matrix verify; a release PR,
+  the one that folds the version bump, or a change to `gate-verify.yml` or `run-gate.sh` needs
+  Gate verify). The coordinating agent pushes each, for the final SHA only, reads its
   summary and deletes the branch, and never re-runs a red run on its own (`tests/README.md` → *The
   full matrix runs on GitHub*); a fix after the gate goes back to Codex as a re-review → the
   operator's verdict → push, open the PR, CI → merge. A release folds its version bump into its
