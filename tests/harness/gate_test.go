@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -92,9 +93,9 @@ type gateProcess struct {
 	done           chan error
 }
 
-func startGate(t *testing.T, root string, env []string) *gateProcess {
+func startGate(t *testing.T, root string, env []string, args ...string) *gateProcess {
 	t.Helper()
-	p := &gateProcess{cmd: exec.Command("/bin/bash", "tests/scripts/run-gate.sh"), done: make(chan error, 1)}
+	p := &gateProcess{cmd: exec.Command("/bin/bash", append([]string{"tests/scripts/run-gate.sh"}, args...)...), done: make(chan error, 1)}
 	p.cmd.Dir, p.cmd.Env = root, env
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -129,9 +130,9 @@ func (p *gateProcess) reap(t *testing.T) gateResult {
 	}
 	return gateResult{}
 }
-func runGate(t *testing.T, root string, env []string) gateResult {
+func runGate(t *testing.T, root string, env []string, args ...string) gateResult {
 	t.Helper()
-	return startGate(t, root, env).reap(t)
+	return startGate(t, root, env, args...).reap(t)
 }
 func fixtureEnv(env []string, key, value string) []string {
 	result := make([]string, 0, len(env)+1)
@@ -190,7 +191,7 @@ func manifest(t *testing.T, dir string) [][]string {
 }
 func runMetadata(t *testing.T, dir string) []string {
 	t.Helper()
-	row := readTSV(t, filepath.Join(dir, "run.tsv"), "run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit", 1)[0]
+	row := readTSV(t, filepath.Join(dir, "run.tsv"), "run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\tpart", 1)[0]
 	if row[0] != filepath.Base(dir) {
 		t.Fatalf("run ID %q differs from directory %q", row[0], dir)
 	}
@@ -316,11 +317,11 @@ func TestGatePersistsSuccess(t *testing.T) {
 			if dirty {
 				wantDirty = "dirty"
 			}
-			if meta[1] != strings.TrimSpace(string(sha)) || meta[2] != wantDirty || meta[5] != "PASS" || meta[6] != "0" || meta[7] != "0" {
+			if meta[1] != strings.TrimSpace(string(sha)) || meta[2] != wantDirty || meta[5] != "PASS" || meta[6] != "0" || meta[7] != "0" || meta[8] != "all" {
 				t.Fatalf("success metadata=%v", meta)
 			}
 			complete := readFixture(t, filepath.Join(dir, "complete"))
-			want := "GATE COMPLETE - every stage above exited 0\nrun_id=" + meta[0] + "\nsha=" + meta[1] + "\n"
+			want := "GATE COMPLETE - every stage above exited 0\nrun_id=" + meta[0] + "\nsha=" + meta[1] + "\npart=all\n"
 			if complete != want || strings.Count(result.stdout, "GATE COMPLETE - every stage above exited 0") != 1 {
 				t.Fatalf("completion disagrees: %q stdout=%s", complete, result.stdout)
 			}
@@ -507,5 +508,95 @@ func TestGateSignalEvidence(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+// TestGatePart (RVG-3): --part runs only its stages, and the others are NOT RUN, as after a
+// failure. run.tsv names the part, and complete certifies the part only, never a whole gate.
+// --part all is the whole gate.
+func TestGatePart(t *testing.T) {
+	for _, tc := range []struct {
+		part, first string
+		ran         []string
+	}{
+		{"integration", "GATE PART COMPLETE - every stage of part integration exited 0", gateStages[:8]},
+		{"e2e", "GATE PART COMPLETE - every stage of part e2e exited 0", []string{"estate", "e2e", "e2e-examples"}},
+		{"all", "GATE COMPLETE - every stage above exited 0", gateStages},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			root, env := gateFixture(t, "", "")
+			result := runGate(t, root, env, "--part", tc.part)
+			if result.exit != 0 {
+				t.Fatalf("part %s failed: %+v", tc.part, result)
+			}
+			dir := gateRunDir(t, root, result, "GATE_PART")
+			for i, row := range manifest(t, dir) {
+				want := "NOT RUN"
+				if slices.Contains(tc.ran, gateStages[i]) {
+					want = "PASS"
+				}
+				if row[1] != want {
+					t.Errorf("stage %s = %v, want %s", gateStages[i], row, want)
+				}
+			}
+			if !reflect.DeepEqual(commandMarkers(t, root), tc.ran) {
+				t.Errorf("commands=%v, want %v", commandMarkers(t, root), tc.ran)
+			}
+			meta := runMetadata(t, dir)
+			if meta[5] != "PASS" || meta[8] != tc.part {
+				t.Errorf("metadata=%v", meta)
+			}
+			want := tc.first + "\nrun_id=" + meta[0] + "\nsha=" + meta[1] + "\npart=" + tc.part + "\n"
+			if got := readFixture(t, filepath.Join(dir, "complete")); got != want {
+				t.Errorf("complete = %q, want %q", got, want)
+			}
+			if strings.Count(result.stdout, tc.first) != 1 || (tc.part != "all" && strings.Contains(result.stdout, "GATE COMPLETE")) {
+				t.Errorf("stdout does not certify exactly the part:\n%s", result.stdout)
+			}
+		})
+	}
+	t.Run("a failing stage inside a part", func(t *testing.T) {
+		root, env := gateFixture(t, "e2e", "")
+		result := runGate(t, root, env, "--part", "e2e")
+		if result.exit != 23 {
+			t.Fatalf("exit=%d want 23: %+v", result.exit, result)
+		}
+		dir := gateRunDir(t, root, result, "GATE_PART_FAILURE")
+		for i, row := range manifest(t, dir) {
+			want := map[string]string{"estate": "PASS", "e2e": "FAIL"}[gateStages[i]]
+			if want == "" {
+				want = "NOT RUN"
+			}
+			if row[1] != want {
+				t.Errorf("stage %s = %v, want %s", gateStages[i], row, want)
+			}
+		}
+		noCompletion(t, dir, result)
+		if strings.Contains(result.stdout, "GATE PART COMPLETE") {
+			t.Errorf("a failed part certified: %s", result.stdout)
+		}
+		if meta := runMetadata(t, dir); meta[5] != "FAIL" || meta[6] != "23" || meta[8] != "e2e" {
+			t.Errorf("metadata=%v", meta)
+		}
+	})
+}
+
+// TestGatePartArguments (RVG-3): an unknown part, a missing value or an extra argument exits 2,
+// naming the parts, before any evidence directory exists or any stage runs.
+func TestGatePartArguments(t *testing.T) {
+	for _, args := range [][]string{{"--part", "bogus"}, {"--part"}, {"--part", "e2e", "extra"}, {"e2e"}, {"--part", ""}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root, env := gateFixture(t, "", "")
+			result := runGate(t, root, env, args...)
+			if result.exit != 2 || !strings.Contains(result.stderr, "all, integration, e2e") {
+				t.Fatalf("exit=%d, want 2 naming the parts: %+v", result.exit, result)
+			}
+			if strings.Contains(result.stdout, "Gate evidence directory") || len(commandMarkers(t, root)) != 0 {
+				t.Fatalf("a bad argument started a run: %+v", result)
+			}
+			if entries, err := os.ReadDir(filepath.Join(root, "tests/results/gate")); err == nil && len(entries) != 0 {
+				t.Fatalf("a bad argument left evidence: %v", entries)
+			}
+		})
 	}
 }

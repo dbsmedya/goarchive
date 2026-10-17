@@ -30,11 +30,11 @@ results remain available beside the runner summary.
 
 | File in the run directory | What it records |
 |---|---|
-| `run.tsv` | Run ID, source revision, tracked-tree state, start/end and outcome/exit information |
+| `run.tsv` | Run ID, source revision, tracked-tree state, start/end, outcome/exit information and the part (`all` for `make gate`) |
 | `summary.tsv` | All ten stages, their status, command/capture exits and current log paths |
 | `summary.txt` | The same stage verdicts in a readable form |
 | `<stage>.log` | Output from a stage that actually started in this invocation |
-| `complete` | Success marker with run ID, revision and `GATE COMPLETE - every stage above exited 0` |
+| `complete` | Success marker with run ID, revision, part and `GATE COMPLETE - every stage above exited 0` |
 
 A failed gate stops at the failing stage. Later stages are explicitly `NOT RUN`;
 they cannot inherit a previous run's PASS or log. A live stage is `RUNNING`; an
@@ -48,6 +48,14 @@ nonzero process exit report the failure; no successful record is promised.
 
 Read the current run's summary and completion record together with its process
 exit. A console line or an older stage log alone does not certify the checkout.
+
+`make gate` runs every stage. *Gate verify* runs each image's gate as two parts on two runners,
+`bash tests/scripts/run-gate.sh --part integration` (estate, static checks, unit, integration)
+and `--part e2e` (estate, `e2e`, `e2e-examples`). A part's other stages are `NOT RUN`, its
+`run.tsv` and `complete` name the part, and `complete` reads `GATE PART COMPLETE - every stage
+of part <part> exited 0`: a part is never a gate. Locally only `make gate` certifies a checkout.
+`tests/scripts/gate-start.sh` and `gate-wait.sh` start `make gate` detached and wait for it,
+for an agent whose tool calls are shorter than the gate (`tests/AGENTS.md`).
 
 **The order is load-bearing, not stylistic.** `make e2e` begins with `test-reset`, which
 destroys the estate; run it before integration and that fails for reasons
@@ -72,6 +80,45 @@ that is later removed leaves the containers pointing at files that no longer exi
 > **not** a regression). They also DELETE from the source. `make e2e` reseeds first. The
 > integration tests create and drop their own schemas; a few read the seeded Sakila estate, so
 > run `./scripts/run-tests.sh --setup` once before running them with `go test` directly.
+
+### Which checks a change needs
+
+A full gate takes about nine minutes of the dedicated estate, and a GitHub verify run fifteen.
+Each runs where it tests something the change touched, once, on the commit that survives review.
+
+**Reviews come first.** A branch's reviews (Fable for a behaviour change, Codex's MR verdict) and
+their fixes come before the gate and the verify runs. A fix changes the commit, and a gate run
+before the review is spent on a commit that does not ship. A finding from the gate or a verify run
+is fixed in the same way and goes back to Codex as a re-review of the fix alone.
+
+**The change decides the checks.** A PR needs every row that its diff from `v3` touches, on its
+final commit; a mixed change needs the union:
+
+| The PR changes | Paths | Its final commit needs |
+|---|---|---|
+| Documentation only | `docs/`, `*.md`, comments | `make check` (its harness checks the links and the version sites) |
+| Static-check configuration | `.golangci.yml` | `make check` |
+| Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` against the estate; the integration inventory re-measured when test names change |
+| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/workflows/ci.yml`, `matrix-verify.yml`, `gate-verify.yml`, the `Makefile`'s test targets | `make check`; a full gate when `run-gate.sh` or a command it runs changed; a *Matrix verify* run when `tests/envmatrix/` or `matrix-verify.yml` changed; a *Gate verify* run when `gate-verify.yml` or `run-gate.sh` changed |
+| The estate and E2E | `tests/compose.yml`, `tests/dot.env`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | a full gate; a *Matrix verify* run when the change reaches what the matrix reads (`tests/dot.env`, `tests/docker_files/`); a *Gate verify* run when the operator asks |
+| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` (dependencies and the toolchain line) | a full gate and a *Matrix verify* run |
+| Build and packaging | the `Makefile`'s build and release targets, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml`, `docker.yml` | a full gate and a *Matrix verify* run, and the release procedure's artifact checks |
+| A release | the version bump | a full gate, a *Matrix verify* and a *Gate verify* run |
+| Any other path | | no exemption: the gate plan classifies it into a row above before the work goes on, and a review that finds a path the plan left out treats it as a finding |
+
+**A green run carries across a change it does not test.** A full gate GREEN on commit X stands
+for a later commit Y of the same branch when every change from X to Y falls in a row whose checks
+include no full gate (documentation, static-check configuration, tests, or test tooling that
+leaves `run-gate.sh` and its commands alone), and those rows' checks pass on Y. A *Matrix verify*
+run carries only when no change from X to Y reaches what it runs or reads: `./internal/...` and
+`./cmd/...` with their tests, `go.mod` and `go.sum`, `tests/envmatrix/`, `tests/dot.env`,
+`tests/docker_files/` and `matrix-verify.yml`. A *Gate verify* run carries only when no change
+from X to Y needs a full gate or touches `gate-verify.yml` or `run-gate.sh`. A check a row
+requires is never met by a carry across that row's own change. The record names both commits:
+"gate GREEN at X, carried to Y; checks on Y: …". A red run never carries; it goes to the operator.
+
+**Each plan carries a gate plan.** It names, for each task, the check that exercises the task's
+change, and the PR's final checks from the table, so the gate runs are planned with the work.
 
 ## Sakila E2E Test Suite
 
@@ -547,23 +594,26 @@ git push origin --delete verify-gate/<sha7>
 ```
 
 - **Jobs:** *Matrix verify* runs one job per `rows.tsv` row with one pair (`MX_PAIRS=1`), at most
-  14 at once, a target job and a summary: the rows plus two. *Gate verify* runs `make gate` on an estate
-  built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server` 8.0.46-37,
-  8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
-  `compose.yml`), and a summary: 8 jobs.
+  14 at once, a target job and a summary: the rows plus two. *Gate verify* runs the gate on an
+  estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server`
+  8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
+  `compose.yml`), as two jobs per image that start together, its integration part and its e2e
+  part (`run-gate.sh --part`, above), and a target and a summary job: 14 jobs.
 - **Results:** each run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`),
   headed *Matrix verify* or *Gate verify* and the SHA. It is red when any job did not succeed,
   when any row is not OK or is missing, when any gate is missing or lacks the evidence `make gate`
   records for its SHA (above: `complete`, a clean tree, both exits 0), and when a run holds the
-  other workflow's jobs. Every job's evidence directory is an artifact.
+  other workflow's jobs. A Gate verify image counts as a gate only when both its parts carry that
+  evidence, each naming its own part; an image with one part fails the run. Every job's evidence
+  directory is an artifact.
   A gate's integration count is one pass short of the local baseline, with one more skip:
   `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
 - **When, and who:**
 
   | Branch | When | Pushed by |
   |---|---|---|
-  | `verify/<sha7>` | Every PR's final SHA, after the local gate is GREEN, before Codex's and the operator's verdicts | the coordinating agent |
-  | `verify-gate/<sha7>` | The release PR's final SHA (the PR that folds the version bump); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
+  | `verify/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs)), after the reviews and the local gate, before the operator's verdict | the coordinating agent |
+  | `verify-gate/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs): a release PR, or a change to `gate-verify.yml` or `run-gate.sh`); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
 
   The repository is public: a push publishes the PR's commits before the verdicts, and deleting
   the branch does not unpublish them. This standing authorization covers these two branches for
@@ -574,7 +624,7 @@ git push origin --delete verify-gate/<sha7>
   table and is never re-run to get a green one; a red version row caused by a floating image tag
   is reported as such, and the operator decides whether it blocks the PR.
 - *Matrix verify* replaces the local full matrix. Neither replaces the local gate on the final
-  SHA.
+  SHA, or a green gate carried to it ([Which checks a change needs](#which-checks-a-change-needs)).
 
 ### Sakila E2E tests
 

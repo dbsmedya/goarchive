@@ -43,8 +43,8 @@ Builds and pushes Docker images to GitHub Container Registry:
 **Triggers:** a push to a `verify/**` branch only, plus `workflow_dispatch` once this file is on
 the default branch. Never a pull request, a merge or a tag.
 
-The environment matrix on one commit, on every PR's final SHA
-(`tests/README.md` → *The full matrix runs on GitHub*):
+The environment matrix on one commit, on the final SHA of a PR whose change needs it
+(`tests/README.md` → *Which checks a change needs*, and *The full matrix runs on GitHub*):
 - **Matrix:** one job per row of `tests/envmatrix/rows.tsv`, at most 14 at once.
 - **Summary:** one table of every row's verdict (`tests/envmatrix/gh-summary.sh`), on the run page
   and as the `summary-matrix` artifact. It is red when any job did not succeed, when any row is
@@ -59,15 +59,18 @@ git push origin --delete verify/<sha7>             # remove the branch after the
 **Triggers:** a push to a `verify-gate/**` branch only, plus `workflow_dispatch` once this file
 is on the default branch. Never a pull request, a merge or a tag.
 
-The gate on every supported image, on a release PR's final SHA, or another SHA when the
-operator asks:
-- **Gate:** `make gate` on an estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and
-  `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`), all six
-  at once.
-- **Summary:** one table of every gate (`tests/envmatrix/gh-summary.sh`), on the run page and as
-  the `summary-gate` artifact. It is red when any job did not succeed, when any gate is missing or
-  not certified (one run record for the target SHA, on a clean tree, `PASS` with both exits 0,
-  with its completion marker and summary), and when the run holds a matrix row.
+The gate on every supported image, on the final SHA of a PR whose change needs it (a release
+PR, or a change to `gate-verify.yml` or `run-gate.sh`; `tests/README.md` → *Which checks a change
+needs*), or another SHA when the operator asks:
+- **Integration and E2E:** the gate on an estate built from each of `mysql` 8.0.40, 8.4.11 and
+  9.7.1 and `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`),
+  as two jobs per image, all twelve at once (RVG-3): `run-gate.sh --part integration` (estate,
+  static checks, unit, integration) and `--part e2e` (estate, `e2e`, `e2e-examples`).
+- **Summary:** one table of both parts of every gate (`tests/envmatrix/gh-summary.sh`), on the
+  run page and as the `summary-gate` artifact. It is red when any job did not succeed, when any
+  image lacks a part or a part is not certified (one run record for the target SHA, on a clean
+  tree, `PASS` with both exits 0, naming its part, with its completion marker and summary), and
+  when the run holds a matrix row.
 
 ```bash
 git push origin <sha>:refs/heads/verify-gate/<sha7>     # start a run

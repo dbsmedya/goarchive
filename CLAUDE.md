@@ -75,14 +75,18 @@ passes. **Agents never create tags or releases; the operator does.** The release
 - **Branches and PRs.** 3.0 PRs target `v3` on origin; 2.x stays frozen on `main` until `v3` is
   merged onto it by its own PR. The 3.0-alpha PR is the first.
 - **Merge order for every PR into `v3`:** work on a branch (a `test` commit, then a `fix`
-  commit) → Fable's or Sonnet's final review for behaviour changes → `gate-agent` reports GREEN on
-  the final SHA (`tests/AGENTS.md`; re-measure the baselines when tests change) → a green *Matrix
-  verify* run on that SHA (`verify/<sha7>`), and for a release PR (the one that folds the version
-  bump) also a green *Gate verify* run (`verify-gate/<sha7>`): the coordinating agent pushes each,
-  for the final SHA only, reads its summary and deletes the branch, and never re-runs a red run on
-  its own (`tests/README.md` → *The full matrix runs on GitHub*) → Codex's MR verdict on that SHA
-  → the operator's verdict → push, open the PR, CI → merge. A release folds its version bump into
-  its last PR; the operator tags.
+  commit) → the reviews and their fixes: Fable's or Sonnet's final review for behaviour changes,
+  then Codex's MR verdict → the checks the change needs on the final SHA, and only those
+  (`tests/README.md` → *Which checks a change needs*): `gate-agent` GREEN (`tests/AGENTS.md`;
+  re-measure the baselines when tests change), or a green gate carried from an earlier commit; a
+  green *Matrix verify* run (`verify/<sha7>`) and a green *Gate verify* run (`verify-gate/<sha7>`)
+  when that section's table asks for them (a product change needs Matrix verify; a release PR,
+  the one that folds the version bump, or a change to `gate-verify.yml` or `run-gate.sh` needs
+  Gate verify). The coordinating agent pushes each, for the final SHA only, reads its
+  summary and deletes the branch, and never re-runs a red run on its own (`tests/README.md` → *The
+  full matrix runs on GitHub*); a fix after the gate goes back to Codex as a re-review → the
+  operator's verdict → push, open the PR, CI → merge. A release folds its version bump into its
+  last PR; the operator tags.
 
 ## Build & guards
 
