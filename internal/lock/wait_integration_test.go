@@ -141,7 +141,9 @@ func TestMySQLWait(t *testing.T) {
 
 // TestMySQLWaitUnderAStatementTimer (TRK-1, Fable F2): a server whose max_execution_time is
 // shorter than the wait does not abort it. The pool sets the timer on every new session, as
-// an inherited global would; nothing global changes.
+// an inherited global would; nothing global changes. The floor is 1.5 s, not 2 s: the server
+// times GET_LOCK on its own clock and has returned 0.7 ms before the client's 2 s, while a
+// wait the 1 s timer ended would return at about 1 s.
 func TestMySQLWaitUnderAStatementTimer(t *testing.T) {
 	timed := poolWith(t, map[string]string{"max_execution_time": "1000"})
 	name := unique(t, 1)[0]
@@ -152,7 +154,7 @@ func TestMySQLWaitUnderAStatementTimer(t *testing.T) {
 	if !errors.As(err, &held) || held.Holder != id {
 		t.Fatalf("Wait() = %v, want a HeldError after the 2 s wait (error 3024 means the statement timer ended it)", err)
 	}
-	if d := time.Since(start); d < 2*time.Second {
-		t.Errorf("refused after %s, before the 2 s wait ran out", d)
+	if d := time.Since(start); d < 1500*time.Millisecond {
+		t.Errorf("refused after %s, well before the 2 s wait ran out", d)
 	}
 }

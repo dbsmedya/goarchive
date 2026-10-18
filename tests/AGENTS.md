@@ -152,10 +152,12 @@ all, and when a green gate carries to a later commit; a gate agent is given a SH
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1420 FAIL=0 SKIP=7`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-18 (the JSN-1 PR, at
-  `eac40e0`, gate run `20261018T134602Z-71403`). The runner counts every test the `integration`
-  tag compiles, unit tests included: that PR added `TestMySQLJSONVerification` (11 with its
+- **Integration inventory:** `PASS=1421 FAIL=0 SKIP=7`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-18 (RC-1 PR 1, at
+  `6f7789e`). The runner counts every test the `integration` tag compiles, unit tests included,
+  in the product packages (`tests/harness` is not among them): that PR added
+  `TestMySQLRecoveryRefusesALateRowUnderAGoneRoot`. It was 1420 before (the JSN-1 PR, at
+  `eac40e0`, gate run `20261018T134602Z-71403`): that PR added `TestMySQLJSONVerification` (11 with its
   subtests), `TestJSONVerification` (10), `TestMySQLCountWarnings` (4),
   `TestColumnMetadataMarksJSON` and `TestVerificationErrorJSONHint`. It was 1393 before (the beta.3
   charset-check PR, at `ad3afa6` with its docs): that PR added `TestBuildDSNPinsCharset`,

@@ -858,7 +858,7 @@ docker compose down -v      # the -v is what removes the data volumes
 | `e2e/README.md` | The E2E test-file format and how to add a test |
 | `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers, the tracking-table reader and the interrupt/resume arm |
 | `e2e/<category>/NN-*.test.sh` | One declaration file per test, grouped by the command under test |
-| `harness/` | Database-free tests of the test infrastructure: the E2E library (against a fake `mysql-query.sh`), version and toolchain drift, the consumer policy, and every tracked Markdown file's relative links and anchors (`TestDocLinks`) |
+| `harness/` | Database-free tests of the test infrastructure: the E2E library (against a fake `mysql-query.sh`), version and toolchain drift, the consumer policy, every tracked Markdown file's relative links and anchors (`TestDocLinks`), the doc headings that error messages quote (`TestErrorMessagesQuoteDocHeadings`), and actionlint on the workflows (`TestWorkflowsPassActionlint`) |
 | `envmatrix/` | The environment matrix: `rows.tsv`, `run-matrix.sh`, the judge, and `group/`, dbsgomysql's Group Replication cluster |
 | `scripts/check-servers.sh` | Database connectivity checker |
 | `scripts/get_sakila_db.sh` | Downloads the Sakila database |

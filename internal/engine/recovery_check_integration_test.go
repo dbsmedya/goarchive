@@ -205,3 +205,44 @@ func TestMySQLRecoveryWarnsOfARootGoneFromBoth(t *testing.T) {
 		t.Errorf("warnings naming the root gone from both = %d, want 1: %v", n, logs.All())
 	}
 }
+
+// TestMySQLRecoveryRefusesALateRowUnderAGoneRoot (register row REC-2): a run killed after its
+// last delete chunk leaves its roots gone from the source but logged copied, and a line is
+// then written on the source under one of them. Recovery discovers children from every logged
+// root, present or not, so it refuses before any delete; copying the row into the destination
+// lets the rerun finish. A late line_notes row there would not be rediscovered (its parent
+// line is gone): a discovery limit, not the check's.
+func TestMySQLRecoveryRefusesALateRowUnderAGoneRoot(t *testing.T) {
+	const lateLine = "INSERT INTO order_lines VALUES ('o0', 3, 'late', '2019-05-05 10:00:00')"
+	e := newEnv(t, "heldlate")
+	e.both(t, orderTablesNoFK("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	e.killAt(t, jobspec.Archive, orderJob, atDeleted, 5) // batch 1's fifth chunk deletes its two roots
+	if st := statuses(t, e.dst, e.dstSchema); st[int(tracking.StatusCopied)] != 2 {
+		t.Fatalf("log after the kill = %v, want 2 copied", st)
+	}
+	if n := count(t, e.src, "SELECT COUNT(*) FROM orders"); n != 2 {
+		t.Fatalf("source orders after the kill = %d, want 2 (o2 and new)", n)
+	}
+	execAll(t, e.src, lateLine)
+	before := treeCounts(t, e.src)
+
+	_, err := e.run(t, e.config(t, job(t, jobspec.Archive, orderJob)))
+	got := missingByTable(t, err)
+	if m := got["order_lines"]; len(got) != 1 || m.Root || m.Count != 1 {
+		t.Fatalf("refusal = %+v, want the one late order_lines row", got)
+	}
+	if after := treeCounts(t, e.src); after != before {
+		t.Errorf("source %s, was %s: the refused recovery deleted", after, before)
+	}
+	if st := statuses(t, e.dst, e.dstSchema); st[int(tracking.StatusCopied)] != 2 {
+		t.Errorf("log = %v, want the 2 roots still copied", st)
+	}
+
+	execAll(t, e.dst, lateLine) // the remedy: copy the row into the destination
+	rep := e.mustRun(t, e.config(t, job(t, jobspec.Archive, orderJob)))
+	late := "SELECT COUNT(*) FROM order_lines WHERE RTRIM(order_id) = 'o0' AND line_no = 3"
+	if rep.Recovered != 2 || count(t, e.src, late) != 0 || count(t, e.dst, late) != 1 {
+		t.Errorf("after the remedy: %+v, want both roots recovered and the late row archived", rep)
+	}
+}
