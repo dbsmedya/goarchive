@@ -509,6 +509,15 @@ when they end, so those tests do not share state; a killed run can leave one beh
 the seeded Sakila estate instead (for example `internal/key`'s key facts on `film_actor` and
 `payment`), so run `--setup` first.
 
+The suites open their pools as goarchive opens its own, through `database.OpenPool`: the same
+session pins, per-connection checks and pool checks, with the open-connection cap lifted, as the
+suites race more sessions than a run does. A server global a test stands in for (`sql_mode`,
+`max_execution_time`, `range_optimizer_max_mem_size`) is a `database.Global`, layered under the
+pins as a real global is. A few files open a raw pool on purpose: the `internal/database` pin
+tests, the engine's UTC refusal and INSERT diagnostics backstop, the trigger-visibility pool and
+the charset probes. `TestIntegrationPoolsUseOpenPool` (`tests/harness`) lists each one with its
+reason and fails on a raw open in any other integration test file.
+
 #### Interrupted runs
 
 `TestMySQLKillRecovery` (`internal/engine`) kills a helper process (`TestEngineHelperProcess`)
@@ -858,7 +867,7 @@ docker compose down -v      # the -v is what removes the data volumes
 | `e2e/README.md` | The E2E test-file format and how to add a test |
 | `e2e/lib/` | The E2E harness — engine, registry, assertions, estate helpers, the tracking-table reader and the interrupt/resume arm |
 | `e2e/<category>/NN-*.test.sh` | One declaration file per test, grouped by the command under test |
-| `harness/` | Database-free tests of the test infrastructure: the E2E library (against a fake `mysql-query.sh`), version and toolchain drift, the consumer policy, every tracked Markdown file's relative links and anchors (`TestDocLinks`), the doc headings that error messages quote (`TestErrorMessagesQuoteDocHeadings`), and actionlint on the workflows (`TestWorkflowsPassActionlint`) |
+| `harness/` | Database-free tests of the test infrastructure: the E2E library (against a fake `mysql-query.sh`), version and toolchain drift, the consumer policy, every tracked Markdown file's relative links and anchors (`TestDocLinks`), the doc headings that error messages quote (`TestErrorMessagesQuoteDocHeadings`), actionlint on the workflows (`TestWorkflowsPassActionlint`), and the integration suites' pools (`TestIntegrationPoolsUseOpenPool`) |
 | `envmatrix/` | The environment matrix: `rows.tsv`, `run-matrix.sh`, the judge, and `group/`, dbsgomysql's Group Replication cluster |
 | `scripts/check-servers.sh` | Database connectivity checker |
 | `scripts/get_sakila_db.sh` | Downloads the Sakila database |
