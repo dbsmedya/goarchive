@@ -40,6 +40,10 @@ func TestBanners(t *testing.T) {
 			[]string{"verification: none", "copied rows are not compared", "conversion warnings are accepted", "source rows are then deleted"}},
 		{"no verification, copy-only", plain, jobspec.CopyOnly, jobspec.VerifyNone, false, false,
 			[]string{"verification: none", "copied rows are not compared"}},
+		{"count, archive", plain, jobspec.Archive, jobspec.VerifyCount, false, false,
+			[]string{"WARNING: verification: count: copied rows are counted by key, not compared, so a value the copy changes goes unseen. The source rows are then deleted."}},
+		{"count, copy-only", plain, jobspec.CopyOnly, jobspec.VerifyCount, false, false,
+			[]string{"WARNING: verification: count: copied rows are counted by key, not compared, so a value the copy changes goes unseen."}},
 		{"foreign key checks off", fkOff, jobspec.CopyOnly, jobspec.VerifySHA256, false, false,
 			[]string{"safety.disable_foreign_key_checks", "FOREIGN_KEY_CHECKS=0"}},
 	} {
@@ -53,8 +57,13 @@ func TestBanners(t *testing.T) {
 	if got := banners(fkOff, jobspec.Purge, "", false, false); len(got) != 0 {
 		t.Errorf("purge copies nothing, so the FK-checks banner does not apply: %q", got)
 	}
-	if got := strings.Join(banners(plain, jobspec.CopyOnly, jobspec.VerifyNone, false, false), "\n"); strings.Contains(got, "deleted") {
-		t.Errorf("copy-only deletes nothing: %q", got)
+	for _, v := range []jobspec.Verification{jobspec.VerifyNone, jobspec.VerifyCount} {
+		if got := strings.Join(banners(plain, jobspec.CopyOnly, v, false, false), "\n"); strings.Contains(got, "deleted") {
+			t.Errorf("copy-only deletes nothing (%s): %q", v, got)
+		}
+	}
+	if got := banners(plain, jobspec.Purge, jobspec.VerifyCount, false, false); len(got) != 0 {
+		t.Errorf("purge copies nothing, so no verification banner applies: %q", got)
 	}
 }
 
