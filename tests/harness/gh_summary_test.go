@@ -186,6 +186,10 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 
 		// The counts are checked before anything is read (F1): exit 2, never a pass.
 		{name: "a missing gate count", args: []string{"2"}, needs: ok, want: 2, says: []string{"usage: gh-summary.sh"}},
+		// Each guard has a case that fails without it (RVG-2): with no job results $4 is unset, and
+		// without $# -ge 4 bash stops on it with exit 1; without the $3 check, 0+2 reads as 2 and passes.
+		{name: "a missing gate count with no job results", args: []string{"2"}, want: 2, says: []string{"usage: gh-summary.sh"}},
+		{name: "a rows count that is not a number", args: []string{"0+2", "6"}, needs: ok, want: 2, says: []string{"usage: gh-summary.sh"}},
 		{name: "a gate count that is not a number", args: []string{"2", "six"}, needs: ok, want: 2, says: []string{"usage: gh-summary.sh"}},
 		{name: "a summary that wants nothing", args: []string{"0", "0"}, needs: ok, want: 2, says: []string{"verifies nothing"}},
 	} {
