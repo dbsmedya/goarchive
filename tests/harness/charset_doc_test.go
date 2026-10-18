@@ -19,6 +19,16 @@ func fromRoot(path string) []string {
 	return append([]string{"..", ".."}, strings.Split(path, "/")...)
 }
 
+// mysqlCharsets is MySQL's 41 character sets, as SHOW CHARACTER SET lists them on 8.0.40, 8.4.11
+// and 9.7.1 (CHS-1 Task 0), sorted. The guide must name exactly these.
+var mysqlCharsets = []string{
+	"armscii8", "ascii", "big5", "binary", "cp1250", "cp1251", "cp1256", "cp1257", "cp850", "cp852",
+	"cp866", "cp932", "dec8", "eucjpms", "euckr", "gb18030", "gb2312", "gbk", "geostd8", "greek",
+	"hebrew", "hp8", "keybcs2", "koi8r", "koi8u", "latin1", "latin2", "latin5", "latin7", "macce",
+	"macroman", "sjis", "swe7", "tis620", "ucs2", "ujis", "utf16", "utf16le", "utf32", "utf8mb3",
+	"utf8mb4",
+}
+
 var (
 	supportedLiteral = regexp.MustCompile(`(?s)var supportedCharsets = \[\]string\{(.*?)\}`)
 	quotedName       = regexp.MustCompile(`"([a-z0-9]+)"`)
@@ -64,8 +74,8 @@ func docCharsets(t *testing.T, doc, heading string) []string {
 }
 
 // TestCharsetDocMatchesCode (CHD-1): the guide's supported list is the code's, in order;
-// its refused list shares none of it, and the two name each of MySQL's 41 sets once. A set
-// added to the code without the guide fails here.
+// its refused list shares none of it, and the two name each of MySQL's 41 sets once, so a
+// misspelled or invented set fails too. A set added to the code without the guide fails here.
 func TestCharsetDocMatchesCode(t *testing.T) {
 	code := codeCharsets(t)
 	t.Run("the literal parses", func(t *testing.T) {
@@ -88,17 +98,10 @@ func TestCharsetDocMatchesCode(t *testing.T) {
 			}
 		}
 	})
-	t.Run("41 distinct sets", func(t *testing.T) {
-		all := slices.Concat(supported, refused)
-		seen := map[string]bool{}
-		for _, cs := range all {
-			if seen[cs] {
-				t.Errorf("%s is listed twice", cs)
-			}
-			seen[cs] = true
-		}
-		if len(seen) != 41 {
-			t.Errorf("the guide names %d distinct sets, want MySQL's 41", len(seen))
+	t.Run("MySQL's 41 sets, each once", func(t *testing.T) {
+		all := slices.Sorted(slices.Values(slices.Concat(supported, refused)))
+		if !slices.Equal(all, mysqlCharsets) {
+			t.Errorf("the guide names %v, want each of MySQL's sets once: %v", all, mysqlCharsets)
 		}
 	})
 }
