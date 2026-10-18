@@ -152,11 +152,14 @@ all, and when a green gate carries to a later commit; a gate agent is given a SH
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1421 FAIL=0 SKIP=7`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-18 (RC-1 PR 1, at
-  `6f7789e`). The runner counts every test the `integration` tag compiles, unit tests included,
-  in the product packages (`tests/harness` is not among them): that PR added
-  `TestMySQLRecoveryRefusesALateRowUnderAGoneRoot`. It was 1420 before (the JSN-1 PR, at
+- **Integration inventory:** `PASS=1453 FAIL=0 SKIP=7`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`, the gate's integration stage) on
+  2026-10-18 (RC-1 PR 2, at `6823fbf`, gate run `20261018T192611Z-51303`). The runner counts every
+  test the `integration` tag compiles, unit tests included, in the product packages
+  (`tests/harness` is not among them): that PR added `TestOpenPoolGlobals` (18 with its subtests),
+  `TestOpenPoolClassifiesFailures` (7), `TestConnectWithRetryClassifiesFailures` (6) and
+  `TestConnectWithRetryRetriesAnUnparsableDSN`. It was 1421 before (RC-1 PR 1, at `6f7789e`): that
+  PR added `TestMySQLRecoveryRefusesALateRowUnderAGoneRoot`. It was 1420 before (the JSN-1 PR, at
   `eac40e0`, gate run `20261018T134602Z-71403`): that PR added `TestMySQLJSONVerification` (11 with its
   subtests), `TestJSONVerification` (10), `TestMySQLCountWarnings` (4),
   `TestColumnMetadataMarksJSON` and `TestVerificationErrorJSONHint`. It was 1393 before (the beta.3
@@ -193,7 +196,8 @@ after the runner reports; a gate agent never edits it.
   `20261016T162237Z-37397`, 502 s, RVG-1a+b's final SHA; run `20261016T155024Z-12353`, 546 s
   under host load); 518 s on the 1341 inventory (run `20261016T201612Z-86110`, PRC-1 at
   `80e2f41`); 531 s on the 1393 inventory (run `20261018T041536Z-15387`, CHS-1's final SHA); 555 s
-  on the 1420 inventory (run `20261018T134602Z-71403`, JSN-1's final SHA); 570 s on the 1347 inventory (run `20261016T203025Z-19981`, PRC-1's final SHA, with
+  on the 1420 inventory (run `20261018T134602Z-71403`, JSN-1's final SHA); 495 s on the 1453
+  inventory (run `20261018T192611Z-51303`, RC-1 PR 2's final SHA); 570 s on the 1347 inventory (run `20261016T203025Z-19981`, PRC-1's final SHA, with
   another engine test run on the machine); record each new measurement
   here, since the margin shrinks as tests are added.
 - **Release verify on GitHub** (beta.1; split in beta.2 into *Matrix verify* and *Gate verify*):
