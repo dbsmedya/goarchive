@@ -92,8 +92,11 @@ func TestJSONVerification(t *testing.T) {
 		want(t, warnings(w), jsonWarning(jobspec.VerifyCount, jobspec.Archive, "destination:orders.note"))
 	})
 
-	t.Run("column only on the destination", func(t *testing.T) {
+	t.Run("column only on the destination, under skip", func(t *testing.T) {
+		// Under policy a column on one side only is DEST_SCHEMA_COMPATIBILITY_CHECK's refusal;
+		// only SkipPolicy reaches this stage with one.
 		w := setup(t, jobspec.Archive, jobspec.VerifyCount)
+		w.cfg.SkipPolicy = true
 		putColumn(w.dst, "orders", col("extra", "json", ""))
 		if got := warnings(w); len(got) != 0 {
 			t.Errorf("warnings = %q, want none: the column is never written", got)

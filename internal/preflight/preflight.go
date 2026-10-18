@@ -94,6 +94,9 @@ type Config struct {
 	Processing config.ProcessingConfig
 
 	Logger *logger.Logger
+	// Banner emits a warning with a run banner's visibility (R45): on stderr and in the log,
+	// past the level and file_only. Nil logs it with Logger.Warn (JSN-1).
+	Banner func(string)
 }
 
 // Result is what a passing preflight learned.
@@ -172,6 +175,9 @@ func stages(cfg Config) []stage {
 		// Every job type, under SkipPolicy too: the loss is silent and no verification sees it
 		// (CHS-1).
 		{"ColumnCharsets", true, checkColumnCharsets},
+		// Archive and copy-only, under SkipPolicy too: count and none cannot see a JSON value
+		// the destination's parser changes, so the operator is told which columns (JSN-1).
+		{"JSONVerification", profile != ProfileSourceOnly, checkJSONVerification},
 		{"DestinationKeys", destination, checkDestinationKeys},
 		{"DestinationSchemaCompatibility", destination, checkDestinationSchemaCompatibility},
 		{"DestinationWritePermissions", destination, checkDestinationWritePermissions},
