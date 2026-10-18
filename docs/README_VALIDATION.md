@@ -541,10 +541,10 @@ Logged, never fatal:
   a charset difference under sha256 verification, column names that differ only in ASCII
   letter case, and a column order that differs from the source's
   ([Schema compatibility rules](#schema-compatibility-rules)).
-- **A JSON column under `verification: count` or `none`**, for archive and copy-only jobs: one
-  `WARNING:` naming every JSON column of the job, and, under
-  `--skip-dangerously-validate-preflight-allow-experimental`, a same-named destination column that
-  is JSON only there. A JSON value is copied as MySQL's printed text, so a member's type is not
+- **A JSON column under `verification: count` or `none`**, for archive and copy-only jobs, under
+  `--skip-dangerously-validate-preflight-allow-experimental` too: one `WARNING:` naming every JSON
+  column of the job and, under that flag, a same-named destination column that is JSON only
+  there. A JSON value is copied as MySQL's printed text, so a member's type is not
   kept, a long DECIMAL loses digits, and an 8.0 or 8.4 destination can change a double (MySQL
   Bug #116160); neither mode compares values, so the change goes unseen. The run proceeds; to
   have such a change refused, use `verification: sha256`
@@ -559,8 +559,7 @@ Logged, never fatal:
   ```
 
 `validate` logs them at warning level, so `logging.level: error` hides them. The JSON warning is
-the exception: like a run banner, it prints on stderr whatever the log level, under the skip flag
-too.
+the exception: like a run banner, it prints on stderr whatever the log level.
 
 ---
 

@@ -139,7 +139,7 @@ refusal, is not built.
 
 **Affects:** every JSON column of an archive or copy-only job.
 
-**Observed** (2026-10-18, on Oracle MySQL 8.0.40 and 9.7.1 and Percona 8.4.11). A client reads a
+**Observed** (2026-10-18, on Oracle MySQL 8.0.40 and 9.7.1 and Percona 8.4.11-11). A client reads a
 JSON column only as MySQL's printed text, over the text and the binary protocol alike, and a bound
 string is rebuilt by the destination's JSON parser. A document built by SQL, copied through its
 printed text:
@@ -148,9 +148,9 @@ printed text:
 |---|---|---|
 | DATETIME, DATE, TIME | a string with the same text | the type |
 | opaque binary (`CAST(x AS BINARY)`, BIT, a BLOB column) | a string `"base64:typeNN:…"` | the type |
-| YEAR, a DECIMAL with no fraction | an integer | the type |
+| a DECIMAL with no fraction; YEAR on 8.4 and 9.7, which build it as UNSIGNED INTEGER (8.0 builds an INTEGER, which stays one) | an integer | the type |
 | DECIMAL `12.50` | DOUBLE `12.5` | the type and the scale |
-| a DECIMAL with more than 17 significant digits | a DOUBLE, without the digits beyond | **the value** |
+| a DECIMAL with more digits than a double holds | a DOUBLE: digits beyond 17 are always lost, and on an 8.0 or 8.4 destination the 16th or 17th can already differ | **the value** |
 | a double, on an 8.0 or 8.4 destination | sometimes one unit in the last place away | **the value** |
 | strings, integers, booleans, null, nested objects and arrays | unchanged | nothing |
 
@@ -159,11 +159,12 @@ All three servers behave the same, except for doubles:
 | The source's double, copied to | `0.9057697559760601` | `9088544342.689999` | 20,000 random doubles |
 |---|---|---|---|
 | MySQL 8.0.40 | `0.90576975597606` | `9088544342.69` | 1,816 changed |
-| Percona 8.4.11 | `0.90576975597606` | `9088544342.69` | 1,816 changed |
+| Percona 8.4.11-11 | `0.90576975597606` | `9088544342.69` | 1,816 changed |
 | MySQL 9.7.1 | unchanged | unchanged | none changed |
 
-- **On 8.0 and 8.4 the share depends on the values:** from none to 43 % of 20,000 across other
-  generators, most among doubles of 16 or 17 digits. This is MySQL
+- **On 8.0 and 8.4 the share depends on the values:** from none to 43 % of 20,000 across five
+  generators, the same counts on 8.0.40 and 8.4.11-11. The parser can change any number with a
+  fraction or an exponent, a DECIMAL's text included. This is MySQL
   [Bug #116160](https://bugs.mysql.com/bug.php?id=116160) (*Precision loss of double value in
   JSON*, Verified for 8.0 and higher, no fix release); [Bug #83954](https://bugs.mysql.com/bug.php?id=83954)
   is the DECIMAL case. The bug report shows a dump and reload losing the same precision: any client
