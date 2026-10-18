@@ -233,7 +233,8 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 > to delete* in `docs/README_JOBS_SCHEMA.md` (`internal/engine/errors.go`, `RecurringRootError`);
 > *JSON values that do not survive a text copy* in `docs/README_COMPAT.md`
 > (`internal/engine/errors.go`, `VerificationError`; `internal/preflight/json.go`, the JSON
-> warning). Renaming one breaks that reference.
+> warning). Renaming one breaks that reference, and `TestErrorMessagesQuoteDocHeadings`
+> (`tests/harness`) fails `make check`.
 
 ## Documentation Layout (RULE)
 
