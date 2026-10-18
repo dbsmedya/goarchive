@@ -113,33 +113,38 @@ func joinLiterals(e ast.Expr, others *[]ast.Expr) string {
 //
 //	A  docs/README_X.md, "Heading"
 //	B  "Heading" in docs/README_X.md
-//	C  docs/README_X.md → Heading            (up to . ) ; " or the end)
+//	C  docs/README_X.md → Heading            (up to . ) ; " or the end), or → "Heading"
 //	D  docs/README_X.md, Heading             (a capital first, the same ends)
 //
 // or none, for a bare reference followed by ), ., the end, or a lower-case word. Anything
-// else is unrecognised, so a new way of quoting a heading fails the test instead of passing
-// unread.
+// else is unrecognised, and so is a heading form that yields an empty heading, so a new way
+// of quoting a heading fails the test instead of passing unread.
 func classifyDocRefs(pos, v string) (quotes []docQuote, unrecognised []string) {
 	for _, m := range docRef.FindAllStringIndex(v, -1) {
 		file, before, after := v[m[0]:m[1]], v[:m[0]], v[m[1]:]
 		q := docQuote{pos: pos, file: file}
+		headed, ok := true, true
 		switch {
-		case quotedRef.MatchString(before):
-			q.heading = quotedRef.FindStringSubmatch(before)[1]
-		case strings.HasPrefix(after, `, "`):
-			h, _, ok := strings.Cut(after[len(`, "`):], `"`)
-			if !ok {
-				unrecognised = append(unrecognised, unrecognisedRef(pos, v, m))
-				continue
+		case strings.HasSuffix(before, `" in `):
+			if sm := quotedRef.FindStringSubmatch(before); sm != nil {
+				q.heading = sm[1]
 			}
-			q.heading = h
+		case strings.HasPrefix(after, `, "`):
+			q.heading, _, ok = strings.Cut(after[len(`, "`):], `"`)
+		case strings.HasPrefix(after, ` → "`):
+			q.heading, _, ok = strings.Cut(after[len(` → "`):], `"`)
 		case strings.HasPrefix(after, " → "):
 			q.heading = headingUpToEnd(after[len(" → "):])
 		case strings.HasPrefix(after, ", ") && startsWith(after[2:], unicode.IsUpper):
 			q.heading = headingUpToEnd(after[2:])
-		case after == "" || strings.HasPrefix(after, ")") || strings.HasPrefix(after, ".") || strings.HasPrefix(after, "\x00"):
-		case (strings.HasPrefix(after, ", ") || strings.HasPrefix(after, " ")) && startsWith(strings.TrimPrefix(strings.TrimPrefix(after, ","), " "), unicode.IsLower):
+		case after == "" || strings.HasPrefix(after, ")") || strings.HasPrefix(after, ".") || strings.HasPrefix(after, "\x00"),
+			(strings.HasPrefix(after, ", ") || strings.HasPrefix(after, " ")) && startsWith(strings.TrimPrefix(strings.TrimPrefix(after, ","), " "), unicode.IsLower):
+			headed = false
 		default:
+			ok = false
+		}
+		// A heading form that yields no heading is unrecognised, never a bare reference.
+		if !ok || headed && strings.TrimSpace(strings.ReplaceAll(q.heading, "`", "")) == "" {
 			unrecognised = append(unrecognised, unrecognisedRef(pos, v, m))
 			continue
 		}
