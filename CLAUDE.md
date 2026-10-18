@@ -173,6 +173,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | What the dbsgomysql integration changed, and why | `docs/README_dbsgomysql.md` |
 | Moving from 2.x to 3.0: tracking tables, config and flag changes | `docs/README_UPGRADING_3_0.md` |
 | MySQL server behaviours that change how GoArchive binds keys (compatibility issues) | `docs/README_COMPAT.md` |
+| Character sets: the session pin, the supported and refused lists, converting a column | `docs/README_CHARSETS.md` |
 
 ### Where behavior lives in code
 

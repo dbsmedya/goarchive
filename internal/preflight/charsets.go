@@ -15,7 +15,8 @@ import (
 // dec8, geostd8, greek, hebrew, hp8, swe7, big5, euckr, gb2312, gbk, gb18030, tis620), or a
 // lone surrogate reads as bytes that are not UTF-8 and cannot be bound back (ucs2).
 // TestMySQLCharsetRoundTrip proves the list on every supported server, and
-// docs/README_VALIDATION.md (COLUMN_CHARSET_CHECK) shows it.
+// docs/README_CHARSETS.md shows it; TestCharsetDocMatchesCode (tests/harness) reads this literal,
+// so it stays one []string of quoted names.
 var supportedCharsets = []string{
 	"utf8mb4",
 	"utf8mb3",

@@ -16,7 +16,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Moving from 3.0 beta.1](#moving-from-30-beta1)
-- [Moving from 3.0 beta.2 (unreleased)](#moving-from-30-beta2-unreleased)
+- [Moving from 3.0 beta.2](#moving-from-30-beta2)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -241,7 +241,7 @@ under a schema lock and the other waits for it, up to 60 seconds. Exit code 4 ha
 cause: that lock still held after the wait
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
 
-## Moving from 3.0 beta.2 (unreleased)
+## Moving from 3.0 beta.2
 
 The tracking tables are unchanged.
 
@@ -255,7 +255,7 @@ the remedy. A script that treats 4 as "try later" now sees these as failures
 `utf8mb4`, and preflight refuses a job column whose character set does not survive it exactly,
 such as `cp932`, `sjis` or `cp1250`, with `COLUMN_CHARSET_CHECK`: through the `utf8mb4` session two
 of its keys could merge and its text change, silently. Convert the column to `utf8mb4`
-([the check and its fix](README_VALIDATION.md#column_charset_check)).
+([Character sets](README_CHARSETS.md): which sets, and how to convert).
 
 **A server whose `init_connect` narrows the session now works.** GoArchive's `SET NAMES` runs after
 `init_connect`, and `SESSION_CHARSET_CHECK` refuses a session something else narrows

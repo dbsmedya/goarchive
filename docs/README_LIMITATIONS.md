@@ -112,6 +112,11 @@ The destination may drop secondary indexes, `auto_increment` and defaults, and m
 On a server that stores names in lower case, write every table name in the job in lower case.
 A mixed-case name is refused with `TABLE_EXISTENCE_CHECK`.
 
+#### Character sets
+
+Every text column the job reads or writes must use a supported character set; preflight refuses
+the others (`COLUMN_CHARSET_CHECK`). The lists and the reason: [Character sets](README_CHARSETS.md).
+
 ---
 
 ### Model limitations
