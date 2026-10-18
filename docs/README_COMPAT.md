@@ -105,22 +105,11 @@ guarantee holds.
 Every valid single character of each of MySQL's 41 character sets was converted to `utf8mb4` and
 back:
 
-- **19 sets are exact:** `utf8mb4`, `utf8mb3`, `ascii`, `latin1`, `latin2`, `latin5`, `latin7`,
-  `cp850`, `cp852`, `cp866`, `keybcs2`, `koi8r`, `koi8u`, `macce`, `macroman`, `utf16`, `utf16le`,
-  `utf32` and `binary`. In `ascii`, bytes 0x80–0xFF cannot be stored (1366); `utf16`, `utf16le`
-  and `utf32` hold all 1,112,064 Unicode characters, surrogate pairs included.
-- **22 sets lose data:**
-  - two characters read as one: sjis writes its backslash 0x5C back as 0x815F (`C:\tmp` arrives
-    as `43 3A 81 5F …`); cp932 and eucjpms map their NEC and IBM duplicates (such as 0x8790 and
-    0x81E0) to one character; ujis, armscii8, tis620 and big5 have such pairs too;
-  - storable codes with no Unicode character read back as `?`: cp1250, cp1251, cp1256, cp1257,
-    dec8, geostd8, greek, hebrew, hp8, swe7, big5, cp932, euckr, gb2312, gbk, sjis, eucjpms, ujis
-    and gb18030; tis620 and big5 codes become U+FFFD;
-  - ucs2's 2,048 lone surrogates read as bytes that are not UTF-8 (`EDA080`), which MySQL refuses to
-    bind back (3988), strict or not.
-
-  Every collation of these sets keeps the colliding characters distinct, so a primary key holds
-  both.
+- **19 sets are exact, and 22 lose data:** characters that read as one, codes that read as `?` or
+  U+FFFD, and ucs2's lone surrogates, which read as bytes that are not UTF-8 and cannot be bound
+  back (3988). Both lists, set by set: [Character sets](README_CHARSETS.md#supported-character-sets).
+  Every collation of the lossy sets keeps the colliding characters distinct, so a primary key
+  holds both.
 - **An ill-formed value inside an exact set** (the `EDA080` an `ALTER` from ucs2 writes into
   `utf8mb4`) is read unchanged: a strict destination refuses its INSERT (1366), a non-strict one
   stores it empty with warning 1366. A non-strict load stores an `ascii` byte above 0x7F as empty,
@@ -143,4 +132,3 @@ in cp1250, sjis, tis620 and ucs2.
 
 **Still open.** Reading and binding keys as bytes (`CAST(… AS BINARY)`), which would lift the
 refusal, is not built.
-

@@ -205,9 +205,8 @@ exactly through its utf8mb4 session, so keys could merge and text change without
 [children.code(cp932) destination:notes.body(sjis)])
 ```
 
-The supported sets: `utf8mb4`, `utf8mb3`, `ascii`, `latin1`, `latin2`, `latin5`, `latin7`, `cp850`,
-`cp852`, `cp866`, `keybcs2`, `koi8r`, `koi8u`, `macce`, `macroman`, `utf16`, `utf16le`, `utf32` and
-`binary`. Every other set is refused. The check judges the character set, not the collation.
+The supported and refused sets, and why: [Character sets](README_CHARSETS.md#supported-character-sets).
+The check judges the character set, not the collation.
 
 | Job type | Columns checked |
 |---|---|
@@ -218,21 +217,9 @@ The supported sets: `utf8mb4`, `utf8mb3`, `ascii`, `latin1`, `latin2`, `latin5`,
 character set and are not. It runs under
 `--skip-dangerously-validate-preflight-allow-experimental` too.
 
-**Fix:** convert the column to `utf8mb4` on both servers
-(`ALTER TABLE <table> MODIFY <column> … CHARACTER SET utf8mb4`), or leave the table out of the
-job. The conversion is MySQL's own, under the default strict mode:
-
-| Value | Strict `ALTER … CHARACTER SET utf8mb4` |
-|---|---|
-| a code with no Unicode character (cp932 0x81AD, cp1250 0x81) | refused, 1366 `Incorrect string value` |
-| a primary-key pair that would merge (cp932 0x8790 and 0x81E0) | refused, 1062 `Duplicate entry` |
-| a non-key pair that maps to one character (cp932 0x8790 and 0x81E0; sjis 0x5C and 0x815F) | **merged without a message**: both rows hold the same character afterwards |
-| a ucs2 lone surrogate (0xD800) | stored as `EDA080`, invalid UTF-8, which a strict destination then refuses (1366) |
-
-So before converting, look for non-key values that map to one character (the cp932 and eucjpms
-NEC/IBM duplicates, the sjis and ujis full-width backslash), and remove ucs2's lone surrogates.
-MySQL refuses the rest itself. The MySQL facts:
-[Character sets that do not survive a utf8mb4 session](README_COMPAT.md#character-sets-that-do-not-survive-a-utf8mb4-session).
+**Fix:** convert the column to `utf8mb4` on both servers, or leave the table out of the job. A
+strict `ALTER` merges some values without a message, so check first:
+[Converting a refused column](README_CHARSETS.md#converting-a-refused-column).
 
 ---
 

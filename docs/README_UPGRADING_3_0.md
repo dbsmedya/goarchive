@@ -255,7 +255,7 @@ the remedy. A script that treats 4 as "try later" now sees these as failures
 `utf8mb4`, and preflight refuses a job column whose character set does not survive it exactly,
 such as `cp932`, `sjis` or `cp1250`, with `COLUMN_CHARSET_CHECK`: through the `utf8mb4` session two
 of its keys could merge and its text change, silently. Convert the column to `utf8mb4`
-([the check and its fix](README_VALIDATION.md#column_charset_check)).
+([Character sets](README_CHARSETS.md): which sets, and how to convert).
 
 **A server whose `init_connect` narrows the session now works.** GoArchive's `SET NAMES` runs after
 `init_connect`, and `SESSION_CHARSET_CHECK` refuses a session something else narrows
