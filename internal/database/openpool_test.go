@@ -142,3 +142,31 @@ func TestConnectWithRetryClassifiesFailures(t *testing.T) {
 		})
 	}
 }
+
+// TestConnectWithRetryRetriesAnUnparsableDSN (M7c-F6, Codex N1): a host that validation
+// accepts but the driver cannot parse (root@localhost) failed in the old connect's connector
+// build, so Manager tried it three times and said "failed after 3 retries: ". OpenPool marks
+// that failure retryable and keeps the rule; a refused Global stays unretried.
+func TestConnectWithRetryRetriesAnUnparsableDSN(t *testing.T) {
+	cfg := &config.DatabaseConfig{Host: "root@localhost", Port: 3306, User: "test", Password: "test", Database: "sakila", TLS: "disable"}
+	if _, err := OpenPool(context.Background(), cfg, true); err == nil {
+		t.Fatal("OpenPool parsed a DSN with root@localhost as its host")
+	} else if _, retryable := errors.AsType[*retryableError](err); !retryable {
+		t.Errorf("OpenPool(root@localhost) = %v, want a retryable failure as the old connect's", err)
+	}
+	if _, err := OpenPool(context.Background(), cfg, true, Global{"time_zone", "'+01:00'"}); err == nil {
+		t.Fatal("OpenPool accepted a refused global")
+	} else if _, retryable := errors.AsType[*retryableError](err); retryable {
+		t.Errorf("a refused global is retryable: %v", err)
+	}
+
+	calls := 0
+	m := &Manager{backoff: time.Millisecond, open: func(ctx context.Context, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
+		calls++
+		return OpenPool(ctx, cfg, readsWarnings)
+	}}
+	_, err := m.connectWithRetry(context.Background(), "source", cfg, true)
+	if calls != 3 || err == nil || !strings.HasPrefix(err.Error(), "failed after 3 retries: ") {
+		t.Errorf("connectWithRetry(root@localhost) = %d attempts, %v; want 3 and \"failed after 3 retries: \"", calls, err)
+	}
+}
