@@ -36,7 +36,7 @@ func enabledStages(cfg Config) []string {
 // has no destination-table checks but keeps the job schema permission check (R5).
 func TestStagesByJobType(t *testing.T) {
 	structure := []string{"TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
-	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "ColumnCharsets", "DestinationKeys", "DestinationSchemaCompatibility",
+	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "ColumnCharsets", "JSONVerification", "DestinationKeys", "DestinationSchemaCompatibility",
 		"DestinationWritePermissions", "DestinationInsertTriggerVisibility", "DestinationInsertTriggers"}
 	join := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	for _, tc := range []struct {
@@ -53,8 +53,8 @@ func TestStagesByJobType(t *testing.T) {
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
 		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3).
-		{jobspec.Archive, true, []string{"Keys", "ColumnCharsets", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.CopyOnly, true, []string{"Keys", "ColumnCharsets", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.Archive, true, []string{"Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.CopyOnly, true, []string{"Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
 		{jobspec.Purge, true, []string{"Keys", "ColumnCharsets", "StatementCaps"}},
 	} {
 		got := enabledStages(Config{Spec: &jobspec.Spec{Type: tc.typ}, SkipPolicy: tc.skip})
