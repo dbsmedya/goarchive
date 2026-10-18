@@ -37,7 +37,9 @@ func TestMySQLCountWarnings(t *testing.T) {
 			before := len(logged())
 			out, errOut, code := mainStreams(t, command, "-c", f.config, "--job", "archive_orders", "--verification=count")
 			if code != 0 {
-				t.Fatalf("exit %d, stderr %q", code, errOut)
+				// validate prints a job's refusal on stdout, the others on stderr: show both, so a
+				// refusal is named whichever command made it (the matrix judge reads this line).
+				t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 			}
 			log := logged()[before:]
 			for _, w := range want {
