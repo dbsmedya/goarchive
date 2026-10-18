@@ -6,12 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"strconv"
 
 	mysql "github.com/go-sql-driver/mysql"
-
-	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 // A session keeps at most max_error_count of a statement's warnings. At 0 it keeps none, so
@@ -161,17 +157,17 @@ func (c warningsConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-// poolConnector is the connector Manager.connect opens a pool on: the driver's own, from
-// BuildDSN's DSN exactly as sql.Open would build it, wrapped in warningsConnector when the
-// pool's statements read warnings and job data (source and destination; replica pools read
-// replica status only, so they are pinned by BuildDSN but not checked).
-func poolConnector(cfg *config.DatabaseConfig, readsWarnings bool) (driver.Connector, error) {
-	connector, err := (mysql.MySQLDriver{}).OpenConnector(BuildDSN(cfg))
+// poolConnector is the connector OpenPool opens a pool on: the driver's own, from mc's DSN
+// exactly as sql.Open would build it, wrapped in warningsConnector for addr when the pool's
+// statements read warnings and job data (source and destination; replica pools read replica
+// status only, so they are pinned by BuildDSN but not checked).
+func poolConnector(mc *mysql.Config, addr string, readsWarnings bool) (driver.Connector, error) {
+	connector, err := (mysql.MySQLDriver{}).OpenConnector(mc.FormatDSN())
 	if err != nil {
 		return nil, err
 	}
 	if !readsWarnings {
 		return connector, nil
 	}
-	return warningsConnector{Connector: connector, addr: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))}, nil
+	return warningsConnector{Connector: connector, addr: addr}, nil
 }

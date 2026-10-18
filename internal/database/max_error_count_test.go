@@ -254,8 +254,12 @@ func TestOpenDBSurfacesTheRefusal(t *testing.T) {
 // is never refused for a setting it never uses.
 func TestPoolConnectorWrapsOnlyWarningReaders(t *testing.T) {
 	cfg := &config.DatabaseConfig{Host: "127.0.0.1", Port: 3307, User: "u", Password: "p", Database: "d"}
+	mc, err := dsnConfig(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, reads := range []bool{true, false} {
-		c, err := poolConnector(cfg, reads)
+		c, err := poolConnector(mc, "127.0.0.1:3307", reads)
 		if err != nil {
 			t.Fatal(err)
 		}
