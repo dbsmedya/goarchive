@@ -4,24 +4,55 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"maps"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
 
 // nonStrict replaces e's destination pool with one whose sessions run with an empty
-// sql_mode, so a conversion is a warning on the INSERT instead of an error. params adds
-// session variables.
+// sql_mode, so a conversion is a warning on the INSERT instead of an error. params are
+// server globals the test emulates. A session at max_error_count 0 comes from rawDest, as
+// goarchive's pool would raise it.
 func (e env) nonStrict(t *testing.T, params map[string]string) env {
 	t.Helper()
 	p := map[string]string{"sql_mode": "''"}
 	for k, v := range params {
 		p[k] = v
 	}
-	e.dst = openServer(t, "TEST_DEST", e.dstSchema, p)
+	if p["max_error_count"] == "0" {
+		e.dst = rawDest(t, e.dstSchema, p)
+	} else {
+		e.dst = openServer(t, "TEST_DEST", e.dstSchema, p)
+	}
 	return e
+}
+
+// rawDest opens the destination raw, without the per-connection checks, with params set on
+// every session: the runtime backstop (INSERT_DIAGNOSTICS_UNPROVEN) is tested on a session
+// at max_error_count 0, which MAX_ERROR_COUNT_CHECK would raise.
+func rawDest(t *testing.T, schema string, params map[string]string) *sql.DB {
+	t.Helper()
+	port, _ := strconv.Atoi(os.Getenv("TEST_DEST_PORT"))
+	cfg := mysql.NewConfig()
+	cfg.User, cfg.Passwd, cfg.Net, cfg.DBName = os.Getenv("TEST_DEST_USER"), os.Getenv("TEST_DEST_PASSWORD"), "tcp", schema
+	cfg.Addr = fmt.Sprintf("%s:%d", os.Getenv("TEST_DEST_HOST"), port)
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "sql_notes": "1", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
+	maps.Copy(cfg.Params, params)
+	connector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
 }
 
 // text reads one value of the destination as text, for a converted-value assertion.

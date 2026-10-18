@@ -9,20 +9,21 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 )
 
 // These tests run on TEST_SOURCE_* (db1). Each pool is the test's own, so its connection
 // counts are the set's alone.
 func pool(t *testing.T) *sql.DB { return poolWith(t, nil) }
 
-// poolWith is pool with more session variables set on every new session, as a server's
-// globals would be.
+// poolWith is pool with server globals the test emulates under the pins (database.Global).
 func poolWith(t *testing.T, params map[string]string) *sql.DB {
 	t.Helper()
 	host, user, pass := os.Getenv("TEST_SOURCE_HOST"), os.Getenv("TEST_SOURCE_USER"), os.Getenv("TEST_SOURCE_PASSWORD")
@@ -30,17 +31,18 @@ func poolWith(t *testing.T, params map[string]string) *sql.DB {
 	if host == "" || user == "" || port == 0 {
 		t.Fatal("integration environment not loaded: set -a; source tests/.env; set +a")
 	}
-	cfg := mysql.NewConfig()
-	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port)
-	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
-	// reads are whole under the matrix row sql_select_limit_20.
-	cfg.Params = map[string]string{"sql_select_limit": "18446744073709551615"}
-	maps.Copy(cfg.Params, params)
-	connector, err := mysql.NewConnector(cfg)
+	cfg := config.DatabaseConfig{Host: host, Port: port, User: user, Password: pass, TLS: "disable"}
+	var globals []database.Global
+	for _, k := range slices.Sorted(maps.Keys(params)) {
+		globals = append(globals, database.Global{Name: k, Value: params[k]})
+	}
+	// goarchive's own pool (database.OpenPool); the cap is lifted, as the suites race more
+	// sessions than a run.
+	db, err := database.OpenPool(t.Context(), &cfg, true, globals...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(0)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
