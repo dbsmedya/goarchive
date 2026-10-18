@@ -1,8 +1,11 @@
 package database
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
@@ -15,6 +18,29 @@ func TestOpenPoolGlobals(t *testing.T) {
 	cfg := &config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}
 
 	t.Run("no globals", func(t *testing.T) {
+		// The connector is built from mc's DSN, so mc must parse as BuildDSN's DSN parses, for
+		// every TLS mode. The text is equal only where the driver's normalize adds nothing:
+		// under preferred (the default) it writes allowFallbackToPlaintext out, which a parse
+		// sets again.
+		for _, tls := range []string{"", "disable", "required", "skip-verify", "preferred"} {
+			c := *cfg
+			c.TLS = tls
+			mc, err := dsnConfig(&c, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := mysql.ParseDSN(BuildDSN(&c))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := mysql.ParseDSN(mc.FormatDSN())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("tls %q: dsnConfig's DSN parses as %+v, BuildDSN's as %+v", tls, got, want)
+			}
+		}
 		mc, err := dsnConfig(cfg, nil)
 		if err != nil {
 			t.Fatal(err)
