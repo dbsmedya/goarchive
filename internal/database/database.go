@@ -263,13 +263,13 @@ func openOn(ctx context.Context, c driver.Connector, cfg *config.DatabaseConfig)
 const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
 
 // dsnConfig is the driver configuration of cfg's pools: BuildDSN's DSN, parsed as sql.Open
-// parses it, with globals layered under the pins (Global). With no globals it cannot fail:
-// BuildDSN writes only the driver's own TLS names. Were the parse ever to fail, OpenPool would
-// return it unretried, where the old connect retried a connector error.
+// parses it, with globals layered under the pins (Global). A DSN the driver cannot parse (a
+// host that validation accepts, such as root@localhost) is marked retryable, as the old
+// connect's connector error was; a refused Global is not.
 func dsnConfig(cfg *config.DatabaseConfig, globals []Global) (*mysql.Config, error) {
 	mc, err := mysql.ParseDSN(BuildDSN(cfg))
 	if err != nil {
-		return nil, err
+		return nil, &retryableError{err}
 	}
 	if err := applyGlobals(mc.Params, globals); err != nil {
 		return nil, err

@@ -154,7 +154,9 @@ func TestConnectWithRetryRetriesAnUnparsableDSN(t *testing.T) {
 	} else if _, retryable := errors.AsType[*retryableError](err); !retryable {
 		t.Errorf("OpenPool(root@localhost) = %v, want a retryable failure as the old connect's", err)
 	}
-	if _, err := OpenPool(context.Background(), cfg, true, Global{"time_zone", "'+01:00'"}); err == nil {
+	valid := *cfg
+	valid.Host = "localhost"
+	if _, err := OpenPool(context.Background(), &valid, true, Global{"time_zone", "'+01:00'"}); err == nil {
 		t.Fatal("OpenPool accepted a refused global")
 	} else if _, retryable := errors.AsType[*retryableError](err); retryable {
 		t.Errorf("a refused global is retryable: %v", err)
