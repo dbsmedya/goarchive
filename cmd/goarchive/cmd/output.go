@@ -29,6 +29,13 @@ func banners(doc *jobspec.Document, typ jobspec.Type, v jobspec.Verification, sk
 	if forceTriggers {
 		out = append(out, "WARNING: --force-triggers: DELETE triggers on source tables are accepted; every delete fires them.")
 	}
+	if v == jobspec.VerifyCount && typ != jobspec.Purge {
+		msg := "WARNING: verification: count: copied rows are counted by key, not compared, so a value the copy changes goes unseen."
+		if typ == jobspec.Archive {
+			msg += " The source rows are then deleted."
+		}
+		out = append(out, msg)
+	}
 	if v == jobspec.VerifyNone && typ != jobspec.Purge {
 		msg := "WARNING: verification: none: copied rows are not compared, and conversion warnings are accepted."
 		if typ == jobspec.Archive {
