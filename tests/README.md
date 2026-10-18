@@ -542,10 +542,10 @@ The environment matrix runs the integration suites again under **one changed MyS
 environment at a time**: a global variable, a setting fixed at initialization, or another
 server version. The rows are in [`envmatrix/rows.tsv`](envmatrix/rows.tsv), and each one states
 its expected outcome. Under every row a run must be exact, or refused at startup with a named
-error, or fail closed by name before it changes anything (as the INSERT and range checks do on
-a session whose `max_error_count` is 0, which the matrix reaches through the suites' own pools:
-goarchive's own connections raise such a session to 1024). A row expected to `pass` has no
-failing test. A row expected to `refuse:CODE|…` passes
+error, or fail closed by name before it changes anything. The suites open goarchive's own
+pools, so under `max_error_count_0` a session at 0 is raised to 1024, or refused at open with
+`MAX_ERROR_COUNT_CHECK` for an account that may not raise it, as the binary refuses it. A row
+expected to `pass` has no failing test. A row expected to `refuse:CODE|…` passes
 only if every failing test's own output cites one of those codes, a failing parent's own lines
 included. A panic, a timeout, a build failure, a test or package that started and never
 finished, or a `go test` exit status that disagrees with its output (a killed run) fails any
