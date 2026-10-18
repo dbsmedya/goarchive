@@ -31,7 +31,7 @@ var allowedRawPools = map[string]string{
 // matrix certifies the sessions the binary opens and the suites cannot drift from the pins.
 // A file that opens a raw pool must be in allowedRawPools, and a listed file must still open
 // one, so the list cannot rot. The list is by file: a raw open added to a listed file is not
-// seen.
+// seen. The match is textual, so a comment or string naming one of rawPoolOpens counts too.
 func TestIntegrationPoolsUseOpenPool(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {

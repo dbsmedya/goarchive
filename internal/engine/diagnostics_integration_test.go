@@ -17,8 +17,8 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
 
-// nonStrict replaces e's destination pool with one whose sessions run with an empty
-// sql_mode, so a conversion is a warning on the INSERT instead of an error. params are
+// nonStrict replaces e's destination pool with one whose sessions run without the strict
+// modes, so a conversion is a warning on the INSERT instead of an error. params are
 // server globals the test emulates. A session at max_error_count 0 comes from rawDest, as
 // goarchive's pool would raise it.
 func (e env) nonStrict(t *testing.T, params map[string]string) env {

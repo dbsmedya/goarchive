@@ -193,11 +193,11 @@ type retryableError struct{ err error }
 func (e *retryableError) Error() string { return e.err.Error() }
 func (e *retryableError) Unwrap() error { return e.err }
 
-// OpenPool opens a pool as goarchive opens its source (readsWarnings true) and replica pools:
-// BuildDSN's settings, the per-connection checks when readsWarnings, Manager's pool limits, then
-// a ping, the UTC probe and the AUTO_INCREMENT zero assertion. It does not retry. A failure
-// closes the pool, and the error carries no prefix of its own. globals emulate server globals
-// under the pins (Global); Manager passes none.
+// OpenPool opens a pool as goarchive opens its source and destination (readsWarnings true) and
+// replica pools: BuildDSN's settings, the per-connection checks when readsWarnings, Manager's
+// pool limits, then a ping, the UTC probe and the AUTO_INCREMENT zero assertion. It does not
+// retry. A failure closes the pool, and the error carries no prefix of its own. globals emulate
+// server globals under the pins (Global); Manager passes none.
 func OpenPool(ctx context.Context, cfg *config.DatabaseConfig, readsWarnings bool, globals ...Global) (*sql.DB, error) {
 	mc, err := dsnConfig(cfg, globals)
 	if err != nil {
@@ -263,7 +263,9 @@ func openOn(ctx context.Context, c driver.Connector, cfg *config.DatabaseConfig)
 const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
 
 // dsnConfig is the driver configuration of cfg's pools: BuildDSN's DSN, parsed as sql.Open
-// parses it, with globals layered under the pins (Global). With no globals it cannot fail.
+// parses it, with globals layered under the pins (Global). With no globals it cannot fail:
+// BuildDSN writes only the driver's own TLS names. Were the parse ever to fail, OpenPool would
+// return it unretried, where the old connect retried a connector error.
 func dsnConfig(cfg *config.DatabaseConfig, globals []Global) (*mysql.Config, error) {
 	mc, err := mysql.ParseDSN(BuildDSN(cfg))
 	if err != nil {
