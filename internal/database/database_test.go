@@ -814,7 +814,7 @@ func TestBuildDSNDiagnosticInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroModeExpression {
+	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroMode("@@SESSION.sql_mode") {
 		t.Fatalf("diagnostic DSN initialization missing or auto-zero expression changed: %#v", dsn.Params)
 	}
 }
