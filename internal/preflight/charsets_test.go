@@ -124,7 +124,9 @@ func TestColumnCharsets(t *testing.T) {
 			w.jobYAML = withoutNotes
 			w.cfg.SkipPolicy = true
 			both(w, "order_lines", col("line_no", "varchar(8)", "cp932 cp932_bin"))
-			w.mustFail("COLUMN_CHARSET_CHECK")
+			if e := w.mustFail("COLUMN_CHARSET_CHECK"); !hasTable(e, "order_lines.line_no(cp932)") {
+				t.Errorf("%s under SkipPolicy: tables = %v, want order_lines.line_no(cp932)", typ, e.Tables)
+			}
 		}
 	})
 
