@@ -226,6 +226,13 @@ func TestErrorMessagesQuoteDocHeadings(t *testing.T) {
 		{"an unrecognised form", `var _ = "docs/README_A.md; Plain heading"`, "unrecognised"},
 		{"a bare reference", "var _ = \"(docs/README_A.md), or a key\"\nvar _ = \"docs/README_A.md for the limits\"", ""},
 		{"a comment", "// See docs/README_A.md, \"Gone heading\"\nvar _ = 1", ""},
+		// A heading form that yields no heading is never a bare reference (Codex R1).
+		{"form C quoted, current", `var _ = "See docs/README_A.md → \"Plain heading\""`, ""},
+		{"form C quoted, stale", `var _ = "See docs/README_A.md → \"Gone heading\""`, "Gone heading"},
+		{"form C, empty", `var _ = "see docs/README_A.md → ."`, "unrecognised"},
+		{"form A, empty", `var _ = "See docs/README_A.md, \"\""`, "unrecognised"},
+		{"form A, backticks only", "var _ = \"See docs/README_A.md, \\\"``\\\"\"", "unrecognised"},
+		{"form B, empty", `var _ = "See \"\" in docs/README_A.md"`, "unrecognised"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
