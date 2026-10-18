@@ -85,7 +85,7 @@ func (r *run) verifyHash(ctx context.Context, src, dst queryer, table string, ke
 		return &VerificationError{Table: table, Method: "sha256", Requested: want, Source: rows[0], Destination: rows[1]}
 	case sums[0] != sums[1]:
 		return &VerificationError{Table: table, Method: "sha256", Requested: want, Source: rows[0], Destination: rows[1],
-			Detail: fmt.Sprintf(", hashes differ (source %s…, destination %s…)", sums[0][:16], sums[1][:16])}
+			Detail: fmt.Sprintf(", hashes differ (source %s…, destination %s…)", sums[0][:16], sums[1][:16]), JSONColumns: meta.JSON}
 	}
 	return nil
 }

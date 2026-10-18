@@ -31,6 +31,8 @@ func columnMetadataFromFacts(tables []string, facts []validations.TableColumns) 
 				meta.Temporal[col.Name] = types.TemporalDateTime
 			case "timestamp":
 				meta.Temporal[col.Name] = types.TemporalTimestamp
+			case "json":
+				meta.JSON = append(meta.JSON, col.Name)
 			}
 		}
 		byTable[fact.Table] = meta
