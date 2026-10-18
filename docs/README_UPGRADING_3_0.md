@@ -16,7 +16,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Moving from 3.0 beta.1](#moving-from-30-beta1)
-- [Moving from 3.0 beta.2 (unreleased)](#moving-from-30-beta2-unreleased)
+- [Moving from 3.0 beta.2](#moving-from-30-beta2)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -241,7 +241,7 @@ under a schema lock and the other waits for it, up to 60 seconds. Exit code 4 ha
 cause: that lock still held after the wait
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
 
-## Moving from 3.0 beta.2 (unreleased)
+## Moving from 3.0 beta.2
 
 The tracking tables are unchanged.
 
