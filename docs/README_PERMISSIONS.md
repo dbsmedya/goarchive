@@ -107,6 +107,9 @@ preflight.
   lock's session sets for its wait. Reading `performance_schema.metadata_locks` (the upgrade
   check in [README_UPGRADING_3_0.md](README_UPGRADING_3_0.md#moving-from-30-alpha0)) needs `SELECT` on
   `performance_schema`: run it as a DBA account, not as GoArchive's.
+- **The session character set needs no privilege.** The `SET NAMES` every connection runs, and
+  the read of its result ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)),
+  are session statements any account may run.
 - **The source facts need no privilege.** The unfinished-work guard reads the source's
   `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql; neither
   needs a grant beyond connecting

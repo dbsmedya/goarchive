@@ -103,6 +103,7 @@ server's global. None is configurable.
 | `sql_notes` | `1` | Notes are kept, so INSERT diagnostics see them |
 | `sql_select_limit` | `18446744073709551615` (no limit) | A server's global limit would cap every read without its own `LIMIT`: column lists and discovery would silently see only that many rows, and verification would hash only the columns read; a short copy read or row count fails loudly |
 | `wait_timeout` | `GREATEST(@@GLOBAL.wait_timeout, 28800)`; `300` on the two lock sessions | A batch's source session waits while the destination copies, verifies and commits; a shorter server value could close it under the batch. No session is held through a pause or a replication hold. A lock session is checked every 30 seconds, and its 300 seconds bound how long a lost host keeps its locks ([The lock sessions must stay alive](README_OPERATIONS.md#the-lock-sessions-must-stay-alive)) |
+| character set | `utf8mb4`, collated `utf8mb4_general_ci` (`SET NAMES` after authentication, so after any `init_connect`) | GoArchive reads and binds every value through the session's character set; a narrowed session would read text it cannot hold as `?` ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)) |
 | `max_error_count` | raised from 0 to 1024 (source and destination) | GoArchive reads every statement's warnings ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 
 ---

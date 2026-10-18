@@ -48,7 +48,7 @@ compiler checks.
 
 **`sqlmock` covers SQL GoArchive owns** and that a unit test cannot reach otherwise:
 connection-time probes in `internal/database` (the session pins, `MAX_ERROR_COUNT_CHECK`,
-`AUTO_INCREMENT_ZERO_MODE_CHECK`) and the advisory-lock statements in `internal/lock`. Everything
+`SESSION_CHARSET_CHECK`, `AUTO_INCREMENT_ZERO_MODE_CHECK`) and the advisory-lock statements in `internal/lock`. Everything
 else GoArchive sends — the engine's statements, the tracking tables, INSERT diagnostics — is
 proven by the integration tests on real servers.
 
@@ -61,6 +61,9 @@ own session reports, not the metadata catalog the library owns, so they stay GoA
   `NO_AUTO_VALUE_ON_ZERO` (`AUTO_INCREMENT_ZERO_MODE_CHECK`).
 - **`max_error_count`** — every new source and destination connection reads its session value
   and, at 0, sets 1024 (`MAX_ERROR_COUNT_CHECK`).
+- **Session character set** — every new source and destination connection reads its client,
+  connection and results character sets and its collation, and refuses any other than `utf8mb4` /
+  `utf8mb4_general_ci` (`SESSION_CHARSET_CHECK`).
 - **Server identity** — `@@GLOBAL.server_uuid`, `DATABASE()`, hostname and port of both pools, to
   refuse a source and destination that are one database (`SRC_DEST_IDENTITY_CHECK`).
 - **INSERT diagnostics** — `SHOW COUNT(*) WARNINGS`, `SHOW WARNINGS` and the session's

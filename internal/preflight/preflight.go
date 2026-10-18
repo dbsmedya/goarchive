@@ -169,6 +169,9 @@ func stages(cfg Config) []stage {
 		{"JobSchemaPermissions", policy, checkJobSchemaPermissions},
 		{"DestinationTablesExist", destination, checkDestinationTablesExist},
 		{"DestinationStorageEngine", destination, checkDestinationStorageEngine},
+		// Every job type, under SkipPolicy too: the loss is silent and no verification sees it
+		// (CHS-1).
+		{"ColumnCharsets", true, checkColumnCharsets},
 		{"DestinationKeys", destination, checkDestinationKeys},
 		{"DestinationSchemaCompatibility", destination, checkDestinationSchemaCompatibility},
 		{"DestinationWritePermissions", destination, checkDestinationWritePermissions},

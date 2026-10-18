@@ -36,7 +36,7 @@ func enabledStages(cfg Config) []string {
 // has no destination-table checks but keeps the job schema permission check (R5).
 func TestStagesByJobType(t *testing.T) {
 	structure := []string{"TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
-	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "DestinationKeys", "DestinationSchemaCompatibility",
+	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "ColumnCharsets", "DestinationKeys", "DestinationSchemaCompatibility",
 		"DestinationWritePermissions", "DestinationInsertTriggerVisibility", "DestinationInsertTriggers"}
 	join := func(parts ...[]string) []string { return slices.Concat(parts...) }
 	for _, tc := range []struct {
@@ -46,16 +46,16 @@ func TestStagesByJobType(t *testing.T) {
 	}{
 		{jobspec.Archive, false, join(structure, destination, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
 			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggerVisibility", "DeleteTriggers", "CascadeRules", "StatementCaps", "MaxAllowedPacket"})},
-		{jobspec.Purge, false, join(structure, []string{"ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
+		{jobspec.Purge, false, join(structure, []string{"ColumnCharsets", "ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
 			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggerVisibility", "DeleteTriggers", "CascadeRules", "StatementCaps",
 			"MaxAllowedPacket"})},
 		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
 		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3).
-		{jobspec.Archive, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.CopyOnly, true, []string{"Keys", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.Purge, true, []string{"Keys", "StatementCaps"}},
+		{jobspec.Archive, true, []string{"Keys", "ColumnCharsets", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.CopyOnly, true, []string{"Keys", "ColumnCharsets", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.Purge, true, []string{"Keys", "ColumnCharsets", "StatementCaps"}},
 	} {
 		got := enabledStages(Config{Spec: &jobspec.Spec{Type: tc.typ}, SkipPolicy: tc.skip})
 		if !slices.Equal(got, tc.want) {

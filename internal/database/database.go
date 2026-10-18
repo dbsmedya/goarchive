@@ -163,10 +163,11 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 				return db, nil
 			} else {
 				_ = db.Close()
-				// The first connection ran the max_error_count check: a property of the
-				// server and the account, not a transient, so no retry.
+				// The first connection ran the max_error_count and session charset checks:
+				// a property of the server and the account, not a transient, so no retry.
 				var mec *MaxErrorCountError
-				if errors.As(pingErr, &mec) {
+				var sce *SessionCharsetError
+				if errors.As(pingErr, &mec) || errors.As(pingErr, &sce) {
 					return nil, fmt.Errorf("%s: %w", name, pingErr)
 				}
 				err = pingErr
@@ -236,6 +237,14 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	dsnCfg.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	dsnCfg.DBName = cfg.Database
 	dsnCfg.ParseTime = true
+	// CHS-1: every value is read and bound through the session's character set. A narrowing
+	// init_connect, a proxy, or 8.0's --skip-character-set-client-handshake under a latin1
+	// server default left utf8mb4 text reading back as '?', and a key binding a look-alike
+	// row. The driver runs SET NAMES after authentication, so after init_connect, on every
+	// new connection, and closes one the server refuses. The collation is the handshake's
+	// own (45), so comparisons in the where and the key SQL do not change.
+	// SESSION_CHARSET_CHECK proves the result. The option cannot fail.
+	_ = dsnCfg.Apply(mysql.Charset("utf8mb4", "utf8mb4_general_ci"))
 	// M7c-F1: read each server's max_allowed_packet at connect instead of the driver's
 	// default 64 MiB. The driver sends a value as long data when it reaches
 	// max_allowed_packet/(parameters+1); against a smaller server, 64 MiB put values inline

@@ -73,6 +73,7 @@ type.
 | `JOB_SCHEMA_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `DEST_TABLE_EXISTENCE_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_STORAGE_ENGINE_CHECK` | ✅ | ❌ | ✅ |
+| `COLUMN_CHARSET_CHECK` | ✅ | ✅ | ✅ |
 | `DEST_KEY_IDENTITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_SCHEMA_COMPATIBILITY_CHECK` | ✅ | ❌ | ✅ |
 | `DEST_WRITE_PERMISSION_CHECK` | ✅ | ❌ | ✅ |
@@ -147,6 +148,26 @@ server's error; diagnose that. A connection that dies during the check is an ord
 connection failure, retried like one. Replica connections are not checked: they read replica
 status only.
 
+### `SESSION_CHARSET_CHECK`
+
+GoArchive reads every value in the session's `character_set_results` and binds every value in its
+`character_set_client`, so every connection is pinned to `utf8mb4` with `utf8mb4_general_ci`: the
+driver runs `SET NAMES utf8mb4 COLLATE utf8mb4_general_ci` after authentication, so after any
+`init_connect`. Every new source and destination connection, at startup or opened later by its
+pool, then reads its session and requires `utf8mb4` for client, connection and results, with
+`utf8mb4_general_ci`. A narrowed session would read `utf8mb4` text it cannot hold as `?`, and a
+key bound back would match a look-alike row. The failure names the values found:
+
+```
+failed to connect to databases: failed to connect to source database: source: SESSION_CHARSET_CHECK: db1:3306: the session is client=latin1 connection=latin1 results=latin1 collation=latin1_swedish_ci, not utf8mb4 with utf8mb4_general_ci, so text would read back changed. GoArchive sets it with SET NAMES at connect; an init_connect or a proxy on this server changes it after
+```
+
+**Fix:** find what rewrites the session after `SET NAMES`, usually a proxy, and make it keep the
+client's character set. A server's `init_connect` runs before GoArchive's `SET NAMES` and needs no
+change. The check proves the session at connect, per physical connection; a multiplexing proxy
+that changes the session between statements is not covered, as with the other session pins.
+Replica connections are pinned but not checked: they read replica status only.
+
 ---
 
 ## Source structure checks
@@ -168,6 +189,50 @@ Every source job table must be **InnoDB**. A base table whose engine MySQL repor
 refused too, as `<table>(<unknown>)`; that usually means a corrupted or unknown-engine table.
 
 **Fix:** `ALTER TABLE <table> ENGINE=InnoDB;`
+
+### `COLUMN_CHARSET_CHECK`
+
+A job column the run reads or writes as text uses a character set that does not survive the
+`utf8mb4` session exactly. In such a set two characters can read as one, or a character reads as
+`?`: two keys then merge, so a row is never copied and an in-tree `ON DELETE CASCADE` deletes it,
+and text is written back changed, while every verification passes. It runs before any row is
+read: after `DEST_STORAGE_ENGINE_CHECK`, or after `JOB_SCHEMA_PERMISSION_CHECK` for purge, which
+runs no destination check:
+
+```
+COLUMN_CHARSET_CHECK: A job column uses a character set that GoArchive cannot read and write back
+exactly through its utf8mb4 session, so keys could merge and text change without notice (tables:
+[children.code(cp932) destination:notes.body(sjis)])
+```
+
+The supported sets: `utf8mb4`, `utf8mb3`, `ascii`, `latin1`, `latin2`, `latin5`, `latin7`, `cp850`,
+`cp852`, `cp866`, `keybcs2`, `koi8r`, `koi8u`, `macce`, `macroman`, `utf16`, `utf16le`, `utf32` and
+`binary`. Every other set is refused. The check judges the character set, not the collation.
+
+| Job type | Columns checked |
+|---|---|
+| `archive`, `copy-only` | every column of every job table on the source, and every destination column of the same name |
+| `purge` | the primary-key and `foreign_key` columns of every job table, on the source |
+
+`ENUM` and `SET` columns are checked; numbers, temporal types, binary strings and `JSON` have no
+character set and are not. It runs under
+`--skip-dangerously-validate-preflight-allow-experimental` too.
+
+**Fix:** convert the column to `utf8mb4` on both servers
+(`ALTER TABLE <table> MODIFY <column> … CHARACTER SET utf8mb4`), or leave the table out of the
+job. The conversion is MySQL's own, under the default strict mode:
+
+| Value | Strict `ALTER … CHARACTER SET utf8mb4` |
+|---|---|
+| a code with no Unicode character (cp932 0x81AD, cp1250 0x81) | refused, 1366 `Incorrect string value` |
+| a primary-key pair that would merge (cp932 0x8790 and 0x81E0) | refused, 1062 `Duplicate entry` |
+| a non-key pair that maps to one character (cp932 0x8790 and 0x81E0; sjis 0x5C and 0x815F) | **merged without a message**: both rows hold the same character afterwards |
+| a ucs2 lone surrogate (0xD800) | stored as `EDA080`, invalid UTF-8, which a strict destination then refuses (1366) |
+
+So before converting, look for non-key values that map to one character (the cp932 and eucjpms
+NEC/IBM duplicates, the sjis and ujis full-width backslash), and remove ucs2's lone surrogates.
+MySQL refuses the rest itself. The MySQL facts:
+[Character sets that do not survive a utf8mb4 session](README_COMPAT.md#character-sets-that-do-not-survive-a-utf8mb4-session).
 
 ---
 
@@ -577,6 +642,7 @@ prefix length, collation)`.
 | Collation differs on a column of a destination unique index | **Fatal** (unless the column is a `utf8mb4` twin) |
 | Collation differs elsewhere outside the key | Warning |
 | Charset or collation differs on a key column | `DEST_KEY_IDENTITY_CHECK` |
+| Either side's character set is not supported | `COLUMN_CHARSET_CHECK`, earlier |
 
 A charset change can transliterate or truncate text silently. Count verification proves which
 keys arrived, not their values, so it cannot see that; sha256 can, and fails the batch before
@@ -618,7 +684,7 @@ foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK
 ```
 
 Still enforced on a run: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
-`KEY_TYPE_UNSUPPORTED`, the destination keys being readable (for the statement caps), the job's
+`KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the destination keys being readable (for the statement caps), the job's
 [startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. `dry-run`
 prints no warning and never reads the tracking tables, so it does not test the job's
 registration or binding: a dry-run that passes does not promise the run will start. `validate`
