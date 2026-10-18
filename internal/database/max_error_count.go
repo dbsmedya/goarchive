@@ -136,10 +136,10 @@ func readMaxErrorCount(ctx context.Context, c driver.QueryerContext) (uint64, er
 	return 0, fmt.Errorf("%w: %s returned %v (%T), want an unsigned integer", errProbeShape, maxErrorCountProbe, dest[0], dest[0])
 }
 
-// warningsConnector runs ensureMaxErrorCount on every physical connection its pool opens,
-// startup and replacements alike: the pools retire each connection within
-// defaultConnMaxLife, and a replacement takes the global as it is then. A connection that
-// fails the check is closed and never reaches the pool.
+// warningsConnector runs ensureMaxErrorCount, then ensureSessionCharset (CHS-1), on every
+// physical connection its pool opens, startup and replacements alike: the pools retire each
+// connection within defaultConnMaxLife, and a replacement takes the globals as they are then.
+// A connection that fails either check is closed and never reaches the pool.
 type warningsConnector struct {
 	driver.Connector
 	addr string
@@ -154,13 +154,17 @@ func (c warningsConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	if err := ensureSessionCharset(ctx, conn, c.addr); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
 // poolConnector is the connector Manager.connect opens a pool on: the driver's own, from
 // BuildDSN's DSN exactly as sql.Open would build it, wrapped in warningsConnector when the
-// pool's statements read warnings (source and destination; replica pools read replica
-// status only).
+// pool's statements read warnings and job data (source and destination; replica pools read
+// replica status only, so they are pinned by BuildDSN but not checked).
 func poolConnector(cfg *config.DatabaseConfig, readsWarnings bool) (driver.Connector, error) {
 	connector, err := (mysql.MySQLDriver{}).OpenConnector(BuildDSN(cfg))
 	if err != nil {

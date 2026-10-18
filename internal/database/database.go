@@ -163,10 +163,11 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 				return db, nil
 			} else {
 				_ = db.Close()
-				// The first connection ran the max_error_count check: a property of the
-				// server and the account, not a transient, so no retry.
+				// The first connection ran the max_error_count and session charset checks:
+				// a property of the server and the account, not a transient, so no retry.
 				var mec *MaxErrorCountError
-				if errors.As(pingErr, &mec) {
+				var sce *SessionCharsetError
+				if errors.As(pingErr, &mec) || errors.As(pingErr, &sce) {
 					return nil, fmt.Errorf("%s: %w", name, pingErr)
 				}
 				err = pingErr
