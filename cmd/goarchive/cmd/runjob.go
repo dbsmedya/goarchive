@@ -168,6 +168,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Lag: lag, Stop: stop, Logger: log,
+		Banner:   func(b string) { emitBanners(log, stderr, []string{b}) },
 		Progress: progress, Out: out, ProgressLog: entries,
 	})
 	switch {

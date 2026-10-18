@@ -44,11 +44,20 @@ type VerificationError struct {
 	Source      int64 // rows found on the source
 	Destination int64 // rows found in the destination transaction
 	Detail      string
+	// JSONColumns are the table's JSON columns, on a sha256 hash mismatch (JSN-1): a JSON value
+	// copied as text can arrive changed, and the message says so.
+	JSONColumns []string
 }
 
 func (e *VerificationError) Error() string {
-	return fmt.Sprintf("engine: %s verification of %s failed: %d keys requested, %d source rows, %d destination rows%s; the batch was rolled back",
-		e.Method, e.Table, e.Requested, e.Source, e.Destination, e.Detail)
+	var hint string
+	if len(e.JSONColumns) > 0 {
+		hint = fmt.Sprintf("; %s has JSON columns (%s): a JSON value copied as text can arrive changed (a DECIMAL such as 12.50 as 12.5; "+
+			"on an 8.0 or 8.4 destination, some doubles), see docs/README_COMPAT.md → JSON values that do not survive a text copy",
+			e.Table, strings.Join(e.JSONColumns, ", "))
+	}
+	return fmt.Sprintf("engine: %s verification of %s failed: %d keys requested, %d source rows, %d destination rows%s%s; the batch was rolled back",
+		e.Method, e.Table, e.Requested, e.Source, e.Destination, e.Detail, hint)
 }
 
 // DuplicateError is a destination INSERT that met a row the destination already holds.

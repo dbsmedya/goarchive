@@ -92,6 +92,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 			JobSchema: doc.Shared.Destination.EffectiveJobSchema(),
 			Spec:      spec, Verification: verification, ForceTriggers: o.forceTriggers, Logger: log,
 			Processing: spec.EffectiveProcessing(doc.Shared.Processing),
+			Banner:     func(b string) { emitBanners(log, c.ErrOrStderr(), []string{b}) },
 		})
 		syncLogger(log)
 		if err != nil {

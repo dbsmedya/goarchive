@@ -17,6 +17,7 @@ What changed from 2.x, and how to move a job to 3.0.
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Moving from 3.0 beta.1](#moving-from-30-beta1)
 - [Moving from 3.0 beta.2](#moving-from-30-beta2)
+- [Moving from 3.0 beta.3](#moving-from-30-beta3)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
@@ -269,6 +270,23 @@ file readable by you alone (`chmod 600`), which root read before, now needs
 `--user "$(id -u):$(id -g)"` or a group-readable mode, and the same `--user` makes a log file
 written to a mounted directory yours
 ([Run the published image](../INSTALL.md#run-the-published-image)).
+
+---
+
+## Moving from 3.0 beta.3
+
+The tracking tables are unchanged.
+
+**`verification: count` now prints a warning before the run**, as `none` does: one `WARNING:`
+line on stderr and in the log, whatever the log level. A `count` job run from cron is no longer
+silent ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
+
+**A JSON column under `count` or `none` is named in a further warning.** A JSON value is copied
+as MySQL's printed text, and an 8.0 or 8.4 destination can change a double; neither mode compares
+values. The run proceeds
+([JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)).
+
+**A sha256 mismatch on a table with JSON columns names them,** and links the same entry.
 
 ---
 

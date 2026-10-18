@@ -541,8 +541,25 @@ Logged, never fatal:
   a charset difference under sha256 verification, column names that differ only in ASCII
   letter case, and a column order that differs from the source's
   ([Schema compatibility rules](#schema-compatibility-rules)).
+- **A JSON column under `verification: count` or `none`**, for archive and copy-only jobs, under
+  `--skip-dangerously-validate-preflight-allow-experimental` too: one `WARNING:` naming every JSON
+  column of the job and, under that flag, a same-named destination column that is JSON only
+  there. A JSON value is copied as MySQL's printed text, so a member's type is not
+  kept, a long DECIMAL loses digits, and an 8.0 or 8.4 destination can change a double (MySQL
+  Bug #116160); neither mode compares values, so the change goes unseen. The run proceeds; to
+  have such a change refused, use `verification: sha256`
+  ([JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)):
 
-`validate` logs them at warning level, so `logging.level: error` hides them.
+  ```
+  WARNING: verification: count: JSON columns orders.payload: a JSON value is copied as MySQL's
+  printed text, so a member's type is not kept, a DECIMAL can lose digits, and an 8.0 or 8.4
+  destination can change a double (MySQL Bug #116160). count does not compare values, so such a
+  change goes unseen; an archive then deletes the original. See docs/README_COMPAT.md → JSON
+  values that do not survive a text copy.
+  ```
+
+`validate` logs them at warning level, so `logging.level: error` hides them. The JSON warning is
+the exception: like a run banner, it prints on stderr whatever the log level.
 
 ---
 
@@ -643,9 +660,13 @@ With `verification: sha256`, each batch is verified per table by a row count and
 over that batch's rows, read in key order on the source and on the destination.
 
 - Each row is hashed as `column=value` pairs sorted by column name.
-- Text, DECIMAL, JSON, BIT and binary values hash as the bytes a `utf8mb4` session receives: the
-  same text stored as latin1 and as utf8mb4 hashes equal, and JSON key order and spacing do not
-  matter (MySQL normalizes JSON).
+- Text, DECIMAL, BIT and binary values hash as the bytes a `utf8mb4` session receives: the same
+  text stored as latin1 and as utf8mb4 hashes equal.
+- JSON hashes as MySQL's printed text. Its key order and spacing are MySQL's own, measured
+  identical on 8.0.40, 8.4.11 and 9.7.1, but not guaranteed across releases. A member whose
+  printed text changes in the copy (a DECIMAL's scale, a long DECIMAL, a double that an 8.0 or 8.4
+  destination reads back differently) fails the batch, and the error names the table's JSON columns
+  ([JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)).
 - `NULL` and an empty string hash differently.
 - DATE, DATETIME and TIMESTAMP hash as MySQL's text for the value, with the column's fractional
   digits, in a UTC session.

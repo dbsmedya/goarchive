@@ -15,7 +15,7 @@ Detailed specifications for GoArchive. Start at the
 | [Testing](README_TESTING.md) | What each test layer proves |
 | [Upgrading to 3.0](README_UPGRADING_3_0.md) | Moving from 2.x and from 3.0 alpha.0: the tracking tables, configuration and command-line changes, changed limits |
 | [Character sets](README_CHARSETS.md) | The session pin, the supported and refused character sets, converting a refused column |
-| [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys, the path it takes for each, and what is still open |
+| [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys or copies values, the path it takes for each, and what is still open |
 | [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
 
 ## Elsewhere in the repository

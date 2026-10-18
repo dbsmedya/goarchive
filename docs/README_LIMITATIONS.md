@@ -117,6 +117,14 @@ A mixed-case name is refused with `TABLE_EXISTENCE_CHECK`.
 Every text column the job reads or writes must use a supported character set; preflight refuses
 the others (`COLUMN_CHARSET_CHECK`). The lists and the reason: [Character sets](README_CHARSETS.md).
 
+#### JSON values
+
+JSON is copied as MySQL's printed text, the form every MySQL client reads, so a member's MySQL
+type is not kept, and a MySQL 8.0 or 8.4 destination can change a double as it parses the text
+(MySQL Bug #116160). `sha256` verification refuses a changed value; `count` and `none` do not
+compare values, and warn, naming the job's JSON columns. What changes, and on which versions:
+[JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy).
+
 ---
 
 ### Model limitations

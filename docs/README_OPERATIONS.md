@@ -77,8 +77,10 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 
 Before a run starts, each setting that weakens its checks prints one `WARNING:` line on stderr,
 whatever the log level, and records it in the log:
-`--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: none`, and
-`safety.disable_foreign_key_checks`. `dry-run` and `validate` print them too.
+`--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: count`,
+`verification: none`, and `safety.disable_foreign_key_checks`. Under `count` or `none`, a job with
+JSON columns gets one more such line, naming them
+([Warnings](README_VALIDATION.md#warnings)). `dry-run` and `validate` print them too.
 
 ### Progress display
 

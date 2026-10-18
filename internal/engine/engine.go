@@ -69,6 +69,8 @@ type Config struct {
 	Stop <-chan struct{}
 	// Logger defaults to logger.NewDefault().
 	Logger *logger.Logger
+	// Banner is preflight's: it emits a warning with a run banner's visibility (JSN-1).
+	Banner func(string)
 	// Progress is --progress's interval; zero disables it (R50). Out receives the progress
 	// lines and defaults to os.Stdout.
 	Progress time.Duration
@@ -230,6 +232,7 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
 		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Processing: cfg.Processing, Logger: cfg.Logger,
+		Banner: cfg.Banner,
 	})
 	if err != nil {
 		return src, dst, nil, err

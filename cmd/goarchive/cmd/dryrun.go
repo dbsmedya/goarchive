@@ -72,6 +72,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		Verification:  verification,
 		ForceTriggers: o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Logger: log,
+		Banner: func(b string) { emitBanners(log, c.ErrOrStderr(), []string{b}) },
 	})
 	if err != nil {
 		return err

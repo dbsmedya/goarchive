@@ -21,6 +21,8 @@ const (
 type ColumnMetadata struct {
 	Names    []string
 	Temporal map[string]TemporalKind
+	// JSON are the JSON columns, in select order (JSN-1).
+	JSON []string
 }
 
 func (m ColumnMetadata) Kind(column string) TemporalKind {

@@ -279,8 +279,8 @@ One value, globally or per job:
 | Value | Compares | Notes |
 |-------|----------|-------|
 | `sha256` (default) | a row count and one SHA-256 over every copied row, per table, on both servers | Detects a changed value ([how rows are hashed](README_VALIDATION.md#sha256-verification)) |
-| `count` | each table's row count on both servers against the keys requested | Proves which keys landed, not their values: a transliterated or truncated text goes unseen, so a non-key charset difference is fatal under it ([Charset and collation](README_VALIDATION.md#charset-and-collation)) |
-| `none` | nothing | Conversion warnings (1264, 1265, 1292, 1366) are accepted and counted, and an archive then deletes the source rows; a warning is printed before the run |
+| `count` | each table's row count on both servers against the keys requested | Proves which keys landed, not their values: a transliterated or truncated text goes unseen, so a non-key charset difference is fatal under it ([Charset and collation](README_VALIDATION.md#charset-and-collation)); a warning is printed before the run, and a further one names the job's JSON columns ([why](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)) |
+| `none` | nothing | Conversion warnings (1264, 1265, 1292, 1366) are accepted and counted, and an archive then deletes the source rows; a warning is printed before the run, and a further one names the job's JSON columns |
 
 ```yaml
 verification: sha256          # global
