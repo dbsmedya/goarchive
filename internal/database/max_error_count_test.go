@@ -19,14 +19,17 @@ import (
 type noRow struct{}
 
 // fakeSession is a driver connection whose session answers maxErrorCountProbe with values,
-// in order (queryErr instead once they run out), and maxErrorCountSet with setErr. It
-// records every statement it runs.
+// in order (queryErr instead once they run out), and maxErrorCountSet with setErr. It answers
+// sessionCharsetProbe with charset, the pinned session when nil (charsetErr instead when set).
+// It records every statement it runs.
 type fakeSession struct {
-	values   []driver.Value
-	queryErr error
-	setErr   error
-	ran      []string
-	closed   bool
+	values     []driver.Value
+	queryErr   error
+	setErr     error
+	charset    []driver.Value
+	charsetErr error
+	ran        []string
+	closed     bool
 }
 
 func (f *fakeSession) Prepare(string) (driver.Stmt, error) {
@@ -37,6 +40,16 @@ func (f *fakeSession) Close() error              { f.closed = true; return nil }
 
 func (f *fakeSession) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
 	f.ran = append(f.ran, q)
+	if q == sessionCharsetProbe {
+		if f.charsetErr != nil {
+			return nil, f.charsetErr
+		}
+		v := f.charset
+		if v == nil {
+			v = []driver.Value{[]byte("utf8mb4"), []byte("utf8mb4"), []byte("utf8mb4"), []byte("utf8mb4_general_ci")}
+		}
+		return &oneRow{v: v}, nil
+	}
 	if len(f.values) == 0 {
 		if f.queryErr != nil {
 			return nil, f.queryErr
@@ -67,6 +80,25 @@ func (r *oneValue) Next(dest []driver.Value) error {
 	}
 	r.done = true
 	dest[0] = r.v
+	return nil
+}
+
+// oneRow answers sessionCharsetProbe: one row of its values.
+type oneRow struct {
+	v    []driver.Value
+	done bool
+}
+
+func (r *oneRow) Columns() []string {
+	return []string{"@@character_set_client", "@@character_set_connection", "@@character_set_results", "@@collation_connection"}[:len(r.v)]
+}
+func (r *oneRow) Close() error { return nil }
+func (r *oneRow) Next(dest []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	copy(dest, r.v)
 	return nil
 }
 
