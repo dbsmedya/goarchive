@@ -3,7 +3,6 @@
 package preflight
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -29,6 +28,9 @@ type loss struct {
 	invalid     int // read as bytes that are not UTF-8
 	mismatch    int // the read value, bound back, does not match exactly its own row
 	sample      []string
+	stored      int             // the candidates MySQL stored as one character
+	merges      map[string]bool // every merged pair, as "first=later" stored hex
+	notUTF8     map[string]bool // the stored hex of every read that is not UTF-8
 }
 
 func (l loss) zero() bool {
@@ -114,12 +116,13 @@ func sessionRoundTrip(t *testing.T, db *sql.DB, cs string, cands [][]byte, bind 
 		t.Fatalf("%s: no candidate was stored", cs)
 	}
 
-	var l loss
+	l := loss{stored: len(stored), merges: map[string]bool{}, notUTF8: map[string]bool{}}
 	seen := map[string]string{}
 	for _, r := range stored {
 		merged := false
 		if first, ok := seen[string(r.read)]; ok {
 			l.merged++
+			l.merges[first+"="+r.hex] = true
 			merged = true
 			l.note(fmt.Sprintf("%s=%s→%X", first, r.hex, r.read))
 		} else {
@@ -132,12 +135,13 @@ func sessionRoundTrip(t *testing.T, db *sql.DB, cs string, cands [][]byte, bind 
 		case string(r.read) == "?" && r.hex != qHex:
 			l.question++
 			l.note(r.hex + "→?")
-		case string(r.read) == "�" && r.hex != fHex:
+		case string(r.read) == "\uFFFD" && r.hex != fHex:
 			l.replacement++
 			l.note(r.hex + "→U+FFFD")
 		case cs != "binary" && !utf8.Valid(r.read):
 			// A ucs2 lone surrogate reads as EDA080, which MySQL refuses to bind back (3988).
 			l.invalid++
+			l.notUTF8[r.hex] = true
 			l.note(fmt.Sprintf("%s→%X (not UTF-8)", r.hex, r.read))
 			continue
 		}
@@ -292,8 +296,19 @@ func TestMySQLCharsetRoundTrip(t *testing.T) {
 	t.Run("side A", func(t *testing.T) {
 		for _, cs := range supportedCharsets {
 			began := time.Now()
-			if l := sessionRoundTrip(t, db, cs, candidates(cs), true); !l.zero() {
+			cands := candidates(cs)
+			l := sessionRoundTrip(t, db, cs, cands, true)
+			if !l.zero() {
 				t.Errorf("%s through the session: %s", cs, l)
+			}
+			// Every valid character is measured: a server that stopped storing some would shrink
+			// the set unseen. ascii's bytes 0x80-0xFF are not storable (1366).
+			want := len(cands)
+			if cs == "ascii" {
+				want = 128
+			}
+			if l.stored != want {
+				t.Errorf("%s: %d of %d candidates stored as one character, want %d", cs, l.stored, len(cands), want)
 			}
 			switch cs {
 			case "utf8mb4", "utf8mb3", "utf16", "utf16le", "utf32":
@@ -309,31 +324,15 @@ func TestMySQLCharsetRoundTrip(t *testing.T) {
 		if l := sessionRoundTrip(t, db, "cp1250", candidates("cp1250"), false); l.question == 0 {
 			t.Errorf("cp1250: no code read as '?' (%s); the measure cannot see a loss", l)
 		}
-		if l := sessionRoundTrip(t, db, "sjis", candidates("sjis"), false); l.merged == 0 || !sampled(l, "5C", "815F") {
+		if l := sessionRoundTrip(t, db, "sjis", candidates("sjis"), false); !l.merges["5C=815F"] {
 			t.Errorf("sjis: 0x5C and 0x815F not read as one (%s); the measure cannot see a merge", l)
 		}
 		if l := sessionRoundTrip(t, db, "tis620", candidates("tis620"), false); l.replacement == 0 {
 			t.Errorf("tis620: no code read as U+FFFD (%s)", l)
 		}
-		if l := sessionRoundTrip(t, db, "ucs2", candidates("ucs2"), false); l.invalid == 0 || !sampled(l, "D800") {
+		if l := sessionRoundTrip(t, db, "ucs2", candidates("ucs2"), false); !l.notUTF8["D800"] {
 			t.Errorf("ucs2: no lone surrogate read as bytes that are not UTF-8 (%s)", l)
 		}
 	})
 	t.Logf("total %v", time.Since(start).Round(time.Millisecond))
-}
-
-// sampled reports whether one of l's samples mentions every hex string in hs.
-func sampled(l loss, hs ...string) bool {
-	for _, s := range l.sample {
-		all := true
-		for _, h := range hs {
-			if !bytes.Contains([]byte(s), []byte(h)) {
-				all = false
-			}
-		}
-		if all {
-			return true
-		}
-	}
-	return false
 }
