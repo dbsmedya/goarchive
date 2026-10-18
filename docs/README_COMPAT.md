@@ -150,7 +150,7 @@ printed text:
 | opaque binary (`CAST(x AS BINARY)`, BIT, a BLOB column) | a string `"base64:typeNN:…"` | the type |
 | a DECIMAL with no fraction; YEAR on 8.4 and 9.7, which build it as UNSIGNED INTEGER (8.0 builds an INTEGER, which stays one) | an integer | the type |
 | DECIMAL `12.50` | DOUBLE `12.5` | the type and the scale |
-| a DECIMAL with more digits than a double holds | a DOUBLE: digits beyond 17 are always lost, and on an 8.0 or 8.4 destination the 16th or 17th can already differ | **the value** |
+| a DECIMAL with more significant digits than a double keeps (`1.234567890123456789012345678901`) | a DOUBLE without the digits it cannot keep (`1.2345678901234567`) | **the value** |
 | a double, on an 8.0 or 8.4 destination | sometimes one unit in the last place away | **the value** |
 | strings, integers, booleans, null, nested objects and arrays | unchanged | nothing |
 
@@ -181,8 +181,10 @@ notice. A changed value is data loss, and an archive then deletes the original.
 **What GoArchive does.**
 
 - **`sha256`** hashes the printed text, so any change to it fails the batch before anything is
-  deleted, and the error names the table's JSON columns. A DECIMAL with a scale, or a double on an
-  8.0 or 8.4 destination, stops such a table's archive under sha256.
+  deleted, and the error names the table's JSON columns. A member whose printed text changes, such
+  as a DECIMAL with a scale or a double that an 8.0 or 8.4 destination reads back differently,
+  stops such a table's archive under sha256. A double that reads back unchanged (`41.00823` in the
+  probes, on every server) does not.
 - **`count` and `none`** cannot see the change. They are the operator's choice, so the run
   proceeds, after a warning naming the job's JSON columns ([Warnings](README_VALIDATION.md#warnings)).
 - **Dates, times and binary members arriving as strings** is accepted under every mode: the text is

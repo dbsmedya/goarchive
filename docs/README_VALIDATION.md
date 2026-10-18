@@ -664,8 +664,8 @@ over that batch's rows, read in key order on the source and on the destination.
   text stored as latin1 and as utf8mb4 hashes equal.
 - JSON hashes as MySQL's printed text. Its key order and spacing are MySQL's own, measured
   identical on 8.0.40, 8.4.11 and 9.7.1, but not guaranteed across releases. A member whose
-  printed text changes in the copy (a DECIMAL's scale, a long DECIMAL, a double on an 8.0 or 8.4
-  destination) fails the batch, and the error names the table's JSON columns
+  printed text changes in the copy (a DECIMAL's scale, a long DECIMAL, a double that an 8.0 or 8.4
+  destination reads back differently) fails the batch, and the error names the table's JSON columns
   ([JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)).
 - `NULL` and an empty string hash differently.
 - DATE, DATETIME and TIMESTAMP hash as MySQL's text for the value, with the column's fractional
