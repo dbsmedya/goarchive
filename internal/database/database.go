@@ -222,8 +222,16 @@ func (m *Manager) connect(cfg *config.DatabaseConfig, readsWarnings bool) (*sql.
 // variable only in the CAST form; GREATEST or IF alone fail with 1232 (M7c-2 probe PR-8).
 const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
 
-// BuildDSN constructs a MySQL DSN from configuration.
+// BuildDSN constructs a MySQL DSN from configuration: goarchive's session pins and driver
+// settings (dsnConfig with no globals, which cannot fail).
 func BuildDSN(cfg *config.DatabaseConfig) string {
+	mc, _ := dsnConfig(cfg, nil)
+	return mc.FormatDSN()
+}
+
+// dsnConfig is the driver configuration of cfg's pools, with globals layered under the pins
+// (Global). It fails only on a global it refuses.
+func dsnConfig(cfg *config.DatabaseConfig, globals []Global) (*mysql.Config, error) {
 	// Start from NewConfig() so the driver's safe defaults are preserved.
 	// A bare mysql.Config{} literal would zero AllowNativePasswords (default
 	// true) and CheckConnLiveness (default true), emitting
@@ -281,7 +289,7 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 		"sql_select_limit": "18446744073709551615",
 		"sql_notes":        "1",
 		"time_zone":        "'+00:00'",
-		"sql_mode":         autoZeroModeExpression,
+		"sql_mode":         autoZeroMode("@@SESSION.sql_mode"),
 		"autocommit":       "1",
 		"wait_timeout":     waitTimeoutExpression,
 	}
@@ -302,7 +310,10 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 		dsnCfg.TLSConfig = "preferred"
 	}
 
-	return dsnCfg.FormatDSN()
+	if err := applyGlobals(dsnCfg.Params, globals); err != nil {
+		return nil, err
+	}
+	return dsnCfg, nil
 }
 
 // Close closes all database connections gracefully.
