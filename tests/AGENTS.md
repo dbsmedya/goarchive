@@ -152,11 +152,16 @@ all, and when a green gate carries to a later commit; a gate agent is given a SH
 Measured by their runners, never calculated from a diff. The coordinator updates this section
 after the runner reports; a gate agent never edits it.
 
-- **Integration inventory:** `PASS=1359 FAIL=0 SKIP=5`, measured by the integration runner
-  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-17 (the beta.3
-  image-nonroot PR, at `7eb8017`). The runner counts every test the `integration` tag compiles,
-  unit tests included: that PR added `TestFetchNotes` and `TestMySQLExplainSubquerySort`. It was
-  1357 before (the beta.3 audit-review-1 PR, at `97a8046`): that PR added `TestRecurringRootError`, `TestLogInsertError`,
+- **Integration inventory:** `PASS=1393 FAIL=0 SKIP=7`, measured by the integration runner
+  (`tests/scripts/run-tests.sh --setup --integration-only`) on 2026-10-18 (the beta.3
+  charset-check PR, at `ad3afa6` with its docs). The runner counts every test the `integration`
+  tag compiles, unit tests included: that PR added `TestBuildDSNPinsCharset`,
+  `TestEnsureSessionCharset` (10 with its subtests), `TestWarningsConnectorChecksCharset`,
+  `TestMySQLSessionCharset` (3), `TestColumnCharsets` (12), `TestMySQLColumnCharsetRefusal` (3),
+  `TestMySQLCharsetRoundTrip` (3) and `TestMySQLInitConnectCharset`, whose two subtests run only
+  under the matrix row `init_connect_set_names` and skip on the estate. It was 1359 before (the
+  beta.3 image-nonroot PR, at `7eb8017`): that PR added `TestFetchNotes` and
+  `TestMySQLExplainSubquerySort`. It was 1357 before (the beta.3 audit-review-1 PR, at `97a8046`): that PR added `TestRecurringRootError`, `TestLogInsertError`,
   `TestMySQLRecurringRoot` (6 with its subtests) and two `TestMySQLExitCodes` subtests. It was
   1347 before (the beta.2 PRC-1 PR, at `51154dc`): PRC-1 added `TestEstimateRoots` (28 with its subtests) and
   `TestMySQLProgress/an_estimate,_not_a_count`. It was 1318 before (the beta.2 PKT-1 PR, at

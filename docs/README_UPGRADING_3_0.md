@@ -251,6 +251,16 @@ block waits for the stopped job's rerun, by its schedule or by an operator, and 
 the remedy. A script that treats 4 as "try later" now sees these as failures
 ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
 
+**A job column in an unsupported character set is now refused.** Every session is now pinned to
+`utf8mb4`, and preflight refuses a job column whose character set does not survive it exactly,
+such as `cp932`, `sjis` or `cp1250`, with `COLUMN_CHARSET_CHECK`: through the `utf8mb4` session two
+of its keys could merge and its text change, silently. Convert the column to `utf8mb4`
+([the check and its fix](README_VALIDATION.md#column_charset_check)).
+
+**A server whose `init_connect` narrows the session now works.** GoArchive's `SET NAMES` runs after
+`init_connect`, and `SESSION_CHARSET_CHECK` refuses a session something else narrows
+([the check](README_VALIDATION.md#session_charset_check)).
+
 **The image runs non-root, on a supported Alpine base.** The published image runs as UID 65532
 from `/work`, on `alpine:3.24.2` (was 3.19, no longer supported), and the binary moves to
 `/usr/local/bin`. A config mounted under `/root/` is no longer readable: mount it at `/work/`,
