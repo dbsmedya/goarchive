@@ -195,8 +195,9 @@ refused too, as `<table>(<unknown>)`; that usually means a corrupted or unknown-
 A job column the run reads or writes as text uses a character set that does not survive the
 `utf8mb4` session exactly. In such a set two characters can read as one, or a character reads as
 `?`: two keys then merge, so a row is never copied and an in-tree `ON DELETE CASCADE` deletes it,
-and text is written back changed, while every verification passes. It runs after
-`DEST_STORAGE_ENGINE_CHECK`, before any row is read:
+and text is written back changed, while every verification passes. It runs before any row is
+read: after `DEST_STORAGE_ENGINE_CHECK`, or after `JOB_SCHEMA_PERMISSION_CHECK` for purge, which
+runs no destination check:
 
 ```
 COLUMN_CHARSET_CHECK: A job column uses a character set that GoArchive cannot read and write back

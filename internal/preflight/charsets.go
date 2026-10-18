@@ -13,8 +13,9 @@ import (
 // (CHS-1, spec §1). The other 22 lose data: two characters read as one (sjis, cp932,
 // eucjpms, ujis, armscii8), a code reads as '?' or U+FFFD (cp1250, cp1251, cp1256, cp1257,
 // dec8, geostd8, greek, hebrew, hp8, swe7, big5, euckr, gb2312, gbk, gb18030, tis620), or a
-// lone surrogate reads as nothing (ucs2). TestMySQLCharsetRoundTrip proves the list on every
-// supported server. docs/README_CHARSETS.md shows it, and the harness reads this literal.
+// lone surrogate reads as bytes that are not UTF-8 and cannot be bound back (ucs2).
+// TestMySQLCharsetRoundTrip proves the list on every supported server, and
+// docs/README_VALIDATION.md (COLUMN_CHARSET_CHECK) shows it.
 var supportedCharsets = []string{
 	"utf8mb4",
 	"utf8mb3",
