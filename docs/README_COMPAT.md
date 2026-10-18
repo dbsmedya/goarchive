@@ -132,3 +132,68 @@ in cp1250, sjis, tis620 and ucs2.
 
 **Still open.** Reading and binding keys as bytes (`CAST(… AS BINARY)`), which would lift the
 refusal, is not built.
+
+---
+
+## JSON values that do not survive a text copy
+
+**Affects:** every JSON column of an archive or copy-only job.
+
+**Observed** (2026-10-18, on Oracle MySQL 8.0.40 and 9.7.1 and Percona 8.4.11). A client reads a
+JSON column only as MySQL's printed text, over the text and the binary protocol alike, and a bound
+string is rebuilt by the destination's JSON parser. A document built by SQL, copied through its
+printed text:
+
+| Member as SQL built it | After the copy | What changes |
+|---|---|---|
+| DATETIME, DATE, TIME | a string with the same text | the type |
+| opaque binary (`CAST(x AS BINARY)`, BIT, a BLOB column) | a string `"base64:typeNN:…"` | the type |
+| YEAR, a DECIMAL with no fraction | an integer | the type |
+| DECIMAL `12.50` | DOUBLE `12.5` | the type and the scale |
+| a DECIMAL with more than 17 significant digits | a DOUBLE, without the digits beyond | **the value** |
+| a double, on an 8.0 or 8.4 destination | sometimes one unit in the last place away | **the value** |
+| strings, integers, booleans, null, nested objects and arrays | unchanged | nothing |
+
+All three servers behave the same, except for doubles:
+
+| The source's double, copied to | `0.9057697559760601` | `9088544342.689999` | 20,000 random doubles |
+|---|---|---|---|
+| MySQL 8.0.40 | `0.90576975597606` | `9088544342.69` | 1,816 changed |
+| Percona 8.4.11 | `0.90576975597606` | `9088544342.69` | 1,816 changed |
+| MySQL 9.7.1 | unchanged | unchanged | none changed |
+
+- **On 8.0 and 8.4 the share depends on the values:** from none to 43 % of 20,000 across other
+  generators, most among doubles of 16 or 17 digits. This is MySQL
+  [Bug #116160](https://bugs.mysql.com/bug.php?id=116160) (*Precision loss of double value in
+  JSON*, Verified for 8.0 and higher, no fix release); [Bug #83954](https://bugs.mysql.com/bug.php?id=83954)
+  is the DECIMAL case. The bug report shows a dump and reload losing the same precision: any client
+  that copies JSON as text meets it.
+- **The change is in the destination's JSON parser, not in the printed text:** SQL
+  `CAST(text AS DOUBLE)` rebuilt all 20,000 exactly on 8.0.40 and 8.4.11.
+- **9.7.1's exact parse is measured, not documented:** no release note names a fix.
+
+**Why it matters.** A changed type is visible inside MySQL: `JSON_TYPE()`, a comparison of the
+member with a date, and generated columns and indexes over a JSON path see a string where the
+source held a date. DECIMAL scale and binary bytes are the two an application is likeliest to
+notice. A changed value is data loss, and an archive then deletes the original.
+
+**What GoArchive does.**
+
+- **`sha256`** hashes the printed text, so any change to it fails the batch before anything is
+  deleted, and the error names the table's JSON columns. A DECIMAL with a scale, or a double on an
+  8.0 or 8.4 destination, stops such a table's archive under sha256.
+- **`count` and `none`** cannot see the change. They are the operator's choice, so the run
+  proceeds, after a warning naming the job's JSON columns ([Warnings](README_VALIDATION.md#warnings)).
+- **Dates, times and binary members arriving as strings** is accepted under every mode: the text is
+  kept.
+
+For a table that sha256 refuses:
+
+- **a changed double:** a 9.7 destination (measured on 9.7.1). Writing the member as JSON text
+  does not help: an 8.x parser can change a double again on each copy (Bug #116160's
+  `9088544342.689998` → `…689999` → `…69`);
+- **a DECIMAL:** the member written as JSON text, not built from a SQL DECIMAL;
+- **either:** the table left out of the job.
+
+**Still open.** Rebuilding each member with its type on the destination, with a `CAST` per member
+from the source's `JSON_TYPE`, keeps types and avoids the 8.x parser. It is not built.

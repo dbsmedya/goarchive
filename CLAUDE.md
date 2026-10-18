@@ -210,6 +210,9 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Session pins on every connection (UTC, `sql_notes`, `sql_mode`, `autocommit`, `sql_select_limit`, the character set `utf8mb4` / `utf8mb4_general_ci`) | `internal/database/database.go` → `BuildDSN` |
 | Session character set proven on every new source and destination connection (`SESSION_CHARSET_CHECK`) | `internal/database/session_charset.go` → `ensureSessionCharset`; `internal/database/max_error_count.go` → `warningsConnector` |
 | Job columns refused outside the character sets that survive the `utf8mb4` session (`COLUMN_CHARSET_CHECK`); the supported list | `internal/preflight/charsets.go` → `checkColumnCharsets`, `supportedCharsets` |
+| JSON columns named in a warning under `count` and `none` (the JSON warning, banner-visible through `Config.Banner`) | `internal/preflight/json.go` → `checkJSONVerification`; `internal/preflight/preflight.go` → `Config.Banner` |
+| A sha256 mismatch on a table with JSON columns names them | `internal/engine/errors.go` → `VerificationError`; `internal/engine/columns.go` → `columnMetadataFromFacts` |
+| Run banners (`--skip-…`, `--force-triggers`, `verification: count` and `none`, FK checks off) | `cmd/goarchive/cmd/output.go` → `banners`, `emitBanners` |
 | Session `max_error_count` raised from 0 on every new source and destination connection (`MAX_ERROR_COUNT_CHECK`) | `internal/database/max_error_count.go` → `ensureMaxErrorCount`, `warningsConnector`, `poolConnector`; `Manager.connect` |
 | Temporal projection and representation contracts | `internal/types/temporal.go` → `ColumnMetadata`, `TemporalText`, `TemporalReadContractError` |
 | INSERT diagnostic session, collection and classification | `internal/engine/diagnostics.go` → `readDiagnosticSession`, `collectInsertDiagnostics`, `classifyInsertDiagnostics`, `insertDiagnosticError` |
@@ -227,8 +230,10 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 > file, `PacketError`); *Supported relationship types* in `docs/README_LIMITATIONS.md`
 > (`internal/preflight/relations.go`, `SELF_FK_DELETE_RULE_CHECK`); *No DDL and no concurrent
 > writes during a run (contract)* in `docs/README_LIMITATIONS.md` and *Maintenance: what is safe
-> to delete* in `docs/README_JOBS_SCHEMA.md` (`internal/engine/errors.go`, `RecurringRootError`).
-> Renaming one breaks that reference.
+> to delete* in `docs/README_JOBS_SCHEMA.md` (`internal/engine/errors.go`, `RecurringRootError`);
+> *JSON values that do not survive a text copy* in `docs/README_COMPAT.md`
+> (`internal/engine/errors.go`, `VerificationError`; `internal/preflight/json.go`, the JSON
+> warning). Renaming one breaks that reference.
 
 ## Documentation Layout (RULE)
 
