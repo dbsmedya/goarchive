@@ -14,8 +14,9 @@ import (
 	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
-	"github.com/go-sql-driver/mysql"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
 
@@ -57,8 +58,7 @@ func acctFixture(t *testing.T, name string) (src, dst *sql.DB, srcSchema, dstSch
 	return src, dst, schemaOf(t, src), schemaOf(t, dst)
 }
 
-// acctOpen opens a pool on one test server as user, with the session pins openServer
-// uses.
+// acctOpen opens a pool on one test server as user, as goarchive opens its own.
 func acctOpen(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	t.Helper()
 	host := os.Getenv(prefix + "_HOST")
@@ -66,16 +66,14 @@ func acctOpen(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	if host == "" || port == 0 {
 		t.Fatal("integration environment not loaded: set -a; source tests/.env; set +a")
 	}
-	cfg := mysql.NewConfig()
-	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port), schema
-	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
-	// reads are whole under the matrix row sql_select_limit_20.
-	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
-	connector, err := mysql.NewConnector(cfg)
+	cfg := config.DatabaseConfig{Host: host, Port: port, User: user, Password: pass, Database: schema, TLS: "disable"}
+	// goarchive's own pool (database.OpenPool); the cap is lifted, as the suites race more
+	// sessions than a run.
+	db, err := database.OpenPool(t.Context(), &cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(0)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

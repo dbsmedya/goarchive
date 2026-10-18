@@ -7,15 +7,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
-
 	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/lock"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
@@ -25,8 +26,8 @@ import (
 // destination on TEST_DEST_* (db2, whose global time_zone is +03:00). Each test creates its
 // own ga3m5_<name>_<pid> schemas on both servers and drops them afterwards.
 
-// openServer opens a pool pinned to UTC and autocommit, as internal/database's DSN pins every session
-// (spec §4.5). params adds or overrides session variables.
+// openServer opens a pool on one test server as goarchive opens its own. params are server
+// globals the test emulates under the pins (database.Global).
 func openServer(t *testing.T, prefix, schema string, params map[string]string) *sql.DB {
 	t.Helper()
 	host, user, pass := os.Getenv(prefix+"_HOST"), os.Getenv(prefix+"_USER"), os.Getenv(prefix+"_PASSWORD")
@@ -34,19 +35,18 @@ func openServer(t *testing.T, prefix, schema string, params map[string]string) *
 	if host == "" || user == "" || port == 0 {
 		t.Fatal("integration environment not loaded: set -a; source tests/.env; set +a")
 	}
-	cfg := mysql.NewConfig()
-	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = user, pass, "tcp", fmt.Sprintf("%s:%d", host, port), schema
-	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
-	// reads are whole under the matrix row sql_select_limit_20.
-	cfg.Params = map[string]string{"time_zone": "'+00:00'", "sql_notes": "1", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
-	for k, v := range params {
-		cfg.Params[k] = v
+	cfg := config.DatabaseConfig{Host: host, Port: port, User: user, Password: pass, Database: schema, TLS: "disable"}
+	var globals []database.Global
+	for _, k := range slices.Sorted(maps.Keys(params)) {
+		globals = append(globals, database.Global{Name: k, Value: params[k]})
 	}
-	connector, err := mysql.NewConnector(cfg)
+	// goarchive's own pool (database.OpenPool); the cap is lifted, as the suites race more
+	// sessions than a run.
+	db, err := database.OpenPool(t.Context(), &cfg, true, globals...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(0)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

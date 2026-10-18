@@ -6,8 +6,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
@@ -97,6 +102,26 @@ func TestMySQLFourColumnKey(t *testing.T) {
 	}
 }
 
+// berlinPool opens the source raw, its sessions in Europe/Berlin time: the engine is handed it
+// so that its own UTC check refuses it, which database.OpenPool's UTC probe would do first.
+func berlinPool(t *testing.T, schema string) *sql.DB {
+	t.Helper()
+	params := map[string]string{"time_zone": "'Europe/Berlin'"}
+	port, _ := strconv.Atoi(os.Getenv("TEST_SOURCE_PORT"))
+	cfg := mysql.NewConfig()
+	cfg.User, cfg.Passwd, cfg.Net, cfg.DBName = os.Getenv("TEST_SOURCE_USER"), os.Getenv("TEST_SOURCE_PASSWORD"), "tcp", schema
+	cfg.Addr = fmt.Sprintf("%s:%d", os.Getenv("TEST_SOURCE_HOST"), port)
+	cfg.Params = map[string]string{"time_zone": "'+00:00'", "sql_notes": "1", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
+	maps.Copy(cfg.Params, params)
+	connector, err := mysql.NewConnector(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 // TestMySQLTimestampFold (Review Focus 3): TIMESTAMP keys at the two UTC instants that are
 // both 02:30 in Europe/Berlin on the night summer time ends. Under the UTC pin they are two
 // roots and both are archived; the destination server's global zone is +03:00. A pool whose
@@ -105,7 +130,7 @@ func TestMySQLTimestampFold(t *testing.T) {
 	e := newEnv(t, "fold")
 	e.both(t, "CREATE TABLE r (k TIMESTAMP(0) NOT NULL, old TINYINT NOT NULL, PRIMARY KEY (k)) ENGINE=InnoDB")
 	execAll(t, e.src, "INSERT INTO r VALUES ('2026-10-25 00:30:00', 1), ('2026-10-25 01:30:00', 1), ('2026-10-26 00:00:00', 0)")
-	berlin := openServer(t, "TEST_SOURCE", e.srcSchema, map[string]string{"time_zone": "'Europe/Berlin'"})
+	berlin := berlinPool(t, e.srcSchema)
 	var local string
 	if err := berlin.QueryRowContext(context.Background(), "SELECT GROUP_CONCAT(CAST(k AS CHAR) ORDER BY k) FROM r WHERE old = 1").Scan(&local); err != nil {
 		t.Fatal(err)

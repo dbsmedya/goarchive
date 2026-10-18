@@ -75,14 +75,27 @@ func TestMySQLAutoIncrementZero(t *testing.T) {
 			}
 
 			// The same INSERT on a session without the mode: the fixture would catch a lost mode.
+			// f.dst is goarchive's own pool, which pins the mode, so this is the one test that
+			// drops a pin on purpose: one session of it goes back to the server's global mode.
+			ctx := context.Background()
+			conn, err := f.dst.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			if _, err := conn.ExecContext(ctx, "SET SESSION sql_mode = @@GLOBAL.sql_mode"); err != nil {
+				t.Fatal(err)
+			}
 			var mode string
-			if err := f.dst.QueryRowContext(context.Background(), "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
+			if err := conn.QueryRowContext(ctx, "SELECT @@SESSION.sql_mode").Scan(&mode); err != nil {
 				t.Fatal(err)
 			}
 			if strings.Contains(mode, "NO_AUTO_VALUE_ON_ZERO") {
 				t.Fatalf("the assertion session's sql_mode %q already holds NO_AUTO_VALUE_ON_ZERO", mode)
 			}
-			mustExec(t, f.dst, "INSERT INTO t (id, seq) VALUES (2, 0)")
+			if _, err := conn.ExecContext(ctx, "INSERT INTO t (id, seq) VALUES (2, 0)"); err != nil {
+				t.Fatal(err)
+			}
 			if got := scalar(t, f.dst, "SELECT seq FROM t WHERE id = 2"); got != 1 {
 				t.Errorf("a raw INSERT of seq = 0 without NO_AUTO_VALUE_ON_ZERO stored %d, want MySQL's renumbered 1", got)
 			}

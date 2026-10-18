@@ -11,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-sql-driver/mysql"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/database"
 )
 
 // These tests run the commands end to end: the source on TEST_SOURCE_* (db1) and the
@@ -35,16 +36,14 @@ func serverFor(t *testing.T, prefix string) server {
 
 func (s server) open(t *testing.T, schema string) *sql.DB {
 	t.Helper()
-	cfg := mysql.NewConfig()
-	cfg.User, cfg.Passwd, cfg.Net, cfg.Addr, cfg.DBName = s.user, s.pass, "tcp", fmt.Sprintf("%s:%d", s.host, s.port), schema
-	// The test pool pins sql_select_limit as BuildDSN does (beta audit A1), so the test's own
-	// reads are whole under the matrix row sql_select_limit_20.
-	cfg.Params = map[string]string{"time_zone": "'+00:00'", "autocommit": "1", "sql_select_limit": "18446744073709551615"}
-	connector, err := mysql.NewConnector(cfg)
+	cfg := config.DatabaseConfig{Host: s.host, Port: s.port, User: s.user, Password: s.pass, Database: schema, TLS: "disable"}
+	// goarchive's own pool (database.OpenPool); the cap is lifted, as the suites race more
+	// sessions than a run.
+	db, err := database.OpenPool(t.Context(), &cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db := sql.OpenDB(connector)
+	db.SetMaxOpenConns(0)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

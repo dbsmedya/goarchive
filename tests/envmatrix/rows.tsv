@@ -33,11 +33,13 @@ max_allowed_packet_dst_4m	dynamic	dst: SET GLOBAL max_allowed_packet = 4194304	p
 # sql_select_limit_20: a global limit new sessions inherit. TestMySQLArchiveUnderAFiniteSelectLimit
 # reads a 25-column table and an order's 30 lines through the CLI (beta audit A1).
 sql_select_limit_20	dynamic	SET GLOBAL sql_select_limit = 20	pass
-# max_error_count_0: goarchive's own pools (Manager) raise a session at 0 to 1024, or refuse
-# with MAX_ERROR_COUNT_CHECK (TestMySQLMaxErrorCount, which runs only on this row). The
-# expectation is the runtime backstop's, as the suites' own pools reach it: they open with
-# mysql.NewConnector, not through Manager (register row M7c-F6).
-max_error_count_0	dynamic	SET GLOBAL max_error_count = 0	refuse:INSERT_DIAGNOSTICS_UNPROVEN|raise max_error_count
+# max_error_count_0: goarchive's pools raise a session at 0 to 1024, or refuse with
+# MAX_ERROR_COUNT_CHECK (TestMySQLMaxErrorCount, which runs only on this row). The suites open
+# goarchive's pools (database.OpenPool), so a root session is raised and runs, and a
+# least-privilege account without SESSION_VARIABLES_ADMIN is refused at open by name, as the
+# binary refuses it (M7c-F6). The runtime backstop is TestMySQLInsertDiagnosticsRetention's
+# raw capacity-0 case.
+max_error_count_0	dynamic	SET GLOBAL max_error_count = 0	refuse:MAX_ERROR_COUNT_CHECK
 # init_connect_set_names: a narrowing init_connect for accounts without CONNECTION_ADMIN; goarchive's
 # SET NAMES runs after it and restores utf8mb4 (CHS-1, TestMySQLInitConnectCharset)
 init_connect_set_names	dynamic	SET GLOBAL init_connect = 'SET NAMES latin1'	pass
