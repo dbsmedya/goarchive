@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -872,5 +873,22 @@ func TestBuildDSNPinsWaitTimeout(t *testing.T) {
 	}
 	if got, want := dsn.Params["wait_timeout"], "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"; got != want {
 		t.Fatalf("DSN wait_timeout = %q, want %q (params %#v)", got, want, dsn.Params)
+	}
+}
+
+// TestBuildDSNPinsCharset (CHS-1): every value is read and bound through the session's
+// character set, so every session is utf8mb4 / utf8mb4_general_ci. The driver sets it with
+// SET NAMES after authentication, so after any init_connect.
+func TestBuildDSNPinsCharset(t *testing.T) {
+	raw := BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"})
+	dsn, err := mysql.ParseDSN(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "charset=utf8mb4&") && !strings.HasSuffix(raw, "charset=utf8mb4") {
+		t.Errorf("DSN %q does not set charset=utf8mb4", raw)
+	}
+	if dsn.Collation != "utf8mb4_general_ci" {
+		t.Errorf("DSN collation = %q, want utf8mb4_general_ci, the handshake's own (45)", dsn.Collation)
 	}
 }
