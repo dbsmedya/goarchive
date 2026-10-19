@@ -92,7 +92,8 @@ Each of these is described where a 3.0 prerelease introduced it; a 2.x user meet
   is accepted ([alpha.0](#moving-from-30-alpha0)).
 - **Archive recovery checks the destination before it deletes**, even under
   `verification: none`, and rows and INSERTs larger than `max_allowed_packet` are copied: only one
-  value larger than the destination's packet fails its batch ([alpha.1](#moving-from-30-alpha1)).
+  value larger than the destination's packet, or rarely a whole INSERT, fails its batch
+  ([alpha.1](#moving-from-30-alpha1)).
 - **`TRIGGER` must be provable** on the job tables, and a self-referencing `ON DELETE CASCADE`
   or `SET NULL` is refused for archive and purge ([alpha.2](#moving-from-30-alpha2)).
 - **Exit codes, stdout and stderr**: a stop exits 3, a live run holding the work exits 4, a
