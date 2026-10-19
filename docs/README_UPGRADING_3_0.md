@@ -12,16 +12,21 @@ What changed from 2.x, and how to move a job to 3.0.
 
 - [The short version](#the-short-version)
 - [Moving from 2.2](#moving-from-22)
+- [Also new against 2.x](#also-new-against-2x)
 - [Moving from 3.0 alpha.0](#moving-from-30-alpha0)
 - [Moving from 3.0 alpha.1](#moving-from-30-alpha1)
 - [Moving from 3.0 alpha.2](#moving-from-30-alpha2)
 - [Moving from 3.0 beta.1](#moving-from-30-beta1)
 - [Moving from 3.0 beta.2](#moving-from-30-beta2)
 - [Moving from 3.0 beta.3](#moving-from-30-beta3)
+- [Moving from 3.0 RC.1](#moving-from-30-rc1)
 - [Configuration changes](#configuration-changes)
 - [Command-line changes](#command-line-changes)
 - [Limits removed or changed](#limits-removed-or-changed)
 - [Coming from a release before 2.2](#coming-from-a-release-before-22)
+
+From a 3.0 prerelease, read every *Moving from 3.0* section from your release onward: each lists
+only what changed after that release, and a later section overrides an earlier one.
 
 ---
 
@@ -31,12 +36,18 @@ What changed from 2.x, and how to move a job to 3.0.
    ([Moving from 2.2](#moving-from-22)). 3.0 never reads or migrates them.
 2. Rewrite the configuration: every job needs `job_type`, `verification` is one value, and
    unknown keys are refused ([Configuration changes](#configuration-changes)).
-3. Drop `--force` and `--skip-verify` from your scripts
-   ([Command-line changes](#command-line-changes)).
-4. Run `goarchive validate`; 3.0's preflight checks keys and relations more strictly than 2.x.
+3. Grant `TRIGGER` directly on the job tables: on the source for archive and purge, on the
+   destination for archive and copy-only. The 2.x recipes lack it, and preflight refuses the job
+   without it ([grant recipes](README_PERMISSIONS.md#grant-recipes)).
+4. Drop `--force` and `--skip-verify` from your scripts, rename `--skip-validate-preflight`, and
+   check how they read exit codes ([Command-line changes](#command-line-changes)).
+5. Run `goarchive validate`; 3.0's preflight checks keys and relations more strictly than 2.x.
+   What else is new: [Also new against 2.x](#also-new-against-2x).
 
-A 2.x configuration fails to load with
-`GoArchive 3.0 changed the configuration format; see docs/README_UPGRADING_3_0.md`, and 2.x
+A 2.x configuration fails to load with an error naming `docs/README_UPGRADING_3_0.md`: a 2.x
+`verification` block is refused on its own, by line, and a job without `job_type` or one of the
+2.x keys `replica`, `safety.lag_threshold` and `safety.check_interval` adds
+`GoArchive 3.0 changed the configuration format; see docs/README_UPGRADING_3_0.md`. 2.x
 tracking tables are refused at startup with a pointer to the next section.
 
 ---
@@ -54,7 +65,8 @@ nothing is migrated.
    `DROP`):
 
    ```sql
-   -- Generate the DROP statements for every log table, review them, run them.
+   -- Generate the DROP statements for every log table (substitute your job_schema for
+   -- goarchive), review them, run them.
    SELECT CONCAT('DROP TABLE `', table_schema, '`.`', table_name, '`;')
    FROM information_schema.tables
    WHERE table_schema = 'goarchive' AND table_name LIKE 'archiver_job_log%';
@@ -69,6 +81,24 @@ nothing is migrated.
    starts at the beginning of the job's `where` range: for archive and purge the finished rows
    are gone from the source; a copy-only job would copy everything again, so point it at an empty
    destination, or give it a `where` that starts after what 2.x copied.
+
+---
+
+## Also new against 2.x
+
+Each of these is described where a 3.0 prerelease introduced it; a 2.x user meets them all:
+
+- **Destination tables must be InnoDB**, and a destination whose columns are in another order
+  is accepted ([alpha.0](#moving-from-30-alpha0)).
+- **`TRIGGER` must be provable** on the job tables, and a self-referencing `ON DELETE CASCADE`
+  or `SET NULL` is refused for archive and purge ([alpha.2](#moving-from-30-alpha2)).
+- **Exit codes, stdout and stderr**: a stop exits 3, a live run holding the work exits 4, a
+  usage error exits 2; a run prints to stdout only with `--progress`, and banners go to stderr
+  ([beta.1](#moving-from-30-beta1), [beta.2](#moving-from-30-beta2)).
+- **A job column in an unsupported character set is refused**, and the published image runs
+  as UID 65532 from `/work` instead of root from `/root/` ([beta.2](#moving-from-30-beta2)).
+- **`verification: count` and JSON columns under `count` or `none` print warnings**
+  ([beta.3](#moving-from-30-beta3)).
 
 ---
 
@@ -111,9 +141,10 @@ other.
 
 **Destination tables must be InnoDB.** `archive` and `copy-only` refuse a destination table on
 another engine ([`DEST_STORAGE_ENGINE_CHECK`](README_VALIDATION.md#dest_storage_engine_check)),
-and `validate` and `dry-run` report it; convert it with `ALTER TABLE … ENGINE=InnoDB`. A destination created on a server whose
-`default_storage_engine` is not InnoDB is the usual cause. **`--skip-validate-preflight` is
-renamed** `--skip-dangerously-validate-preflight-allow-experimental`; the old name is refused.
+and `validate` and `dry-run` report it; convert it with `ALTER TABLE … ENGINE=InnoDB`. A
+destination created on a server whose `default_storage_engine` is not InnoDB is the usual cause.
+**`--skip-validate-preflight` is renamed** `--skip-dangerously-validate-preflight-allow-experimental`;
+the old name is refused.
 
 **A destination whose columns are in another order is accepted.** alpha.0 refused it with
 `DEST_SCHEMA_COMPATIBILITY_CHECK`; later releases log one warning per table naming the displaced
@@ -129,7 +160,8 @@ The tracking tables are unchanged, and a job stopped under alpha.1 is recovered 
 **Archive recovery checks the destination before it deletes.** A `copied` root's tree is
 rediscovered from the source, and each of its rows must be in the destination before any of it
 is deleted. A row the destination lacks, typically one written into the tree after the copy,
-stops the run with `UncopiedError`, which names the rows and the remedies; nothing is deleted
+stops the run (`archive recovery stopped before any delete`), naming the rows and the remedies;
+nothing is deleted
 ([Crash recovery](README_OPERATIONS.md#crash-recovery)). Recovery reads the destination even
 under `verification: none`, so the archive account needs `SELECT` on the destination tables
 ([privileges](README_PERMISSIONS.md)); the recipes already grant it.
@@ -148,8 +180,8 @@ a whole INSERT, fails, with an error naming the table and the remedy
 statement at 64 MiB: the server's value is the only limit.
 
 **Logging.** A new log file is created readable by its owner only (`0600`) on Unix; on Windows
-it inherits its folder's permissions. An existing file keeps its mode. A run's log ends with one entry saying how it ended (`Run completed`,
-`Run stopped …` or `Run failed`) and its counts
+it inherits its folder's permissions. An existing file keeps its mode. A run's log ends with one
+entry saying how it ended (`Run completed`, `Run stopped …` or `Run failed`) and its counts
 ([logging](README_CONFIGURATION.md#logging)).
 
 ---
@@ -157,12 +189,12 @@ it inherits its folder's permissions. An existing file keeps its mode. A run's l
 ## Moving from 3.0 alpha.2
 
 The tracking tables are unchanged. A job stopped under alpha.2 is recovered by its next run once
-it passes the two checks below.
+it passes the new checks below.
 
 **Grant `TRIGGER` directly before upgrading.** MySQL lists a table's triggers only to an account
 holding `TRIGGER` on it. An alpha.2 account set up from the old recipes saw an empty list and ran
-past triggers it could not see. Two new checks now refuse the job unless `TRIGGER` is granted
-directly on every job table, at `<schema>.*` or table scope:
+past triggers it could not see. Two new checks now refuse the job unless `TRIGGER` is provably
+granted directly on every job table (the recipes grant it at `<schema>.*`):
 
 - `DELETE_TRIGGER_VISIBILITY_CHECK`: the source account, for archive and purge.
 - `DEST_INSERT_TRIGGER_VISIBILITY_CHECK`: the destination account, for archive and copy-only.
@@ -195,7 +227,8 @@ The tracking tables are unchanged. What changes is what goarchive prints, where,
 ends.
 
 **Exit codes.** A graceful stop now exits **3**, not 0; "another run holds the work" (the job,
-a source table, or unfinished work on the same data) exits **4**; a usage or configuration error
+a source table, or unfinished work on the same data) exits **4** (narrowed in beta.2:
+[below](#moving-from-30-beta2)); a usage or configuration error
 found before anything connected exits **2**; every other failure still exits 1. A script that
 treated any non-zero code as a failure, or a stop as success, needs the table.
 
@@ -241,6 +274,8 @@ with MySQL error 1213 (deadlock) while both created the tracking tables; now one
 under a schema lock and the other waits for it, up to 60 seconds. Exit code 4 has one more
 cause: that lock still held after the wait
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+
+---
 
 ## Moving from 3.0 beta.2
 
@@ -290,6 +325,24 @@ values. The run proceeds
 
 ---
 
+## Moving from 3.0 RC.1
+
+The tracking tables are unchanged.
+
+**A tracking schema labelled by a release other than 2.x or 3.0 gets its own remedy.** RC.1
+refused it with the 2.x procedure, which drops the tables; it is still refused, but the remedy
+now asks which release wrote it, keeps a later release's tables, and retires an earlier one's
+with that release
+([Tracking-schema upgrade procedures](README_JOBS_SCHEMA.md#tracking-schema-upgrade-procedures)).
+Nothing to do.
+
+**`--force-triggers` no longer warns for a copy-only job**, which deletes nothing; `validate`
+and `dry-run` still accept the flag for any job. The
+`--skip-dangerously-validate-preflight-allow-experimental` warning now says that a run, not
+`dry-run`, still checks the job's log key and binding.
+
+---
+
 ## Configuration changes
 
 The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how-configuration-is-loaded)).
@@ -316,7 +369,8 @@ The file is read strictly ([how errors are reported](README_CONFIGURATION.md#how
   3.0 refuses it. A helper key such as `x-defaults:` is refused too, so a YAML anchor shared by
   merge keys must live under a known key, for example a real job.
 - **Job names keep their case**, so the name on the command line must match the file exactly,
-  and two names that differ only in case are refused; names must be printable ASCII
+  and two names that differ only in case are refused; names must be printable ASCII without
+  spaces, not start with `-`, and be at most 255 characters
   ([the rule](README_CONFIGURATION.md#jobs)).
 - **A table may appear once in a job.**
 - **One YAML document per file:** a second document after `---` is refused rather than ignored.
@@ -346,6 +400,9 @@ Every option: [Configuration](README_CONFIGURATION.md).
 |-----|-----|
 | `--skip-verify` | `--verification=none`; `--verification=<sha256\|count\|none>` overrides the file for one run |
 | `--force` | Removed. A copy-only rerun uses `resume: true`; a held job lock is never taken over |
+| `--skip-validate-preflight` | Renamed `--skip-dangerously-validate-preflight-allow-experimental`; the old name is refused |
+| Every error exited 1; a stop exited 0 | 0 done, 1 failed, 2 usage or configuration error, 3 stopped, 4 a live run holds the work ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)) |
+| A run printed its report on stdout | A run prints to stdout only with `--progress` or a stdout log; banners and errors go to stderr |
 | `dry-run` inserted a sample into the destination and rolled it back | `dry-run` writes nothing: it prints MySQL's plans for the first batch's statements |
 | `validate` ran every check on every job | `validate` checks each job under its `job_type` |
 
