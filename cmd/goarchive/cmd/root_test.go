@@ -105,13 +105,34 @@ func TestRootHelpDescription(t *testing.T) {
 
 // TestRunHelpNamesExitCodes (console-output spec §3.9): each run command points at the codes.
 func TestRunHelpNamesExitCodes(t *testing.T) {
-	for _, c := range []*cobra.Command{archiveCmd, purgeCmd, copyOnlyCmd} {
+	for _, c := range []*cobra.Command{archiveCmd, purgeCmd, copyOnlyCmd, dryrunCmd, validateCmd, planCmd, listJobsCmd} {
 		if !strings.Contains(c.Long, "Exit codes: see goarchive --help.") {
 			t.Errorf("%s help does not point at the exit codes", c.Name())
 		}
 	}
 	if f := archiveCmd.Flags().Lookup("progress"); f == nil || !strings.Contains(f.Usage, "log entries when the log is JSON on the console") {
 		t.Errorf("--progress help does not say where its output goes")
+	}
+}
+
+// TestCommandHelpTexts (DSW-1 B2, B23, B24): the help says what each command does and does not do.
+func TestCommandHelpTexts(t *testing.T) {
+	if !strings.Contains(planCmd.Long, "It opens no connection; dry-run shows MySQL's plans.") {
+		t.Errorf("plan help does not say it opens no connection:\n%s", planCmd.Long)
+	}
+	if strings.Contains(dryrunCmd.Long, "coverage") || !strings.Contains(dryrunCmd.Long, "root table, key, where and matching roots") {
+		t.Errorf("dry-run help does not name what its job section shows:\n%s", dryrunCmd.Long)
+	}
+	for _, w := range []string{"storage engines", "character sets"} {
+		if !strings.Contains(validateCmd.Long, w) {
+			t.Errorf("validate help does not name %q:\n%s", w, validateCmd.Long)
+		}
+	}
+	for _, c := range []*cobra.Command{archiveCmd, purgeCmd, copyOnlyCmd, dryrunCmd} {
+		f := c.Flags().Lookup("skip-dangerously-validate-preflight-allow-experimental")
+		if f == nil || strings.Contains(f.Usage, "binding checks still run") || !strings.Contains(f.Usage, "a run still checks the job's log key and binding") {
+			t.Errorf("%s: the skip flag's help promises checks dry-run does not run: %v", c.Name(), f)
+		}
 	}
 }
 
