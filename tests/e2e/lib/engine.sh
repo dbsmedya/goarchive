@@ -14,7 +14,7 @@
 #   expected_error  mode=example only: substring required in the failure
 #   source_account  mode=example only: "" (root) | recipe | recipe-trigger -- the demo
 #                   runs as ga3e2e_recipe, created before validate with the documented
-#                   source recipe (recipe-trigger adds TRIGGER) and dropped after it
+#                   source recipe less TRIGGER (recipe-trigger adds it) and dropped after it
 #   force_triggers  mode=example only: "" or yes (validate takes --force-triggers) | no
 #   expected_detail mode=example only: a second, literal substring the failure must hold
 #   command         mode=working only: archive | purge | copy-only
@@ -75,8 +75,8 @@ load_test_vars() {
 DEMO_ACCOUNT="ga3e2e_recipe"
 
 # create_source_account recipe|recipe-trigger: as root on the source, (re)create the
-# account with exactly the documented source recipe (README_PERMISSIONS.md ->
-# Source), TRIGGER only for recipe-trigger. DROP first: a killed run's leftover is
+# account with the documented source recipe (README_PERMISSIONS.md -> Source) less
+# TRIGGER, which only recipe-trigger adds. DROP first: a killed run's leftover is
 # replaced, never reused.
 # The statements are not atomic: on failure the caller drops the account.
 create_source_account() {

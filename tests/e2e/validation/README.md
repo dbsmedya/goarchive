@@ -15,7 +15,7 @@ touch data.
 | 10 | `TABLE_EXISTENCE_CHECK` | `root_table` is the view `customer_list`; only base tables can be archived — the **non-base-table policy** |
 | 11 | `INTERNAL_FK_COVERAGE` | the `customer → rental → payment` GDPR diamond — `payment` has two parents in the job, so one foreign key is never a relation |
 | 12 | `SRC_DEST_IDENTITY_CHECK` | `source` and `destination` are the same server and schema (`127.0.0.1:3305/sakila`); refused at connection time, before preflight — an archive into itself would delete the only copy (issue #13); the root `payment` carries an INSERT trigger, so a binary that checked identity after preflight would be refused by the destination trigger check instead — the demo therefore also pins that the guard runs before preflight |
-| 18 | `DELETE_TRIGGER_VISIBILITY_CHECK`, naming `film(unconfirmed)` | nothing in the config: it is Test01's `film` tree, run as `ga3e2e_recipe`, which holds exactly the documented source recipe and no `TRIGGER`, so it cannot see `film`'s DELETE trigger and cannot prove there is none; `--force-triggers`, passed as usual, does not apply |
+| 18 | `DELETE_TRIGGER_VISIBILITY_CHECK`, naming `film(unconfirmed)` | nothing in the config: it is Test01's `film` tree, run as `ga3e2e_recipe`, which holds the documented source recipe less `TRIGGER`, so it cannot see `film`'s DELETE trigger and cannot prove there is none; `--force-triggers`, passed as usual, does not apply |
 | 19 | `DELETE_TRIGGER_CHECK`, naming `film(del_film)` | the same tree as an account holding `TRIGGER` too, validated **without** `--force-triggers`: Sakila's `del_film` fires on every deleted film, and without the operator's acceptance the job is refused |
 
 Test 01 was a demo in 2.x (`COMPOSITE_PK_CHECK`). 3.0 archives composite keys, so it
@@ -27,7 +27,7 @@ leakage check like every other, serve tests 18 and 19:
 
 | Declaration | Values | Effect |
 |---|---|---|
-| `source_account` | `recipe` \| `recipe-trigger` | Before `validate`, the engine creates `ga3e2e_recipe` on the source as root, with exactly the documented source recipe (`SELECT, DELETE` on the source database, `PROCESS`; `recipe-trigger` adds `TRIGGER`) and the estate's root password; after `validate`, or after a setup that failed part-way, it drops the account, and a failed drop fails the demo. The config's `source.user` must be `ga3e2e_recipe`, or the test is refused before it runs. |
+| `source_account` | `recipe` \| `recipe-trigger` | Before `validate`, the engine creates `ga3e2e_recipe` on the source as root, with the documented source recipe less `TRIGGER` (`SELECT, DELETE` on the source database, `PROCESS`; `recipe-trigger` adds `TRIGGER`, which makes it the full recipe) and the estate's root password; after `validate`, or after a setup that failed part-way, it drops the account, and a failed drop fails the demo. The config's `source.user` must be `ga3e2e_recipe`, or the test is refused before it runs. |
 | `force_triggers` | `yes` (default) \| `no` | `no` runs `validate` without `--force-triggers`. |
 | `expected_detail` | a literal string | A second substring the failure must hold, for a category whose subject still needs pinning (`film(del_film)`). Matched literally, unlike `expected_error`. Quote it in the file when it holds parentheses. |
 
