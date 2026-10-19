@@ -49,9 +49,9 @@ PK_COLUMN_CHECK: The configured primary_key must list the PRIMARY KEY's columns,
 key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_id, line_no))])
 ```
 
-Every command computes each key-addressed statement's cap, the most key tuples it carries, and
-fails on it as before. `validate` and `dry-run` print the caps; a run logs one `Statement cap:`
-line per statement.
+Preflight computes each key-addressed statement's cap, the most key tuples it carries, and fails
+when a cap cannot be computed. `validate` and `dry-run` print the caps; a run logs one
+`Statement cap:` line per statement.
 
 ---
 
@@ -96,7 +96,8 @@ type.
   proof, the self-reference delete rule, the delete permission and the DELETE-trigger checks. It
   still runs `FK_COVERAGE_CHECK`, but without `PROCESS` that check sees only the foreign keys the
   account can read, so a cross-schema one can pass unseen.
-- [Connection checks](#connection-checks) run before preflight, for every command.
+- [Connection checks](#connection-checks) run before preflight, for every command that connects
+  (`archive`, `purge`, `copy-only`, `validate`, `dry-run`).
 
 ---
 
@@ -129,6 +130,13 @@ Every connection — source, destination and replica, including those a pool ope
 AUTO_INCREMENT column stays zero while other modes remain intact. The failure means GoArchive
 could not prove the session does this. Check whether the server or a proxy honors connection
 initialization; a wrapped query cause in the message comes first.
+
+### Session time zone
+
+Every pool, source, destination and replica, proves when it opens that its session runs in UTC
+(`time_zone = '+00:00'`, [Session settings](README_CONFIGURATION.md#session-settings)). A server or
+proxy that overrides it is refused with `session time zone is not UTC`; the check has no name and
+no flag reaches it.
 
 ### `MAX_ERROR_COUNT_CHECK`
 
@@ -543,11 +551,11 @@ Logged, never fatal:
   ([Schema compatibility rules](#schema-compatibility-rules)).
 - **A JSON column under `verification: count` or `none`**, for archive and copy-only jobs, under
   `--skip-dangerously-validate-preflight-allow-experimental` too: one `WARNING:` naming every JSON
-  column of the job and, under that flag, a same-named destination column that is JSON only
-  there. A JSON value is copied as MySQL's printed text, so a member's type is not
-  kept, a long DECIMAL loses digits, and an 8.0 or 8.4 destination can change a double (MySQL
-  Bug #116160); neither mode compares values, so the change goes unseen. The run proceeds; to
-  have such a change refused, use `verification: sha256`
+  column of the job's source tables, and every destination column that is JSON where its same-named
+  source column is not. A JSON value is copied as MySQL's printed text, so a member's type is not
+  kept, a long DECIMAL loses digits, and an 8.0 or 8.4 destination can change a double (MySQL Bug
+  #116160); neither mode compares values, so the change goes unseen. The run proceeds; to have such
+  a change refused, use `verification: sha256`
   ([JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy)):
 
   ```
@@ -558,8 +566,8 @@ Logged, never fatal:
   values that do not survive a text copy.
   ```
 
-`validate` logs them at warning level, so `logging.level: error` hides them. The JSON warning is
-the exception: like a run banner, it prints on stderr whatever the log level.
+Preflight logs them at warning level, under every command, so `logging.level: error` hides them. The
+JSON warning is the exception: like a run banner, it prints on stderr whatever the log level.
 
 ---
 
@@ -622,6 +630,10 @@ reject rows. Every incompatible table is reported, each with its first fatal dif
 | Destination column generated, even when the source's is generated the same way | MySQL rejects an explicit value with error 3105 |
 | Destination-only unique index | Rows the source holds as distinct collide, and the copy fails |
 | Primary key differs | `DEST_KEY_IDENTITY_CHECK`'s, above |
+
+CHECK constraints and foreign keys are not compared. A destination-only one that rejects a row
+fails that batch's copy, which rolls back before anything is deleted (for foreign keys, see
+[`disable_foreign_key_checks`](README_CONFIGURATION.md#disable_foreign_key_checks)).
 
 **How destination unique indexes are compared.** By what they make unique, not by name: two
 unique indexes are equivalent when they have the same set of parts, each `(column or expression,
@@ -692,11 +704,14 @@ foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK
 ```
 
 Still enforced on a run: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
-`KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the destination keys being readable (for the statement caps), the job's
-[startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. `dry-run`
-prints no warning and never reads the tracking tables, so it does not test the job's
-registration or binding: a dry-run that passes does not promise the run will start. `validate`
-has no skip flag.
+`KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the statement caps (computed from the source keys
+and, for archive and copy-only, the destination keys, which must be readable), the job's
+[startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. The JSON
+warning is still printed. Every other check in
+[the table](#which-checks-run-for-which-command) is skipped, `TABLE_EXISTENCE_CHECK`,
+`PK_COLUMN_CHECK`, `RELATION_KEY_CHECK` and `FK_INDEX_CHECK` included. `dry-run` prints the same
+warning, but it never reads the tracking tables, so it does not test the job's registration or
+binding: a dry-run that passes does not promise the run will start. `validate` has no skip flag.
 
 Use it only to recover from an incident, after verifying the schema by hand.
 
