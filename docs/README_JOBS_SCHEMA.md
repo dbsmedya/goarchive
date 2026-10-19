@@ -53,6 +53,8 @@ SELECT id, job_name, root_table, job_type FROM goarchive.archiver_job;
 -- job id 42  ->  goarchive.archiver_job_log_42
 ```
 
+The examples use a `job_schema` named `goarchive` and job id 42; substitute yours.
+
 ---
 
 ## `archiver_job`
@@ -83,7 +85,7 @@ CREATE TABLE IF NOT EXISTS archiver_job (
 | Column | Meaning |
 |--------|---------|
 | `id` | Surrogate key; **names the log table**, `archiver_job_log_<id>` |
-| `job_name` | The job's name in the config: printable ASCII, unique **without regard to letter case** |
+| `job_name` | The job's name in the config: printable ASCII without spaces, not starting with `-`, at most 255 characters, unique **without regard to letter case** ([the rule](README_CONFIGURATION.md#jobs)) |
 | `root_table` | The root table; fixed for the job's life |
 | `job_type` | `archive`, `purge` or `copy-only`; fixed for the job's life |
 | `job_status` | `0` idle, `1` running, `3` failed (the last run ended in an error) |
@@ -246,6 +248,7 @@ FROM goarchive.archiver_job WHERE job_name = 'archive_old_orders';
 | `DELETE … WHERE ga_status = 2` (copy-only) | ⚠️ | Those roots are no longer skipped by `resume: true`; a rerun re-copies them and fails on the duplicates unless their destination rows are removed too |
 | `DELETE … WHERE ga_status IN (1, 4)` | ⚠️ | Abandons recovery: [Abandoning logged roots](#abandoning-logged-roots) |
 | `DROP TABLE archiver_job_log_<id>` and `DELETE` its job row | ✅ only without pending work | [Retiring the job](#retiring-a-job-completely); with `copied` or `deleting` roots it is abandonment |
+| `DROP TABLE archiver_job_log_<id>` alone | ⚠️ | The next run recreates it empty and carries on: archive and purge lose the record, copy-only loses its `resume` skips, and pending roots are [abandoned](#abandoning-logged-roots) |
 | `TRUNCATE archiver_job` | ❌ | Resets `AUTO_INCREMENT`: new jobs take the ids of old logs, and a job whose old log holds rows stays unregistered until that log is dropped. Drop every log table in the same window, or use `DELETE` |
 | `DROP TABLE archiver_job` alone | ❌ | A labelled schema without `archiver_job` is refused: the logs would meet new jobs reusing their ids |
 | `DROP TABLE goarchive_meta` alone | ❌ | A populated `archiver_job` without a label is refused until the label row is restored |
@@ -358,7 +361,8 @@ trees share one of its tables ([the unfinished-work guard](README_OPERATIONS.md#
 engine: job "purge_logs" shares source tables in `shop` with jobs that are marked running or
 stopped with unfinished work (registry `goarchive`.`archiver_job`). This run did nothing.
   archive_old_orders: marked running, heartbeat 1h4m1s ago, unfinished roots in its log; shares payment_logs
-Rerun each job with unfinished roots so that its recovery finishes them, then rerun this one.
+Rerun each job with unfinished roots so that its recovery finishes them, then rerun this one. A job
+that cannot be rerun (its source or config is gone): docs/README_JOBS_SCHEMA.md, "Abandoning logged roots".
 A job marked running whose heartbeat stopped: confirm its process is gone first
 (docs/README_JOBS_SCHEMA.md, "Clearing a stale running job").
 ```

@@ -54,7 +54,8 @@ chmod +x goarchive-<version>-linux-amd64
 ## Run the Published Image
 
 Each release is also published as `ghcr.io/dbsmedya/goarchive:<version>`, tagged with the release
-version without the leading `v`. Use a version tag:
+version without the leading `v`; a stable release is also tagged `<major>.<minor>` and `latest`.
+Branch and `sha-` tags are development builds. Use a version tag:
 
 ```bash
 docker run --rm ghcr.io/dbsmedya/goarchive:<version> --version
@@ -117,7 +118,7 @@ sudo mv goarchive /usr/local/bin/
 ### 4. Verify Installation
 
 ```bash
-./goarchive --version
+goarchive --version   # or ./goarchive --version if you did not move it
 ```
 
 ## Building with Make
@@ -136,7 +137,7 @@ make dev
 # Install to $GOPATH/bin
 make install
 
-# Build release binaries for linux and darwin (amd64, arm64)
+# Build linux and darwin binaries (amd64, arm64) in bin/; published releases also include windows-amd64
 make release
 
 # Clean build artifacts
@@ -166,7 +167,8 @@ make help
 
 By default, the binary is built to `bin/goarchive` with version information injected:
 
-- Version: From the git tag, or else the `Makefile`'s `RELEASE_VERSION`
+- Version: on a tagged commit, the tag as written, with its leading `v` (`v<version>`, where a
+  published binary reports `<version>`); otherwise the `Makefile`'s `RELEASE_VERSION`
 - Commit: Short git commit hash
 
 ## Docker Build
@@ -202,7 +204,7 @@ described in [Configuration](docs/README_CONFIGURATION.md).
 ### 3. Validate Configuration
 
 ```bash
-./goarchive validate -c archiver.yaml
+goarchive validate -c archiver.yaml   # or ./goarchive if you did not move it
 ```
 
 ## Troubleshooting

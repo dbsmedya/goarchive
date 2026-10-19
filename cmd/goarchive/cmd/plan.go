@@ -22,6 +22,7 @@ var planCmd = &cobra.Command{
 	Short: "Show execution plan for a job",
 	Long: `Plan analyzes the job configuration and displays the execution order
 for tables based on dependency resolution.
+It opens no connection; dry-run shows MySQL's plans.
 
 The plan shows:
   - Visual relation tree (using mermaid-ascii)
@@ -30,7 +31,9 @@ The plan shows:
   - Each table's column pairing with its parent
 
 Example:
-  goarchive plan --config archiver.yaml --job archive_old_orders`,
+  goarchive plan --config archiver.yaml --job archive_old_orders
+
+Exit codes: see goarchive --help.`,
 	RunE: runE(runPlan),
 }
 

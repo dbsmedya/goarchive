@@ -23,10 +23,10 @@ func banners(doc *jobspec.Document, typ jobspec.Type, v jobspec.Verification, sk
 	if skipPolicy {
 		out = append(out, "WARNING: --"+skipPolicyFlag+": preflight's policy checks are skipped (storage engines, "+
 			"permissions, triggers, foreign-key coverage, destination compatibility, packet size). The keys are still read "+
-			"from MySQL, and the log-key and binding checks still run. A misspelled foreign_key column fails as a "+
+			"from MySQL; a run still checks the job's log key and binding. A misspelled foreign_key column fails as a "+
 			"statement-caps error instead of RELATION_KEY_CHECK.")
 	}
-	if forceTriggers {
+	if forceTriggers && typ != jobspec.CopyOnly { // copy-only deletes nothing
 		out = append(out, "WARNING: --force-triggers: DELETE triggers on source tables are accepted; every delete fires them.")
 	}
 	if v == jobspec.VerifyCount && typ != jobspec.Purge {

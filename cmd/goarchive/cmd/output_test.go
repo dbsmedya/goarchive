@@ -33,7 +33,7 @@ func TestBanners(t *testing.T) {
 		want          []string
 	}{
 		{"skip preflight", plain, jobspec.Archive, jobspec.VerifySHA256, true, false,
-			[]string{"--skip-dangerously-validate-preflight-allow-experimental", "storage engines", "keys are still read from MySQL", "log-key and binding checks still run",
+			[]string{"--skip-dangerously-validate-preflight-allow-experimental", "storage engines", "keys are still read from MySQL", "a run still checks the job's log key and binding",
 				"misspelled foreign_key column fails as a statement-caps error"}},
 		{"force triggers", plain, jobspec.Purge, "", false, true, []string{"--force-triggers", "every delete fires them"}},
 		{"no verification, archive", plain, jobspec.Archive, jobspec.VerifyNone, false, false,
@@ -64,6 +64,15 @@ func TestBanners(t *testing.T) {
 	}
 	if got := banners(plain, jobspec.Purge, jobspec.VerifyCount, false, false); len(got) != 0 {
 		t.Errorf("purge copies nothing, so no verification banner applies: %q", got)
+	}
+	// DSW-1 B18: copy-only deletes nothing, so --force-triggers, which validate and dry-run
+	// accept for any job, has nothing to warn about.
+	if got := banners(plain, jobspec.CopyOnly, jobspec.VerifySHA256, false, true); len(got) != 0 {
+		t.Errorf("copy-only deletes nothing, so the --force-triggers banner does not apply: %q", got)
+	}
+	// DSW-1 B2: dry-run prints the skip banner too, and it reads no tracking table.
+	if got := strings.Join(banners(plain, jobspec.Archive, jobspec.VerifySHA256, true, false), "\n"); strings.Contains(got, "binding checks still run") {
+		t.Errorf("the skip banner promises binding checks that dry-run does not run: %q", got)
 	}
 }
 

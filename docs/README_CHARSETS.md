@@ -30,7 +30,8 @@ set, twice.
 
 - **Two real characters read as one.** cp932 and eucjpms map their duplicate NEC and IBM codes
   (such as 0x8790 and 0x81E0) to one Unicode character; sjis writes its backslash 0x5C back as
-  0x815F, so `C:\tmp` arrives as `43 3A 81 5F …`.
+  0x815F, so `C:\tmp` arrives as `43 3A 81 5F …`. ujis does the same with its full-width
+  backslash and tilde, and armscii8 with six punctuation bytes and their ASCII look-alikes.
 - **A code with no Unicode character reads back as `?`** (or as U+FFFD in tis620 and big5).
 - **A ucs2 lone surrogate reads back as bytes that are not UTF-8**, which MySQL refuses to bind
   back (error 3988).
@@ -89,9 +90,10 @@ character set and are not.
 `--skip-dangerously-validate-preflight-allow-experimental`. The loss is silent and cannot be found
 after the run, so no option turns them off.
 
-`TestMySQLCharsetRoundTrip` proves the supported list on every supported MySQL version: every
-character of each set, read through the pinned session, is distinct and binds back to its own
-row; and the same measure sees the loss in cp1250, sjis, tis620 and ucs2.
+`TestMySQLCharsetRoundTrip` proves the supported list on every server a release is gated on (Oracle
+MySQL 8.0.40, 8.4.11 and 9.7.1, Percona Server 8.0.46, 8.4.11 and 9.7.1): every character of each
+set, read through the pinned session, is distinct and binds back to its own row; and the same
+measure sees the loss in cp1250, sjis, tis620 and ucs2.
 
 ---
 
@@ -101,7 +103,7 @@ row; and the same measure sees the loss in cp1250, sjis, tis620 and ucs2.
 |---|---|
 | `utf8mb4` | The session's own character set |
 | `utf8mb3` | |
-| `ascii` | Bytes 0x80–0xFF cannot be stored (MySQL error 1366), so none is lost |
+| `ascii` | Bytes 0x80–0xFF cannot be stored (refused with error 1366 under strict mode, stored empty otherwise), so none reaches a run |
 | `latin1` | |
 | `latin2` | |
 | `latin5` | |
@@ -171,8 +173,8 @@ job. The conversion is MySQL's own, under the default strict mode:
 So, before converting:
 
 1. **Find non-key values that map to one character:** the cp932 and eucjpms NEC and IBM
-   duplicates, and the sjis and ujis full-width backslash. A strict `ALTER` merges them without a
-   message.
+   duplicates, the sjis and ujis full-width backslash, ujis's full-width tilde, and armscii8's six
+   punctuation bytes. A strict `ALTER` merges them without a message.
 2. **Remove ucs2's lone surrogates.** A strict `ALTER` stores them as invalid UTF-8.
 3. **Convert under strict mode.** MySQL refuses the rest itself: a code with no Unicode character
    (1366), and a key pair that would merge (1062).

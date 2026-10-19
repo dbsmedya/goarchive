@@ -9,6 +9,7 @@ deleted.
 | 06 | `payment`, exactly half | over-deletion is purge's unrecoverable failure, and the exact count is the only thing that catches it |
 | 13 | `payment`, live replica enabled | an observed replication hold preserves rows; the same process resumes and completes after the applier restarts |
 | 15 | `km_blob` (`BINARY(16)`) → `km_blob_ref` | the key matrix's binary root: keys whose bytes are not valid UTF-8 must reach the delete statements unchanged |
+| 17 | `payment`, live replica enabled | one SIGTERM during a replication hold exits 3 with nothing logged; a second purge completes |
 
 Two assertions carry this category, and both are about what must *not* happen:
 

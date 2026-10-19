@@ -32,23 +32,23 @@ GoArchive is for **cold data**. It is not designed for hot, actively-transacting
 
 ## Known Limits & Caution
 
-> This is the section GoArchive's preflight error messages refer to.
+> This is the section GoArchive's error messages refer to.
 
 <a id="hard-constraints--rejected-by-preflight"></a>
 
 ### Hard constraints
 
-Preflight refuses these before a run starts; stored temporal identities are refused when
-encountered, before they drive any copy, discovery, verification or delete.
+Refused before a run starts, at connection or in preflight, except the run contract and JSON
+values, which are not checked; stored temporal identities are refused when met, before any delete.
 
 #### Primary keys
 
 Every participating table needs a `PRIMARY KEY`, single-column or composite, and its configured
 `primary_key` must name exactly those columns in key order
 ([Primary key checks](README_VALIDATION.md#primary-key-checks)). Refused as keys
-(`KEY_TYPE_UNSUPPORTED`): `FLOAT`/`DOUBLE`, `ENUM`/`SET`, `BIT`, and a key part with a prefix
-length. The root table's key definition must stay the one the job was created with; a changed
-one is refused at startup.
+(`KEY_TYPE_UNSUPPORTED`): any type outside [the allowed list](README_VALIDATION.md#key_type_unsupported)
+(`FLOAT`/`DOUBLE`, `ENUM`/`SET`, `BIT`, …) and a prefix key part. The root table's key definition
+must stay the one the job was created with; a changed one is refused at startup.
 
 #### Temporal values and identities
 
@@ -65,7 +65,7 @@ GoArchive's correctness rests on these operating contracts. Violations are docum
 detected, except where [recovery](README_OPERATIONS.md#crash-recovery) stops:
 
 1. **No DDL on participating tables while a job runs.** Column lists are read once at startup.
-   A renamed or dropped column fails the next batch before it reaches the delete; an
+   A renamed or dropped column fails an archive or copy-only batch before its copy commits; an
    **added** column is not detected and not copied. Run migrations between runs.
 2. **Cold data only.** The rows of a root's tree must not change from the moment GoArchive
    reads them until it has finished that root, including across a crash and the recovery that
@@ -98,8 +98,8 @@ Every participating source and destination table must be InnoDB (`STORAGE_ENGINE
 Any table **outside** the job holding a foreign key **into** it is fatal, for every `ON DELETE`
 rule (`FK_COVERAGE_CHECK`). A table in another schema cannot join a job
 ([identifier rules](README_CONFIGURATION.md#identifier-rules)), so an incoming cross-schema
-foreign key is always fatal. Proving that none was missed needs `PROCESS` on the source account
-([the provable-grant rule](README_PERMISSIONS.md#the-provable-grant-rule)).
+foreign key is always fatal. For archive and purge, proving that none was missed needs `PROCESS`
+on the source account ([the provable-grant rule](README_PERMISSIONS.md#the-provable-grant-rule)).
 
 #### Destination schema must not be stricter than source
 
@@ -119,10 +119,10 @@ the others (`COLUMN_CHARSET_CHECK`). The lists and the reason: [Character sets](
 
 #### JSON values
 
-JSON is copied as MySQL's printed text, the form every MySQL client reads, so a member's MySQL
-type is not kept, and a MySQL 8.0 or 8.4 destination can change a double as it parses the text
-(MySQL Bug #116160). `sha256` verification refuses a changed value; `count` and `none` do not
-compare values, and warn, naming the job's JSON columns. What changes, and on which versions:
+JSON is copied as MySQL's printed text, so a member's MySQL type is not kept, a DECIMAL member
+longer than a double loses digits, and an 8.0 or 8.4 destination can change a double as it parses
+the text (MySQL Bug #116160). `sha256` verification refuses a changed value; `count` and `none` do
+not compare values, and warn, naming the job's JSON columns. What changes, and on which versions:
 [JSON values that do not survive a text copy](README_COMPAT.md#json-values-that-do-not-survive-a-text-copy).
 
 ---
@@ -183,9 +183,9 @@ values each just under the driver's long-data threshold can be refused whole: lo
 On a Group Replication source, a delete chunk larger than
 `group_replication_transaction_size_limit` (default 150 MB) fails its commit with MySQL's
 `Error 3100 … replication hook 'before_commit'`, which names neither the limit nor the remedy.
-Nothing is lost: the roots stay `copied`; lower `batch_delete_size` and rerun, and recovery finishes
-them. On a Group Replication destination, the copy transaction can fail the same way: lower
-`batch_size`.
+Nothing is lost: the roots stay logged (`copied`, or `deleting` for purge); lower
+`batch_delete_size` and rerun, and recovery finishes them. On a Group Replication destination,
+the copy transaction can fail the same way: lower `batch_size`.
 
 #### The copy transaction spans all tables
 
@@ -270,13 +270,13 @@ configuration file is trusted input: whoever writes it already holds the credent
 ## Environment
 
 This section is the single source of truth for supported versions. `README.md` and `INSTALL.md`
-link here rather than restating it.
+link here rather than restating it (README's badges show only the floors).
 
-- **MySQL**: Oracle MySQL **8.0.40+** with the **InnoDB** storage engine, and Percona Server for
-  MySQL as tested by [dbsgomysql](https://github.com/dbsmedya/dbsgomysql), which supplies every
-  preflight fact ([Why GoArchive uses dbsgomysql](README_dbsgomysql.md))
-- **Go**: 1.26 or later to build from source. `go.mod` pins `toolchain go1.26.8`, which the
-  project's own builds use; an older Go with `GOTOOLCHAIN=auto` downloads it
+- **MySQL**: Oracle MySQL or Percona Server **8.0.40+**, **InnoDB**; each release is gated on
+  Oracle 8.0.40, 8.4.11, 9.7.1 and Percona 8.0.46, 8.4.11, 9.7.1. [dbsgomysql](https://github.com/dbsmedya/dbsgomysql)
+  supplies every preflight fact ([Why GoArchive uses dbsgomysql](README_dbsgomysql.md))
+- **Go**: 1.26+ to build from source. Releases, the image and `make` use go1.26.8 (`go.mod`'s
+  `toolchain`); a plain `go build` uses a newer local Go, and `GOTOOLCHAIN=auto` fetches go1.26.8
 - **Network**: access to the source and destination databases, and to every replica listed
   in `replication.servers` when the replication gate is enabled
 

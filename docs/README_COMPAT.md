@@ -126,7 +126,8 @@ in-tree `ON DELETE CASCADE` deleted the other, while every verification passed.
 
 **What GoArchive does.** It pins every session to `utf8mb4` / `utf8mb4_general_ci` and checks it
 on every connection, and refuses any job column outside the 19 sets in preflight.
-`TestMySQLCharsetRoundTrip` proves the 19 on every supported server: every character read through
+`TestMySQLCharsetRoundTrip` proves the 19 on every server a release is gated on (Oracle MySQL
+8.0.40, 8.4.11 and 9.7.1, Percona Server 8.0.46, 8.4.11 and 9.7.1): every character read through
 the pinned session is distinct and binds back to its own row, and the same measure sees the loss
 in cp1250, sjis, tis620 and ucs2.
 

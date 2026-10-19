@@ -34,9 +34,11 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 | `purge` | Delete without copying | **yes** |
 | `dry-run` | Preflight, the `where` count, then the job, its orders, settings, caps and the first batch's plans; writes nothing | no |
 | `validate` | Load the file and run preflight for every job, or one with `--job` | no |
-| `plan` | The relation tree, copy order and delete order, without connecting | no |
-| `list-jobs` | The jobs in the file | no |
-| `version` | The version | no |
+| `plan` | The relation tree, copy order and delete order, with the processing and verification settings, without connecting | no |
+| `list-jobs` | The jobs in the file, with their type, keys and relations, without connecting | no |
+| `version` | The version, commit, Go version and platform | no |
+| `completion <shell>` | A shell completion script (`bash`, `zsh`, `fish`, `powershell`) on stdout | no |
+| `help [command]` | Help for any command, as `--help` | no |
 
 A job runs only under the command its `job_type` names: `goarchive copy-only --job j` refuses an
 archive job before connecting.
@@ -52,6 +54,13 @@ archive job before connecting.
 | `-c`, `--config <path>` | `archiver.yaml` | The configuration file |
 | `--log-level <level>` | — | Override the log level (`debug`, `info`, `warn`, `error`) |
 | `--log-format <format>` | — | Override the log format (`json`, `text`) |
+| `-h`, `--help` | — | Help for the command |
+
+`goarchive -v` or `goarchive --version` prints the version on one line; `goarchive version` adds
+the commit, Go version and platform.
+
+An unknown `--log-level` or `--log-format` value is not refused: the level falls back to `info`
+and the format to `text`. The same values in the file's `logging` block are refused.
 
 Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 ([how configuration is loaded](README_CONFIGURATION.md#how-configuration-is-loaded)).
@@ -70,17 +79,20 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | Flag | Meaning |
 |------|---------|
 | `-j`, `--job <name>` | The job to run; required except for `validate`, which checks every job without it |
-| `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)) |
-| `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)) |
+| `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)). Ignored for a purge job under `validate` and `dry-run` |
+| `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)). Under `validate` and `dry-run` it has no effect on a copy-only job and prints no warning there |
 | `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
 | `--progress[=<interval>]` | Periodic progress, a start line and a closing block ([Progress display](#progress-display), [Output and exit codes](#output-and-exit-codes)) |
 
-Before a run starts, each setting that weakens its checks prints one `WARNING:` line on stderr,
-whatever the log level, and records it in the log:
-`--skip-dangerously-validate-preflight-allow-experimental`, `--force-triggers`, `verification: count`,
-`verification: none`, and `safety.disable_foreign_key_checks`. Under `count` or `none`, a job with
-JSON columns gets one more such line, naming them
-([Warnings](README_VALIDATION.md#warnings)). `dry-run` and `validate` print them too.
+Before a run starts, each setting that weakens its checks is reported once on stderr, whatever
+the log level, and recorded in the log:
+`--skip-dangerously-validate-preflight-allow-experimental` on any job; `--force-triggers` on
+archive and purge jobs; `verification: count`, `verification: none` and
+`safety.disable_foreign_key_checks` on archive and copy-only jobs (purge copies nothing). Under
+`count` or `none`, a job with JSON columns gets one more, naming them
+([Warnings](README_VALIDATION.md#warnings)). With `logging.output: stderr` the warning is one log
+entry on stderr, in the log's format; otherwise it is a plain `WARNING:` line. `dry-run` and
+`validate` print them too.
 
 ### Progress display
 
@@ -98,24 +110,29 @@ progress: roots 12000/~12000 (100.0%)  remaining=0      copied_rows=64920      d
 The columns have fixed widths, so successive lines line up; a count wider than its column
 pushes the rest of its own line. With the log as JSON on the console, each line is instead a
 `progress` log entry with the fields `roots_done`, `roots_total`, `percent`, `remaining`,
-`copied_rows`, `deleted_rows`, `elapsed_seconds` and `eta`
+`copied_rows`, `deleted_rows`, `elapsed_seconds` and `eta`, and, while paused, `paused`
 ([Output and exit codes](#output-and-exit-codes)).
 
 - `roots`, the percentage, `remaining` and the ETA count root rows. The total is MySQL's
   optimizer estimate of the `where` range, read once after recovery from an `EXPLAIN`; nothing is
   counted, so `--progress` adds no pass over the source. `~` marks the estimate: it is close when
   an index serves the `where`, and can be far off in either direction when the `where` filters
-  each row with a subquery or a function. The percentage caps at 100 and `remaining` at zero; past
-  the estimate the ETA shows `unknown`, and a run that finishes shows its done count as the total.
-  `dry-run` counts the range exactly ([its report](#recommended-operator-workflow) says what that
-  count costs).
+  each row with a subquery or a function. The percentage caps at 100 and `remaining` at zero; the
+  ETA shows `calculating` until a root is done and `unknown` past the estimate, and a run that
+  finishes shows its done count as the total. `dry-run` counts the range exactly
+  ([its report](#recommended-operator-workflow) says what that count costs).
+- If that `EXPLAIN` fails, or its plan has no row GoArchive can read for the root table, the run
+  fails before its first batch (`engine: --progress estimate on <table>: …`); run without
+  `--progress` to proceed.
 - `copied_rows` and `deleted_rows` count rows of every table: archive shows both, copy-only
   `copied_rows`, purge `deleted_rows`.
 - While the [sentinel](#pausing-a-run-sentinel_file) pauses the run, `eta=paused` and
   `[PAUSED: sentinel file "…" present]` are shown.
 - `elapsed` counts from the run's start, so the last line agrees with the closing block's
   duration; the ETA's rate counts from the first batch, so startup and recovery do not slow it.
-- One final line is printed on every exit; a run that ends naturally shows `remaining=0`.
+- Once the first batch has started, one final line is printed on every exit; a run that ends
+  naturally shows `remaining=0`. A run that stops or fails during startup or recovery prints no
+  progress line.
 
 ### Output and exit codes
 
@@ -125,8 +142,8 @@ and an error always reaches stderr.
 
 | Stream | Carries |
 |---|---|
-| stdout | The `validate`, `dry-run`, `plan` and `list-jobs` reports and `version`. For a run, only with `--progress`: the start line, the progress lines and the closing block. The log, when `logging.output` is `stdout` (or empty). |
-| stderr | Every error; the `WARNING:` banners; with `--progress` and a log file, the warnings and live events. The log, when `logging.output` is `stderr`. |
+| stdout | The `validate`, `dry-run`, `plan` and `list-jobs` reports, `version`, `--version`, `completion` and the help. For a run, only with `--progress`: the start line, the progress lines and the closing block. The log, when `logging.output` is `stdout` (or empty). |
+| stderr | Every error; the `WARNING:` banners; with `--progress` and a log file, the warnings and errors (as `level` keeps them) and live events. The log, when `logging.output` is `stderr`. |
 | log | Every entry, in its `format`, at its `level`. A log file is the run's record. |
 
 **Three logging setups.**
@@ -140,12 +157,14 @@ and an error always reaches stderr.
   Error: engine: …
   ```
 
-  A failure before the first batch says `failed before the first batch.` With `--progress`, the
-  start line, the progress lines and the closing block go to stdout (a failure before the first
-  batch prints its summary there instead of the block), and the log's warnings go to stderr as
-  text lines, with the live events whatever the level: a replication hold, the replica
-  recovering, a stop ending a hold, the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` keeps every
-  log entry off the console; the banners and errors still reach stderr.
+  A failure before the run's startup completes (connecting, preflight, locks, registration) says
+  `failed before the first batch.`; a failure in recovery shows its duration. With `--progress`, the
+  start line, the progress lines and the closing block go to stdout (a failure before startup
+  completes prints its summary there instead of the block), and the log's warnings and errors (as
+  `level` keeps them) go to stderr as text lines, with the live events whatever the level: a
+  replication hold, the replica recovering, a stop ending a hold, the gate passing again, a sentinel
+  pause and its end, recovery replaying. `file_only: true` keeps every log entry off the console;
+  the banners and errors still reach stderr.
 - **The log on the console as text** (`output: stdout` or `stderr`, `format: text`): the log
   stream is plain text, with no colour codes. `--progress` adds its lines and the closing block on
   stdout.
@@ -156,7 +175,8 @@ and an error always reaches stderr.
   plain `Error:` line goes to stderr; with `output: stderr` the error is the closing entry itself.
   The one exception: an error found before the log exists (a flag, the config file, an unknown job)
   is a plain `Error:` line. `validate` and `dry-run` print their reports as text on stdout in every
-  setup; in a container, log them to `stderr` to keep stdout JSON.
+  setup; in a container, set `logging.output: stderr` for them, so stdout carries only the
+  report and stderr only the log.
 
 The closing block of a run with `--progress`:
 
@@ -172,7 +192,8 @@ Job archive_old_orders (archive): completed in 109.412s
 
 The status is `completed`, `stopped before the end of the where range: run the job again to
 continue`, or `failed` (the error follows on stderr). Purge shows `deleted`, copy-only `copied`
-and `verified`; `recovered`, `skipped` and accepted conversions are listed under `roots`.
+and `verified`; under `verification: none` there is no `verified` column. `recovered`, `skipped`
+and accepted conversions are listed under `roots`.
 
 **Exit codes.**
 
@@ -358,7 +379,8 @@ processing:
 Before each batch, and before each page of recovery, GoArchive checks whether that file exists.
 **While it is present, the run pauses**, re-checking every second and logging a reminder about
 every 30 seconds. Remove the file to resume. Presence is the only signal; contents are ignored.
-Empty (the default) disables it.
+Empty (the default) disables it. A path that cannot be checked (for example, permission denied)
+counts as absent: the run logs one warning and does not pause.
 
 ```bash
 touch /var/run/goarchive/pause.flag   # pause, e.g. to relieve a struggling replica
@@ -390,7 +412,8 @@ than being skipped. By default **every channel counts**; `channels` narrows that
 
 ### What you see while it holds
 
-One `WARN` line per unhealthy server per check, with the reason and the time held so far:
+One `WARN` line per unhealthy server per check, with the reason, and from the second check on,
+the time held so far:
 
 ```
 replication hold: server replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s); job held, retrying in 5s

@@ -24,7 +24,8 @@ type DatabaseConfig struct {
 	Password string `yaml:"password"`
 	Database string `yaml:"database"`
 	// JobSchema is the schema holding GoArchive's tracking tables
-	// (archiver_job, archiver_job_log_<id>). Empty (default) resolves to
+	// (archiver_job, archiver_job_log_<id>, goarchive_meta). Only the
+	// destination's is used. Empty (default) resolves to
 	// Database. A DBA must pre-create this schema and grant CREATE + CRUD.
 	JobSchema          string `yaml:"job_schema"`
 	TLS                string `yaml:"tls"` // disable, preferred, skip-verify, required
@@ -126,7 +127,7 @@ type LoggingConfig struct {
 	Level    string `yaml:"level"`     // debug, info, warn, error
 	Format   string `yaml:"format"`    // json or text
 	Output   string `yaml:"output"`    // stdout, stderr, or file path
-	FileOnly bool   `yaml:"file_only"` // suppress stdout tee when output is a file
+	FileOnly bool   `yaml:"file_only"` // no console tee under --progress (stderr) when output is a file
 }
 
 // DefaultConfig returns a Config with sensible default values.
