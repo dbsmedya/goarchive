@@ -458,22 +458,26 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		"source_server_uuid VARCHAR(64) NOT NULL, source_database VARCHAR(64) NOT NULL, destination_database VARCHAR(64) NOT NULL, " +
 		"config_fingerprint TEXT NOT NULL, root_key_columns TEXT NOT NULL, UNIQUE KEY uk_job_name (job_name)) ENGINE=InnoDB"
 	for _, tc := range []struct {
-		name  string
-		setup []string
-		found string
+		name   string
+		setup  []string
+		found  string
+		remedy string // "" checks no remedy
 	}{
-		{"label22", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '2.2')"}, `report schema_version "2.2"`},
-		{"unknown", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.1')"}, `report schema_version "3.1"`},
-		{"bare2x", []string{job2x}, "hold a 2.x archiver_job table without a schema_version label"},
+		{"label22", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '2.2')"}, `report schema_version "2.2"`,
+			"Finish every 2.x job with the 2.x binary"},
+		// SLR-1: a label 2.x never wrote is not given the 2.x drop.
+		{"unknown", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.1')"}, `report schema_version "3.1"`,
+			"an earlier or a later GoArchive release"},
+		{"bare2x", []string{job2x}, "hold a 2.x archiver_job table without a schema_version label", ""},
 		{"rows2x", []string{job2x, "INSERT INTO archiver_job (job_name, root_table) VALUES ('j', 't')"},
-			"hold a 2.x archiver_job table without a schema_version label"},
-		{"nojob", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"}, "are labelled 3.0 but have no archiver_job table"},
+			"hold a 2.x archiver_job table without a schema_version label", ""},
+		{"nojob", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"}, "are labelled 3.0 but have no archiver_job table", ""},
 		// The DBA's shortcut: relabel a 2.x schema instead of finishing and dropping it.
 		{"label30on2x", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"},
-			`hold a 2.x archiver_job table under schema_version "3.0"`},
+			`hold a 2.x archiver_job table under schema_version "3.0"`, ""},
 		// A schema a pre-alpha v3 build created: labelled 3.0, no destination_server_uuid.
 		{"label30pre", []string{job30pre, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"},
-			`under schema_version "3.0"`},
+			`under schema_version "3.0"`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema, db := scratch(t, tc.name)
@@ -482,6 +486,9 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 			var se *SchemaError
 			if !errors.As(err, &se) || !strings.Contains(err.Error(), tc.found) {
 				t.Fatalf("Open() = %v, want a SchemaError saying %q", err, tc.found)
+			}
+			if !strings.Contains(err.Error(), tc.remedy) {
+				t.Errorf("Open() = %v, want the remedy %q", err, tc.remedy)
 			}
 			if n := countTables(t, db); n != strings.Count(strings.Join(tc.setup, ";"), "CREATE TABLE") {
 				t.Errorf("tables after the refusal = %d: Open wrote to a refused schema", n)
