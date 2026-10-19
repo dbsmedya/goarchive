@@ -84,7 +84,7 @@ const remedyUnknownLabel = "This GoArchive did not write that label: an earlier 
 
 // classify decides spec §6.1 and R37 for one state. Every label but 3.0 is refused, and so
 // is an unlabelled schema unless it is new: 2.x wrote its label before any job row, and
-// releases before 1.8 wrote none. A 2.x-shaped archiver_job is refused whatever its label.
+// releases before 2.0 (1.9.8-RC) wrote none. A 2.x-shaped archiver_job is refused whatever its label.
 // A 3.0 label without archiver_job is refused too: its job ids would restart at 1 and
 // meet the logs of the jobs that held them.
 func classify(schema string, st schemaState) error {

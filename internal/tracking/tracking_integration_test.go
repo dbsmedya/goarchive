@@ -461,7 +461,7 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		name   string
 		setup  []string
 		found  string
-		remedy string // "" checks no remedy
+		remedy string // "" skips the remedy assertion
 	}{
 		{"label22", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '2.2')"}, `report schema_version "2.2"`,
 			"Finish every 2.x job with the 2.x binary"},
