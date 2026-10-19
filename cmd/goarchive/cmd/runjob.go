@@ -43,7 +43,7 @@ func registerSkipPolicyFlag(c *cobra.Command, skipPolicy *bool) {
 	c.Flags().BoolVar(skipPolicy, skipPolicyFlag, false,
 		"Dangerous. Skip preflight's policy checks (storage engines, permissions, triggers, foreign-key coverage, "+
 			"destination compatibility, packet size), for an experimental setup GoArchive does not test or support. "+
-			"The keys are still read from MySQL, and the log-key and binding checks still run.")
+			"The keys are still read from MySQL; a run still checks the job's log key and binding.")
 	c.Flags().Var(renamedFlag{to: skipPolicyFlag}, "skip-validate-preflight", "")
 	f := c.Flags().Lookup("skip-validate-preflight")
 	f.NoOptDefVal = "true"

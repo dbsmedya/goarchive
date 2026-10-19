@@ -23,13 +23,16 @@ preflight under its job type's profile: archive gets every check, purge no
 destination-table checks, copy-only no delete checks.
 
 The checks read every table's primary key from MySQL and check the job's
-documented keys and relations against it, then the permissions, triggers,
-foreign-key coverage and destination compatibility, and that each statement cap fits
-the server's max_allowed_packet.
+documented keys and relations against it, then the storage engines,
+character sets, permissions, triggers, foreign-key coverage and
+destination compatibility, and that each statement cap fits the server's
+max_allowed_packet.
 
 Example:
   goarchive validate --config archiver.yaml
-  goarchive validate --job archive_old_orders`,
+  goarchive validate --job archive_old_orders
+
+Exit codes: see goarchive --help.`,
 	RunE: runE(runValidate),
 }
 

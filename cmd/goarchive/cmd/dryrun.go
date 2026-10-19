@@ -17,8 +17,9 @@ var dryrunCmd = &cobra.Command{
 	Short: "Show how a job would run, without changing anything",
 	Long: `Dry-run runs the job's preflight under its job type's profile, counts the rows
 its where range matches, reads the first batch of root keys, and prints a
-report: the job and its coverage, the copy and delete orders with the first
-batch's rows per table, the settings the run would use, the statement caps,
+report: the job (root table, key, where and matching roots), the copy and
+delete orders with the first batch's rows per table, the settings the run
+would use, the statement caps,
 and MySQL's plan (EXPLAIN FORMAT=TRADITIONAL) for the root fetch and for the
 first discovery chunk of each child table.
 
@@ -29,7 +30,9 @@ large range it takes as long as that count takes.
 Recommended operator workflow: validate -> dry-run -> archive.
 
 Example:
-  goarchive dry-run --config archiver.yaml --job archive_old_orders`,
+  goarchive dry-run --config archiver.yaml --job archive_old_orders
+
+Exit codes: see goarchive --help.`,
 	RunE: runE(runDryrun),
 }
 

@@ -687,7 +687,7 @@ it starts:
 ```
 WARNING: --skip-dangerously-validate-preflight-allow-experimental: preflight's policy checks are skipped (storage
 engines, permissions, triggers, foreign-key coverage, destination compatibility, packet size).
-The keys are still read from MySQL, and the log-key and binding checks still run. A misspelled
+The keys are still read from MySQL; a run still checks the job's log key and binding. A misspelled
 foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK.
 ```
 

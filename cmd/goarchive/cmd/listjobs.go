@@ -14,7 +14,9 @@ var listJobsCmd = &cobra.Command{
 along with their type, keys and relations. It opens no connection.
 
 Example:
-  goarchive list-jobs --config archiver.yaml`,
+  goarchive list-jobs --config archiver.yaml
+
+Exit codes: see goarchive --help.`,
 	RunE: runE(runListJobs),
 }
 
