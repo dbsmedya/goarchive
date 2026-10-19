@@ -143,8 +143,9 @@ logging:
                              # a file path logs to the file only; a run with
                              # --progress also shows its warnings and live
                              # events on stderr
-  file_only: false           # true = nothing on the console, even with
-                             # --progress (output must be a file path)
+  file_only: false           # true = the log is not teed to stderr under
+                             # --progress; progress lines, banners and
+                             # errors still print (output must be a file)
 
 # Log rotation: goarchive does not rotate log files itself. Files are opened
 # in append mode, so external rotation is safe — e.g. logrotate with the

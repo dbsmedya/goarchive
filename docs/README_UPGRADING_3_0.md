@@ -90,10 +90,14 @@ Each of these is described where a 3.0 prerelease introduced it; a 2.x user meet
 
 - **Destination tables must be InnoDB**, and a destination whose columns are in another order
   is accepted ([alpha.0](#moving-from-30-alpha0)).
+- **Archive recovery checks the destination before it deletes**, even under
+  `verification: none`, and rows and INSERTs larger than `max_allowed_packet` are copied: only one
+  value larger than the destination's packet fails its batch ([alpha.1](#moving-from-30-alpha1)).
 - **`TRIGGER` must be provable** on the job tables, and a self-referencing `ON DELETE CASCADE`
   or `SET NULL` is refused for archive and purge ([alpha.2](#moving-from-30-alpha2)).
 - **Exit codes, stdout and stderr**: a stop exits 3, a live run holding the work exits 4, a
-  usage error exits 2; a run prints to stdout only with `--progress`, and banners go to stderr
+  usage error exits 2; a run's report reaches stdout only with `--progress` (the log still goes
+  to stdout when `logging.output` is `stdout`, the default), and banners go to stderr
   ([beta.1](#moving-from-30-beta1), [beta.2](#moving-from-30-beta2)).
 - **A job column in an unsupported character set is refused**, and the published image runs
   as UID 65532 from `/work` instead of root from `/root/` ([beta.2](#moving-from-30-beta2)).

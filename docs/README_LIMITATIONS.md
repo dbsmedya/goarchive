@@ -65,7 +65,7 @@ GoArchive's correctness rests on these operating contracts. Violations are docum
 detected, except where [recovery](README_OPERATIONS.md#crash-recovery) stops:
 
 1. **No DDL on participating tables while a job runs.** Column lists are read once at startup.
-   A renamed or dropped column fails an archive or copy-only batch before its delete; an
+   A renamed or dropped column fails an archive or copy-only batch before its copy commits; an
    **added** column is not detected and not copied. Run migrations between runs.
 2. **Cold data only.** The rows of a root's tree must not change from the moment GoArchive
    reads them until it has finished that root, including across a crash and the recovery that
