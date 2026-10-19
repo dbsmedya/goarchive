@@ -33,7 +33,7 @@ The current version is the `Makefile`'s `RELEASE_VERSION` (see *Versioning* belo
 
 ### Versioning (read before bumping the version)
 
-From 3.0 the version is SemVer with no edition suffix (`3.0.0`); a prerelease adds `-alpha.N`,
+From 3.0 the version is SemVer with no edition suffix (`MAJOR.MINOR.PATCH`); a prerelease adds `-alpha.N`,
 `-beta.N` or `-RC.N` (2.x versions carry `-community`). A bump MUST update all four sites:
 
 | Location | What it controls |
