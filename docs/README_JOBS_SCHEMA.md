@@ -405,10 +405,10 @@ matches the refusal:
 
 | The refusal says the tables… | Procedure |
 |---|---|
-| report another `schema_version`, or hold a 2.x `archiver_job` | Written by GoArchive 2.x or earlier: [Moving from 2.2](README_UPGRADING_3_0.md#moving-from-22) |
+| report `schema_version` `"2.0"` or `"2.2"`, or hold a 2.x `archiver_job` | Written by GoArchive 2.x or earlier: [Moving from 2.2](README_UPGRADING_3_0.md#moving-from-22) |
 | are labelled 3.0 but have no `archiver_job` table | Restore `archiver_job` from a backup, or drop every tracking table to start afresh |
 | hold job rows but no `schema_version` label | After confirming GoArchive 3.0 wrote them: `INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '3.0')`; or drop every tracking table |
-| report a label newer than this binary | Upgrade GoArchive, or point `job_schema` at another schema |
+| report any other `schema_version` | Another GoArchive release wrote them, earlier or later: find out which first. An earlier release's tables: finish its jobs with its binary, then drop them. A later release's tables: run that release, and do not drop them. Or point `job_schema` at another schema, which leaves them untouched |
 
 ---
 

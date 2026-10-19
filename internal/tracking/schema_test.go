@@ -69,6 +69,44 @@ func TestSchemaErrorMessage(t *testing.T) {
 	}
 }
 
+// TestSchemaErrorLabelRemedy (SLR-1): only the labels 2.x wrote get its drop procedure. Any
+// other label may be a stale schema from an earlier release or a current one from a later
+// release, so its remedy names both and never the 2.x drop.
+func TestSchemaErrorLabelRemedy(t *testing.T) {
+	for _, label := range []string{"2.0", "2.2"} {
+		msg := classify("goarchive", schemaState{meta: true, labelled: true, label: label, job: true}).Error()
+		if !strings.Contains(msg, "Finish every 2.x job with the 2.x binary") {
+			t.Errorf("label %q lacks the 2.x procedure:\n%s", label, msg)
+		}
+	}
+	unknown := []struct {
+		name string
+		st   schemaState
+	}{
+		{"3.1", schemaState{meta: true, labelled: true, label: "3.1", job: true, jobIs30: true}},
+		{"3.0.1", schemaState{meta: true, labelled: true, label: "3.0.1"}},
+		{"1.9", schemaState{meta: true, labelled: true, label: "1.9", job: true}},
+		{"empty", schemaState{meta: true, labelled: true, label: "", job: true, jobIs30: true}},
+		{"4.0", schemaState{meta: true, labelled: true, label: "4.0"}},
+		// A later release may change archiver_job itself: its shape proves nothing about 2.x.
+		{"3.1 over a 2.x-shaped archiver_job", schemaState{meta: true, labelled: true, label: "3.1", job: true}},
+	}
+	for _, tc := range unknown {
+		msg := classify("goarchive", tc.st).Error()
+		for _, want := range []string{"an earlier or a later GoArchive release", "finish its jobs with its binary",
+			"run that release, and do not drop them", `"Tracking-schema upgrade procedures" in docs/README_JOBS_SCHEMA.md`} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%s: lacks %q:\n%s", tc.name, want, msg)
+			}
+		}
+		for _, bad := range []string{"2.x binary", "drop the 2.x tracking tables"} {
+			if strings.Contains(msg, bad) {
+				t.Errorf("%s: carries the 2.x procedure %q:\n%s", tc.name, bad, msg)
+			}
+		}
+	}
+}
+
 // TestSchemaLockedErrorMessage (TRK-1, Fable F5): the message states what the wait knows,
 // with a form for a holder that released between the wait's end and the lookup.
 func TestSchemaLockedErrorMessage(t *testing.T) {

@@ -70,15 +70,31 @@ type schemaState struct {
 	jobHasRow bool   // archiver_job holds at least one row
 }
 
+// legacyLabels are the labels GoArchive 2.x wrote: 2.0 (1.9.8-RC to 2.1.x) and 2.2. The set is
+// closed. Only these, and a 2.x-shaped archiver_job, get the 2.x drop procedure (SLR-1).
+var legacyLabels = map[string]bool{"2.0": true, "2.2": true}
+
+// remedyUnknownLabel is the procedure for any other label. The label is not ordered: it may be a
+// stale schema an earlier release left, or a current one a later release wrote.
+const remedyUnknownLabel = "This GoArchive did not write that label: an earlier or a later GoArchive release did. " +
+	"Find out which before changing anything. Tables left by an earlier release are retired with that release: " +
+	"finish its jobs with its binary, then drop them. Tables written by a later release belong to it: " +
+	"run that release, and do not drop them. Either way, pointing destination.job_schema at another schema " +
+	"leaves them untouched. See \"Tracking-schema upgrade procedures\" in docs/README_JOBS_SCHEMA.md"
+
 // classify decides spec §6.1 and R37 for one state. Every label but 3.0 is refused, and so
 // is an unlabelled schema unless it is new: 2.x wrote its label before any job row, and
-// releases before 1.8 wrote none. A 2.x-shaped archiver_job is refused whatever its label.
+// releases before 2.0 (1.9.8-RC) wrote none. A 2.x-shaped archiver_job is refused whatever its label.
 // A 3.0 label without archiver_job is refused too: its job ids would restart at 1 and
 // meet the logs of the jobs that held them.
 func classify(schema string, st schemaState) error {
 	switch {
-	case st.labelled && st.label != SchemaLabel:
+	case st.labelled && st.label != SchemaLabel && legacyLabels[st.label]:
 		return &SchemaError{Schema: schema, Found: fmt.Sprintf("report schema_version %q", st.label)}
+	case st.labelled && st.label != SchemaLabel:
+		// Before the 2.x-shape case: a later release may change archiver_job itself.
+		return &SchemaError{Schema: schema, Found: fmt.Sprintf("report schema_version %q", st.label),
+			Remedy: remedyUnknownLabel}
 	case st.job && !st.jobIs30:
 		// Checked before the label is trusted: relabelling a 2.x schema is the shortcut
 		// R37's procedure exists to prevent.
