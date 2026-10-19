@@ -21,8 +21,9 @@ with archiving:
 - A privilege held through an active role, or granted globally while
   `@@global.partial_revokes` is enabled, is not provable for a specific object from
   `information_schema` alone.
-- InnoDB's own foreign-key registry is complete but normally requires `PROCESS` (one MySQL
-  version differs: [compatibility notes](README_COMPAT.md));
+- InnoDB's own foreign-key registry is complete but normally requires `PROCESS` (MySQL 8.0.40
+  serves it without; versions between 8.0.40 and 8.0.46 were not probed:
+  [compatibility notes](README_COMPAT.md#foreign-key-metadata-readable-without-process-on-mysql-8040));
   `information_schema` is always readable but only shows constraints on tables the account
   is already privileged for — so a fallback silently answers a weaker question.
 - Integer display widths (`bigint(20)`) are cosmetic and not reported by MySQL 8.0.17 and
@@ -58,7 +59,7 @@ The split is deliberate and it is the reason the integration is safe:
 - **GoArchive owns its own session.** Properties of the connection GoArchive itself
   opened — the UTC session it pins, the server identity it refuses to archive into
   itself — are read by GoArchive-owned probes, listed under *Retained
-  application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md). They
+  application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md#retained-application-owned-mysql-probes). They
   inspect what the session reports, not the metadata catalog the library owns.
 
 ## The consumer boundary
@@ -68,9 +69,10 @@ just intended: `make consumer-policy` walks every non-test Go file in the module
 the build on any string literal naming `information_schema`.
 
 Preflight facts are read **once per run** and shared by every check that needs them, so
-adding a check does not add a round trip. Grants are read on a dedicated connection that
-is released before any other query runs, which keeps the answer accurate on a pool and
-avoids self-deadlocking a single-connection configuration.
+adding a check does not add a round trip. Grants are read on a dedicated connection,
+together with the trigger list they prove when a trigger check needs both, and the
+connection is released before any other query runs; this keeps the answer accurate on a
+pool and avoids self-deadlocking a single-connection configuration.
 
 ## Versioning
 
