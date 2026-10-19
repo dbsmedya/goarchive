@@ -51,8 +51,9 @@ conversion-warning override. Like pt-archiver, every GoArchive run starts at the
 
 GoArchive archives **cold** data from **InnoDB** tables joined by **1:1 or 1:N** relationships,
 where every participating table has a **primary key**, single-column or composite, of a
-supported type ([Limitations](docs/README_LIMITATIONS.md)). Preflight rejects anything outside
-that envelope before any data moves.
+supported type ([Limitations](docs/README_LIMITATIONS.md)). Preflight rejects what it can detect
+outside that envelope before any data moves; what it cannot detect is listed in
+[Limitations](docs/README_LIMITATIONS.md).
 
 ## The Philosophy
 
@@ -100,8 +101,8 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Composite and non-integer keys** - String, UUID, DECIMAL and temporal keys, single-column or composite, at the root and at every child
 - **Batch processing without long locks** - Configurable batch sizes and delays
 - **Replication gating** - Holds the job while any monitored replica is lagging, stopped, or unreachable, across a fleet of replicas and all their channels, then resumes the same run once they recover
-- **No overlapping runs** - Advisory locks on the source tables and the job, and a guard on stopped jobs' unfinished work, refuse any run whose tables overlap a running job's, or those of a job that has not finished its work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
-- **Dry-run mode** - Runs preflight, reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; writes nothing
+- **No overlapping runs** - Advisory locks on the source tables and the job, and a guard on stopped jobs' unfinished work, refuse any run on the same source data whose tables overlap a running job's, or those of a job that has not finished its work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking))
+- **Dry-run mode** - Runs preflight, counts the rows the `where` range matches (a read of the whole range on the source), reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; takes no lock and writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
 
@@ -185,7 +186,7 @@ replication:
       password: change_me
 ```
 
-`job_type` (`archive`, `purge` or `copy-only`) must match the command that runs the job. `where` is required on every job — use `where: "1=1"` to deliberately process a whole table. Verification defaults to `sha256`. A complete annotated example: [configs/archiver.yaml.example](configs/archiver.yaml.example). Every option: [Configuration](docs/README_CONFIGURATION.md).
+`job_type` (`archive`, `purge` or `copy-only`) must match the command that runs the job. `where` is required on every job — use `where: "1=1"` to deliberately process a whole table. Verification defaults to `sha256`. An annotated example: [configs/archiver.yaml.example](configs/archiver.yaml.example). Every option: [Configuration](docs/README_CONFIGURATION.md).
 
 ### Basic Usage
 
@@ -286,7 +287,7 @@ goarchive purge -c archiver.yaml --job purge_old_sessions
 ### Processing pipeline
 
 1. **Preflight** - the checks that apply to the job type run before any tracking state is written ([which checks run for which command](docs/README_VALIDATION.md#which-checks-run-for-which-command), including the skip flag)
-2. **Startup** - the tracking schema, the job lock and the source table lock names (`GET_LOCK()`, not table locks), the job's binding check, then the roots an interrupted run left in the job's log are finished
+2. **Startup** - the tracking schema, the job lock and a named lock on each source table (`GET_LOCK()`, not `LOCK TABLES`), the unfinished-work guard, the job's binding check, then the roots an interrupted run left in the job's log are finished
 3. **Batch loop** - fetch the next root keys → discover every child row, parent-first → copy, verify and log in one destination transaction → delete child-first in chunks, each its own transaction with an exact row count. Purge skips the copy and copy-only the delete. `batch_size` is the copy chunk for every table ([Tuning throughput](docs/README_OPERATIONS.md#tuning-throughput); [Resume semantics](docs/README_OPERATIONS.md#resume-semantics))
 4. **Safety** - one run at a time per source table ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)); the replication gate holds processing before every delete chunk while any monitored replica is lagging, stopped, or unreachable; a sentinel file pauses the run, and SIGTERM/SIGINT stops it at a batch boundary, or at once during a replication hold
 

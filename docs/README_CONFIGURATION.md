@@ -41,13 +41,16 @@ its line; a YAML parse error reports the line where the parser has one:
 
 Only `--log-level`, `--log-format` and `--verification` override the file. Batch sizes, sleeps
 and the sentinel file are file-only, deliberately: one file holds many jobs, and one CLI value
-cannot suit them all. `goarchive validate` loads the file and runs preflight for every job.
+cannot suit them all. `goarchive validate` loads the file and runs preflight for every job, or
+for one with `--job`.
 
 ---
 
 ## `source:` / `destination:`
 
-Connection settings. Both blocks take the same options; `job_schema` is destination-only.
+Connection settings. Both blocks take the same options; only the destination's `job_schema` is
+used: a `source.job_schema` is accepted and ignored, and not checked against the
+[identifier rules](#identifier-rules).
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -57,8 +60,8 @@ Connection settings. Both blocks take the same options; `job_schema` is destinat
 | `password` | Password | — |
 | `database` | Database name | **required** |
 | `tls` | `disable`, `preferred`, `skip-verify` or `required` | `preferred` |
-| `max_connections` | Max open connections, not negative; a run needs at least 2 on the source and 3 on the destination | `10` |
-| `max_idle_connections` | Max idle connections, not negative | `5` |
+| `max_connections` | Max open connections, not negative; `0` means the default. A run refuses, when it starts, a pool below 2 on the source or 3 on the destination; `validate` does not check it | `10` |
+| `max_idle_connections` | Max idle connections, not negative; `0` means the default, and never more than `max_connections` | `5` |
 
 Source and destination must be different databases
 ([`SRC_DEST_IDENTITY_CHECK`](README_VALIDATION.md#src_dest_identity_check)).
@@ -102,7 +105,7 @@ server's global. None is configurable.
 | `sql_mode` | the inherited mode plus `NO_AUTO_VALUE_ON_ZERO` | An explicit zero in an AUTO_INCREMENT column stays zero ([`AUTO_INCREMENT_ZERO_MODE_CHECK`](README_VALIDATION.md#auto_increment_zero_mode_check)) |
 | `sql_notes` | `1` | Notes are kept, so INSERT diagnostics see them |
 | `sql_select_limit` | `18446744073709551615` (no limit) | A server's global limit would cap every read without its own `LIMIT`: column lists and discovery would silently see only that many rows, and verification would hash only the columns read; a short copy read or row count fails loudly |
-| `wait_timeout` | `GREATEST(@@GLOBAL.wait_timeout, 28800)`; `300` on the two lock sessions | A batch's source session waits while the destination copies, verifies and commits; a shorter server value could close it under the batch. No session is held through a pause or a replication hold. A lock session is checked every 30 seconds, and its 300 seconds bound how long a lost host keeps its locks ([The lock sessions must stay alive](README_OPERATIONS.md#the-lock-sessions-must-stay-alive)) |
+| `wait_timeout` | `GREATEST(@@GLOBAL.wait_timeout, 28800)`; `300` on the two lock sessions | A batch's source session waits while the destination copies, verifies and commits; a shorter server value could close it under the batch. No batch session is held through a pause or a replication hold; the two lock sessions are. A lock session is checked every 30 seconds, and its 300 seconds bound how long a lost host keeps its locks ([The lock sessions must stay alive](README_OPERATIONS.md#the-lock-sessions-must-stay-alive)) |
 | character set | `utf8mb4`, collated `utf8mb4_general_ci` (`SET NAMES` after authentication, so after any `init_connect`) | GoArchive reads and binds every value through the session's character set; a narrowed session would read text it cannot hold as `?` ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)) |
 | `max_error_count` | raised from 0 to 1024 (source and destination) | GoArchive reads every statement's warnings ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 
@@ -192,7 +195,7 @@ handles them ([the run contract](README_LIMITATIONS.md#no-ddl-and-no-concurrent-
 compared with `NOW()` is unaffected, but a `DATETIME` column compared with `NOW()`, a `TIMESTAMP`
 column compared with a bare literal, and `CURDATE()` / `DATE()` day boundaries sit at UTC rather
 than the server's zone. To pin a local boundary, give the literal an offset
-(`created_at < '2025-01-01 00:00:00+03:00'`, MySQL 8.0.19+) or use `CONVERT_TZ`.
+(`created_at < '2025-01-01 00:00:00+03:00'`) or use `CONVERT_TZ`.
 
 ### `primary_key` documents the key
 
@@ -309,8 +312,8 @@ deleted: a mismatch rolls the batch back and stops the run. Purge copies nothing
   also tees the file's warnings and errors, as `level` keeps them, to **stderr**, one text line
   each, and the live events whatever the level: a replication hold, the replica recovering, a stop ending a hold,
   the gate passing again, a sentinel pause and its end, recovery replaying. `file_only: true` turns that tee off. Without `--progress` nothing is
-  teed, so a cron run prints only a failure (README_OPERATIONS.md,
-  [Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
+  teed, so a cron run prints only a failure
+  ([Output and exit codes](README_OPERATIONS.md#output-and-exit-codes)).
 - `stdout` or `stderr` makes the log that stream, in `format`. Text has no colour codes; JSON is
   one object per line, the container setup.
 - `file_only: true` is refused when `output` is empty, `stdout` or `stderr`.
