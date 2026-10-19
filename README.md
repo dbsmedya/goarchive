@@ -8,6 +8,8 @@
 
 GoArchive is a Go CLI for archiving related MySQL rows across servers. You declare the parent-child relations once in the job config. Foreign keys the schema already declares are checked against that declaration, and relations an ORM enforces only in application code are just as valid. Copy runs parent-first and delete runs child-first, so deleting old `orders` never leaves orphaned `order_items` behind. Each batch is verified (SHA256 by default, or by row count) before its source rows are deleted, and the roots an interrupted run left in the job's log are finished when the job next starts.
 
+**Website:** [product page](https://dbsmedya.com/en/urunler/goarchive/) · [documentation](https://dbsmedya.com/en/urunler/goarchive/docs/) ([Türkçe](https://dbsmedya.com/urunler/goarchive/dokumanlar/))
+
 ## What problem does this solve?
 
 You need to delete or archive old data from a production MySQL database, but those rows have children:
@@ -87,7 +89,9 @@ Testing, backups and the other cautions before production: [Limitations](docs/RE
 
 ## Documentation
 
-📖 Every document, and where to start: [docs/README.md](docs/README.md).
+📖 The user manual is on the website: [GoArchive documentation](https://dbsmedya.com/en/urunler/goarchive/docs/) ([Türkçe](https://dbsmedya.com/urunler/goarchive/dokumanlar/)). The full technical reference is in this repository; start with [docs/README.md](docs/README.md).
+
+**Support:** questions and bug reports go to [GitHub issues](https://github.com/dbsmedya/goarchive/issues). Enterprise support is available on request: [contact DBS Medya](https://dbsmedya.com/en/contacts.html).
 
 ## Features
 
