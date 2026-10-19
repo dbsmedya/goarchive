@@ -319,8 +319,9 @@ How to run every test layer: [tests/README.md](tests/README.md).
 
 ## Project Status
 
-- **Version**: `3.0.0-RC.1` (**prerelease**)
-- **Stable release**: `2.2.4-community` — the current production line.
+- **Version**: `3.0.0` (**stable**)
+- **Stable release**: `3.0.0` — the current production line.
+- **2.x**: fixes only; new features land in 3.x.
 - **Recommended for**: archival of cold MySQL data
 
 ### Planned
