@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, v3]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, v3]
 
 jobs:
   check:
@@ -39,7 +39,25 @@ jobs:
 
       - name: Test version output
         run: |
-          go build -ldflags "-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=ci-test'" -o goarchive ./cmd/goarchive
+          go build -ldflags "-X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Version=ci-test'" -o goarchive ./cmd/goarchive
           ./goarchive --version
           ./goarchive version
           go version ./goarchive
+
+  logger-windows:
+    name: Logger on Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # A release ships a Windows binary, where a log file's mode sets only the read-only
+      # attribute (GH #5: log files are created owner-only). The logger's tests run there too.
+      - name: Logger tests
+        run: go test ./internal/logger/ -count=1

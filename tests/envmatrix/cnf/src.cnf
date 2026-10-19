@@ -1,0 +1,32 @@
+# Environment matrix source (tests/envmatrix/run-matrix.sh). The estate's db1.cnf, sized
+# for three throwaway pairs at 1 GiB each: a 128M buffer pool. Mounted in /etc/my.cnf.d
+# (Percona images) and /etc/mysql/conf.d (Oracle images).
+[mysqld]
+local_infile                 = ON
+server_id                    = 91
+report_host                  = mx1.local
+skip-name-resolve            = ON
+
+log-bin                      = db1_binlog
+log-bin-index                = db1_binlog.index
+binlog-checksum              = NONE
+binlog-row-image             = FULL
+log_replica_updates          = 1
+enforce-gtid-consistency     = TRUE
+gtid-mode                    = ON
+relay-log                    = db1_relaylog
+
+# innodb_dedicated_server must stay OFF: an unbounded container would size InnoDB for the
+# whole Docker VM.
+innodb_dedicated_server      = OFF
+innodb_buffer_pool_size      = 128M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity     = 256M
+innodb_log_buffer_size       = 16M
+# loose-: Oracle builds have no NUMA option and refuse an unknown one at initialization.
+loose-innodb_numa_interleave = OFF
+
+# The integration suite peaks above the default 151 connections.
+max_connections              = 500
+
+plugin_load_add              = mysql_clone.so

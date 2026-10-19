@@ -2,11 +2,11 @@ name: Docker
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, v3]
     tags:
       - 'v*'
   pull_request:
-    branches: [main, master]
+    branches: [main, master, v3]
 
 env:
   REGISTRY: ghcr.io
@@ -33,13 +33,15 @@ jobs:
         run: |
           # On tag pushes, use the tag (stripped of the leading 'v') so the
           # in-image binary version exactly matches the Docker image tag
-          # produced by metadata-action. On branch pushes, fall back to
-          # `git describe` which yields strings like v0.4.3-2-gb191450 —
-          # still unique and traceable, just not a clean semver.
+          # produced by metadata-action. On branch pushes, use the Makefile's
+          # RELEASE_VERSION with the commit, e.g. <RELEASE_VERSION>-dev.b191450:
+          # `git describe` would name the newest reachable tag, which on the
+          # 3.0 line is a 2.x release.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
           else
-            VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo '0.9.2-community')"
+            RELEASE="$(sed -n 's/^RELEASE_VERSION *:= *//p' Makefile)"
+            VERSION="${RELEASE:?RELEASE_VERSION not found in Makefile}-dev.$(git rev-parse --short HEAD)"
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
@@ -48,6 +50,29 @@ jobs:
         uses: docker/setup-buildx-action@v3
         with:
           buildkitd-flags: --debug
+
+      # IMG-1: on a PR, the image is also built for amd64 into the local daemon and run as an
+      # arbitrary user. A PR only: no test runs on a tag (CLAUDE.md, .ayder/RELEASING.md).
+      - name: Build the image for the run test
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: goarchive:test
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            COMMIT=${{ steps.version.outputs.COMMIT }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the image as an arbitrary user
+        if: github.event_name == 'pull_request'
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: bash tests/scripts/image-run-test.sh goarchive:test "$VERSION"
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
@@ -62,11 +87,17 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` is set explicitly, never by metadata-action's latest=auto: it
+          # names a stable 3.x release only (the tag pushed last), so no branch build, no
+          # prerelease (a tag with a "-", such as an alpha) and no 2.x tag can take it.
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v3.') && !contains(github.ref, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

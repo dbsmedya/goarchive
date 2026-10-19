@@ -1,7 +1,6 @@
 # Permissions Reference
 
-The MySQL privileges GoArchive requires, why each is needed, and copy-paste grant
-recipes.
+The MySQL privileges GoArchive needs, why, and grant recipes.
 
 **Related:** [Configuration](README_CONFIGURATION.md) ·
 [Validation & Preflight](README_VALIDATION.md) ·
@@ -21,84 +20,109 @@ recipes.
 
 ## Grant recipes
 
-These grants satisfy every permission check, with or without `@@global.partial_revokes`,
-because each privilege is granted directly at schema scope
+These grants pass every permission check, with or without `@@global.partial_revokes`, because
+each privilege is granted directly: the schema privileges on their schema, and `PROCESS` and
+`REPLICATION CLIENT` on `*.*`, the only scope they have
 ([the provable-grant rule](#the-provable-grant-rule)).
 
 ### Source
 
 ```sql
-GRANT SELECT, DELETE ON `<source_schema>`.* TO '<user>'@'<host>';  -- DELETE: archive, purge and validate only
-GRANT PROCESS ON *.* TO '<user>'@'<host>';                         -- archive, purge, dry-run and validate
+GRANT SELECT, DELETE, TRIGGER ON `<source_schema>`.* TO '<user>'@'<host>';  -- DELETE, TRIGGER: archive and purge jobs
+GRANT PROCESS ON *.* TO '<user>'@'<host>';                                  -- archive and purge jobs (see the version note below)
 ```
 
-`PROCESS` is server-wide by definition — MySQL has no narrower scope for it.
+`PROCESS` is server-wide by definition; MySQL has no narrower scope for it.
 
 ### Destination — tracking tables in the destination database (default)
 
-When `job_schema` is unset it defaults to `destination.database`, so one grant covers both
-data and tracking tables:
+When `job_schema` is unset it is `destination.database`, so one grant covers the data and the
+tracking tables:
 
 ```sql
-GRANT SELECT, INSERT, CREATE, UPDATE ON `<destination_schema>`.* TO '<user>'@'<host>';
+GRANT SELECT, INSERT, CREATE, UPDATE, TRIGGER ON `<destination_schema>`.* TO '<user>'@'<host>';
 ```
 
 ### Destination — tracking tables in a separate schema
 
-With `destination.job_schema` set, the two are granted separately. A DBA must create that
-schema first; GoArchive never does ([`job_schema`](README_CONFIGURATION.md#job_schema-destination-only)).
+With `destination.job_schema` set, grant the two separately. A DBA creates that schema first;
+GoArchive never does ([`job_schema`](README_CONFIGURATION.md#job_schema-destination-only)).
 
 ```sql
-GRANT SELECT, INSERT ON `<destination_schema>`.* TO '<user>'@'<host>';
+GRANT SELECT, INSERT, TRIGGER ON `<destination_schema>`.* TO '<user>'@'<host>';
 GRANT CREATE, SELECT, INSERT, UPDATE ON `<job_schema>`.* TO '<user>'@'<host>';
 ```
 
 ### Monitored replicas (optional)
 
 ```sql
--- Run on EACH server listed in replication.servers, for that entry's user.
+-- On EACH server in replication.servers, for that entry's user.
 GRANT REPLICATION CLIENT ON *.* TO 'monitor'@'%';
 ```
 
-Only needed when `replication.enabled: true`. A server whose account lacks it is held by the
-gate, not skipped ([Replication gating](README_OPERATIONS.md#replication-gating)).
+Only with `replication.enabled: true`. A server whose account lacks it holds the job rather than
+being skipped ([Replication gating](README_OPERATIONS.md#replication-gating)).
 
-### Tracking-table cleanup (a separate DBA account)
+### Tracking-table maintenance (a DBA account)
 
-Pruning or truncating tracking tables
-([what is safe to delete](README_JOBS_SCHEMA.md#maintenance-what-is-safe-to-delete)) needs
-`DELETE`, and `DROP` for `TRUNCATE`. GoArchive itself never needs either: grant them to a DBA
-account, not to the account GoArchive runs as.
+Pruning, abandoning, retiring and dropping in the tracking schema
+([Job Tracking Schema](README_JOBS_SCHEMA.md#maintenance-what-is-safe-to-delete)) need `DELETE`
+and `DROP`. GoArchive never does any of it: grant them to a DBA account, not to GoArchive's.
 
 ---
 
 ## Privilege matrix
 
-| Server | Privileges | Used for |
-|--------|-----------|----------|
-| **Source** | `SELECT` | Reading rows and estimates — all five commands |
-| **Source** | `DELETE` | Deleting archived rows — `archive`, `purge`, `validate` |
-| **Source** | `PROCESS` (global) | Proving foreign-key metadata completeness (`FK_COVERAGE_VISIBILITY_CHECK`) — `archive`, `purge`, `dry-run`, `validate`; not `copy-only` |
-| **Destination** (data tables) | `SELECT`, `INSERT` | Copying rows, and reading them back to verify |
-| **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | Creating and maintaining `archiver_job`, the per-job `archiver_job_log_<id>` tables, and the one-row `goarchive_meta` revision marker |
-| **Each monitored replica** (optional) | `REPLICATION CLIENT` | Replication gating, on every server listed in `replication.servers`, for the account that entry names |
+By job type; `validate` and `dry-run` need what the job's type needs, since they run its
+preflight.
 
-Source `DELETE` is required for `archive`, `purge`, and `validate` — `validate`
-enforces the privilege without deleting anything, so a `validate`-only run still
-needs the grant. It is **not** required for `dry-run` or `copy-only`: `dry-run`
-previews a delete without running this check, and `copy-only` never deletes from
-source at all.
+| Server | Privileges | archive | purge | copy-only | Used for |
+|--------|-----------|:---:|:---:|:---:|----------|
+| **Source** | `SELECT` | ✅ | ✅ | ✅ | Reading rows |
+| **Source** | `DELETE` | ✅ | ✅ | — | Deleting archived rows |
+| **Source** | `TRIGGER` | ✅ | ✅ | — | Listing DELETE triggers (`DELETE_TRIGGER_VISIBILITY_CHECK`) |
+| **Source** | `PROCESS` (global) | ✅ | ✅ | — | Proving foreign-key metadata complete (`FK_COVERAGE_VISIBILITY_CHECK`); not needed on MySQL 8.0.40 (below) |
+| **Destination** (data) | `INSERT` | ✅ | — | ✅ | Copying rows |
+| **Destination** (data) | `SELECT` | ✅ | — | ✅ | Reading copies back under `verification: sha256` or `count`, and archive recovery's check of what the destination holds |
+| **Destination** (data) | `TRIGGER` | ✅ | — | ✅ | Listing INSERT triggers (`DEST_INSERT_TRIGGER_VISIBILITY_CHECK`) |
+| **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | ✅ | ✅ | ✅ | The registry, the per-job logs, the label |
+| **Source** and **destination** (optional, global) | `SESSION_VARIABLES_ADMIN` | ✅ | ✅ | ✅ | Only on a server whose global `max_error_count` is 0 ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
+| **Each monitored replica** (optional) | `REPLICATION CLIENT` | ✅ | ✅ | — | Replication gating |
 
-Preflight proves destination `INSERT` only. Verification also reads the copied rows back, so
-the destination account needs `SELECT` too: an account without it passes preflight and fails
-at verification, after the copy and before any delete.
+- **Destination `SELECT`.** Preflight proves `INSERT` only, and `validate` and `dry-run` never read
+  copies. A run that verifies (`sha256` or `count`) reads them back, and archive recovery reads
+  them before it deletes a logged root's tree, so an account without `SELECT` fails there, before
+  any delete; under `verification: none` only archive recovery reads them. The recipes grant it.
+- **`PROCESS` and the MySQL version.** The proof reads InnoDB's foreign-key registry. MySQL
+  8.0.46 and later refuse that read without `PROCESS`; MySQL 8.0.40 serves it unfiltered without
+  `PROCESS`, so the check passes there without the grant and still sees every foreign key
+  ([compatibility notes](README_COMPAT.md)).
+- **`TRIGGER` lists the triggers.** MySQL shows a table's triggers only to an account holding
+  `TRIGGER` on it, so without it an empty list proves nothing and preflight refuses the job
+  ([trigger checks](README_VALIDATION.md#trigger-checks)). MySQL has no read-only form: `TRIGGER`
+  also permits `CREATE TRIGGER` and `DROP TRIGGER` on those tables, which GoArchive never runs.
+  Granting it on each job table instead of the schema narrows it to those tables.
+- **Locks need no privilege.** `GET_LOCK()`, `IS_USED_LOCK()`, `RELEASE_LOCK()` and
+  `RELEASE_ALL_LOCKS()` need no grant, on the source or the destination, and work on a
+  `super_read_only` server; neither does the session `max_execution_time = 0` the schema
+  lock's session sets for its wait. Reading `performance_schema.metadata_locks` (the upgrade
+  check in [README_UPGRADING_3_0.md](README_UPGRADING_3_0.md#moving-from-30-alpha0)) needs `SELECT` on
+  `performance_schema`: run it as a DBA account, not as GoArchive's.
+- **The session character set needs no privilege.** The `SET NAMES` every connection runs, and
+  the read of its result ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)),
+  are session statements any account may run.
+- **The source facts need no privilege.** The unfinished-work guard reads the source's
+  `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql; neither
+  needs a grant beyond connecting
+  ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+- **`SESSION_VARIABLES_ADMIN`** also lets the account change other restricted session variables,
+  so raising the global `max_error_count` is usually the better remedy. The recipes above do not
+  include it.
 
 ### Why `CREATE` on the tracking schema
 
-`CREATE` is a **runtime** requirement, not a one-time setup step. GoArchive
-creates each job's `archiver_job_log_<id>` table on the fly the first time that
-job runs. A grant that omits `CREATE` fails at startup with
-`JOB_SCHEMA_PERMISSION_CHECK`.
+`CREATE` is needed at run time, not once: each job's `archiver_job_log_<id>` is created the first
+time the job runs. A grant without it fails at startup with `JOB_SCHEMA_PERMISSION_CHECK`.
 
 ---
 
@@ -106,50 +130,34 @@ job runs. A grant that omits `CREATE` fails at startup with
 
 A permission check passes only when the privilege is **established for the specific object**.
 A privilege held only through a role, or a global grant while `@@global.partial_revokes` is
-enabled, is *unconfirmed* and fails closed: MySQL does not expose a role's grant rows to the
-account that holds the role, so GoArchive cannot prove the privilege exists — only that it
-might. Grant `SELECT`, `DELETE`, `INSERT` and the tracking-schema privileges **directly** to
-the account GoArchive connects as, at schema or table scope.
+enabled, cannot be proven — MySQL does not show the account a role's grant rows — and fails
+closed as `unconfirmed`. So does a privilege granted nowhere, to an account that cannot read the
+`mysql` schema: only such a read can tell `absent` from `unconfirmed`. Grant `SELECT`, `DELETE`, `INSERT`, `TRIGGER` and the tracking-schema privileges
+**directly** to the account GoArchive connects as, at schema or table scope. How each check
+reports what it saw: [Permission checks](README_VALIDATION.md#permission-checks).
 
-This governs `SOURCE_SELECT_PERMISSION_CHECK`, `SOURCE_DELETE_PERMISSION_CHECK`,
-`DEST_WRITE_PERMISSION_CHECK` and `JOB_SCHEMA_PERMISSION_CHECK`; how each reports the state it
-saw is in [Permission checks](README_VALIDATION.md#permission-checks).
-
-**`PROCESS` is the exception: a role-held `PROCESS` is accepted.** `FK_COVERAGE_VISIBILITY_CHECK`
-proves completeness by successfully reading InnoDB's foreign-key metadata registry, which needs
-effective `PROCESS`. A role-held `PROCESS` produces that same successful read, so the proof
-holds however the privilege reached the account.
+**`PROCESS` is the exception: a role-held `PROCESS` is accepted.** The visibility proof is a
+successful read of the registry, and a role-held `PROCESS` produces the same read. `TRIGGER` is not
+an exception: without it MySQL returns an empty trigger list, not an error, so the only proof is
+the grant itself, and a role's grant rows cannot be read.
 
 ---
 
 ## Troubleshooting
 
-**`JOB_SCHEMA_PERMISSION_CHECK`**
+**A check lists tables you believe are granted.** Check that the grant targets the account
+`CURRENT_USER()` resolves to (not the one you connected as, with proxying or host patterns); that
+it is granted **directly**, not through a role; and that it is on the right schema and server:
+source `DELETE` and destination `INSERT` are separate grants on separate servers.
 
-The message names the exact grant, and the `CREATE DATABASE` when the schema itself is missing
-([the check](README_VALIDATION.md#job_schema_permission_check)).
+**`FK_COVERAGE_VISIBILITY_CHECK` on a schema with no cross-schema foreign keys.** Expected: the
+check proves that discovery was complete, whatever the schema holds
+([the check](README_VALIDATION.md#fk_coverage_visibility_check)).
 
-**`DEST_WRITE_PERMISSION_CHECK` / `SOURCE_DELETE_PERMISSION_CHECK` lists tables
-you believe are granted**
-
-Check three things: the grant targets the account `CURRENT_USER()` actually
-resolves to (not the one you connected *as*, if proxying or host-pattern matching
-is involved); the privilege is granted **directly** to the account rather than
-through any role ([the provable-grant rule](#the-provable-grant-rule)); and the privilege
-is on the right schema — source `DELETE` and destination `INSERT` are separate
-grants on separate servers.
-
-**`FK_COVERAGE_VISIBILITY_CHECK` on a schema with no cross-schema foreign keys**
-
-Expected: the check tests whether foreign-key metadata completeness is provable, not the
-schema's contents ([the check](README_VALIDATION.md#fk_coverage_visibility_check)).
-
-**Least-privilege deployments**
-
-Running `validate` or `dry-run` from a separate, more-privileged account is
-**diagnostic only**: `archive`, `purge`, and `copy-only` re-run preflight with their own
-account ([How preflight works](README_VALIDATION.md#how-preflight-works)). The account that
-actually runs the command must itself hold every privilege in the
-[matrix](#privilege-matrix), including `PROCESS` where required. The only way around that is
-`--skip-validate-preflight`, which bypasses every preflight check
+**Least-privilege deployments.** Running `validate` or `dry-run` from a more privileged account is
+diagnostic only: `archive`, `purge` and `copy-only` run preflight again with their own accounts,
+which must hold every privilege their job type needs.
+`--skip-dangerously-validate-preflight-allow-experimental` skips the permission checks, not the
+privileges: a missing `SELECT`, `DELETE` or `INSERT` then fails mid-run, while a missing `TRIGGER`
+fails nothing and the run proceeds with triggers it cannot see
 ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)).

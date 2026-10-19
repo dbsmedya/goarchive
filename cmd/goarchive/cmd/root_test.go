@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"github.com/spf13/cobra"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -45,68 +47,10 @@ func TestGetConfigFile(t *testing.T) {
 }
 
 func TestGetCLIOverrides(t *testing.T) {
-	// Save original values and restore after test
-	originalLogLevel := logLevel
-	originalLogFormat := logFormat
-	originalSkipVerify := skipVerify
-	defer func() {
-		logLevel = originalLogLevel
-		logFormat = originalLogFormat
-		skipVerify = originalSkipVerify
-	}()
-
-	tests := []struct {
-		name       string
-		logLevel   string
-		logFormat  string
-		skipVerify bool
-		want       CLIOverrides
-	}{
-		{
-			name:       "empty overrides",
-			logLevel:   "",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-		{
-			name:       "all overrides set",
-			logLevel:   "debug",
-			logFormat:  "text",
-			skipVerify: true,
-			want: CLIOverrides{
-				LogLevel:   "debug",
-				LogFormat:  "text",
-				SkipVerify: true,
-			},
-		},
-		{
-			name:       "partial overrides",
-			logLevel:   "warn",
-			logFormat:  "",
-			skipVerify: false,
-			want: CLIOverrides{
-				LogLevel:   "warn",
-				LogFormat:  "",
-				SkipVerify: false,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logLevel = tt.logLevel
-			logFormat = tt.logFormat
-			skipVerify = tt.skipVerify
-
-			got := GetCLIOverrides()
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	originalLogLevel, originalLogFormat := logLevel, logFormat
+	defer func() { logLevel, logFormat = originalLogLevel, originalLogFormat }()
+	logLevel, logFormat = "debug", "text"
+	assert.Equal(t, CLIOverrides{LogLevel: "debug", LogFormat: "text"}, GetCLIOverrides())
 }
 
 func TestRootCommandStructure(t *testing.T) {
@@ -115,6 +59,81 @@ func TestRootCommandStructure(t *testing.T) {
 	assert.NotEmpty(t, rootCmd.Short)
 	assert.NotEmpty(t, rootCmd.Long)
 	assert.Equal(t, Version, rootCmd.Version)
+}
+
+// TestRootHelpDescription pins the paragraph goarchive --help prints before its features
+// (pre-alpha minors, item 2): 3.0 has no edition split, and the limits live in the README and
+// LIMITATIONS.
+func TestRootHelpDescription(t *testing.T) {
+	// Console-output spec §3.9: filled evenly to 76 columns, corrected (3.0 builds the tree from
+	// the declared relations; verification has none), and naming the exit codes.
+	const want = "GoArchive archives related MySQL data across servers: it copies each batch\n" +
+		"of a table tree to the destination, verifies it, and only then deletes it\n" +
+		"from the source. An interrupted run is finished by replaying the job's log.\n" +
+		"\n" +
+		"Recommended for cold data: the rows in a job's where range must not change\n" +
+		"while it runs. On very large or deeply nested trees, read the README and\n" +
+		"docs/README_LIMITATIONS.md for the known limits first.\n" +
+		"\n" +
+		"Features:\n" +
+		"  - Parent/child trees from the job's declared relations, with composite\n" +
+		"    and non-integer keys\n" +
+		"  - Key-ordered batches: copy, verification and the log write in one\n" +
+		"    destination transaction; deletes in chunks committed only on an exact\n" +
+		"    row count\n" +
+		"  - Crash recovery by replaying the job's log\n" +
+		"  - Replication lag gate before every delete\n" +
+		"  - Verification by SHA256 (default), count, or none\n" +
+		"\n" +
+		"Exit codes: 0 done, 1 failed, 2 usage or configuration error, 3 stopped\n" +
+		"before the end of the where range, 4 not started (another run holds the\n" +
+		"work). See docs/README_OPERATIONS.md, Output and exit codes."
+	if rootCmd.Long != want {
+		t.Errorf("rootCmd.Long =\n%s\nwant\n%s", rootCmd.Long, want)
+	}
+	for i, line := range strings.Split(rootCmd.Long, "\n") {
+		if len(line) > 76 {
+			t.Errorf("help line %d is %d characters, over 76: %q", i+1, len(line), line)
+		}
+	}
+	for _, gone := range []string{"Community edition", "Enterprise", "single-operator workstation", "automatic dependency resolution"} {
+		if strings.Contains(rootCmd.Long, gone) {
+			t.Errorf("rootCmd.Long still says %q", gone)
+		}
+	}
+}
+
+// TestRunHelpNamesExitCodes (console-output spec §3.9): each run command points at the codes.
+func TestRunHelpNamesExitCodes(t *testing.T) {
+	for _, c := range []*cobra.Command{archiveCmd, purgeCmd, copyOnlyCmd, dryrunCmd, validateCmd, planCmd, listJobsCmd} {
+		if !strings.Contains(c.Long, "Exit codes: see goarchive --help.") {
+			t.Errorf("%s help does not point at the exit codes", c.Name())
+		}
+	}
+	if f := archiveCmd.Flags().Lookup("progress"); f == nil || !strings.Contains(f.Usage, "log entries when the log is JSON on the console") {
+		t.Errorf("--progress help does not say where its output goes")
+	}
+}
+
+// TestCommandHelpTexts (DSW-1 B2, B23, B24): the help says what each command does and does not do.
+func TestCommandHelpTexts(t *testing.T) {
+	if !strings.Contains(planCmd.Long, "It opens no connection; dry-run shows MySQL's plans.") {
+		t.Errorf("plan help does not say it opens no connection:\n%s", planCmd.Long)
+	}
+	if strings.Contains(dryrunCmd.Long, "coverage") || !strings.Contains(dryrunCmd.Long, "root table, key, where and matching roots") {
+		t.Errorf("dry-run help does not name what its job section shows:\n%s", dryrunCmd.Long)
+	}
+	for _, w := range []string{"storage engines", "character sets"} {
+		if !strings.Contains(validateCmd.Long, w) {
+			t.Errorf("validate help does not name %q:\n%s", w, validateCmd.Long)
+		}
+	}
+	for _, c := range []*cobra.Command{archiveCmd, purgeCmd, copyOnlyCmd, dryrunCmd} {
+		f := c.Flags().Lookup("skip-dangerously-validate-preflight-allow-experimental")
+		if f == nil || strings.Contains(f.Usage, "binding checks still run") || !strings.Contains(f.Usage, "a run still checks the job's log key and binding") {
+			t.Errorf("%s: the skip flag's help promises checks dry-run does not run: %v", c.Name(), f)
+		}
+	}
 }
 
 func TestRootCommandPersistentFlags(t *testing.T) {
@@ -140,10 +159,8 @@ func TestRootCommandPersistentFlags(t *testing.T) {
 		assert.Nil(t, flags.Lookup(removed), "flag --%s should not be registered", removed)
 	}
 
-	// Test skip-verify flag
-	skipVerifyFlag, err := flags.GetBool("skip-verify")
-	assert.NoError(t, err)
-	assert.Equal(t, false, skipVerifyFlag)
+	// --skip-verify is gone: --verification=none replaces it (R42, M6-1).
+	assert.Nil(t, flags.Lookup("skip-verify"))
 }
 
 func TestRootCommandSubcommands(t *testing.T) {
@@ -155,6 +172,7 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	expectedCommands := []string{
 		"archive",
+		"copy-only",
 		"dry-run",
 		"list-jobs",
 		"plan",
@@ -165,13 +183,5 @@ func TestRootCommandSubcommands(t *testing.T) {
 
 	for _, expected := range expectedCommands {
 		assert.Contains(t, commandNames, expected, "Expected command %s not found", expected)
-	}
-}
-
-func TestRootCommandConversionHelp(t *testing.T) {
-	want := "Skip copied-data comparison and accept reported conversion/truncation warnings (source originals may be deleted after conversion)"
-	flag := rootCmd.PersistentFlags().Lookup("skip-verify")
-	if flag == nil || flag.Usage != want {
-		t.Fatalf("skip-verify help=%v want=%s", flag, want)
 	}
 }

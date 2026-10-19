@@ -1,8 +1,17 @@
-# Test13's live replication witness. The subshell scopes traps and private
+# source_gtid_set prints the source's gtid_executed on one line. The server separates the
+# uuids of a set with a newline (probe L11, .ayder unfinished-work guard), which
+# mysql-query.sh prints as two lines, so the newline is removed on the server.
+source_gtid_set() {
+    MYSQL_QUERY_HOST="$SOURCE_HOST" MYSQL_QUERY_USER="$SOURCE_USER" \
+        "$SCRIPT_DIR/mysql-query.sh" "$SOURCE_PORT" "SELECT REPLACE(@@GLOBAL.gtid_executed, CHAR(10), '')" |
+        awk 'NR == 2 { print; seen=1 } END { if (!seen || NR != 2) exit 1 }'
+}
+
+# Test13's and Test17's live replication witness. The subshell scopes traps and private
 # helpers so an interrupted test cannot poison the next engine invocation.
 # No operator data is used: this runs only on the seeded E2E payment fixture.
 run_replication_hold_job() (
-    local config_file="$1" log_file="$2"
+    local config_file="$1" log_file="$2" hold_mode="${3:-stopped-applier}"
     local full_config_path="$TESTS_DIR/configs/$config_file"
     local process_out="${log_file%.log}.replication.stdout"
     local process_err="${log_file%.log}.replication.stderr"
@@ -39,7 +48,7 @@ run_replication_hold_job() (
             log_error "PURGE_REPLICA_NOT_READY: io=$io sql=$sql delay=$delay"
             return 1
         fi
-        gtid=$(source_query "SELECT @@GLOBAL.gtid_executed" | scalar_value) || return 1
+        gtid=$(source_gtid_set) || return 1
         # A GTID set contains only UUIDs, transaction ranges and separators.
         if [[ -z "$gtid" || "$gtid" == *[!a-fA-F0-9:,-]* ]]; then
             log_error "PURGE_REPLICA_NOT_READY: missing or invalid source GTID set"
@@ -82,11 +91,14 @@ run_replication_hold_job() (
     : > "$process_out" || return 1
     : > "$process_err" || return 1
 
-    # This helper deliberately describes one fixture, not arbitrary user SQL.
-    if [[ "$config_file" != test13_purge_replication.yaml ]]; then
-        log_error "replication_hold: unsupported fixture $config_file"
-        return 1
-    fi
+    # This helper deliberately describes two fixtures, not arbitrary user SQL.
+    case "$hold_mode:$config_file" in
+        stopped-applier:test13_purge_replication.yaml | stop-signal:test17_purge_replication_stop.yaml) ;;
+        *)
+            log_error "replication_hold: unsupported mode/fixture $hold_mode/$config_file"
+            return 1
+            ;;
+    esac
     ensure_goarchive_bin || return 1
     local job_name selected before_count held_count held_dest after_count deadline child_rc
     job_name=$(extract_job_name "$full_config_path") || return 1
@@ -123,6 +135,54 @@ run_replication_hold_job() (
         return 1
     fi
     echo "replication witness: observed hold; source unchanged; pid=$pid" >> "$log_file"
+    if [[ "$hold_mode" == stop-signal ]]; then
+        local second_out="${log_file%.log}.replication.second"
+        kill -TERM "$pid" || return 1
+        deadline=$((SECONDS + 10)) # Docker's default grace, the number the docs cite
+        while kill -0 "$pid" 2>/dev/null; do
+            if [[ $SECONDS -ge $deadline ]]; then
+                log_error "PURGE_REPLICATION_STOP_TIMEOUT: a first SIGTERM did not end the hold within 10 s"
+                return 1
+            fi
+            sleep 0.1
+        done
+        wait "$pid"
+        child_rc=$?
+        pid=""
+        copy_process_output || return 1
+        if [[ "$child_rc" != 3 ]] ||
+            ! grep -Fq 'replication hold ended by a stop request' "$process_out" "$process_err" ||
+            ! grep -Fq 'Run stopped' "$process_out" "$process_err"; then
+            log_error "PURGE_REPLICATION_STOP_FAILED: exit=$child_rc (want 3), or the stop line or the stopped closing entry is missing"
+            return 1
+        fi
+        after_count=$(get_row_count "$SOURCE_HOST" "$SOURCE_PORT" "$SOURCE_USER" "$SOURCE_DB" payment) || return 1
+        if [[ "$after_count" != "$before_count" ]]; then
+            log_error "PURGE_REPLICATION_STOP_CHANGED: source rows $after_count, want $before_count"
+            return 1
+        fi
+        echo "replication witness: SIGTERM ended the hold; exit 3; source unchanged" >> "$log_file"
+        replica_query "START REPLICA SQL_THREAD" || return 1
+        assert_replica_ready || return 1
+        restore_applier=false
+        if ! "$GOARCHIVE_BIN" purge --job "$job_name" --config "$full_config_path" --force-triggers > "$second_out" 2>&1; then
+            cat "$second_out" >> "$log_file"
+            log_error "PURGE_REPLICATION_STOP_SECOND_RUN: the purge after the stop failed"
+            return 1
+        fi
+        cat "$second_out" >> "$log_file" || return 1
+        if grep -Fq 'Recovery:' "$second_out"; then
+            log_error "PURGE_REPLICATION_STOP_LOGGED: a stop before logging deleting must leave nothing to recover"
+            return 1
+        fi
+        after_count=$(source_query "SELECT COUNT(*) FROM \`$SOURCE_DB\`.payment WHERE payment_id <= 2000" | scalar_value) || return 1
+        if [[ "$after_count" != 0 ]]; then
+            log_error "PURGE_REPLICATION_STOP_INCOMPLETE: selected rows remain after the second purge"
+            return 1
+        fi
+        echo "replication witness: second purge completed; selected rows=0; nothing recovered" >> "$log_file"
+        return 0
+    fi
     replica_query "START REPLICA SQL_THREAD" || return 1
     deadline=$((SECONDS + 60))
     while kill -0 "$pid" 2>/dev/null; do

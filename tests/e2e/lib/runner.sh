@@ -101,16 +101,19 @@ run_archive_job() {
 
     # STEP 1: Validate configuration first. Kept for every command -- it is cheap,
     # and the only place the preflight profile is exercised end to end.
+    #
+    # All three steps carry the run's own trigger flag: validate and dry-run run
+    # the same preflight as the command, so they must accept exactly what it
+    # accepts. Sakila's film has a DELETE trigger (test 01).
     log_info "[STEP 1/3] Validating configuration..."
-    # Use --force-triggers because Sakila database has DELETE triggers
-    if ! "$GOARCHIVE_BIN" validate --config "$full_config_path" --force-triggers 2>&1; then
+    if ! "$GOARCHIVE_BIN" validate --config "$full_config_path" $command_flags 2>&1; then
         log_error "Configuration validation failed - check for missing relations"
         return 1
     fi
 
     # STEP 2: Dry-run to detect issues before the real run
     log_info "[STEP 2/3] Running dry-run to detect potential issues..."
-    if ! "$GOARCHIVE_BIN" dry-run --job "$job_name" --config "$full_config_path" 2>&1; then
+    if ! "$GOARCHIVE_BIN" dry-run --job "$job_name" --config "$full_config_path" $command_flags 2>&1; then
         log_error "Dry-run failed - check configuration"
         return 1
     fi

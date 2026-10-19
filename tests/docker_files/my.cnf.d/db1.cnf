@@ -31,7 +31,8 @@ innodb_buffer_pool_size     = 768M
 innodb_buffer_pool_instances = 2
 innodb_redo_log_capacity    = 256M
 innodb_log_buffer_size      = 16M
-innodb_numa_interleave      = OFF
+# loose-: Oracle's images are built without NUMA and reject the bare option (as in envmatrix/cnf).
+loose-innodb_numa_interleave = OFF
 
 # The integration suite opens a pool per DatabaseManager and peaked at 152
 # concurrent connections on the DESTINATION against the default limit of 151,

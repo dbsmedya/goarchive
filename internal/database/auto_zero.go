@@ -7,8 +7,12 @@ import (
 	"strings"
 )
 
-// autoZeroModeExpression preserves inherited modes on each physical connection.
-const autoZeroModeExpression = "CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_AUTO_VALUE_ON_ZERO')"
+// autoZeroMode is the session sql_mode that adds NO_AUTO_VALUE_ON_ZERO to base, keeping every
+// mode base holds. The pin preserves the inherited modes on each physical connection with
+// base "@@SESSION.sql_mode"; a test's emulated sql_mode global is a quoted literal (Global).
+func autoZeroMode(base string) string {
+	return "CONCAT_WS(',', NULLIF(" + base + ", ''), 'NO_AUTO_VALUE_ON_ZERO')"
+}
 
 // AutoIncrementZeroModeError reports a session whose explicit AUTO_INCREMENT
 // zero preservation could not be proven during connection establishment.

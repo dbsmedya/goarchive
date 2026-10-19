@@ -3,6 +3,7 @@ package replication
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,9 +11,14 @@ import (
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
+
+// ErrStopped reports that a stop request ended a hold (LAG-1). A call returns
+// it only once a probe has reported a server unhealthy: a stop never cuts a
+// pass short.
+var ErrStopped = errors.New("replication: hold ended by a stop request")
 
 // statusReader is the one library behavior the gate needs, named locally so
 // the policy layer can be tested without a connection.
@@ -51,7 +57,7 @@ type Gate struct {
 	// now and sleep are seams: injected in tests so TTL expiry, tick cadence
 	// and held durations need no wall clock.
 	now   func() time.Time
-	sleep func(context.Context, time.Duration) error
+	sleep func(context.Context, <-chan struct{}, time.Duration) error
 
 	logger *logger.Logger
 }
@@ -106,15 +112,18 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger) (*Gate
 	return g, nil
 }
 
-// sleepUntil waits for d or for the context, whichever comes first. It is the
-// production seam; tests inject a deterministic replacement.
-func sleepUntil(ctx context.Context, d time.Duration) error {
+// sleepUntil waits for d, for the context or for stop, whichever comes first. A
+// stop returns nil, so the caller's check decides. It is the production seam;
+// tests inject a deterministic replacement.
+func sleepUntil(ctx context.Context, stop <-chan struct{}, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-stop:
+		return nil
 	case <-timer.C:
 		return nil
 	}
@@ -151,7 +160,15 @@ type holdInfo struct {
 // The hold state machine is scoped to this call: a hold spanning two calls
 // logs a fresh entry line in the second, because from the job's perspective it
 // is a new hold.
-func (g *Gate) WaitForLag(ctx context.Context) error {
+//
+// stop is the run's stop channel; nil never closes. A stop ends a hold, never a
+// pass: the first probe of a call runs on ctx alone, so a stop before its
+// result still lets a healthy fleet pass. Once a probe has reported a server
+// unhealthy, a stop ends the call at once with ErrStopped: during the sleep, or
+// during a later probe, which runs on a context the stop cancels, since a probe
+// of a replica whose host is down blocks for the connect timeout, and whatever
+// that probe returns. A cancelled ctx outranks a stop that came with it.
+func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
 	}
@@ -173,11 +190,28 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 
 		allOK := true
 		for _, srv := range g.servers {
-			snapshot, err := srv.reader.ReplicaStatus(ctx)
+			// Decided per probe: once any server has reported unhealthy, in
+			// this round or an earlier one, the call is a hold and a stop
+			// also aborts the probe.
+			holding := !firstHold.IsZero()
+			probe, release := ctx, context.CancelFunc(func() {})
+			if holding {
+				probe, release = withStop(ctx, stop)
+			}
+			snapshot, err := srv.reader.ReplicaStatus(probe)
+			release()
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
+			}
+			// Nor is a probe the stop aborted. Once the call holds, a stop
+			// that arrived during the probe ends it whatever the probe
+			// returned: a healthy result is not a pass to finish.
+			if holding {
+				if err := g.stopHold(ctx, stop, firstHold); err != nil {
+					return err
+				}
 			}
 
 			var cause holdCause
@@ -204,17 +238,71 @@ func (g *Gate) WaitForLag(ctx context.Context) error {
 			g.mu.Unlock()
 
 			if !firstHold.IsZero() {
-				g.logger.Infof("replication gate passed: all %d servers healthy; job resuming after %s held",
-					len(g.servers), g.now().Sub(firstHold).Round(time.Second))
+				g.logger.Infow(fmt.Sprintf("replication gate passed: all %d servers healthy; job resuming after %s held",
+					len(g.servers), g.now().Sub(firstHold).Round(time.Second)), logger.Live)
 			}
 
 			return nil
 		}
 
-		if err := g.sleep(ctx, g.interval); err != nil {
+		if err := g.stopHold(ctx, stop, firstHold); err != nil {
+			return err
+		}
+		if err := g.sleep(ctx, stop, g.interval); err != nil {
+			return err
+		}
+		if err := g.stopHold(ctx, stop, firstHold); err != nil {
 			return err
 		}
 	}
+}
+
+// stopHold decides whether a hold ends here: the context's error once it is
+// cancelled, since a second signal outranks the first even when both arrived
+// together; else ErrStopped, through endHold, once stop is closed; else nil.
+func (g *Gate) stopHold(ctx context.Context, stop <-chan struct{}, firstHold time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if stopped(stop) {
+		return g.endHold(firstHold)
+	}
+
+	return nil
+}
+
+// endHold logs that a stop ended the hold begun at firstHold and returns
+// ErrStopped. WARN and Live, like the hold lines.
+func (g *Gate) endHold(firstHold time.Time) error {
+	g.logger.Warnw(fmt.Sprintf("replication hold ended by a stop request; job held %s",
+		g.now().Sub(firstHold).Round(time.Second)), logger.Live)
+
+	return ErrStopped
+}
+
+// stopped reports whether stop is closed. A nil channel never is.
+func stopped(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// withStop returns a child of ctx that stop also cancels, for a probe made
+// during a hold; the returned cancel ends it and its watcher.
+func withStop(ctx context.Context, stop <-chan struct{}) (context.Context, context.CancelFunc) {
+	probe, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-probe.Done():
+		}
+	}()
+
+	return probe, cancel
 }
 
 // transition advances one server's hold state and emits exactly one log line
@@ -237,8 +325,8 @@ func (g *Gate) transition(
 			return
 		}
 		delete(holds, id)
-		g.logger.Infof("replication recovered: server %s healthy; held %s",
-			id, now.Sub(prev.since).Round(time.Second))
+		g.logger.Infow(fmt.Sprintf("replication recovered: server %s healthy; held %s",
+			id, now.Sub(prev.since).Round(time.Second)), logger.Live)
 
 		return
 	}
@@ -248,16 +336,16 @@ func (g *Gate) transition(
 		if firstHold.IsZero() {
 			*firstHold = now
 		}
-		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s",
-			id, cause, detail, g.interval)
+		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s",
+			id, cause, detail, g.interval), logger.Live)
 
 		return
 	}
 
 	held := now.Sub(prev.since).Round(time.Second)
 	if prev.cause == cause {
-		g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
-			id, cause, detail, g.interval, held)
+		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
+			id, cause, detail, g.interval, held), logger.Live)
 
 		return
 	}
@@ -265,8 +353,8 @@ func (g *Gate) transition(
 	// A cause change keeps the original entry time: the job has been held
 	// continuously, and the duration must not restart.
 	holds[id] = holdInfo{cause: cause, since: prev.since}
-	g.logger.Warnf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
-		id, cause, detail, g.interval, prev.cause, held)
+	g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
+		id, cause, detail, g.interval, prev.cause, held), logger.Live)
 }
 
 // renderChannelList spells a server's channel selection, where an empty

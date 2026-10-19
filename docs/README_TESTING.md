@@ -15,6 +15,7 @@ environment, the test estate and troubleshooting — is in [tests/README.md](../
 - [Unit tests](#unit-tests)
 - [Consumer-policy enforcement](#consumer-policy-enforcement)
 - [Integration tests](#integration-tests)
+- [Environment matrix](#environment-matrix)
 - [End-to-end (Sakila) tests](#end-to-end-sakila-tests)
 
 ---
@@ -23,8 +24,9 @@ environment, the test estate and troubleshooting — is in [tests/README.md](../
 
 | Layer | Database required | Build tag | What it proves |
 |-------|:-----------------:|-----------|----------------|
-| Unit | no | — | GoArchive's own logic and SQL, and each preflight stage's policy over the library's facts |
-| Integration | real MySQL | `integration` | Copy, verification, delete, recovery and replication gating against real source, destination and replica servers |
+| Unit | no | — | GoArchive's own logic, and each preflight check's policy over the library's facts |
+| Integration | real MySQL | `integration` | Preflight on real facts, the engine's copy, verification, deletes and recovery, tracking, connections, and replication gating against a live replica |
+| Environment matrix | throwaway MySQL pairs | `integration` | The integration suites again under one changed server variable, init option or MySQL version at a time |
 | End-to-end | real MySQL + Sakila | — | The built CLI binary, end to end, on a realistic schema |
 
 The commands for each layer are in [tests/README.md → Overview](../tests/README.md#overview).
@@ -33,139 +35,100 @@ The commands for each layer are in [tests/README.md → Overview](../tests/READM
 
 ## Unit tests
 
-Fast, and no database (`go test -short ./...`). Coverage is measured on demand from the current
-checkout, never kept as a snapshot; see
-[tests/README.md → Coverage on demand](../tests/README.md#coverage-on-demand).
+Fast, with no database (`go test -short ./...`). Coverage is measured on demand from the current
+checkout, never kept as a snapshot
+([tests/README.md → Coverage on demand](../tests/README.md#coverage-on-demand)).
 
-**Two kinds of unit test, and the difference matters when adding one.**
+**Preflight tests inject facts; they do not mock SQL.** Preflight's facts come from
+`dbsgomysql`, so its tests hand the checks the library's typed values (`validations.TableInfo`,
+`validations.Grants`, …) and open no database handle. Mocking the library's queries instead would
+tie the test to `dbsgomysql`'s SQL wire format, which nothing verifies, so a library change could
+diverge while the suite stayed green; injecting the facts ties it to the library's API, which the
+compiler checks.
 
-Tests that exercise **GoArchive's own SQL** — tracking tables, batch DML, checkpoints — use
-`sqlmock`, and that is correct: the statement under test is one GoArchive wrote.
-
-Tests that exercise a **preflight stage** do not mock SQL at all. Preflight facts come from
-`dbsgomysql`, so those tests inject the library's typed values (`[]validations.TableInfo`,
-`validations.Grants`, …) directly into the run the stage reads from, and most of them open no
-database handle whatsoever. Mocking the library's queries instead would couple the test to
-`dbsgomysql`'s SQL wire format — column names, aliases, row order — which nothing verifies, so a
-library change would diverge silently while the suite stayed green. Injecting the fact couples
-the test to the library's API, which the compiler checks.
-
-A stage that ignores the injected fact and issues its own query fails with
-`validations: nil Querier`, so the absence of a handle is itself the assertion.
-
-A metadata-policy test should preload an exported fact and assert the semantic result plus
-the reader call count:
-
-```go
-fake := &fakePreflightInspector{
-    tablesResult: []validations.TableInfo{
-        {Table: "orders", Type: "BASE TABLE", Engine: "InnoDB"},
-    },
-}
-_, run, _ := newTypedFactRun(t, fake, nil)
-
-first, err := run.sourceTables(context.Background())
-// Assert the returned fact and error, call again, then prove memoization.
-second, err := run.sourceTables(context.Background())
-if fake.tablesCalls != 1 {
-    t.Fatalf("Tables calls = %d, want 1", fake.tablesCalls)
-}
-```
-
-For SQL GoArchive owns, keep an exact expectation and assert both the behavior and mock
-completion:
-
-```go
-mock.ExpectQuery(regexp.QuoteMeta(maxAllowedPacketQuery)).
-    WillReturnRows(sqlmock.NewRows([]string{"Variable_name", "Value"}).
-        AddRow("max_allowed_packet", "67108864"))
-// Call the GoArchive method, assert its value/error, then ExpectationsWereMet.
-```
-
-If you need a mock in a file the [consumer-policy guards](#consumer-policy-enforcement) pin,
-preload the fact instead — the guard's failure message names the pattern to copy.
+**`sqlmock` covers SQL GoArchive owns** and that a unit test cannot reach otherwise:
+connection-time probes in `internal/database` (the session pins, `MAX_ERROR_COUNT_CHECK`,
+`SESSION_CHARSET_CHECK`, `AUTO_INCREMENT_ZERO_MODE_CHECK`) and the advisory-lock statements in `internal/lock`. Everything
+else GoArchive sends — the engine's statements, the tracking tables, INSERT diagnostics — is
+proven by the integration tests on real servers.
 
 ### Retained application-owned MySQL probes
 
-The boundary is ownership, not whether a statement happens to inspect MySQL. The following application probes remain GoArchive SQL and therefore keep exact `sqlmock` coverage:
+The boundary is ownership, not whether a statement inspects MySQL. These read what GoArchive's
+own session reports, not the metadata catalog the library owns, so they stay GoArchive SQL:
 
-- Dry-run reads `SHOW VARIABLES LIKE 'max_allowed_packet'` to decide whether the INSERT
-  payload GoArchive itself constructs fits the destination. This application-specific
-  safety check stays local; it does not justify a generic dbsgomysql server-variable API.
-- `database.Manager.Connect` proves, on every pool, that the session honours the UTC
-  `time_zone` the DSN pins (by its effective offset) and that its `sql_mode` carries
+- **Session pins** — every pool proves its sessions run in UTC (by the effective offset) and carry
   `NO_AUTO_VALUE_ON_ZERO` (`AUTO_INCREMENT_ZERO_MODE_CHECK`).
-- `database.Manager.Connect` reads `@@GLOBAL.server_uuid`, `DATABASE()`, `@@GLOBAL.hostname`
-  and `@@GLOBAL.port` from both pools to refuse a configuration whose source and
-  destination are one database (`SRC_DEST_IDENTITY_CHECK`, issue #13). It inspects what the
-  session reports about itself, not the metadata catalog, and does not justify a dbsgomysql
-  server-identity fact.
-- Copy and dry-run own `SHOW COUNT(*) WARNINGS`, `SHOW WARNINGS`, and the pre-operation
-  `@@SESSION.max_error_count`, `@@SESSION.sql_notes`, `@@SESSION.sql_mode` read.
-  These establish the diagnostics of GoArchive's own INSERT on its transaction.
-  `TestReadDiagnosticSession` and `TestCollectInsertDiagnosticsFailures` cover I/O
-  refusal; `TestInsertDiagnosticPolicy` covers numeric allowlists and completeness.
+- **`max_error_count`** — every new source and destination connection reads its session value
+  and, at 0, sets 1024 (`MAX_ERROR_COUNT_CHECK`).
+- **Session character set** — every new source and destination connection reads its client,
+  connection and results character sets and its collation, and refuses any other than `utf8mb4` /
+  `utf8mb4_general_ci` (`SESSION_CHARSET_CHECK`).
+- **Server identity** — `@@GLOBAL.server_uuid`, `DATABASE()`, hostname and port of both pools, to
+  refuse a source and destination that are one database (`SRC_DEST_IDENTITY_CHECK`).
+- **INSERT diagnostics** — `SHOW COUNT(*) WARNINGS`, `SHOW WARNINGS` and the session's
+  `max_error_count`, `sql_notes` and `sql_mode`, read on the copy's own transaction.
 
 ## Consumer-policy enforcement
 
-`make consumer-policy` runs every `TestConsumerPolicy*` guard in `internal/archiver`, and
-`make check`, which CI runs, includes it. The rule the guards enforce is described in
-[dbsgomysql integration](README_dbsgomysql.md); the guards prove that:
+`make consumer-policy` runs the `TestConsumerPolicy*` guards in `tests/harness`, and `make check`,
+which CI runs, includes it. The rule is in [dbsgomysql integration](README_dbsgomysql.md); the
+guards prove that:
 
-- production Go files do not query the metadata catalog owned by dbsgomysql;
-- production Go files do not name `SHOW REPLICA STATUS` or `SHOW SLAVE STATUS` in a string
-  literal — those reads belong to `dbsgomysql/pkg/replication`;
-- the remaining application-owned `sqlmock` budgets match their reviewed inventory;
-- non-integration unit tests do not encode dbsgomysql query fragments, aliases, result
-  column layouts, or fallback choreography.
+- production Go files do not name the metadata catalog (`information_schema`) in a string literal;
+- production Go files do not name `SHOW REPLICA STATUS` or `SHOW SLAVE STATUS` — those reads belong
+  to `dbsgomysql/pkg/replication`;
+- unit tests do not encode dbsgomysql query fragments, aliases, result column layouts or fallback
+  choreography; files with the `integration` build tag are outside that rule.
 
-Test files carrying the `integration` build tag or an `_integration_test` name are classified
-as real-estate tests and are outside the unit wire-format invariant. The detector patterns are stored in
-`internal/archiver/testdata/consumer_policy/dbsgomysql_wire_rules.tsv`, so the guard's own
-source cannot exempt itself.
+The detector patterns live in `tests/harness/testdata/consumer_policy/`, so the guard's own source
+cannot exempt itself.
 
 ---
 
 ## Integration tests
 
-Integration tests run against real MySQL — a source, a destination and a live replica.
+Real MySQL: a source, a destination in `+03:00` and a live replica. Most tests build their fixtures
+in scratch schemas they create and drop; some read the seeded Sakila estate, so the estate is set
+up first ([tests/README.md → Integration tests](../tests/README.md#integration-tests)). By
+package:
 
-Focused value-preservation tests use production `BuildDSN` with real sessions:
-`TestTemporalPayloadStrictIgnore_Integration`, the collision and valid-key archive/
-purge tests, dirty-destination SHA256, driver implicit/explicit close, session
-ownership and late-table rollback. These are integration tests at package entry
-points. Conversion codes 1264/1265/1366 are reached at the Copy boundary;
-1292 is reached at the collector boundary with an explicit CAST expression, not
-SQL generated by GoArchive. Normal preflight is retained in orchestrator cases.
-Profile-only value-preservation tests skip on the ordinary estate and run against disposable
-MySQL profiles ([tests/README.md](../tests/README.md#value-preservation-profile-tests));
-`TestValuePreservationCLI_Integration` is an E2E witness
-([the E2E guide](../tests/e2e/README.md#focused-value-preservation-cli-witnesses)).
+| Package | Proves |
+|---------|--------|
+| `internal/preflight` | Every check against real facts: structure, keys, relations and pairing, destination compatibility and unique indexes, triggers and their visibility proof, cascades, each permission state (role-held, `partial_revokes`, pools of one), foreign-key visibility |
+| `internal/engine` | Archive, purge and copy-only runs: the key matrix (every key type × job type), composite and permuted keys, NULL foreign keys, collations, the DST fold across the UTC pin, INSERT diagnostics, the key-set and range-warning refusals, verification detecting a changed value, recovery after a kill at every crash point, recovery stopping before any delete when the destination lacks a rediscovered row, the refusal of a self-referencing `CASCADE` or `SET NULL`, the sentinel and graceful stop, locking and concurrency, the job binding, `dry-run`'s count, first-batch rows and plans with their statements' display parts |
+| `internal/tracking` | The schema label and the refused revisions, the typed log, the log-key and binding checks, registration and leftover logs |
+| `internal/database` | The session pins, `wait_timeout`, `max_error_count`, AUTO_INCREMENT zero, the identity guard, single-statement connections, a partly failing replica fleet |
+| `internal/key` | Key SQL shapes on a real server: range access, exact `IN` matching per type, wire sizes, the range-warning check |
+| `cmd/goarchive/cmd` | Every command through the CLI layer: flags, banners, output per logging setup (stdout, stderr and the log; cron silence; `--progress`; JSON on the console), exit codes against held locks and refusals, the `dry-run` report, `validate` over every job, an archive whose rows are larger than the destination's `max_allowed_packet`, a value larger than the destination's `max_allowed_packet` (refused; run under the destination-only matrix row), an archive under a server's finite `sql_select_limit` |
 
-### Orchestrator integration tests
+`TestMySQLLiveReplicationGate` and `TestMySQLStopDuringHold` stop the real replica's applier, and
+`TestMySQLStopNeverCutsAPass` reads it through the live gate; they need the estate to itself.
 
-| Test | Covers |
-|------|--------|
-| `TestOrchestrator_FullArchiveCycle_Integration` | End-to-end archive workflow |
-| `TestOrchestrator_CrashRecovery_Integration` | Resume after simulated crash |
-| `TestOrchestrator_ReplicationGate_Integration` | Replication gating against a live replica: healthy pass, stopped-applier hold, and lag hold — each proving the job resumes on the same invocation |
-| `TestOrchestrator_VerificationMismatch_Integration` | Data verification logic |
-| `TestOrchestrator_ContextCancellation_Integration` | Graceful shutdown |
-| `TestOrchestrator_EmptyResultSet_Integration` | Empty result handling |
-| `TestOrchestrator_MultiLevelHierarchy_Integration` | 3-level deep relationships |
-| `TestOrchestrator_BatchArchive_Integration` | Archive with per-job batch overrides: rows copied and deleted, no root left pending |
+---
+
+## Environment matrix
+
+The same suites under one changed environment at a time: a `SET GLOBAL` (strict and non-strict
+`sql_mode`, `ANSI_QUOTES`, `autocommit`, `max_error_count`, `max_allowed_packet`, `wait_timeout`,
+`sql_select_limit`, character sets and more), an init option (`lower_case_table_names`) or another server (Percona and
+Oracle, 8.0.40 to 9.7). Each row states its expected outcome — the run is exact, or refused at
+startup by name — and a judge checks it from `go test -json`
+([tests/README.md → Environment matrix](../tests/README.md#environment-matrix)). Before every
+merge the full matrix runs on GitHub, and before a release also the gate on every supported image
+([The full matrix runs on GitHub](../tests/README.md#the-full-matrix-runs-on-github)).
 
 ---
 
 ## End-to-end (Sakila) tests
 
-E2E tests archive the Sakila sample database through the **real CLI binary**.
-They come in two flavours:
+E2E tests archive the Sakila sample database, and a key-matrix fixture of the key types Sakila
+lacks, through the **real CLI binary**:
 
-- **Working archives** — runs that must complete successfully.
-- **Validation demos** — configurations that **must fail preflight** with
-  documented error categories. Success means the expected failure occurred.
+- **Working runs** must complete, and are checked on five independent axes: exact row counts on
+  both sides, verification over every copied row, referential integrity, a pacing floor, and the
+  tracking tables;
+- **Validation demos** must fail preflight with the expected check.
 
-The real-database tests delete from source Sakila and expect an empty destination, so every
-run starts from a freshly reseeded estate. How to run and reseed:
+The catalogue and how to run it:
 [tests/README.md → Sakila E2E Test Suite](../tests/README.md#sakila-e2e-test-suite).

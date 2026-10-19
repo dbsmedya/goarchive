@@ -18,8 +18,8 @@ import (
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	mysql "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/config"
-	"github.com/dbsmedya/goarchive/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
 // newTestLogger returns a real file-backed JSON logger plus a reader that
@@ -36,7 +36,7 @@ func newTestLogger(t *testing.T) (*logger.Logger, func() []map[string]any) {
 		Output: path,
 		// FileOnly keeps the assertions off the console stream.
 		FileOnly: true,
-	})
+	}, logger.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,15 +259,21 @@ func TestGateNewStartupSummary(t *testing.T) {
 //
 // Everything below is deterministic: no goroutines, no wall clock, no
 // time.Sleep. The clock and sleep seams are injected, so a whole hold-and-
-// recover scenario runs in microseconds.
+// recover scenario runs in microseconds. The exception is the LAG-1 stop cases,
+// whose subject is a context the stop cancels from another goroutine.
 
 // readerResult is one scripted ReplicaStatus response. before, when set, runs
 // immediately before the response is returned — the cancellation case uses it
-// to kill the context mid-read.
+// to kill the context mid-read. block waits for the probe's context to end and
+// returns its error, as a probe of a replica whose host is down blocks for the
+// connect timeout (LAG-1); grace waits up to grace for the probe's context to
+// end, counting a cut, else returns the scripted result.
 type readerResult struct {
 	snapshot []dbsrepl.ChannelStatus
 	err      error
 	before   func()
+	block    bool
+	grace    time.Duration
 }
 
 func okRes(snapshot []dbsrepl.ChannelStatus) readerResult {
@@ -281,13 +287,15 @@ func errRes(err error) readerResult {
 // fakeReader pops one scripted response per call and repeats its final
 // response once the script is exhausted. Every script below therefore ends in
 // a response that lets the loop terminate: a repeating failure under a live
-// context is a hang, and a test bug by definition.
+// context is a hang, and a test bug by definition. cut counts the probes whose
+// context ended under them.
 type fakeReader struct {
 	responses []readerResult
 	calls     int
+	cut       int
 }
 
-func (r *fakeReader) ReplicaStatus(context.Context) ([]dbsrepl.ChannelStatus, error) {
+func (r *fakeReader) ReplicaStatus(ctx context.Context) ([]dbsrepl.ChannelStatus, error) {
 	i := r.calls
 	if i >= len(r.responses) {
 		i = len(r.responses) - 1
@@ -297,6 +305,21 @@ func (r *fakeReader) ReplicaStatus(context.Context) ([]dbsrepl.ChannelStatus, er
 	res := r.responses[i]
 	if res.before != nil {
 		res.before()
+	}
+	if res.block {
+		<-ctx.Done()
+		r.cut++
+
+		return nil, ctx.Err()
+	}
+	if res.grace > 0 {
+		select {
+		case <-ctx.Done():
+			r.cut++
+
+			return nil, ctx.Err()
+		case <-time.After(res.grace):
+		}
 	}
 
 	return res.snapshot, res.err
@@ -355,7 +378,7 @@ func newGateHarness(t *testing.T, ttl time.Duration, readers ...*fakeReader) *ga
 
 // advance is the default injected sleep: it advances the fake clock, counts
 // the call, and reports whether the context died. Nothing blocks.
-func (h *gateHarness) advance(ctx context.Context, d time.Duration) error {
+func (h *gateHarness) advance(ctx context.Context, _ <-chan struct{}, d time.Duration) error {
 	h.sleepCalls++
 	h.clock.t = h.clock.t.Add(d)
 
@@ -393,7 +416,7 @@ func TestGateWaitDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New returned %v, want nil", err)
 	}
-	if err := g.WaitForLag(context.Background()); err != nil {
+	if err := g.WaitForLag(context.Background(), nil); err != nil {
 		t.Errorf("WaitForLag on a disabled gate = %v, want nil", err)
 	}
 	if n := len(msgsAt(lines(), "warn")); n != 0 {
@@ -406,7 +429,7 @@ func TestGateWaitCacheHit(t *testing.T) {
 	reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("first WaitForLag = %v, want nil", err)
 	}
 	if reader.calls != 1 {
@@ -414,7 +437,7 @@ func TestGateWaitCacheHit(t *testing.T) {
 	}
 
 	h.tick(time.Second)
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("second WaitForLag = %v, want nil", err)
 	}
 	if reader.calls != 1 {
@@ -430,12 +453,12 @@ func TestGateWaitCacheExpiry(t *testing.T) {
 	reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("first WaitForLag = %v, want nil", err)
 	}
 
 	h.tick(16 * time.Second)
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("second WaitForLag = %v, want nil", err)
 	}
 	if reader.calls != 2 {
@@ -449,7 +472,7 @@ func TestGateWaitCacheDisabled(t *testing.T) {
 	h := newGateHarness(t, 0, reader)
 
 	for i := range 2 {
-		if err := h.gate.WaitForLag(context.Background()); err != nil {
+		if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 			t.Fatalf("WaitForLag %d = %v, want nil", i+1, err)
 		}
 	}
@@ -469,7 +492,7 @@ func TestGateWaitFailureNeverCached(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("call A = %v, want nil", err)
 	}
 	if reader.calls != 1 {
@@ -477,7 +500,7 @@ func TestGateWaitFailureNeverCached(t *testing.T) {
 	}
 
 	h.tick(time.Second)
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("call B = %v, want nil", err)
 	}
 	if reader.calls != 1 {
@@ -488,7 +511,7 @@ func TestGateWaitFailureNeverCached(t *testing.T) {
 	}
 
 	h.tick(15 * time.Second)
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("call C = %v, want nil", err)
 	}
 	if reader.calls != 3 {
@@ -517,7 +540,7 @@ func TestGateWaitHoldThenRecover(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 
@@ -544,7 +567,7 @@ func TestGateWaitTwoServersOneSick(t *testing.T) {
 	b := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
 	h := newGateHarness(t, 15*time.Second, a, b)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 
@@ -576,7 +599,7 @@ func TestGateWaitRecoveryWhileAnotherHolds(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, a, b)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 	if a.calls != 3 || b.calls != 3 {
@@ -612,7 +635,7 @@ func TestGateWaitCauseChange(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 
@@ -653,7 +676,7 @@ func TestGateWaitRelapseWithinOneCall(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, a, b)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 	if a.calls != 4 || b.calls != 4 {
@@ -716,7 +739,7 @@ func TestGateWaitCancelAfterRead(t *testing.T) {
 	}}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	err := h.gate.WaitForLag(ctx)
+	err := h.gate.WaitForLag(ctx, nil)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("WaitForLag = %v, want context.Canceled", err)
@@ -742,14 +765,14 @@ func TestGateWaitCancelDuringSleep(t *testing.T) {
 
 	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot())}}
 	h := newGateHarness(t, 15*time.Second, reader)
-	h.gate.sleep = func(context.Context, time.Duration) error {
+	h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
 		h.sleepCalls++
 		cancel()
 
 		return context.Canceled
 	}
 
-	err := h.gate.WaitForLag(ctx)
+	err := h.gate.WaitForLag(ctx, nil)
 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("WaitForLag = %v, want context.Canceled", err)
@@ -759,6 +782,281 @@ func TestGateWaitCancelDuringSleep(t *testing.T) {
 	}
 	if n := len(msgsAt(h.lines(), "warn")); n != 1 {
 		t.Errorf("warn lines = %d, want the single entry hold", n)
+	}
+}
+
+// LAG-1: a stop ends a hold, never a pass. stopLine is the one line a stop logs.
+const stopLine = "replication hold ended by a stop request"
+
+func closedStop() chan struct{} {
+	stop := make(chan struct{})
+	close(stop)
+
+	return stop
+}
+
+// Stop closed before the call, first probe unhealthy: the hold line, then the stop line with
+// held 0s and ErrStopped; no sleep.
+//
+// The script ends healthy, as every fixture's must: before the fix the loop ignores the stop,
+// probes again and passes, and the test fails on its assertions instead of spinning.
+func TestGateStopBeforeCallHolds(t *testing.T) {
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, reader)
+
+	err := h.gate.WaitForLag(context.Background(), closedStop())
+
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want ErrStopped", err)
+	}
+	warns := msgsAt(h.lines(), "warn")
+	if countWith(warns, "replication hold: server replica1:3306") != 1 || !reflect.DeepEqual(warns[len(warns)-1], stopLine+"; job held 0s") {
+		t.Errorf("warn lines = %#v, want the hold line, then %q", warns, stopLine+"; job held 0s")
+	}
+	if h.sleepCalls != 0 || reader.calls != 1 {
+		t.Errorf("sleep calls = %d, probes = %d, want 0 and 1", h.sleepCalls, reader.calls)
+	}
+}
+
+// Stop closed before the call, first probe healthy: a pass, cached, and no stop line.
+func TestGateStopNeverCutsAPass(t *testing.T) {
+	reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
+	h := newGateHarness(t, 15*time.Second, reader)
+
+	if err := h.gate.WaitForLag(context.Background(), closedStop()); err != nil {
+		t.Fatalf("WaitForLag = %v, want nil: a stop never cuts a pass short", err)
+	}
+	if err := h.gate.WaitForLag(context.Background(), closedStop()); err != nil || reader.calls != 1 {
+		t.Errorf("second call = %v after %d probes, want the cached pass", err, reader.calls)
+	}
+	if n := len(msgsAt(h.lines(), "warn")); n != 0 {
+		t.Errorf("warn lines = %#v, want none", msgsAt(h.lines(), "warn"))
+	}
+}
+
+// The first probe of a call runs on ctx alone: a stop while it is under way does not cut it,
+// and its healthy result passes.
+func TestGateStopDuringFirstProbe(t *testing.T) {
+	stop := make(chan struct{})
+	reader := &fakeReader{responses: []readerResult{{
+		snapshot: healthySnapshot(), before: func() { close(stop) }, grace: 100 * time.Millisecond,
+	}}}
+	h := newGateHarness(t, 0, reader)
+
+	if err := h.gate.WaitForLag(context.Background(), stop); err != nil {
+		t.Fatalf("WaitForLag = %v, want nil", err)
+	}
+	if reader.cut != 0 {
+		t.Errorf("the first probe was cut by the stop; it must run on ctx alone")
+	}
+}
+
+// In a hold, a stop during a probe that blocks ends the call at once: ErrStopped, the stop
+// line, and no cause logged for the aborted probe. Before the fix the second probe runs on
+// the Background context and never returns: the 5-second bound fails the test, leaving that
+// goroutine blocked until the test binary exits.
+func TestGateStopDuringHeldProbe(t *testing.T) {
+	stop := make(chan struct{})
+	reader := &fakeReader{responses: []readerResult{
+		okRes(stoppedSnapshot()),
+		{block: true, before: func() { close(stop) }},
+	}}
+	h := newGateHarness(t, 0, reader)
+
+	done := make(chan error, 1)
+	go func() { done <- h.gate.WaitForLag(context.Background(), stop) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForLag still blocked 5 s after a stop during a held probe")
+	}
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want ErrStopped", err)
+	}
+	warns := msgsAt(h.lines(), "warn")
+	if countWith(warns, "replication hold: server") != 1 || countWith(warns, stopLine) != 1 {
+		t.Errorf("warn lines = %#v, want one hold line (the first probe's) and the stop line", warns)
+	}
+}
+
+// In the first round of a call over a fleet, once one server has reported unhealthy, the
+// call is a hold: a stop during the next server's blocking probe ends it at once, not when
+// that probe returns (Fable final review F1). Each script ends in a response that lets the
+// loop terminate.
+func TestGateStopDuringFirstRoundSecondProbe(t *testing.T) {
+	stop := make(chan struct{})
+	a := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	b := &fakeReader{responses: []readerResult{{block: true, before: func() { close(stop) }}, okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, a, b)
+
+	done := make(chan error, 1)
+	go func() { done <- h.gate.WaitForLag(context.Background(), stop) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForLag still blocked 5 s after a stop during the second server's probe in a hold")
+	}
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want ErrStopped", err)
+	}
+	warns := msgsAt(h.lines(), "warn")
+	if countWith(warns, "replication hold: server replica1:3306") != 1 || countWith(warns, "replication hold: server replica2:3306") != 0 || countWith(warns, stopLine) != 1 {
+		t.Errorf("warn lines = %#v, want replica1's hold line and the stop line only", warns)
+	}
+}
+
+// A stop during the sleep ends the hold without another probe.
+func TestGateStopDuringSleep(t *testing.T) {
+	stop := make(chan struct{})
+	// Ends healthy so that, before the fix, the loop's second probe passes and the test fails
+	// on its assertions.
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, reader)
+	h.gate.sleep = func(_ context.Context, _ <-chan struct{}, d time.Duration) error {
+		h.sleepCalls++
+		h.tick(d)
+		close(stop)
+
+		return nil
+	}
+
+	err := h.gate.WaitForLag(context.Background(), stop)
+
+	if !errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want ErrStopped", err)
+	}
+	if reader.calls != 1 {
+		t.Errorf("probes = %d, want 1: a stop during the sleep ends the hold without probing again", reader.calls)
+	}
+	if !hasMsg(h.lines(), "warn", stopLine+"; job held 5s") {
+		t.Errorf("warn lines = %#v, want %q", msgsAt(h.lines(), "warn"), stopLine+"; job held 5s")
+	}
+}
+
+// A second signal that lands with the first during the sleep wins: with stop closed and ctx
+// cancelled when the loop resumes, the context error and no stop line, whichever the sleep
+// returned (Codex MR R1). The seam returns nil, as the production sleep does when its stop
+// arm is chosen.
+func TestGateCancelledDuringSleepWithStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := make(chan struct{})
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 0, reader)
+	h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
+		h.sleepCalls++
+		close(stop)
+		cancel()
+
+		return nil
+	}
+
+	err := h.gate.WaitForLag(ctx, stop)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitForLag = %v, want context.Canceled: the second signal outranks the first", err)
+	}
+	if countWith(msgsAt(h.lines(), "warn"), stopLine) != 0 {
+		t.Errorf("warn lines = %#v, want no stop line", msgsAt(h.lines(), "warn"))
+	}
+}
+
+// The same through the production sleep, whose select may choose either ready arm: every
+// call returns the context error (Codex MR R1 measured 35 of 64 calls returning the stop).
+func TestGateCancelledDuringProductionSleepWithStop(t *testing.T) {
+	for i := 0; i < 64; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		stop := make(chan struct{})
+		reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+		h := newGateHarness(t, 0, reader)
+		h.gate.sleep = func(ctx context.Context, stop2 <-chan struct{}, d time.Duration) error {
+			close(stop)
+			cancel()
+
+			return sleepUntil(ctx, stop2, d)
+		}
+
+		err := h.gate.WaitForLag(ctx, stop)
+		cancel()
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("call %d: WaitForLag = %v, want context.Canceled", i, err)
+		}
+	}
+}
+
+// In a hold, a stop that arrives during a probe ends the call even when the probe returns
+// healthy before the stop aborts it: no pass, no "gate passed" line, nothing cached (Codex
+// MR R2). For one server, and for the last server of a fleet.
+func TestGateStopDuringHeldHealthyProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		readers func(stop chan struct{}) []*fakeReader
+	}{
+		{"one server", func(stop chan struct{}) []*fakeReader {
+			return []*fakeReader{{responses: []readerResult{
+				okRes(stoppedSnapshot()),
+				{snapshot: healthySnapshot(), before: func() { close(stop) }},
+				okRes(healthySnapshot()),
+			}}}
+		}},
+		{"the last server of two", func(stop chan struct{}) []*fakeReader {
+			return []*fakeReader{
+				{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}},
+				{responses: []readerResult{okRes(healthySnapshot()), {snapshot: healthySnapshot(), before: func() { close(stop) }}, okRes(healthySnapshot())}},
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			readers := tc.readers(stop)
+			h := newGateHarness(t, 15*time.Second, readers...)
+
+			err := h.gate.WaitForLag(context.Background(), stop)
+
+			if !errors.Is(err, ErrStopped) {
+				t.Fatalf("WaitForLag = %v, want ErrStopped: the call was holding when the stop arrived", err)
+			}
+			if countWith(msgsAt(h.lines(), "warn"), stopLine) != 1 || countWith(msgsAt(h.lines(), "info"), "replication gate passed") != 0 {
+				t.Errorf("lines = warn %#v, info %#v; want the stop line and no gate-passed line",
+					msgsAt(h.lines(), "warn"), msgsAt(h.lines(), "info"))
+			}
+			calls := readers[0].calls
+			if err := h.gate.WaitForLag(context.Background(), nil); err != nil || readers[0].calls == calls {
+				t.Errorf("next call = %v after %d probes of the first server, want a fresh probe: the stopped call cached no pass", err, readers[0].calls-calls)
+			}
+		})
+	}
+}
+
+// A second signal wins: with ctx cancelled and stop closed, the context error.
+func TestGateCancelledAndStopped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot())}}
+	h := newGateHarness(t, 0, reader)
+
+	err := h.gate.WaitForLag(ctx, closedStop())
+
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrStopped) {
+		t.Fatalf("WaitForLag = %v, want context.Canceled", err)
+	}
+}
+
+// A disabled gate and a fresh cached pass return nil whatever stop holds.
+func TestGateStopDisabledAndCached(t *testing.T) {
+	if err := (&Gate{enabled: false}).WaitForLag(context.Background(), closedStop()); err != nil {
+		t.Errorf("disabled gate = %v, want nil", err)
+	}
+	reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
+	h := newGateHarness(t, 15*time.Second, reader)
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.gate.WaitForLag(context.Background(), closedStop()); err != nil {
+		t.Errorf("cached pass with a stop = %v, want nil", err)
 	}
 }
 
@@ -773,7 +1071,7 @@ func TestGateWaitNeverLogsErrorLevel(t *testing.T) {
 	}}
 	h := newGateHarness(t, 15*time.Second, reader)
 
-	if err := h.gate.WaitForLag(context.Background()); err != nil {
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 		t.Fatalf("WaitForLag = %v, want nil", err)
 	}
 
@@ -811,7 +1109,7 @@ func TestGateInvalidStatusNeverPasses(t *testing.T) {
 			reader := &fakeReader{responses: []readerResult{tc.bad, okRes(healthySnapshot())}}
 			h := newGateHarness(t, 0, reader)
 
-			if err := h.gate.WaitForLag(context.Background()); err != nil {
+			if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 				t.Fatalf("WaitForLag = %v, want recovery on the same call", err)
 			}
 			if reader.calls != 2 {
@@ -833,7 +1131,7 @@ func TestGateInvalidStatusNeverPasses(t *testing.T) {
 		reader := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
 		h := newGateHarness(t, 0, reader)
 
-		if err := h.gate.WaitForLag(context.Background()); err != nil {
+		if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
 			t.Fatalf("WaitForLag = %v, want nil", err)
 		}
 		if reader.calls != 1 {
@@ -868,13 +1166,13 @@ func TestGateInvalidStatusCancellation(t *testing.T) {
 			defer cancel()
 			reader := &fakeReader{responses: []readerResult{tc.bad}}
 			h := newGateHarness(t, 0, reader)
-			h.gate.sleep = func(context.Context, time.Duration) error {
+			h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
 				h.sleepCalls++
 				cancel()
 				return context.Canceled
 			}
 
-			err := h.gate.WaitForLag(ctx)
+			err := h.gate.WaitForLag(ctx, nil)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("WaitForLag = %v, want context.Canceled", err)
 			}
@@ -888,5 +1186,30 @@ func TestGateInvalidStatusCancellation(t *testing.T) {
 				t.Errorf("hold lines = %d, want 1", got)
 			}
 		})
+	}
+}
+
+// TestGateRecoveryIsLive (spec §3.3): with a file log's tee, a hold's end reaches stderr like
+// the hold, so the console never ends on "held".
+func TestGateRecoveryIsLive(t *testing.T) {
+	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
+	h := newGateHarness(t, 15*time.Second, reader)
+	var errb bytes.Buffer
+	// At level error: the hold and its end are live, so the level hides neither (Codex MR R1).
+	log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: filepath.Join(t.TempDir(), "tee.log")},
+		logger.Options{Stderr: &errb, Tee: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = log.Close() })
+	h.gate.logger = log
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	got := errb.String()
+	for _, w := range []string{"WARN  replication hold:", "INFO  replication recovered: server replica1:3306 healthy", "INFO  replication gate passed:"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("tee lacks %q:\n%s", w, got)
+		}
 	}
 }

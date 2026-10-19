@@ -3,10 +3,12 @@ package logger
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 func TestParseLevel(t *testing.T) {
@@ -33,6 +35,7 @@ func TestParseLevel(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "test-log.json")
 	tests := []struct {
 		name    string
 		cfg     *config.LoggingConfig
@@ -61,7 +64,7 @@ func TestNew(t *testing.T) {
 			cfg: &config.LoggingConfig{
 				Level:  "warn",
 				Format: "json",
-				Output: "/tmp/test-log.json",
+				Output: logPath,
 			},
 			wantErr: false,
 		},
@@ -87,7 +90,7 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			logger, err := New(tt.cfg)
+			logger, err := New(tt.cfg, Options{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -96,13 +99,76 @@ func TestNew(t *testing.T) {
 				t.Error("New() returned nil logger without error")
 			}
 			if logger != nil {
-				_ = logger.Sync()
+				_ = logger.Close()
 			}
 		})
 	}
+}
 
-	// Cleanup test log file
-	_ = os.Remove("/tmp/test-log.json")
+// TestNewCreatesLogFileOwnerOnly (GH #5): a log file GoArchive creates is readable by its
+// owner only, since the log names tables, keys and servers. On Windows a mode sets only the
+// read-only attribute, so there the file must stay writable.
+func TestNewCreatesLogFileOwnerOnly(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "new.log")
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true}, Options{})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	log.Info("mode check")
+	_ = log.Close()
+
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		if info.Mode().Perm()&0o200 == 0 {
+			t.Errorf("log file mode = %v, want a writable file", info.Mode().Perm())
+		}
+		return
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("log file mode = %#o, want 0600", got)
+	}
+}
+
+// TestNewKeepsExistingLogFileMode (GH #5): GoArchive appends to an existing log file and
+// leaves its mode alone, so an operator whose log collector needs to read the file creates it
+// first with the mode it needs.
+func TestNewKeepsExistingLogFileMode(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "existing.log")
+	if err := os.WriteFile(logPath, []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(logPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: logPath, FileOnly: true}, Options{})
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	log.Info("after")
+	_ = log.Close()
+
+	after, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Errorf("log file mode = %#o, want the existing %#o", after.Mode().Perm(), before.Mode().Perm())
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(content), "before\n") || !strings.Contains(string(content), "after") {
+		t.Errorf("log file = %q, want the old line then the new entry", content)
+	}
 }
 
 func TestNewDefault(t *testing.T) {
@@ -123,7 +189,7 @@ func TestWithJob(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -149,7 +215,7 @@ func TestWithBatch(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -171,7 +237,7 @@ func TestWithTable(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -193,7 +259,7 @@ func TestWithFields(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -220,7 +286,7 @@ func TestChaining(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -238,10 +304,8 @@ func TestChaining(t *testing.T) {
 
 func TestBuildEncoder(t *testing.T) {
 	for _, format := range []string{"json", "text", "unknown"} {
-		for _, console := range []bool{true, false} {
-			if buildEncoder(format, console) == nil {
-				t.Errorf("buildEncoder(%q, %v) returned nil", format, console)
-			}
+		if buildEncoder(format) == nil {
+			t.Errorf("buildEncoder(%q) returned nil", format)
 		}
 	}
 }
@@ -253,7 +317,7 @@ func TestSync(t *testing.T) {
 		Output: "stdout",
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -279,7 +343,7 @@ func TestCloseIgnoresConsoleSyncError(t *testing.T) {
 		_ = r.Close()
 	}()
 
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: "stdout"})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "json", Output: "stdout"}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -294,7 +358,7 @@ func TestCloseIgnoresConsoleSyncError(t *testing.T) {
 func TestFileOutputTextFormatNoColorCodes(t *testing.T) {
 	logPath := t.TempDir() + "/out.log"
 
-	log, err := New(&config.LoggingConfig{Level: "info", Format: "text", Output: logPath})
+	log, err := New(&config.LoggingConfig{Level: "info", Format: "text", Output: logPath}, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -343,7 +407,7 @@ func TestFileOnlySuppressesStdout(t *testing.T) {
 	captured := captureStdoutDuring(t, func() {
 		log, err := New(&config.LoggingConfig{
 			Level: "info", Format: "json", Output: logPath, FileOnly: true,
-		})
+		}, Options{})
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
@@ -364,13 +428,15 @@ func TestFileOnlySuppressesStdout(t *testing.T) {
 	}
 }
 
-func TestFileOutputTeesToStdoutByDefault(t *testing.T) {
+// TestFileOutputNoStdoutTee: a file log never tees to stdout; its console tee is stderr, with
+// --progress only (spec §3.3).
+func TestFileOutputNoStdoutTee(t *testing.T) {
 	logPath := t.TempDir() + "/out.log"
 
 	captured := captureStdoutDuring(t, func() {
 		log, err := New(&config.LoggingConfig{
 			Level: "info", Format: "json", Output: logPath,
-		})
+		}, Options{})
 		if err != nil {
 			t.Fatalf("New() failed: %v", err)
 		}
@@ -378,8 +444,8 @@ func TestFileOutputTeesToStdoutByDefault(t *testing.T) {
 		_ = log.Close()
 	})
 
-	if !strings.Contains(captured, "tee-marker") {
-		t.Error("file output without file_only should still write to stdout")
+	if strings.Contains(captured, "tee-marker") {
+		t.Error("a file log wrote to stdout")
 	}
 }
 
@@ -398,7 +464,7 @@ func TestLoggingOutput(t *testing.T) {
 		Output: tmpFile.Name(),
 	}
 
-	logger, err := New(cfg)
+	logger, err := New(cfg, Options{})
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
 	}
@@ -408,7 +474,7 @@ func TestLoggingOutput(t *testing.T) {
 	logger.Warn("test warn message")
 	logger.WithJob("test-job").Info("message with job context")
 
-	_ = logger.Sync()
+	_ = logger.Close()
 
 	// Read the log file
 	content, err := os.ReadFile(tmpFile.Name())

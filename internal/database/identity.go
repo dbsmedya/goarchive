@@ -30,13 +30,14 @@ type ServerIdentity struct {
 
 func (id ServerIdentity) endpoint() string { return fmt.Sprintf("%s:%d", id.Hostname, id.Port) }
 
-// readServerIdentity runs the probe on one pool.
+// ReadServerIdentity runs the probe on one pool. The 3.0 engine binds a job to the source
+// identity it returns (spec §6.2).
 //
 // DATABASE() is NULL when the session selected no schema. GoArchive's DSN
 // always selects one (config requires `database:`), so NULL — or an empty
 // name — means a proxy or server rewrote the session. Comparing an empty
 // schema would let two unrelated schemas look equal, so it is refused instead.
-func readServerIdentity(ctx context.Context, db *sql.DB) (ServerIdentity, error) {
+func ReadServerIdentity(ctx context.Context, db *sql.DB) (ServerIdentity, error) {
 	var (
 		id     ServerIdentity
 		schema sql.NullString
@@ -91,11 +92,11 @@ func (e *SameDatabaseError) Error() string {
 // either side is a refusal too (fail closed), attributed to that side and
 // wrapped so cancellation and driver errors stay inspectable.
 func assertDistinctDatabases(ctx context.Context, source, destination *sql.DB) error {
-	src, err := readServerIdentity(ctx, source)
+	src, err := ReadServerIdentity(ctx, source)
 	if err != nil {
 		return fmt.Errorf("source identity check failed: %w", err)
 	}
-	dst, err := readServerIdentity(ctx, destination)
+	dst, err := ReadServerIdentity(ctx, destination)
 	if err != nil {
 		return fmt.Errorf("destination identity check failed: %w", err)
 	}

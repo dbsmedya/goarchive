@@ -1,0 +1,145 @@
+//go:build integration
+
+package engine
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+)
+
+// TestMySQLExplain (spec §7.2, M6-9): dry-run's plans. The root fetch's EXPLAIN, then each
+// child's discovery EXPLAIN bound with the first batch's keys, all in FORMAT=TRADITIONAL,
+// which names its columns on every version (9.7 defaults to TREE). Nothing is locked, logged
+// or deleted.
+func TestMySQLExplain(t *testing.T) {
+	e := newEnv(t, "explain")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	before := rows(t, e.src, "line_notes", "note_id")
+	ex, err := Explain(context.Background(), e.config(t, job(t, jobspec.Archive, orderJob)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Roots != 2 {
+		t.Errorf("first batch = %d roots, want batch_size 2", ex.Roots)
+	}
+	if !strings.HasPrefix(ex.Fetch.Query, "EXPLAIN FORMAT=TRADITIONAL SELECT `id` FROM `orders` WHERE (") ||
+		len(ex.Fetch.Rows) != 1 || ex.Fetch.Rows[0].Table != "orders" {
+		t.Errorf("fetch plan = %+v", ex.Fetch)
+	}
+	if len(ex.Discovery) != 2 || ex.Discovery[0].Table != "order_lines" || ex.Discovery[1].Table != "line_notes" {
+		t.Fatalf("discovery plans = %+v, want order_lines then line_notes", ex.Discovery)
+	}
+	if got := ex.Discovery[0].Rows[0].Key; got != "PRIMARY" {
+		t.Errorf("order_lines discovery key = %q, want PRIMARY (order_id leads it)", got)
+	}
+	if got := ex.Discovery[1].Rows[0].Key; got != "ix_line" {
+		t.Errorf("line_notes discovery key = %q, want ix_line", got)
+	}
+	if len(ex.Preflight.Caps) == 0 {
+		t.Error("no statement caps reported")
+	}
+	// The report's coverage (spec §3.8): the where count, the first batch's rows per table,
+	// and the statement as configured.
+	if ex.Count != 3 || ex.Rows["orders"] != 2 || ex.Rows["order_lines"] == 0 || ex.Rows["line_notes"] == 0 {
+		t.Errorf("count %d, rows %v: want 3 matching roots and the first batch's rows per table", ex.Count, ex.Rows)
+	}
+	if ex.Fetch.Display.Where != "placed < '2020-01-01'" || ex.Fetch.Display.Tail != "ORDER BY `id` LIMIT 2" {
+		t.Errorf("fetch display = %+v", ex.Fetch.Display)
+	}
+	if d := ex.Discovery[0].Display; d.Parent != "orders" || d.Tuples != 2 || d.Of != 2 {
+		t.Errorf("order_lines display = %+v, want all 2 orders tuples", d)
+	}
+	if got := rows(t, e.src, "line_notes", "note_id"); !equal(got, before) {
+		t.Error("dry-run changed the source")
+	}
+	var name string
+	if err := e.dst.QueryRowContext(context.Background(), "SHOW TABLES LIKE 'archiver_job'").Scan(&name); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("dry-run created the tracking tables (%q, %v)", name, err)
+	}
+}
+
+// TestMySQLExplainOneSourceConnection (Codex M6 B1): dry-run holds one source connection for
+// its EXPLAINs and discovery, so the root fetch must use that connection too. With
+// source.max_connections: 1, a fetch through the pool would wait forever for a second one.
+// TestMySQLExplain, on the default pool, is the larger-pool control.
+func TestMySQLExplainOneSourceConnection(t *testing.T) {
+	e := newEnv(t, "explainone")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	seedOrders(t, e, 3)
+	one := openServer(t, "TEST_SOURCE", e.srcSchema, nil)
+	one.SetMaxOpenConns(1)
+	cfg := e.config(t, job(t, jobspec.Archive, orderJob))
+	cfg.Source = one
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ex, err := Explain(ctx, cfg)
+	if err != nil {
+		t.Fatalf("Explain() with a 1-connection source pool = %v, want the plans", err)
+	}
+	if ex.Roots != 2 || len(ex.Discovery) != 2 {
+		t.Errorf("explanation = %d roots, %d discovery plans, want 2 and 2", ex.Roots, len(ex.Discovery))
+	}
+}
+
+// TestMySQLExplainEmptyRange: with nothing to fetch there are no keys to bind, so only the
+// fetch is explained; the report says why discovery is not (printExplanation).
+func TestMySQLExplainEmptyRange(t *testing.T) {
+	e := newEnv(t, "explainempty")
+	e.both(t, orderTables("CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci")...)
+	ex, err := Explain(context.Background(), e.config(t, job(t, jobspec.Purge, orderJob)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Roots != 0 || len(ex.Fetch.Rows) == 0 || len(ex.Discovery) != 0 {
+		t.Errorf("explanation = %+v", ex)
+	}
+	if ex.Count != 0 {
+		t.Errorf("count = %d, want 0: the report's \"no rows match\" note follows from it", ex.Count)
+	}
+}
+
+// TestMySQLExplainFilesort (M1-D1, second half): a key with a descending part walks
+// correctly but sorts every batch. The fetch's plan shows the filesort, and a note names it.
+func TestMySQLExplainFilesort(t *testing.T) {
+	e := newEnv(t, "explainsort")
+	e.both(t, "CREATE TABLE r (a INT NOT NULL, b INT NOT NULL, PRIMARY KEY (a ASC, b DESC)) ENGINE=InnoDB")
+	execAll(t, e.src, "INSERT INTO r VALUES (1, 1), (1, 2), (2, 1)")
+	ex, err := Explain(context.Background(), e.config(t, job(t, jobspec.Purge, "\n    root_table: r\n    primary_key: [a, b]\n    where: \"1=1\"\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ex.Fetch.Rows[0].Extra, "Using filesort") {
+		t.Fatalf("fetch plan = %+v, want a filesort", ex.Fetch.Rows)
+	}
+	if !strings.Contains(strings.Join(ex.Fetch.Notes, "\n"), "sorts") {
+		t.Errorf("fetch notes = %q, want the filesort note under the fetch", ex.Fetch.Notes)
+	}
+}
+
+// TestMySQLExplainSubquerySort (FSN-1): a where with a dependent subquery that sorts, on a clean
+// PRIMARY root. The subquery's sort is named as its own, and never blamed on the root fetch.
+func TestMySQLExplainSubquerySort(t *testing.T) {
+	e := newEnv(t, "explainsubsort")
+	e.both(t, "CREATE TABLE r (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB",
+		"CREATE TABLE s (id INT NOT NULL, r_id INT NOT NULL, v INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB")
+	execAll(t, e.src, "INSERT INTO r VALUES (1), (2), (3)", "INSERT INTO s VALUES (1, 1, 5), (2, 1, 7), (3, 2, 1)")
+	where := "id = (SELECT s.r_id FROM s WHERE s.r_id = r.id ORDER BY s.v DESC LIMIT 1)"
+	ex, err := Explain(context.Background(), e.config(t, job(t, jobspec.Purge, "\n    root_table: r\n    primary_key: [id]\n    where: \""+where+"\"\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := strings.Join(ex.Fetch.Notes, "\n")
+	if strings.Contains(notes, "The root fetch on r sorts") {
+		t.Errorf("the subquery's sort is blamed on the root fetch: notes %q, plan %+v", ex.Fetch.Notes, ex.Fetch.Rows)
+	}
+	if !strings.Contains(notes, "DEPENDENT SUBQUERY step on s") {
+		t.Errorf("notes %q, want the subquery's sort named; plan %+v", ex.Fetch.Notes, ex.Fetch.Rows)
+	}
+}

@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -645,13 +646,13 @@ func TestReadServerIdentity(t *testing.T) {
 		mock.ExpectQuery("server_uuid").
 			WillReturnRows(identityProbeRows(identityTestUUIDA, "app", "db1.local", 3306))
 
-		got, err := readServerIdentity(context.Background(), db)
+		got, err := ReadServerIdentity(context.Background(), db)
 		if err != nil {
-			t.Fatalf("readServerIdentity: %v", err)
+			t.Fatalf("ReadServerIdentity: %v", err)
 		}
 		want := ServerIdentity{ServerUUID: identityTestUUIDA, Schema: "app", Hostname: "db1.local", Port: 3306}
 		if got != want {
-			t.Fatalf("readServerIdentity = %+v, want %+v", got, want)
+			t.Fatalf("ReadServerIdentity = %+v, want %+v", got, want)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
@@ -677,7 +678,7 @@ func TestReadServerIdentity(t *testing.T) {
 			mock.ExpectQuery("server_uuid").
 				WillReturnRows(identityProbeRows(identityTestUUIDA, tc.schema, "db1.local", 3306))
 
-			_, err = readServerIdentity(context.Background(), db)
+			_, err = ReadServerIdentity(context.Background(), db)
 			if err == nil || !contains(err.Error(), "no selected schema") {
 				t.Fatalf("expected the no-selected-schema refusal, got %v", err)
 			}
@@ -693,7 +694,7 @@ func TestReadServerIdentity(t *testing.T) {
 		sentinel := errors.New("boom")
 		mock.ExpectQuery("server_uuid").WillReturnError(sentinel)
 
-		_, err = readServerIdentity(context.Background(), db)
+		_, err = ReadServerIdentity(context.Background(), db)
 		if !errors.Is(err, sentinel) || !contains(err.Error(), "identity probe failed") {
 			t.Fatalf("expected a wrapped, attributed probe failure, got %v", err)
 		}
@@ -813,7 +814,81 @@ func TestBuildDSNDiagnosticInitialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroModeExpression {
+	if dsn.Params["sql_notes"] != "1" || dsn.Params["sql_mode"] != autoZeroMode("@@SESSION.sql_mode") {
 		t.Fatalf("diagnostic DSN initialization missing or auto-zero expression changed: %#v", dsn.Params)
+	}
+}
+
+// TestBuildDSNReadsTheServersPacket (M7c-F1): the driver reads each server's
+// max_allowed_packet at connect (MaxAllowedPacket 0) instead of assuming its own 64 MiB.
+// Against a smaller server it would otherwise put values inline that the server's limit
+// cannot hold, and the server drops the connection over the INSERT; with the server's value
+// the driver sends them as long data and the INSERT fits.
+func TestBuildDSNReadsTheServersPacket(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dsn.MaxAllowedPacket != 0 {
+		t.Fatalf("DSN MaxAllowedPacket = %d, want 0 (read the server's max_allowed_packet at connect)", dsn.MaxAllowedPacket)
+	}
+}
+
+// TestBuildDSNPinsSelectLimit (beta audit A1): a server's global sql_select_limit must not
+// reach a session. Every read without its own LIMIT — the library's column lists, discovery,
+// copy, verification — would return at most that many rows, silently.
+func TestBuildDSNPinsSelectLimit(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dsn.Params["sql_select_limit"]; got != "18446744073709551615" {
+		t.Fatalf("DSN sql_select_limit = %q, want 18446744073709551615 (the server's maximum: no limit)", got)
+	}
+}
+
+// TestBuildDSNPinsAutocommit (M7c F1): every session commits each statement on its own,
+// whatever the server's global autocommit. Tracking writes outside a transaction rely on
+// it: under a global autocommit=0 they would never commit and would hold their locks.
+func TestBuildDSNPinsAutocommit(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dsn.Params["autocommit"]; got != "1" {
+		t.Fatalf("DSN autocommit = %q, want \"1\" (params %#v)", got, dsn.Params)
+	}
+}
+
+// TestBuildDSNPinsWaitTimeout (M7c-2 P4): every session keeps at least 8 h of idle time, so
+// a server whose wait_timeout is shorter than the lock keep-alive's 30 s does not close the
+// job lock's dedicated session (which releases GET_LOCK while the run goes on deleting), nor
+// a source session pinned through a lag wait. It never lowers the server's own value.
+// MySQL takes this expression only in the CAST form (1232 for GREATEST and IF alone,
+// M7c-2 probe PR-8).
+func TestBuildDSNPinsWaitTimeout(t *testing.T) {
+	dsn, err := mysql.ParseDSN(BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dsn.Params["wait_timeout"], "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"; got != want {
+		t.Fatalf("DSN wait_timeout = %q, want %q (params %#v)", got, want, dsn.Params)
+	}
+}
+
+// TestBuildDSNPinsCharset (CHS-1): every value is read and bound through the session's
+// character set, so every session is utf8mb4 / utf8mb4_general_ci. The driver sets it with
+// SET NAMES after authentication, so after any init_connect.
+func TestBuildDSNPinsCharset(t *testing.T) {
+	raw := BuildDSN(&config.DatabaseConfig{Host: "localhost", Port: 3306, User: "test", Database: "test", TLS: "disable"})
+	dsn, err := mysql.ParseDSN(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "charset=utf8mb4&") && !strings.HasSuffix(raw, "charset=utf8mb4") {
+		t.Errorf("DSN %q does not set charset=utf8mb4", raw)
+	}
+	if dsn.Collation != "utf8mb4_general_ci" {
+		t.Errorf("DSN collation = %q, want utf8mb4_general_ci, the handshake's own (45)", dsn.Collation)
 	}
 }

@@ -174,13 +174,16 @@ assert_postcondition() {
 # The floor is deterministic -- pure arithmetic over the config, with no
 # dependence on the machine:
 #
-#   floor = ceil(rows / batch_size) * sleep_seconds
-#         + SUM over batches of max(0, delete chunks in the batch - 1) * delete_sleep_seconds
+#   floor = (full batches) * sleep_seconds
+#         + SUM over batches of max(0, delete statements in the batch - 1) * delete_sleep_seconds
 #
-# sleep_seconds fires after EVERY batch including the last (orchestrator.go:457,
-# no guard). delete_sleep_seconds pauses before every delete chunk of a batch
-# except the first, across all tables (delete.go, sleepBetweenChunks), so a
-# batch of 100 rows at batch_delete_size=20 sleeps 4 times, not 5.
+# sleep_seconds fires after every FULL batch -- one that fetched batch_size roots --
+# and not after a short last batch, which ends the run ((*run).loop,
+# internal/engine/run.go). A full last batch is followed by one more fetch that
+# finds nothing, so it does sleep. delete_sleep_seconds separates consecutive
+# delete statements of a batch, across all its tables ((*run).deleteTree,
+# internal/engine/delete.go), so a batch of 100 rows at batch_delete_size=20
+# sleeps 4 times, not 5.
 #
 # Why this is safe to assert, when timing assertions usually are not: it is a
 # ONE-SIDED bound. A slow container, a loaded host, a cold filesystem or a
@@ -190,12 +193,13 @@ assert_postcondition() {
 # that ran once where it should have run twenty. Wall-clock alone cannot tell
 # those apart from a fast machine; the floor can.
 #
-# Compared against goarchive's OWN reported duration, not the shell-measured
+# Compared against goarchive's OWN reported elapsed time, not the shell-measured
 # test duration. The latter includes the source reset, validate and dry-run,
 # which together dwarf the floor and would mask a lost throttle entirely.
 assert_min_duration() {
     local log_file=$1
     local floor=$2
+    local job=$3
 
     # Fail closed: a working test with no floor configured asserts nothing.
     if [[ -z "$floor" ]]; then
@@ -203,16 +207,18 @@ assert_min_duration() {
         return 1
     fi
 
-    # The last "duration":<seconds> in the log is the command's own total.
-    # archive, purge and copy-only all emit it as a structured field
-    # (cmd/goarchive/cmd/{archive,purge,copyonly}.go). The phase-level logs spell
-    # duration inside a message string instead, so they cannot collide with this.
-    local actual
-    actual=$(grep -o '"duration":[0-9.]*' "$log_file" | tail -1 | cut -d: -f2)
-    if [[ -z "$actual" ]]; then
-        log_error "  could not read the run's own duration from $log_file"
-        log_error "  the command logs it as a \"duration\" field; if that changed,"
-        log_error "  this assertion has stopped matching and is no longer checking anything."
+    # The closing entry's elapsed_seconds is the run's own wall time (logOutcome,
+    # cmd/goarchive/cmd/output.go; engine.Report.Elapsed).
+    local entry actual
+    if ! entry=$(closing_entry "$log_file" "$job" "Run completed"); then
+        log_error "  could not read the run's own elapsed time: no single closing entry"
+        log_error "  if the closing entry changed, this assertion has stopped matching and is"
+        log_error "  no longer checking anything."
+        return 1
+    fi
+    actual=$(jq -r '.elapsed_seconds | select(type == "number" and . >= 0)' <<<"$entry")
+    if ! _nonneg_number "$actual"; then
+        log_error "  the closing entry's elapsed_seconds is missing or malformed: '$actual'"
         return 1
     fi
 
@@ -226,4 +232,108 @@ assert_min_duration() {
 
     log_info "  pacing OK (${actual}s >= ${floor}s floor)"
     return 0
+}
+
+# Assert the run verified its copies by the declared method, and all of them.
+#
+# Usage: assert_verified <log_file> <method> <job>     method = sha256 | count | none
+#
+# The anchor is the run's closing entry (logOutcome, cmd/goarchive/cmd/output.go):
+#
+#   {"msg":"Run completed","job":"j",...,"copied":{"payment":200},"verified":{"payment":200},
+#    "verification":"sha256",...}
+#
+# verified holds the rows whose verification passed, by table, for the committed batches;
+# it is present only when something was compared. So under sha256 or count the two objects
+# must be EQUAL -- verified covering fewer rows than were copied means some batch committed
+# without verification -- and under none (and for purge, which copies nothing) there must be
+# no verified object.
+#
+# Nothing at any layer asserted that verification ran before 2.x's E2E did, and
+# verification is what makes delete-after-copy safe; a config change or a silently
+# skipped stage would leave every other assertion passing.
+assert_verified() {
+    local log_file=$1
+    local method=$2
+    local job=$3
+
+    local entry verified copied
+    entry=$(closing_entry "$log_file" "$job" "Run completed") || return 1
+    # Presence is has(), never //: a present false or null is malformed, not absent.
+    verified=$(jq -c 'if has("verified") then .verified else empty end' <<<"$entry")
+    if [[ "$method" == "none" ]]; then
+        if [[ $(jq -r 'has("verified")' <<<"$entry") == "true" ]]; then
+            log_error "  verification ran, but this test declares verify_method=none: $verified"
+            return 1
+        fi
+        log_info "  confirmed: nothing was verified, as expected"
+        return 0
+    fi
+    if [[ -z "$verified" ]]; then
+        log_error "  no verified counts in the run's closing entry (expect method=$method)"
+        log_error "    Either nothing was verified, or the closing entry changed and this"
+        log_error "    assertion has stopped matching. Both are findings."
+        return 1
+    fi
+    if [[ $(jq -r '.verification // empty' <<<"$entry") != "$method" ]]; then
+        log_error "  the run verified by another method than $method: $(jq -r '.verification' <<<"$entry")"
+        return 1
+    fi
+    copied=$(jq -c '.copied // empty' <<<"$entry")
+    if ! _count_table "$copied" || ! _count_table "$verified"; then
+        log_error "  copied and verified must be tables of nonnegative row counts:"
+        log_error "    copied   $copied"
+        log_error "    verified $verified"
+        return 1
+    fi
+    if ! _json_equal "$verified" "$copied"; then
+        log_error "  verification did not cover every copied row:"
+        log_error "    copied   $copied"
+        log_error "    verified $verified"
+        return 1
+    fi
+    log_info "  confirmed: every copied row was verified by $method ($copied)"
+    return 0
+}
+
+# Print the one closing entry of <job> in <log_file> whose msg starts with <msg_prefix>, as
+# compact JSON. The closing entry is logOutcome's (cmd/goarchive/cmd/output.go). Fails
+# closed: no such entry, or more than one -- an earlier run's entry must never satisfy the
+# current run's check, so callers pass a file that holds one run.
+closing_entry() {
+    local log_file=$1 job=$2 msg_prefix=$3
+    local entries n
+    # jq reads every JSON line before selecting, so a malformed line anywhere, or an entry
+    # that is not an object with a string msg, fails the read with no output: jq 1.8 would
+    # otherwise print a match and exit 0 past a per-line error. jq's status is the pipeline's.
+    if ! entries=$(grep -E '^\{' "$log_file" | jq -cn --arg job "$job" --arg p "$msg_prefix" \
+        '[inputs] as $all
+         | if ($all | all(type == "object" and (.msg | type) == "string"))
+           then $all[] | select(.job == $job and (.msg | startswith($p)))
+           else error("an entry is not an object with a string msg") end' 2>/dev/null); then
+        log_error "  $log_file holds a JSON line jq cannot read; the run's evidence is malformed"
+        return 1
+    fi
+    n=$(printf '%s' "$entries" | grep -c '^{')
+    if [[ "$n" -ne 1 ]]; then
+        log_error "  expected exactly one \"$msg_prefix\" entry for job $job in $log_file, found $n"
+        return 1
+    fi
+    printf '%s\n' "$entries"
+}
+
+# Succeed when $1 is a nonnegative decimal number.
+_nonneg_number() {
+    [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
+# Succeed when the JSON value $1 is a table of counts: an object whose every value is a
+# nonnegative integer.
+_count_table() {
+    jq -e 'type == "object" and all(.[]; type == "number" and . >= 0 and . == floor)' <<<"$1" >/dev/null 2>&1
+}
+
+# Succeed when the JSON values $1 and $2 are equal as JSON (key order aside).
+_json_equal() {
+    [[ $(jq -n --argjson a "$1" --argjson b "$2" '$a == $b' 2>/dev/null) == "true" ]]
 }

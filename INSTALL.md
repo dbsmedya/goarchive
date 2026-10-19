@@ -54,14 +54,40 @@ chmod +x goarchive-<version>-linux-amd64
 ## Run the Published Image
 
 Each release is also published as `ghcr.io/dbsmedya/goarchive:<version>`, tagged with the release
-version without the leading `v`. Use a version tag:
+version without the leading `v`; a stable release is also tagged `<major>.<minor>` and `latest`.
+Branch and `sha-` tags are development builds. Use a version tag:
 
 ```bash
 docker run --rm ghcr.io/dbsmedya/goarchive:<version> --version
 
 # With a config file mounted
-docker run --rm -v "$(pwd)/archiver.yaml:/root/archiver.yaml" \
-  ghcr.io/dbsmedya/goarchive:<version> -c /root/archiver.yaml plan --job archive_old_orders
+docker run --rm -v "$(pwd)/archiver.yaml:/work/archiver.yaml" \
+  ghcr.io/dbsmedya/goarchive:<version> -c /work/archiver.yaml plan --job archive_old_orders
+```
+
+The image runs as UID 65532 from `/work`, a directory any user can write. On a Linux host, a
+mounted file keeps its host owner and mode, so a config readable by you alone (`chmod 600`, the
+usual mode for a file holding passwords) needs `--user "$(id -u):$(id -g)"` too, or a
+group-readable mode; a host directory mounted over `/work` keeps its own permissions, not the
+image's. With the default logging (JSON to stdout), every line goes to `docker logs`
+as one JSON object; an error also prints one `Error:` line on stderr. A foreground `docker run`
+returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work);
+for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
+exit status. `docker stop` stops a run gracefully if the batch in flight finishes before Docker's
+deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batch's duration. A stop
+during a replication hold ends the hold without waiting for the replicas, though it may wait for one
+replica check in progress
+([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
+On a Linux host, a log file is created with mode `0600`, owned by the user the container runs as
+([log files](docs/README_CONFIGURATION.md#logging)). To write one to a mounted directory and
+read it as yourself, run the container as yourself. Create the directory first: Docker creates
+a missing one as root's, where your user cannot write.
+
+```bash
+mkdir -p logs
+# archiver.yaml: logging.output: /logs/goarchive.log
+docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd)/archiver.yaml:/work/archiver.yaml" \
+  -v "$(pwd)/logs:/logs" ghcr.io/dbsmedya/goarchive:<version> -c /work/archiver.yaml archive --job archive_old_orders
 ```
 
 ## Installation from Source
@@ -92,7 +118,7 @@ sudo mv goarchive /usr/local/bin/
 ### 4. Verify Installation
 
 ```bash
-./goarchive --version
+goarchive --version   # or ./goarchive --version if you did not move it
 ```
 
 ## Building with Make
@@ -111,7 +137,7 @@ make dev
 # Install to $GOPATH/bin
 make install
 
-# Build release binaries for linux and darwin (amd64, arm64)
+# Build linux and darwin binaries (amd64, arm64) in bin/; published releases also include windows-amd64
 make release
 
 # Clean build artifacts
@@ -141,7 +167,8 @@ make help
 
 By default, the binary is built to `bin/goarchive` with version information injected:
 
-- Version: From the git tag, or else the `Makefile`'s `RELEASE_VERSION`
+- Version: on a tagged commit, the tag as written, with its leading `v` (`v<version>`, where a
+  published binary reports `<version>`); otherwise the `Makefile`'s `RELEASE_VERSION`
 - Commit: Short git commit hash
 
 ## Docker Build
@@ -177,7 +204,7 @@ described in [Configuration](docs/README_CONFIGURATION.md).
 ### 3. Validate Configuration
 
 ```bash
-./goarchive validate -c archiver.yaml
+goarchive validate -c archiver.yaml   # or ./goarchive if you did not move it
 ```
 
 ## Troubleshooting

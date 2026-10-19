@@ -19,6 +19,7 @@ Given a table `payment` whose rows are duplicated by `base_payment_id`, indexed 
 ```yaml
 jobs:
   payment_dedup:
+    job_type: archive
     root_table: payment
     primary_key: id
     where: >-
@@ -45,7 +46,7 @@ jobs:
 
 ## Archive or purge
 
-| Command | What happens to the duplicates |
+| `job_type` | What happens to the duplicates |
 |---|---|
 | `archive` | Copied to the destination, verified, then deleted from the source. The duplicates stay recoverable in the destination. |
 | `purge` | Deleted from the source without copying. |
@@ -53,6 +54,7 @@ jobs:
 Prefer `archive` for a first cleanup: the destination is your record of exactly which
 rows were removed. `archive` needs the table in the destination schema with a
 [compatible structure](README_VALIDATION.md#schema-compatibility-rules) (preflight checks it).
+The command follows the job's type: a purge job runs under `goarchive purge`.
 
 ## Run it
 
@@ -62,7 +64,10 @@ goarchive dry-run  -c archiver.yaml -j payment_dedup
 goarchive archive  -c archiver.yaml -j payment_dedup
 ```
 
-Check the `dry-run` count against your own count of duplicates before the real run:
+Before the real run, check that the `where` selects exactly the duplicates: `dry-run` prints
+the number of rows it matches (or count them yourself with
+`SELECT COUNT(*) FROM payment WHERE <the job's where>`); compare it with your own count of
+duplicates:
 
 ```sql
 SELECT COALESCE(SUM(n - 1), 0) FROM (
@@ -73,7 +78,8 @@ SELECT COALESCE(SUM(n - 1), 0) FROM (
 ```
 
 For a job over the whole table the two numbers must be equal. If they are not, the
-`where` does not say what you mean — fix it before running.
+`where` does not say what you mean — fix it before running. `dry-run` shows the plan of the
+root fetch, so you can confirm the subquery uses the index.
 
 ## Why batching is safe here
 
@@ -86,18 +92,13 @@ batch's `where` therefore selects the same rows it would have selected at the st
 
 On a large table, add a primary-key range to the `where` and move it forward from one
 run to the next (`AND payment.id BETWEEN 1 AND 10000000`). Each run stays short, its
-`dry-run` count stays cheap, and you can stop between ranges.
+count stays cheap, and you can stop between ranges.
 
-With a range, the `dry-run` count is that range's **share** of the whole-table
+With a range, the count is that range's **share** of the whole-table
 `GROUP BY` figure above, and the shares of all ranges add up to it. Do not compare a
 range's count with a `GROUP BY` limited to the same range: the subquery finds each
 key's keeper anywhere in the table, so a range whose keys have their keeper in an
 earlier range holds more duplicates than a range-limited `GROUP BY` reports.
-
-Only forward: a job keeps its checkpoint — the highest primary key it completed — after it
-finishes and never looks below it again, so the same job name over an earlier range silently
-finds nothing. To go over earlier rows again, use a new job name or
-[retire the job](README_JOBS_SCHEMA.md#retiring-a-job-completely).
 
 Pace the deletes with `batch_delete_size` and `delete_sleep_seconds` if replicas
 lag — see [Tuning throughput](README_OPERATIONS.md#tuning-throughput).
@@ -111,5 +112,5 @@ lag — see [Tuning throughput](README_OPERATIONS.md#tuning-throughput).
   declare them as `relations` so their rows move with each duplicate; preflight refuses
   a job whose incoming foreign keys are not covered. See
   [Uncovered incoming foreign keys](README_LIMITATIONS.md#uncovered-incoming-foreign-keys).
-- **Primary key.** The root table needs a single-column integer primary key. See
-  [Known Limits & Caution](README_LIMITATIONS.md#known-limits--caution).
+- **Primary key.** The `where` above compares a single-column key; a composite key needs a
+  comparison over all its columns.

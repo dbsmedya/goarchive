@@ -25,26 +25,27 @@ ARG COMMIT=unknown
 
 # Build binary
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
-    -ldflags "-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=${VERSION}' \
-              -X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Commit=${COMMIT}' \
+    -ldflags "-X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Version=${VERSION}' \
+              -X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Commit=${COMMIT}' \
               -s -w" \
     -o goarchive ./cmd/goarchive
 
-# Final stage
-FROM alpine:3.19
+# Final stage: a supported Alpine (BAS-1), pinned to its patch release
+FROM alpine:3.24.2
 
-RUN apk --no-cache add ca-certificates
+# /work is the working directory for any user, sticky like /tmp (IMG-1)
+RUN apk --no-cache add ca-certificates \
+ && mkdir -p /work && chmod 1777 /work
 
-WORKDIR /root/
+COPY --from=builder /app/goarchive /usr/local/bin/goarchive
 
-# Copy binary from builder
-COPY --from=builder /app/goarchive .
+WORKDIR /work
 
-# Make it executable
-RUN chmod +x ./goarchive
+# A numeric user with no passwd entry: GoArchive reads no home directory or user name, and a
+# numeric USER is what Kubernetes runAsNonRoot accepts. Override it with docker run --user.
+USER 65532:65532
 
-# Set as entrypoint
-ENTRYPOINT ["./goarchive"]
+ENTRYPOINT ["/usr/local/bin/goarchive"]
 
 # Default command (show help)
 CMD ["--help"]

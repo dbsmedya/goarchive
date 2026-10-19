@@ -12,7 +12,8 @@ const progressDefaultInterval = "30s"
 
 func registerProgressFlag(cmd *cobra.Command, target *string) {
 	cmd.Flags().StringVar(target, "progress", "",
-		"Periodically print progress (roots done/total, copied/deleted rows, remaining, ETA) to stdout. "+
+		"Periodically print progress (roots done/total, copied/deleted rows, remaining, ETA): lines on stdout, "+
+			"or log entries when the log is JSON on the console; with it a run also prints its start and closing block. "+
 			"Attach an interval with '=': --progress=10s (bare --progress = 30s; bare integer = seconds; minimum 1s).")
 	cmd.Flags().Lookup("progress").NoOptDefVal = progressDefaultInterval
 	cmd.Args = progressAwareNoArgs

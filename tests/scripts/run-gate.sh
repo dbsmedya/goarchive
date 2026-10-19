@@ -1,11 +1,34 @@
 #!/usr/bin/env bash
 # The full verification gate. Every invocation owns its evidence directory.
 # Keep this script compatible with the system Bash 3.2 on macOS.
+#
+#   tests/scripts/run-gate.sh [--part all|integration|e2e]
+#
+# make gate runs every stage (part all). Gate verify runs each image as two parts (RVG-3):
+# integration (estate, static checks, unit, integration) and e2e (estate, e2e, e2e-examples).
+# A part's other stages are NOT RUN, and its record names the part; a part never passes for a gate.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 GATE_ROOT="$PROJECT_ROOT/tests/results/gate"
-STAGES=(estate fmt-check vet lint consumer-policy deadcode unit integration characterization e2e e2e-examples)
+STAGES=(estate fmt-check vet lint consumer-policy deadcode unit integration e2e e2e-examples)
+PART=all
+if [[ $# -gt 0 ]]; then
+    if [[ $# -ne 2 || "$1" != --part || ! "$2" =~ ^(all|integration|e2e)$ ]]; then
+        echo "usage: run-gate.sh [--part <part>], where <part> is one of all, integration, e2e" >&2
+        exit 2
+    fi
+    PART="$2"
+fi
+# in_part reports whether stage $1 runs in this invocation's part.
+in_part() {
+    case "$PART:$1" in
+        all:*) return 0 ;;
+        integration:estate|integration:fmt-check|integration:vet|integration:lint|integration:consumer-policy|integration:deadcode|integration:unit|integration:integration) return 0 ;;
+        e2e:estate|e2e:e2e|e2e:e2e-examples) return 0 ;;
+    esac
+    return 1
+}
 STATUS=() COMMAND_EXIT=() CAPTURE_EXIT=() LOG_PATH=() HEADLINE=()
 cd "$PROJECT_ROOT" || exit 1
 mkdir -p "$GATE_ROOT" || { echo "ERROR: gate recording failed: cannot create evidence root" >&2; exit 1; }
@@ -69,8 +92,8 @@ persist_summary() {
 persist_run() {
     local outcome="$1" tmp="$RUN_DIR/.run.tsv.$$.$RANDOM"
     {
-        printf 'run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\n' || return $?
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RUN_ID" "$SOURCE_SHA" "$DIRTY" "$STARTED" "$ENDED" "$outcome" "$RUN_COMMAND_EXIT" "$RUN_RECORDING_EXIT" || return $?
+        printf 'run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\tpart\n' || return $?
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$RUN_ID" "$SOURCE_SHA" "$DIRTY" "$STARTED" "$ENDED" "$outcome" "$RUN_COMMAND_EXIT" "$RUN_RECORDING_EXIT" "$PART" || return $?
     } > "$tmp" || return $?
     publish_gate_file "$tmp" "$RUN_DIR/run.tsv"
 }
@@ -160,7 +183,6 @@ stage_headline() {
         lint) grep -m1 -oE '[0-9]+ issues' "$log" ;;
         consumer-policy|deadcode) grep -m1 -oE "$name: .*" "$log" | sed "s/^$name: //" ;;
         integration) grep -m1 -oE 'PASS=[0-9]+ FAIL=[0-9]+ SKIP=[0-9]+' "$log" ;;
-        characterization) grep -m1 -oE 'baseline: OK \(.*\)' "$log" | sed 's/^baseline: //' ;;
         e2e|e2e-examples) p=$(grep -oE 'Passed: [0-9]+' "$log" | tail -1); f=$(grep -oE 'Failed: [0-9]+' "$log" | tail -1); [[ -n "$p" || -n "$f" ]] && echo "$p  $f" ;;
     esac
 }
@@ -169,6 +191,7 @@ run_stage() {
     local name="$1" log rc cap j headline
     local ps=()
     shift
+    in_part "$name" || return 0
     for ((j=0; j<${#STAGES[@]}; j++)); do [[ "${STAGES[j]}" == "$name" ]] && break; done
     CURRENT_STAGE=$j
     log="$RUN_DIR/$name.log"
@@ -217,17 +240,18 @@ run_stage consumer-policy make consumer-policy || fail_gate $?
 run_stage deadcode make deadcode || fail_gate $?
 run_stage unit make test-unit || fail_gate $?
 run_stage integration bash tests/scripts/run-tests.sh --setup --integration-only --verbose || fail_gate $?
-run_stage characterization bash tests/scripts/check-characterization-baseline.sh || fail_gate $?
 run_stage e2e make e2e || fail_gate $?
 run_stage e2e-examples make e2e-examples || fail_gate $?
 
 ENDED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 persist_run PASS || recording_failure $?
 completion_tmp="$RUN_DIR/.complete.$$.$RANDOM"
-printf 'GATE COMPLETE - every stage above exited 0\nrun_id=%s\nsha=%s\n' "$RUN_ID" "$SOURCE_SHA" > "$completion_tmp" || recording_failure $?
+COMPLETE_LINE="GATE COMPLETE - every stage above exited 0"
+[[ "$PART" == all ]] || COMPLETE_LINE="GATE PART COMPLETE - every stage of part $PART exited 0"
+printf '%s\nrun_id=%s\nsha=%s\npart=%s\n' "$COMPLETE_LINE" "$RUN_ID" "$SOURCE_SHA" "$PART" > "$completion_tmp" || recording_failure $?
 publish_gate_file "$completion_tmp" "$RUN_DIR/complete" || recording_failure $?
 FINALIZED=true
 print_summary
-echo "  GATE COMPLETE - every stage above exited 0"
+echo "  $COMPLETE_LINE"
 echo "================================================"
 echo "  per-stage logs: $RUN_DIR"

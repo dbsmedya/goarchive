@@ -1,0 +1,131 @@
+package cmd
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/dbsmedya/goarchive/v3/internal/engine"
+	"github.com/dbsmedya/goarchive/v3/internal/lock"
+	"github.com/dbsmedya/goarchive/v3/internal/tracking"
+)
+
+// TestExitCode: each outcome's code and their precedence (spec §3.4). A refusal exits 4 only
+// while every job it names is live: marked running, heartbeat at most 60 s old (EXC-1).
+func TestExitCode(t *testing.T) {
+	defer func() { started = false }()
+	overlap := func(blockers ...tracking.Blocker) *engine.OverlapError {
+		return &engine.OverlapError{Job: "j", Blockers: blockers}
+	}
+	beat := func(age time.Duration, pending bool) tracking.Blocker {
+		return tracking.Blocker{Name: "b", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: age, Pending: pending}
+	}
+	live := beat(5*time.Second, false)
+	never := tracking.Blocker{Name: "never", Status: tracking.JobRunning, Registered: true}
+	failed := tracking.Blocker{Name: "failed", Status: tracking.JobFailed, Registered: true, Pending: true}
+	idle := tracking.Blocker{Name: "idle", Status: tracking.JobIdle, Registered: true, Pending: true}
+	unreadable := tracking.Blocker{Name: "unreadable", Status: tracking.JobIdle, Registered: true, Pending: true, Unreadable: errors.New("bad json")}
+	for _, tc := range []struct {
+		name    string
+		started bool
+		err     error
+		want    int
+	}{
+		{"ok", true, nil, 0},
+		{"stopped", true, errStopped, 3},
+		{"job running", true, fmt.Errorf("x: %w", &engine.JobRunningError{Job: "j"}), 4},
+		{"job running, holder known", true, &engine.JobRunningError{Job: "j", Holder: 7}, 4},
+		{"table locked", true, fmt.Errorf("x: %w", &engine.TableLockedError{Table: "t"}), 4},
+		{"schema locked", true, fmt.Errorf("x: %w", &tracking.SchemaLockedError{Schema: "s", Lock: &lock.HeldError{Name: "n", Holder: 7}}), 4},
+		{"overlap, live", true, overlap(live), 4},
+		{"overlap, two live, one with unfinished roots", true, overlap(live, beat(10*time.Second, true)), 4},
+		{"overlap, heartbeat 60s", true, overlap(beat(60*time.Second, false)), 4},
+		{"overlap, heartbeat 61s", true, overlap(beat(61*time.Second, false)), 1},
+		{"overlap, never beat", true, overlap(never), 1},
+		{"overlap, failed with unfinished roots", true, overlap(failed), 1},
+		{"overlap, idle with unfinished roots", true, overlap(idle), 1},
+		{"overlap, unreadable fingerprint", true, overlap(unreadable), 1},
+		{"overlap, live beside stopped", true, overlap(live, idle), 1},
+		{"overlap, live with an unreadable fingerprint", true, overlap(tracking.Blocker{Name: "b", Status: tracking.JobRunning, Registered: true, Beat: true, HeartbeatAge: 5 * time.Second, Unreadable: errors.New("bad json")}), 4},
+		{"overlap, no blockers", true, overlap(), 1},
+		{"overlap, wrapped live", true, fmt.Errorf("x: %w", overlap(live)), 4},
+		{"overlap, wrapped stopped", true, fmt.Errorf("x: %w", overlap(failed)), 1},
+		{"usage", true, usage(errors.New("bad")), 2},
+		{"cobra before RunE", false, errors.New("unknown flag: --x"), 2},
+		{"contention beats usage", true, usage(&engine.JobRunningError{Job: "j"}), 4},
+		{"other", true, errors.New("connect: refused"), 1},
+		{"wrapped file error after start", true, fmt.Errorf("x: %w", os.ErrNotExist), 1},
+		{"reported failure", true, &reportedError{errors.New("boom")}, 1},
+	} {
+		started = tc.started
+		if got := exitCode(tc.err); got != tc.want {
+			t.Errorf("%s: exitCode = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// mainStreams runs Main in process with the two streams kept apart.
+func mainStreams(t *testing.T, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	resetFlags(rootCmd)
+	defer func() {
+		resetFlags(rootCmd)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	}()
+	var out, errb bytes.Buffer
+	code = Main(args, &out, &errb)
+	return out.String(), errb.String(), code
+}
+
+// TestMainStreams: usage errors exit 2 with exactly one Error: line on stderr and nothing on
+// stdout; a refused connection exits 1; no arguments prints help and exits 0.
+func TestMainStreams(t *testing.T) {
+	cfg := writeConfig(t, unreachable)
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"archive", "--nope"}, 2},
+		{[]string{"archive"}, 2},
+		{[]string{"bogus"}, 2},
+		{[]string{"archive", "-c", "/nonexistent/goarchive.yaml", "--job", "x"}, 2},
+		{[]string{"purge", "-c", cfg, "--job", "nojob"}, 2},
+		{[]string{"purge", "-c", cfg, "--job", "purge_old", "--progress=500ms"}, 2},
+		{[]string{"copy-only", "-c", cfg, "--job", "copy_old", "--verification=md5"}, 2},
+		{[]string{"validate", "-c", cfg}, 1},
+	} {
+		out, errOut, code := mainStreams(t, tc.args...)
+		if code != tc.want || out != "" || strings.Count(errOut, "Error:") != 1 {
+			t.Errorf("%v: code %d (want %d), stdout %q, stderr %q", tc.args, code, tc.want, out, errOut)
+		}
+	}
+	out, errOut, code := mainStreams(t)
+	if code != 0 || !strings.Contains(out, "Usage:") || errOut != "" {
+		t.Errorf("no arguments: code %d, stdout %q, stderr %q; want help on stdout and 0", code, out, errOut)
+	}
+}
+
+// TestFailureBeforeTheFirstBatch (spec §3.4a, Codex MR R5): a run that fails before the engine
+// returns a report says so: on stdout with --progress, in place of the closing block; on stderr
+// without it. Error: stays on stderr, once.
+func TestFailureBeforeTheFirstBatch(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "run.log")
+	cfg := writeConfig(t, unreachable+"logging:\n  output: "+logPath+"\n")
+	summary := "Job purge_old (purge): failed before the first batch. Log: " + logPath + "\n"
+
+	out, errOut, code := mainStreams(t, "purge", "-c", cfg, "--job", "purge_old", "--progress=1h")
+	if code != 1 || !strings.Contains(out, summary) || strings.Contains(errOut, "failed before") || strings.Count(errOut, "Error:") != 1 {
+		t.Errorf("--progress: code %d, stdout %q, stderr %q; want the summary on stdout and one Error: on stderr", code, out, errOut)
+	}
+	out, errOut, code = mainStreams(t, "purge", "-c", cfg, "--job", "purge_old")
+	if code != 1 || out != "" || !strings.HasPrefix(errOut, summary+"Error: ") {
+		t.Errorf("no --progress: code %d, stdout %q, stderr %q; want the summary then Error: on stderr", code, out, errOut)
+	}
+}

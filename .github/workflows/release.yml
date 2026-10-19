@@ -32,7 +32,7 @@ jobs:
         run: |
           VERSION=${{ steps.get_version.outputs.VERSION }}
           COMMIT=$(git rev-parse --short HEAD)
-          LDFLAGS="-X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Version=${VERSION}' -X 'github.com/dbsmedya/goarchive/cmd/goarchive/cmd.Commit=${COMMIT}' -s -w"
+          LDFLAGS="-X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Version=${VERSION}' -X 'github.com/dbsmedya/goarchive/v3/cmd/goarchive/cmd.Commit=${COMMIT}' -s -w"
           
           # Create dist directory
           mkdir -p dist

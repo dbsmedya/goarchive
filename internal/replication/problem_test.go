@@ -7,7 +7,7 @@ import (
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 // Case 1: fromFinding is lossless — Check, Message, Channels and the typed

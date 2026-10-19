@@ -1,0 +1,5 @@
+# Tests the Matrix verify workflow's row jobs skip (.github/workflows/matrix-verify.yml,
+# MX_SKIP_FILE). Each needs something a GitHub matrix job does not have; each still runs in the
+# local matrix and in every gate job (the estate on six images). One test name per line, then its
+# reason. Reviewed with the PR that adds the line; no automatic retries anywhere.
+TestManagerConnect_ReplicaFleetPartialFailure_Integration   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308); a matrix job runs only its source/destination pair

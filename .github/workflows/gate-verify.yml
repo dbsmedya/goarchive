@@ -1,0 +1,178 @@
+# Gate verify (beta.2 PR 6, RVG-1a+b, spec .ayder/superpowers_20261015/specs/
+# 2026-10-16-beta2-verify-split-design.md; the image gates of the beta.1 release-verify
+# workflow): make gate on an estate built from each supported image, on one commit. Started by
+# a push of a verify-gate/<sha7> branch (or, once this file is on the default branch, a dispatch
+# with a SHA), on a release PR's final SHA, or another SHA when the operator asks
+# (tests/README.md → "The full matrix runs on GitHub"). Never on PRs or merges.
+# Since beta.3 (RVG-3, spec .ayder/superpowers_20261017/specs/2026-10-17-beta3-gate-verify-split-design.md)
+# each image runs as two jobs that start together, the gate's integration part and its e2e part
+# (run-gate.sh --part), and the summary wants both parts of every image certified.
+name: Gate verify
+
+on:
+  push:
+    branches: ['verify-gate/**']
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Full 40-character commit SHA to verify'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-verify-${{ inputs.sha || github.sha }}
+  cancel-in-progress: true
+
+env:
+  # MySQL Shell's dump refuses a server newer than itself, so it matches the newest gate image;
+  # the same package as matrix-verify.yml's.
+  MYSQLSH_DEB: mysql-shell_9.7.1-1ubuntu24.04_amd64.deb
+
+jobs:
+  target:
+    name: Target commit
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          sha="${INPUT_SHA:-$PUSH_SHA}"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::not a full commit SHA: $sha"; exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  integration:
+    name: Integration on ${{ matrix.image }}
+    needs: target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        # Exact releases, so a run is reproducible and MySQL Shell supports each one; move them
+        # forward deliberately, with MYSQLSH_DEB. The matrix's version rows keep floating tags.
+        image:
+          - mysql:8.0.40
+          - mysql:8.4.11
+          - mysql:9.7.1
+          - percona/percona-server:8.0.46-37
+          - percona/percona-server:8.4.11-11
+          - percona/percona-server:9.7.1-1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install MySQL Shell
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
+      - name: Gate, part integration
+        env:
+          GA_ESTATE_IMAGE: ${{ matrix.image }}
+        run: |
+          cp tests/dot.env tests/.env
+          set -a; . tests/.env; set +a
+          make e2e-setup
+          bash tests/scripts/run-gate.sh --part integration
+      - name: Server version
+        if: always()
+        run: docker exec db1 mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= tests/.env | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-integration-${{ strategy.job-index }}
+          path: tests/results/gate/
+          if-no-files-found: warn
+
+  e2e:
+    name: E2E on ${{ matrix.image }}
+    needs: target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        # Exact releases, so a run is reproducible and MySQL Shell supports each one; move them
+        # forward deliberately, with MYSQLSH_DEB. The matrix's version rows keep floating tags.
+        image:
+          - mysql:8.0.40
+          - mysql:8.4.11
+          - mysql:9.7.1
+          - percona/percona-server:8.0.46-37
+          - percona/percona-server:8.4.11-11
+          - percona/percona-server:9.7.1-1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install MySQL Shell
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
+      - name: Gate, part e2e
+        env:
+          GA_ESTATE_IMAGE: ${{ matrix.image }}
+        run: |
+          cp tests/dot.env tests/.env
+          set -a; . tests/.env; set +a
+          make e2e-setup
+          bash tests/scripts/run-gate.sh --part e2e
+      - name: Server version
+        if: always()
+        run: docker exec db1 mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= tests/.env | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-e2e-${{ strategy.job-index }}
+          path: tests/results/gate/
+          if-no-files-found: warn
+
+  summary:
+    name: Summary
+    needs: [target, integration, e2e]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/download-artifact@v5
+        with:
+          path: evidence
+      - name: Summarize
+        # Artifacts alone cannot show that a job finished: each dependency's result goes to the
+        # summary too, and anything but success fails the run. The run wants six gates (each
+        # image's two parts) and no row.
+        env:
+          TARGET_SHA: ${{ needs.target.outputs.sha }}
+          TARGET_RESULT: ${{ needs.target.result }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          set -o pipefail
+          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" 0 6 \
+            "target=$TARGET_RESULT" "integration=$INTEGRATION_RESULT" "e2e=$E2E_RESULT" | tee gate-verify.md >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Not gate-*: a re-run summary downloads it, and gh-summary.sh counts gate-*/ as gates.
+          name: summary-gate
+          path: gate-verify.md

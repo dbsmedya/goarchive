@@ -1,189 +1,89 @@
 package cmd
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func TestListJobsCommandStructure(t *testing.T) {
-	assert.NotNil(t, listJobsCmd)
-	assert.Equal(t, "list-jobs", listJobsCmd.Use)
-	assert.NotEmpty(t, listJobsCmd.Short)
-	assert.NotEmpty(t, listJobsCmd.Long)
-	assert.NotNil(t, listJobsCmd.RunE)
-}
-
-func TestRunListJobs(t *testing.T) {
-	// Save original value and restore after test
-	originalCfgFile := cfgFile
-	defer func() {
-		cfgFile = originalCfgFile
-	}()
-
-	// Create a valid test config
-	tmpDir := t.TempDir()
-	validConfig := filepath.Join(tmpDir, "valid-config.yaml")
-
-	configContent := `source:
-  host: 127.0.0.1
-  port: 3305
-  user: root
-  password: test
-  database: test_db
-
+const listConfig = `
+source:
+  host: h
+  user: u
+  database: s
 destination:
-  host: 127.0.0.1
-  port: 3307
-  user: root
-  password: test
-  database: test_archive
-
+  host: h
+  user: u
+  database: d
 jobs:
-  test-job:
-    root_table: users
-    primary_key: user_id
-    where: "id < 100"
-    relations: []
-`
-
-	err := os.WriteFile(validConfig, []byte(configContent), 0644)
-	assert.NoError(t, err)
-
-	tests := []struct {
-		name       string
-		configFile string
-		wantErr    bool
-	}{
-		{
-			name:       "valid config with jobs",
-			configFile: validConfig,
-			wantErr:    false,
-		},
-		{
-			name:       "nonexistent config",
-			configFile: "nonexistent-config.yaml",
-			wantErr:    true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfgFile = tt.configFile
-
-			// Capture output
-			var buf bytes.Buffer
-			listJobsCmd.SetOut(&buf)
-			listJobsCmd.SetErr(&buf)
-
-			err := runListJobs(listJobsCmd, []string{})
-
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				output := buf.String()
-				// Check that output contains job listing
-				assert.Contains(t, output, "Jobs defined in")
-			}
-		})
-	}
-}
-
-func TestListJobsCommandOutput(t *testing.T) {
-	// Save original value and restore after test
-	originalCfgFile := cfgFile
-	defer func() {
-		cfgFile = originalCfgFile
-	}()
-
-	// Create a temporary config file
-	tmpDir := t.TempDir()
-	testConfig := filepath.Join(tmpDir, "test-config.yaml")
-
-	configContent := `source:
-  host: 127.0.0.1
-  port: 3305
-  user: root
-  password: test
-  database: test_db
-
-destination:
-  host: 127.0.0.1
-  port: 3307
-  user: root
-  password: test
-  database: test_archive
-
-jobs:
-  test-job-1:
-    root_table: users
-    primary_key: user_id
-    where: "created_at < '2024-01-01'"
+  archive_orders:
+    job_type: archive
+    root_table: orders
+    primary_key: id
+    where: "placed < '2020-01-01'"
+    processing:
+      batch_size: 50
     relations:
-      - table: orders
-        primary_key: order_id
-        foreign_key: user_id
-        dependency_type: "1-N"
-
-  test-job-2:
-    root_table: products
-    primary_key: product_id
-    where: "status = 'archived'"
-    relations: []
+      - table: order_lines
+        primary_key: [order_id, line_no]
+        foreign_key: order_id
+        relations:
+          - table: line_notes
+            primary_key: note_id
+            foreign_key: [order_id, line_no]
+            references: [order_id, line_no]
+  copy_orders:
+    job_type: copy-only
+    root_table: orders
+    primary_key: id
+    where: "1=1"
+    resume: true
+    verification: count
 `
 
-	err := os.WriteFile(testConfig, []byte(configContent), 0644)
-	assert.NoError(t, err)
+// TestListJobsOutput: list-jobs reads the file with jobspec and shows each job's type, keys
+// and relations at every depth, in name order, without a connection.
+func TestListJobsOutput(t *testing.T) {
+	cfg := writeConfig(t, listConfig)
+	out, err := execute(t, "list-jobs", "-c", cfg)
+	if err != nil {
+		t.Fatalf("list-jobs: %v\n%s", err, out)
+	}
+	for _, w := range []string{
+		"Jobs defined in " + cfg + ":",
+		"1. archive_orders (archive)",
+		"   Root Table:    orders (primary key: id)",
+		"   WHERE:         placed < '2020-01-01'",
+		"   Relations:     2 table(s)",
+		"      - order_lines (FK: order_id -> id, 1-N)",
+		"         - line_notes (FK: order_id, line_no -> order_id, line_no, 1-N)",
+		"   Processing:    batch_size=50, batch_delete_size=500",
+		"2. copy_orders (copy-only)",
+		"   Resume:        true",
+		"   Verification:  count",
+		"Total: 2 job(s)",
+	} {
+		if !strings.Contains(out, w) {
+			t.Errorf("list-jobs lacks %q:\n%s", w, out)
+		}
+	}
+	if strings.Index(out, "archive_orders") > strings.Index(out, "copy_orders") {
+		t.Error("jobs are not in name order")
+	}
+}
 
-	cfgFile = testConfig
-
-	var buf bytes.Buffer
-	listJobsCmd.SetOut(&buf)
-	listJobsCmd.SetErr(&buf)
-
-	err = runListJobs(listJobsCmd, []string{})
-	assert.NoError(t, err)
-
-	output := buf.String()
-	// Check for expected job details
-	assert.Contains(t, output, "Jobs defined in")
-	assert.Contains(t, output, "test-job-1")
-	assert.Contains(t, output, "test-job-2")
-	assert.Contains(t, output, "Root Table:")
-	assert.Contains(t, output, "Primary Key:")
-	assert.Contains(t, output, "Relations:")
-	assert.Contains(t, output, "Total: 2 job(s)")
+// TestListJobsRefusesA2xFile: a 2.x file fails loudly with the upgrade guide (spec §5).
+func TestListJobsRefusesA2xFile(t *testing.T) {
+	old := writeConfig(t, "\nsource:\n  host: h\n  user: u\n  database: s\ndestination:\n  host: h\n  user: u\n  database: d\njobs:\n  j:\n    root_table: t\n    primary_key: id\n    where: \"1=1\"\n")
+	if _, err := execute(t, "list-jobs", "-c", old); err == nil || !strings.Contains(err.Error(), "docs/README_UPGRADING_3_0.md") {
+		t.Errorf("list-jobs on a 2.x file = %v", err)
+	}
 }
 
 func TestListJobsIsAddedToRoot(t *testing.T) {
-	// Check that list-jobs command is registered
-	found := false
-	for _, cmd := range rootCmd.Commands() {
-		if cmd.Name() == "list-jobs" {
-			found = true
-			break
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "list-jobs" {
+			return
 		}
 	}
-	assert.True(t, found, "list-jobs command should be added to root command")
-}
-
-// ============================================================================
-// Phase 3: CLI Execution Tests
-// ============================================================================
-
-// TestListjobsCmd_Execute_MissingConfig tests listing jobs when config doesn't exist
-func TestListjobsCmd_Execute_MissingConfig(t *testing.T) {
-	origCfgFile := cfgFile
-	defer func() {
-		cfgFile = origCfgFile
-		rootCmd.SetArgs(nil)
-	}()
-
-	rootCmd.SetArgs([]string{"list-jobs", "--config", "/tmp/nonexistent_listjobs_config.yaml"})
-	err := rootCmd.Execute()
-	assert.Error(t, err)
+	t.Error("list-jobs is not a subcommand")
 }

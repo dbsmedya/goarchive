@@ -1,0 +1,58 @@
+# Test 17: test 13's payment slice, purged under a live replication gate and stopped
+# during the hold (LAG-1)
+#
+# The harness (lib/replication.sh, replication_hold="stop-signal") stops db3's SQL
+# applier, starts the purge and observes its "replication hold:" line, then sends one
+# SIGTERM: the process must exit 3 within 10 s with "replication hold ended by a stop
+# request" and the stopped closing entry, the source unchanged. The hold is at the
+# purge's first gate, before it logs its roots, so nothing is left for recovery: the
+# applier is restarted and a second purge completes with no "Recovery:" line.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test17_purge_replication_stop.yaml on every run, substituting the MYSQL_ROOT_PASSWORD
+# placeholder from tests/.env. Edit this file, never the generated .yaml -- that one is
+# gitignored (it holds a real password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+  tls: disable
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+  tls: disable
+
+replication:
+  enabled: true
+  seconds_behind_source_within: 10
+  check_interval: 1
+  cache_ttl: 0
+  servers:
+    - host: 127.0.0.1
+      port: 3308
+      user: root
+      password: ${MYSQL_ROOT_PASSWORD}
+      tls: disable
+      type: async
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  purge-replication-stop:
+    job_type: purge
+    root_table: payment
+    primary_key: payment_id
+    where: "payment_id <= 2000"
+    processing:
+      batch_size: 100
+      batch_delete_size: 100
+      sleep_seconds: 0
+      delete_sleep_seconds: 0

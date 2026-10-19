@@ -1,0 +1,13 @@
+{"Time":"2026-10-11T14:02:50.75565+03:00","Action":"start","Package":"jfix/skip"}
+{"Time":"2026-10-11T14:02:51.082344+03:00","Action":"run","Package":"jfix/skip","Test":"TestA"}
+{"Time":"2026-10-11T14:02:51.082457+03:00","Action":"output","Package":"jfix/skip","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.082502+03:00","Action":"output","Package":"jfix/skip","Test":"TestA","Output":"    p_test.go:5: needs row wait_timeout_10\n"}
+{"Time":"2026-10-11T14:02:51.082542+03:00","Action":"output","Package":"jfix/skip","Test":"TestA","Output":"--- SKIP: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.082554+03:00","Action":"skip","Package":"jfix/skip","Test":"TestA","Elapsed":0}
+{"Time":"2026-10-11T14:02:51.082564+03:00","Action":"run","Package":"jfix/skip","Test":"TestB"}
+{"Time":"2026-10-11T14:02:51.082575+03:00","Action":"output","Package":"jfix/skip","Test":"TestB","Output":"=== RUN   TestB\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.082583+03:00","Action":"output","Package":"jfix/skip","Test":"TestB","Output":"--- PASS: TestB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.08259+03:00","Action":"pass","Package":"jfix/skip","Test":"TestB","Elapsed":0}
+{"Time":"2026-10-11T14:02:51.082597+03:00","Action":"output","Package":"jfix/skip","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-10-11T14:02:51.083256+03:00","Action":"output","Package":"jfix/skip","Output":"ok  \tjfix/skip\t0.327s\n"}
+{"Time":"2026-10-11T14:02:51.083287+03:00","Action":"pass","Package":"jfix/skip","Elapsed":0.328}

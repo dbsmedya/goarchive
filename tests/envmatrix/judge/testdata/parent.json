@@ -1,0 +1,14 @@
+{"Time":"2026-10-11T16:44:56.472046+03:00","Action":"start","Package":"jfix/parent"}
+{"Time":"2026-10-11T16:44:56.802668+03:00","Action":"run","Package":"jfix/parent","Test":"TestParent"}
+{"Time":"2026-10-11T16:44:56.802752+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent","Output":"=== RUN   TestParent\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.802826+03:00","Action":"run","Package":"jfix/parent","Test":"TestParent/refusal"}
+{"Time":"2026-10-11T16:44:56.802836+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent/refusal","Output":"=== RUN   TestParent/refusal\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.802853+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent/refusal","Output":"    p_test.go:6: Run() = MAX_ALLOWED_PACKET_CHECK: refused\n","OutputType":"error"}
+{"Time":"2026-10-11T16:44:56.802872+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent/refusal","Output":"--- FAIL: TestParent/refusal (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.802882+03:00","Action":"fail","Package":"jfix/parent","Test":"TestParent/refusal","Elapsed":0}
+{"Time":"2026-10-11T16:44:56.802895+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent","Output":"    p_test.go:7: rows deleted = 1, want 0\n","OutputType":"error"}
+{"Time":"2026-10-11T16:44:56.802903+03:00","Action":"output","Package":"jfix/parent","Test":"TestParent","Output":"--- FAIL: TestParent (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.80291+03:00","Action":"fail","Package":"jfix/parent","Test":"TestParent","Elapsed":0}
+{"Time":"2026-10-11T16:44:56.802916+03:00","Action":"output","Package":"jfix/parent","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.803534+03:00","Action":"output","Package":"jfix/parent","Output":"FAIL\tjfix/parent\t0.331s\n","OutputType":"frame"}
+{"Time":"2026-10-11T16:44:56.803568+03:00","Action":"fail","Package":"jfix/parent","Elapsed":0.332}

@@ -12,8 +12,6 @@ docs/
 
 # Test files
 *_test.go
-internal/archiver/*_test.go
-internal/archiver/*_integration_test.go
 tests/
 testdata/
 

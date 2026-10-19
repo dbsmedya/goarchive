@@ -21,6 +21,8 @@ const (
 type ColumnMetadata struct {
 	Names    []string
 	Temporal map[string]TemporalKind
+	// JSON are the JSON columns, in select order (JSN-1).
+	JSON []string
 }
 
 func (m ColumnMetadata) Kind(column string) TemporalKind {
@@ -171,59 +173,3 @@ func (e *TemporalReadContractError) Error() string {
 	return message
 }
 func (e *TemporalReadContractError) Unwrap() error { return e.Cause }
-
-// TemporalIdentitySet requires a fetched raw identity set to equal the requested set.
-type TemporalIdentitySet struct {
-	kind             TemporalKind
-	table, operation string
-	requested, seen  map[string]struct{}
-	keys             []interface{}
-}
-
-func NewTemporalIdentitySet(kind TemporalKind, table, operation string, requested []interface{}) (*TemporalIdentitySet, error) {
-	s := &TemporalIdentitySet{kind: kind, table: table, operation: operation, requested: map[string]struct{}{}, seen: map[string]struct{}{}}
-	if kind == TemporalNone {
-		return nil, s.fail("non-temporal identity kind", nil)
-	}
-	for _, v := range requested {
-		key, ok := v.(string)
-		if !ok {
-			return nil, s.fail("requested temporal identity must be a string", nil)
-		}
-		if err := ValidateTemporalKey(kind, key); err != nil {
-			return nil, s.fail("invalid requested identity", err)
-		}
-		if _, exists := s.requested[key]; !exists {
-			s.requested[key] = struct{}{}
-			s.keys = append(s.keys, key)
-		}
-	}
-	return s, nil
-}
-func (s *TemporalIdentitySet) fail(detail string, cause error) error {
-	return &TemporalReadContractError{Table: s.table, Operation: s.operation, Detail: detail, Cause: cause}
-}
-func (s *TemporalIdentitySet) Observe(value interface{}) error {
-	key, err := TemporalText(value)
-	if err != nil {
-		return s.fail("unfaithful fetched representation", err)
-	}
-	if err = ValidateTemporalKey(s.kind, key); err != nil {
-		return s.fail("invalid fetched identity", err)
-	}
-	if _, ok := s.requested[key]; !ok {
-		return s.fail("unexpected fetched identity", nil)
-	}
-	if _, ok := s.seen[key]; ok {
-		return s.fail("duplicate fetched identity", nil)
-	}
-	s.seen[key] = struct{}{}
-	return nil
-}
-func (s *TemporalIdentitySet) Finish() error {
-	if len(s.seen) != len(s.requested) {
-		return s.fail(fmt.Sprintf("requested=%d fetched=%d", len(s.requested), len(s.seen)), nil)
-	}
-	return nil
-}
-func (s *TemporalIdentitySet) Keys() []interface{} { return append([]interface{}(nil), s.keys...) }

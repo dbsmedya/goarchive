@@ -7,11 +7,14 @@ This directory contains CI/CD workflows for the project.
 ### 1. CI (`ci.yml`)
 **Triggers:** Push to main/master, Pull requests
 
-Runs on every PR and push, as one **Check** job on the Go release that `go.mod`'s `toolchain`
+Runs on every PR and push, as a **Check** job on the Go release that `go.mod`'s `toolchain`
 line pins:
 - **`make check`:** format, vet, lint (golangci-lint pinned in the `Makefile`), consumer policy,
   dead code, unit tests with race detection, and build
 - **Test version output:** a separate step that builds the binary and checks its version output
+
+A second job, **Logger on Windows**, runs the logger's unit tests on `windows-latest`: a release
+ships a Windows binary, where a log file's mode sets only the read-only attribute.
 
 Database tests do not run in CI. The full gate is `make gate`, described in `tests/README.md`.
 
@@ -32,6 +35,53 @@ Automatically builds and releases:
 Builds and pushes Docker images to GitHub Container Registry:
 - Tags: `main`, `v1.0.0`, `1.0`, `sha-abc123`
 - Multi-platform: linux/amd64, linux/arm64
+- On a pull request, also built for linux/amd64 and run as an arbitrary user
+  (`tests/scripts/image-run-test.sh`): the default user 65532, `--version`, the default config path
+  read from `/work`, and a write to `/work` (IMG-1)
+
+### 4. Matrix verify (`matrix-verify.yml`)
+**Triggers:** a push to a `verify/**` branch only, plus `workflow_dispatch` once this file is on
+the default branch. Never a pull request, a merge or a tag.
+
+The environment matrix on one commit, on the final SHA of a PR whose change needs it
+(`tests/README.md` → *Which checks a change needs*, and *The full matrix runs on GitHub*):
+- **Matrix:** one job per row of `tests/envmatrix/rows.tsv`, at most 14 at once.
+- **Summary:** one table of every row's verdict (`tests/envmatrix/gh-summary.sh`), on the run page
+  and as the `summary-matrix` artifact. It is red when any job did not succeed, when any row is
+  not OK or is missing, and when the run holds a gate.
+
+```bash
+git push origin <sha>:refs/heads/verify/<sha7>     # start a run
+git push origin --delete verify/<sha7>             # remove the branch after the run
+```
+
+### 5. Gate verify (`gate-verify.yml`)
+**Triggers:** a push to a `verify-gate/**` branch only, plus `workflow_dispatch` once this file
+is on the default branch. Never a pull request, a merge or a tag.
+
+The gate on every supported image, on the final SHA of a PR whose change needs it (a release
+PR, or a change to `gate-verify.yml` or `run-gate.sh`; `tests/README.md` → *Which checks a change
+needs*), or another SHA when the operator asks:
+- **Integration and E2E:** the gate on an estate built from each of `mysql` 8.0.40, 8.4.11 and
+  9.7.1 and `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`),
+  as two jobs per image, all twelve at once (RVG-3): `run-gate.sh --part integration` (estate,
+  static checks, unit, integration) and `--part e2e` (estate, `e2e`, `e2e-examples`).
+- **Summary:** one table of both parts of every gate (`tests/envmatrix/gh-summary.sh`), on the
+  run page and as the `summary-gate` artifact. It is red when any job did not succeed, when any
+  image lacks a part or a part is not certified (one run record for the target SHA, on a clean
+  tree, `PASS` with both exits 0, naming its part, with its completion marker and summary), and
+  when the run holds a matrix row.
+
+```bash
+git push origin <sha>:refs/heads/verify-gate/<sha7>     # start a run
+git push origin --delete verify-gate/<sha7>             # remove the branch after the run
+```
+
+One run per commit and workflow: a newer run on the same SHA cancels the older one, and a Matrix
+verify and a Gate verify run on one SHA do not cancel each other. `verify/**` matches only names
+under `verify/`, and `verify-gate/…` is not under it, so each push starts one workflow. A push runs the workflow file
+of the pushed commit: on a commit from before these two files, `verify/` starts the old
+`release-verify.yml` and `verify-gate/` starts nothing.
 
 ## How to Release a New Version
 

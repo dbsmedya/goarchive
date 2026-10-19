@@ -4,6 +4,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"net"
@@ -12,7 +13,7 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 
-	"github.com/dbsmedya/goarchive/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
 const (
@@ -32,6 +33,11 @@ type Manager struct {
 	// identity in logs and errors.
 	Replicas []*sql.DB
 	config   *config.Config
+
+	// open opens each attempt's pool (nil: OpenPool), and backoff is the first retry's wait
+	// (0: 1 s). Tests set them.
+	open    func(ctx context.Context, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error)
+	backoff time.Duration
 }
 
 // replicaDatabaseConfig maps a fleet entry onto the DSN builder's input.
@@ -84,13 +90,13 @@ func (m *Manager) Connect(ctx context.Context) error {
 	}
 
 	// Connect to source database
-	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source)
+	m.Source, err = m.connectWithRetry(ctx, "source", &m.config.Source, true)
 	if err != nil {
 		return fmt.Errorf("failed to connect to source database: %w", err)
 	}
 
 	// Connect to destination database
-	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination)
+	m.Destination, err = m.connectWithRetry(ctx, "destination", &m.config.Destination, true)
 	if err != nil {
 		_ = m.Source.Close() // Ignore error during cleanup of failed connection
 		m.Source = nil
@@ -116,7 +122,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 		for _, s := range m.config.Replication.Servers {
 			addr := s.Addr()
 
-			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s))
+			replica, replicaErr := m.connectWithRetry(ctx, "replica "+addr, replicaDatabaseConfig(s), false)
 			if replicaErr != nil {
 				// Ignore errors during cleanup of a failed connection set.
 				for _, opened := range m.Replicas {
@@ -137,34 +143,34 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return nil
 }
 
-// connectWithRetry attempts to connect with exponential backoff.
-func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig) (*sql.DB, error) {
-	var db *sql.DB
-	var err error
-
-	maxRetries := 3
-	backoff := time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		db, err = m.connect(cfg)
-		if err == nil {
-			// Verify connection
-			if pingErr := db.PingContext(ctx); pingErr == nil {
-				// A property of the server or proxy, not a transient: no retry.
-				if tzErr := assertUTCSession(ctx, db); tzErr != nil {
-					_ = db.Close()
-					return nil, fmt.Errorf("%s: %w", name, tzErr)
-				}
-				if modeErr := assertAutoIncrementZeroMode(ctx, db); modeErr != nil {
-					_ = db.Close()
-					return nil, fmt.Errorf("%s: %w", name, modeErr)
-				}
-				return db, nil
-			} else {
-				_ = db.Close()
-				err = pingErr
-			}
+// connectWithRetry opens a pool through OpenPool (m.open in tests), retrying with
+// exponential backoff only a failure OpenPool marks retryable. readsWarnings is true for the
+// source and destination pools, whose statements read warnings (warningsConnector).
+func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
+	open := m.open
+	if open == nil {
+		open = func(ctx context.Context, cfg *config.DatabaseConfig, readsWarnings bool) (*sql.DB, error) {
+			return OpenPool(ctx, cfg, readsWarnings)
 		}
+	}
+	backoff := m.backoff
+	if backoff == 0 {
+		backoff = time.Second
+	}
+
+	var err error
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		db, openErr := open(ctx, cfg, readsWarnings)
+		if openErr == nil {
+			return db, nil
+		}
+		retry, ok := errors.AsType[*retryableError](openErr)
+		if !ok {
+			// A property of the server, the account or a proxy, not a transient: no retry.
+			return nil, fmt.Errorf("%s: %w", name, openErr)
+		}
+		err = retry.err
 
 		if i < maxRetries-1 {
 			select {
@@ -179,14 +185,34 @@ func (m *Manager) connectWithRetry(ctx context.Context, name string, cfg *config
 	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
 }
 
-// connect creates a database connection.
-func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
-	dsn := BuildDSN(cfg)
+// retryableError marks an OpenPool failure that may be transient: the pool could not be
+// built, or its first connection failed for another reason than the connector's checks.
+// Its text is the failure's own.
+type retryableError struct{ err error }
 
-	db, err := sql.Open("mysql", dsn)
+func (e *retryableError) Error() string { return e.err.Error() }
+func (e *retryableError) Unwrap() error { return e.err }
+
+// OpenPool opens a pool as goarchive opens its source and destination (readsWarnings true) and
+// replica pools: BuildDSN's settings, the per-connection checks when readsWarnings, Manager's
+// pool limits, then a ping, the UTC probe and the AUTO_INCREMENT zero assertion. It does not
+// retry. A failure closes the pool, and the error carries no prefix of its own. globals emulate
+// server globals under the pins (Global); Manager passes none.
+func OpenPool(ctx context.Context, cfg *config.DatabaseConfig, readsWarnings bool, globals ...Global) (*sql.DB, error) {
+	mc, err := dsnConfig(cfg, globals)
 	if err != nil {
 		return nil, err
 	}
+	connector, err := poolConnector(mc, net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), readsWarnings)
+	if err != nil {
+		return nil, &retryableError{err}
+	}
+	return openOn(ctx, connector, cfg)
+}
+
+// openOn opens a pool on c with cfg's pool limits and proves its first session.
+func openOn(ctx context.Context, c driver.Connector, cfg *config.DatabaseConfig) (*sql.DB, error) {
+	db := sql.OpenDB(c)
 
 	// Configure connection pool
 	maxOpen := cfg.MaxConnections
@@ -207,14 +233,55 @@ func (m *Manager) connect(cfg *config.DatabaseConfig) (*sql.DB, error) {
 	db.SetConnMaxLifetime(defaultConnMaxLife)
 	db.SetConnMaxIdleTime(defaultConnMaxIdle)
 
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		// The first connection ran the max_error_count and session charset checks:
+		// a property of the server and the account, not a transient, so no retry.
+		if _, ok := errors.AsType[*MaxErrorCountError](err); ok {
+			return nil, err
+		}
+		if _, ok := errors.AsType[*SessionCharsetError](err); ok {
+			return nil, err
+		}
+		return nil, &retryableError{err}
+	}
+	// A property of the server or proxy, not a transient: no retry.
+	if err := assertUTCSession(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := assertAutoIncrementZeroMode(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+// waitTimeoutExpression is the session wait_timeout BuildDSN pins: the server's global, or
+// 8 h (MySQL's default) when the global is lower. MySQL accepts the expression for this
+// variable only in the CAST form; GREATEST or IF alone fail with 1232 (M7c-2 probe PR-8).
+const waitTimeoutExpression = "CAST(GREATEST(@@GLOBAL.wait_timeout, 28800) AS UNSIGNED)"
+
+// dsnConfig is the driver configuration of cfg's pools: BuildDSN's DSN, parsed as sql.Open
+// parses it, with globals layered under the pins (Global). A DSN the driver cannot parse (a
+// host that validation accepts, such as root@localhost) is marked retryable, as the old
+// connect's connector error was; a refused Global is not.
+func dsnConfig(cfg *config.DatabaseConfig, globals []Global) (*mysql.Config, error) {
+	mc, err := mysql.ParseDSN(BuildDSN(cfg))
+	if err != nil {
+		return nil, &retryableError{err}
+	}
+	if err := applyGlobals(mc.Params, globals); err != nil {
+		return nil, err
+	}
+	return mc, nil
 }
 
 // BuildDSN constructs a MySQL DSN from configuration.
 func BuildDSN(cfg *config.DatabaseConfig) string {
 	// Start from NewConfig() so the driver's safe defaults are preserved.
 	// A bare mysql.Config{} literal would zero AllowNativePasswords (default
-	// true), CheckConnLiveness (default true) and MaxAllowedPacket, emitting
+	// true) and CheckConnLiveness (default true), emitting
 	// allowNativePasswords=false — which breaks any server whose user
 	// authenticates with the mysql_native_password plugin (e.g. MySQL 8.4 /
 	// Cloud SQL) with "this user requires mysql native password authentication".
@@ -225,6 +292,24 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	dsnCfg.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	dsnCfg.DBName = cfg.Database
 	dsnCfg.ParseTime = true
+	// CHS-1: every value is read and bound through the session's character set. A narrowing
+	// init_connect, a proxy, or 8.0's --skip-character-set-client-handshake under a latin1
+	// server default left utf8mb4 text reading back as '?', and a key binding a look-alike
+	// row. The driver runs SET NAMES after authentication, so after init_connect, on every
+	// new connection, and closes one the server refuses. The collation is the handshake's
+	// own (45), so comparisons in the where and the key SQL do not change.
+	// SESSION_CHARSET_CHECK proves the result. The option cannot fail.
+	_ = dsnCfg.Apply(mysql.Charset("utf8mb4", "utf8mb4_general_ci"))
+	// M7c-F1: read each server's max_allowed_packet at connect instead of the driver's
+	// default 64 MiB. The driver sends a value as long data when it reaches
+	// max_allowed_packet/(parameters+1); against a smaller server, 64 MiB put values inline
+	// that the server's limit could not hold, and it dropped the connection over the INSERT.
+	// With the server's value a row or an INSERT larger than the packet fits. What can still
+	// fail is one value larger than the packet, which the server refuses by name (1105), or
+	// rarely a statement of many inline values each just under the threshold, which the
+	// driver refuses before sending (ErrPktTooLarge); both are engine PacketError. A session's
+	// max_allowed_packet is fixed at connect, so the value read is the one the session keeps.
+	dsnCfg.MaxAllowedPacket = 0
 	// Issue #16: MySQL converts TIMESTAMP through the SESSION zone on every
 	// read and write, so a copied value is the same instant on both servers
 	// only if both sessions share one zone. Pin it. The driver sends this as
@@ -233,10 +318,27 @@ func BuildDSN(cfg *config.DatabaseConfig) string {
 	// rejects it. Offset form: needs no time-zone tables.
 	// Issue #108: preserve explicit AUTO_INCREMENT zero without replacing
 	// inherited strict/date modes. The driver initializes every new session.
+	// M7c F1: tracking writes outside an explicit transaction rely on each statement
+	// committing on its own. A server whose global autocommit is 0 would leave them open,
+	// holding their locks, so the session pins it.
+	// M7c-2 P4: a batch's source session waits while the destination copies, verifies and
+	// commits, and a server wait_timeout shorter than that closes it under the batch. The
+	// session keeps at least 8 h (waitTimeoutExpression), never less than the server's own
+	// value. The lock sessions set their own (internal/lock), and no session is held through
+	// a replication hold (LAG-1).
+	// Beta audit A1: a server's global sql_select_limit is every new session's default and
+	// caps any SELECT without its own LIMIT, silently. None of GoArchive's multi-row reads
+	// carries one: under a global limit of 20 the library's column list, discovery, the copy and
+	// verification each read at most 20 rows, so a wide table lost its last columns and an
+	// order left every line past the 20th behind, while the run reported success. 2^64-1 is
+	// the server's maximum, no limit; DEFAULT would mean the global value.
 	dsnCfg.Params = map[string]string{
-		"sql_notes": "1",
-		"time_zone": "'+00:00'",
-		"sql_mode":  autoZeroModeExpression,
+		"sql_select_limit": "18446744073709551615",
+		"sql_notes":        "1",
+		"time_zone":        "'+00:00'",
+		"sql_mode":         autoZeroMode("@@SESSION.sql_mode"),
+		"autocommit":       "1",
+		"wait_timeout":     waitTimeoutExpression,
 	}
 
 	switch cfg.TLS {
@@ -294,32 +396,6 @@ func (m *Manager) Close() error {
 
 func (m *Manager) closeExistingConnections() error {
 	return m.Close()
-}
-
-// Ping verifies all connections are alive.
-func (m *Manager) Ping(ctx context.Context) error {
-	if m.Source != nil {
-		if err := m.Source.PingContext(ctx); err != nil {
-			return fmt.Errorf("source ping failed: %w", err)
-		}
-	}
-
-	if m.Destination != nil {
-		if err := m.Destination.PingContext(ctx); err != nil {
-			return fmt.Errorf("destination ping failed: %w", err)
-		}
-	}
-
-	for i, replica := range m.Replicas {
-		if replica == nil {
-			continue
-		}
-		if err := replica.PingContext(ctx); err != nil {
-			return fmt.Errorf("replica %s ping failed: %w", m.replicaAddr(i), err)
-		}
-	}
-
-	return nil
 }
 
 // replicaAddr names fleet member i for logs and errors. Replicas is

@@ -21,7 +21,9 @@ with archiving:
 - A privilege held through an active role, or granted globally while
   `@@global.partial_revokes` is enabled, is not provable for a specific object from
   `information_schema` alone.
-- InnoDB's own foreign-key registry is complete but requires `PROCESS`;
+- InnoDB's own foreign-key registry is complete but normally requires `PROCESS` (MySQL 8.0.40
+  serves it without; versions between 8.0.40 and 8.0.46 were not probed:
+  [compatibility notes](README_COMPAT.md#foreign-key-metadata-readable-without-process-on-mysql-8040));
   `information_schema` is always readable but only shows constraints on tables the account
   is already privileged for — so a fallback silently answers a weaker question.
 - Integer display widths (`bigint(20)`) are cosmetic and not reported by MySQL 8.0.17 and
@@ -36,9 +38,9 @@ tested against several MySQL releases instead of being rediscovered per check.
 
 | Package | GoArchive uses it for |
 |---|---|
-| `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
+| `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers and the proof that a trigger list is complete, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
 | `pkg/sqlutil` | Identifier quoting and validation. |
-| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating). |
+| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set and its Group Replication state, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking). |
 
 The library also ships a registry of documented MySQL version quirks and records where
 behaviour diverges across the 8.0, 8.4 and 9.7 lines; supported versions are in
@@ -51,13 +53,13 @@ The split is deliberate and it is the reason the integration is safe:
 - **The library reports facts.** It does not know what GoArchive intends to do with a
   table, and it never decides that a schema difference is fatal.
 - **GoArchive owns policy.** Whether a destination may be looser than its source, which
-  primary-key types are acceptable for a root table, whether a difference blocks a copy —
+  key types can identify rows, whether a difference blocks a copy —
   all of that stays here, in GoArchive, where the consequences are understood (the rules:
   [Schema compatibility](README_VALIDATION.md#schema-compatibility-rules)).
 - **GoArchive owns its own session.** Properties of the connection GoArchive itself
   opened — the UTC session it pins, the server identity it refuses to archive into
   itself — are read by GoArchive-owned probes, listed under *Retained
-  application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md). They
+  application-owned MySQL probes* in [README_TESTING.md](README_TESTING.md#retained-application-owned-mysql-probes). They
   inspect what the session reports, not the metadata catalog the library owns.
 
 ## The consumer boundary
@@ -67,9 +69,10 @@ just intended: `make consumer-policy` walks every non-test Go file in the module
 the build on any string literal naming `information_schema`.
 
 Preflight facts are read **once per run** and shared by every check that needs them, so
-adding a check does not add a round trip. Grants are read on a dedicated connection that
-is released before any other query runs, which keeps the answer accurate on a pool and
-avoids self-deadlocking a single-connection configuration.
+adding a check does not add a round trip. Grants are read on a dedicated connection,
+together with the trigger list they prove when a trigger check needs both, and the
+connection is released before any other query runs; this keeps the answer accurate on a
+pool and avoids self-deadlocking a single-connection configuration.
 
 ## Versioning
 
@@ -83,7 +86,6 @@ grep dbsgomysql go.mod
 
 ## See also
 
-- [Upgrading to 2.0](README_UPGRADING_2_0.md) — the six behaviours that change, and what to do
 - [Validation & Preflight](README_VALIDATION.md) — every check
 - [Permissions](README_PERMISSIONS.md) — the privilege matrix and grant recipes
 - [dbsgomysql on GitHub](https://github.com/dbsmedya/dbsgomysql)
