@@ -21,7 +21,8 @@ The MySQL privileges GoArchive needs, why, and grant recipes.
 ## Grant recipes
 
 These grants pass every permission check, with or without `@@global.partial_revokes`, because
-each privilege is granted directly at schema scope
+each privilege is granted directly: the schema privileges on their schema, and `PROCESS` and
+`REPLICATION CLIENT` on `*.*`, the only scope they have
 ([the provable-grant rule](#the-provable-grant-rule)).
 
 ### Source
