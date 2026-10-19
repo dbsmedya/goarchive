@@ -64,9 +64,10 @@ goarchive dry-run  -c archiver.yaml -j payment_dedup
 goarchive archive  -c archiver.yaml -j payment_dedup
 ```
 
-Before the real run, check that the `where` selects exactly the duplicates: count the rows
-it selects (`SELECT COUNT(*) FROM payment WHERE <the job's where>`) and compare with your own
-count of duplicates:
+Before the real run, check that the `where` selects exactly the duplicates: `dry-run` prints
+the number of rows it matches (or count them yourself with
+`SELECT COUNT(*) FROM payment WHERE <the job's where>`); compare it with your own count of
+duplicates:
 
 ```sql
 SELECT COALESCE(SUM(n - 1), 0) FROM (
