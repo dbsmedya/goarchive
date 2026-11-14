@@ -62,7 +62,7 @@ func TestHelperProcess(t *testing.T) {
 			fmt.Println("error", err)
 			os.Exit(2)
 		}
-		fmt.Println("ready")
+		fmt.Printf("ready uid=%d\n", os.Geteuid())
 		c, err := l.Accept()
 		if err != nil {
 			fmt.Println("error", err)

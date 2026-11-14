@@ -60,7 +60,8 @@ func TestPeerUIDOtherUser(t *testing.T) {
 	path := filepath.Join(other, "peer.sock")
 	attr := &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID}}
 	_, out := helper(t, bin, "peer", path, attr)
-	expect(t, out, "ready")
+	// The server really is another user; the uid it reports for the client is then the client's.
+	expect(t, out, fmt.Sprintf("ready uid=%d", otherUID))
 
 	c, err := net.Dial("unix", path)
 	if err != nil {
