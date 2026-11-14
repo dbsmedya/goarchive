@@ -1,12 +1,16 @@
 # Matrix verify (beta.2 PR 6, RVG-1a+b, spec .ayder/superpowers_20261015/specs/
 # 2026-10-16-beta2-verify-split-design.md; the beta.1 release-verify workflow less its image
-# gates): every rows.tsv row of the environment matrix on one commit. Started by a push of a
-# verify/<sha7> branch (or, once this file is on the default branch, a dispatch with a SHA), on
-# the final SHA of a PR whose change needs it (tests/README.md → "Which checks a change needs"). Never on PRs or
-# merges. The gate on every supported image is gate-verify.yml (verify-gate/<sha7>).
+# gates): every rows.tsv row of the environment matrix on one commit. Started by a pull request
+# into main (the dev/goarchive-3.1 → main PR; the PR's head SHA, re-run on each push, the
+# earlier run cancelled), or, for an ad-hoc run, by a push of a verify/<sha7> branch or a
+# dispatch with a SHA (tests/README.md → "The full matrix runs on GitHub"). Never on merges.
+# The gate on every supported image is gate-verify.yml (verify-gate/<sha7>).
 name: Matrix verify
 
 on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: ['verify/**']
   workflow_dispatch:
@@ -19,8 +23,10 @@ on:
 permissions:
   contents: read
 
+# A pull request is one group by its number, so a new push cancels the old run; a dispatch or a
+# push is one group by its SHA.
 concurrency:
-  group: matrix-verify-${{ inputs.sha || github.sha }}
+  group: matrix-verify-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || inputs.sha || github.sha }}
   cancel-in-progress: true
 
 env:
@@ -39,9 +45,11 @@ jobs:
       - id: sha
         env:
           INPUT_SHA: ${{ inputs.sha }}
+          # On a pull request github.sha is the merge commit, never the commit to verify.
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_SHA: ${{ github.sha }}
         run: |
-          sha="${INPUT_SHA:-$PUSH_SHA}"
+          sha="${INPUT_SHA:-${PR_SHA:-$PUSH_SHA}}"
           if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::not a full commit SHA: $sha"; exit 1
           fi
