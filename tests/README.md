@@ -468,7 +468,53 @@ go build -o bin/goarchive ./cmd/goarchive
 
 CI runs the unit tests in its **Check** job, and `internal/logger`'s again on Windows (**Logger on
 Windows**, `.github/workflows/ci.yml`): a release ships a Windows binary, where a log file's mode
-behaves differently.
+behaves differently. The same Windows step, **Logger and control tests**, runs the control socket's
+platform tests too (`internal/control`, `internal/controlpath`, with `-v` so that what the platform
+probes saw is in the log): the file lock, the identity of a socket file, a stale socket, the path
+limit, the home lookup, and how a connect and a close behave.
+
+#### The control socket's platform tests
+
+These two packages hold the facts the control socket relies on, so some tests need a host that a
+plain `go test` does not give. A test that cannot run on its host **skips with its reason**, and the
+skip is the intended result there. Each is a unit test and needs no database.
+
+| Test | It needs | Where it runs |
+|---|---|---|
+| `TestPeerUIDOtherUser` | a test process running as uid 0: it starts the server half as uid 12345 and connects as root | a root container (L1, L4 below). It skips on a developer's Mac and in CI, whose process is not root |
+| `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
+| `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
+| `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
+
+The container runs use the Go release of `go.mod`'s toolchain line, with a writable `GOCACHE` and
+`GOPATH` under `/tmp`:
+
+```bash
+# L1: as root, cgo as the image has it. L2: the same with -e CGO_ENABLED=0
+docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
+  bash -c 'apt-get update -qq && apt-get install -y -qq netcat-openbsd socat &&
+           go test ./internal/control/... ./internal/controlpath/ -count=1 -v'
+
+# L3: a non-root uid with an entry
+docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
+  bash -c 'useradd -m tester && mkdir /tmp/gocache-t /tmp/gopath-t && chown tester /tmp/gocache-t /tmp/gopath-t &&
+           su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v"'
+
+# L4: uid 0 against a server of another uid (the run of L1 includes it)
+docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
+  go test ./internal/control/ -run TestPeerUID -count=1 -v
+
+# L5: an effective uid with no user-database entry, USER and HOME set. Build the test binary
+# first, then run it as that user, so that the go tool itself touches nothing under that HOME
+GOOS=linux CGO_ENABLED=0 go test -c -o /tmp/l5/controlpath.test ./internal/controlpath/   # GOARCH of the Docker host
+docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/controlpath.test \
+  golang:1.26.8 -test.run 'TestHomeIgnoresEnvironment|TestHomeOfUnknownUID' -test.v
+```
+
+On macOS a connection from another uid is never made: `JudgeDir`'s owner rule is tested on a
+directory of this user judged against another uid, and the real other-uid connection is the root
+container's (L1, L4). CI's Check job runs neither container step, so `TestPeerUIDOtherUser` skips
+there.
 
 ### Coverage on demand
 

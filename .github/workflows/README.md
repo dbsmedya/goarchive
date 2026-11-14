@@ -14,7 +14,11 @@ line pins:
 - **Test version output:** a separate step that builds the binary and checks its version output
 
 A second job, **Logger on Windows**, runs the logger's unit tests on `windows-latest`: a release
-ships a Windows binary, where a log file's mode sets only the read-only attribute.
+ships a Windows binary, where a log file's mode sets only the read-only attribute. Its one test
+step, **Logger and control tests**, also runs the control socket's platform tests
+(`internal/control`, `internal/controlpath`): the file lock, socket identity, the path limit, the
+home lookup and how a connect and a close behave on Windows. It runs with `-v`, so that what the
+probes saw is in the job's log.
 
 Database tests do not run in CI. The full gate is `make gate`, described in `tests/README.md`.
 
