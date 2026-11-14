@@ -46,9 +46,7 @@ func TestLockFileHeldAcrossProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(shortDir(t), "job.lock")
-	stdin, stdinW := io.Pipe()
-	defer stdinW.Close()
-	cmd, out := helper(t, exe, "lock", path, stdin, nil)
+	cmd, out := helper(t, exe, "lock", path, nil)
 	expect(t, out, "locked")
 
 	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
@@ -175,7 +173,7 @@ func TestListenDialAcrossProcesses(t *testing.T) {
 		_, _ = c.Write([]byte("pong\n"))
 		served <- string(buf)
 	}()
-	_, out := helper(t, exe, "dial", path, nil, nil)
+	_, out := helper(t, exe, "dial", path, nil)
 	expect(t, out, "pong")
 	select {
 	case got := <-served:

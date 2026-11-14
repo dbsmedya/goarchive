@@ -83,12 +83,16 @@ func TestHelperProcess(t *testing.T) {
 
 // helper starts the helper role against path and returns its stdout reader. The process is
 // killed and reaped when the test ends.
-func helper(t *testing.T, exe, role, path string, stdin io.Reader, attr *syscall.SysProcAttr) (*exec.Cmd, *bufio.Reader) {
+func helper(t *testing.T, exe, role, path string, attr *syscall.SysProcAttr) (*exec.Cmd, *bufio.Reader) {
 	t.Helper()
 	cmd := exec.Command(exe, "-test.run=^TestHelperProcess$")
 	cmd.Env = append(os.Environ(), helperRoleEnv+"="+role, helperPathEnv+"="+path)
-	cmd.Stdin = stdin
 	cmd.SysProcAttr = attr
+	// The helper's stdin is a pipe that stays open until the helper is waited for: the lock
+	// role holds its lock until stdin ends, and Wait closes the pipe itself.
+	if _, err := cmd.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

@@ -59,7 +59,7 @@ func TestPeerUIDOtherUser(t *testing.T) {
 
 	path := filepath.Join(other, "peer.sock")
 	attr := &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: otherUID, Gid: otherUID}}
-	_, out := helper(t, bin, "peer", path, nil, attr)
+	_, out := helper(t, bin, "peer", path, attr)
 	expect(t, out, "ready")
 
 	c, err := net.Dial("unix", path)
