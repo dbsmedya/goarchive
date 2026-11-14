@@ -59,5 +59,8 @@ jobs:
 
       # A release ships a Windows binary, where a log file's mode sets only the read-only
       # attribute (GH #5: log files are created owner-only). The logger's tests run there too.
-      - name: Logger tests
-        run: go test ./internal/logger/ -count=1
+      # So do the control socket's platform tests (TEL-1): the lock, the stale-socket and
+      # identity checks, the path limit, and the probes whose Windows answers are still to be
+      # measured; -v puts what the probes saw in the log.
+      - name: Logger and control tests
+        run: go test ./internal/logger/ ./internal/control/... ./internal/controlpath/ -count=1 -v
