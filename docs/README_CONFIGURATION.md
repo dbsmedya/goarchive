@@ -248,8 +248,8 @@ foreign keys, the relations must mirror them, nesting and pairing included
 |--------|-------------|---------|
 | `batch_size` | Root keys per batch, and the most keys any copy, verification or discovery statement addresses. Positive | `1000` |
 | `batch_delete_size` | Keys per `DELETE` chunk. Positive | `500` |
-| `sleep_seconds` | Pause between batches; fractions accepted. Not negative | `1` |
-| `delete_sleep_seconds` | Pause between consecutive delete chunks of a batch, across tables; fractions accepted. Not negative | `0` |
+| `sleep_seconds` | Pause between batches; fractions accepted. Not negative, finite | `1` |
+| `delete_sleep_seconds` | Pause between consecutive delete chunks of a batch, across tables; fractions accepted. Not negative, finite | `0` |
 | `sentinel_file` | While this path exists, the run pauses before its next batch | _(empty)_ |
 
 How to choose values: [Tuning throughput](README_OPERATIONS.md#tuning-throughput). The statement

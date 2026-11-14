@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 )
@@ -242,21 +244,50 @@ func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingC
 		})
 	}
 
-	if processing.SleepSeconds < 0 {
-		errors = append(errors, ValidationError{
-			Field:   prefix + ".sleep_seconds",
-			Message: "sleep_seconds cannot be negative",
-		})
+	if err := ValidateSleepSeconds(processing.SleepSeconds); err != nil {
+		errors = append(errors, ValidationError{Field: prefix + ".sleep_seconds", Message: err.Error()})
 	}
 
-	if processing.DeleteSleepSeconds < 0 {
-		errors = append(errors, ValidationError{
-			Field:   prefix + ".delete_sleep_seconds",
-			Message: "delete_sleep_seconds cannot be negative",
-		})
+	if err := ValidateDeleteSleepSeconds(processing.DeleteSleepSeconds); err != nil {
+		errors = append(errors, ValidationError{Field: prefix + ".delete_sleep_seconds", Message: err.Error()})
 	}
 
 	return errors
+}
+
+// The per-value validators below judge one setting's value, and are the single rule that the
+// file and a runtime setter share (TEL-1, spec §4.5 *Validation*). The shape every setting
+// follows: one function ValidateX(v T) error per setting; the message names the setting by its
+// bare key; the file wraps it as ValidationError{Field: prefix + ".key", Message: err.Error()},
+// and a setter reports the same text. A value out of range is refused, never clamped.
+
+// ValidateSleepSeconds judges a sleep_seconds value (SLP-1, D14): not negative, finite, and
+// small enough to be a time.Duration.
+func ValidateSleepSeconds(v float64) error { return validateSleep("sleep_seconds", v) }
+
+// ValidateDeleteSleepSeconds judges a delete_sleep_seconds value by the same rule.
+func ValidateDeleteSleepSeconds(v float64) error { return validateSleep("delete_sleep_seconds", v) }
+
+// maxDurationNanoseconds is the largest duration, math.MaxInt64 nanoseconds, as a float64: the
+// integer is not representable and rounds up to 2^63, so a converted value must be strictly
+// below it to fit.
+const maxDurationNanoseconds = float64(1 << 63)
+
+// validateSleep refuses a negative sleep, a NaN or infinite one, and one whose value in
+// nanoseconds does not fit a duration. The last test is made on the converted value, with the
+// expression the engine converts a sleep by (s * float64(time.Second)), not on a constant in
+// seconds: a float just under 2^63/1e9 can still round up to 2^63 when multiplied, and what is
+// accepted here must convert in range. No cap below the largest duration is chosen.
+func validateSleep(key string, v float64) error {
+	switch {
+	case v < 0:
+		return fmt.Errorf("%s cannot be negative", key)
+	case math.IsNaN(v) || math.IsInf(v, 0):
+		return fmt.Errorf("%s must be a finite number", key)
+	case v*float64(time.Second) >= maxDurationNanoseconds:
+		return fmt.Errorf("%s is too large: a sleep must fit a duration (less than 9.2e9 seconds)", key)
+	}
+	return nil
 }
 
 // validateSafety checks the safety block: disable_foreign_key_checks, a bool with nothing
