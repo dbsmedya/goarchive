@@ -83,42 +83,39 @@ that is later removed leaves the containers pointing at files that no longer exi
 
 ### Which checks a change needs
 
-A full gate takes about nine minutes of the dedicated estate, and a GitHub verify run fifteen.
-Each runs where it tests something the change touched, once, on the commit that survives review.
+A full gate takes about nine minutes of the dedicated estate.
 
-**Reviews come first.** A branch's reviews (Fable for a behaviour change, Codex's MR verdict) and
-their fixes come before the gate and the verify runs. A fix changes the commit, and a gate run
-before the review is spent on a commit that does not ship. A finding from the gate or a verify run
-is fixed in the same way and goes back to Codex as a re-review of the fix alone.
+Every change runs `make check`, and the table below adds what its paths need. Each check runs where
+it tests something the change touched, once, on the commit that survives review.
 
-**The change decides the checks.** A PR needs every row that its diff from `v3` touches, on its
-final commit; a mixed change needs the union:
+**Reviews come first.** A behaviour change gets its spec and lite plan from the Fable 5.2 agent
+before the code. Each change gets Codex's MR verdict before it is merged into `dev/goarchive-3.1`.
+A fix changes the commit, so the local checks run after the review: a check run before the review
+is spent on a commit that does not ship. A finding from a check is fixed the same way and goes back
+to Codex as a re-review of the fix alone.
 
-| The PR changes | Paths | Its final commit needs |
+**The change decides the checks.** A change needs every row that its diff from `dev/goarchive-3.1`
+touches, on its final commit; a mixed change needs the union:
+
+| The change changes | Paths | Its local checks, on the final commit |
 |---|---|---|
 | Documentation only | `docs/`, `*.md`, comments | `make check` (its harness checks the links and the version sites) |
 | Static-check configuration | `.golangci.yml` | `make check` |
-| Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` against the estate; the integration inventory re-measured when test names change |
-| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/workflows/ci.yml`, `matrix-verify.yml`, `gate-verify.yml`, the `Makefile`'s test targets | `make check`; a full gate when `run-gate.sh` or a command it runs changed; a *Matrix verify* run when `tests/envmatrix/` or `matrix-verify.yml` changed; a *Gate verify* run when `gate-verify.yml` or `run-gate.sh` changed |
-| The estate and E2E | `tests/compose.yml`, `tests/dot.env`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | a full gate; a *Matrix verify* run when the change reaches what the matrix reads (`tests/dot.env`, `tests/docker_files/`); a *Gate verify* run when the operator asks |
-| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` (dependencies and the toolchain line) | a full gate and a *Matrix verify* run |
-| Build and packaging | the `Makefile`'s build and release targets, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml`, `docker.yml` | a full gate and a *Matrix verify* run, and the release procedure's artifact checks |
-| A release | the version bump | a full gate, a *Matrix verify* and a *Gate verify* run |
+| Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` on the estate |
+| Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/workflows/ci.yml`, `matrix-verify.yml`, `gate-verify.yml`, the `Makefile`'s test targets | `make check`; a full local gate (`gate-agent`) when `tests/scripts/run-gate.sh` or a command it runs changed. The matrix and gate runs are the dev→main PR's (*The full matrix runs on GitHub*) |
+| The estate and E2E | `tests/compose.yml`, `tests/dot.env`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | `make check`, and the changed packages' tests under `-tags=integration` on the estate; a full local gate when `run-gate.sh` or a command it runs changed. The E2E runs are the dev→main PR's *Gate verify* |
+| Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` (dependencies and the toolchain line) | `make check`, and the changed packages' tests under `-tags=integration` on the estate. The dev→main PR's *Matrix verify* and *Gate verify* runs cover the full matrix and the gate |
+| Build and packaging | the `Makefile`'s build and release targets, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml`, `docker.yml` | `make check`. The dev→main PR's CI, Docker, *Gate verify* and *Matrix verify* runs, and the release procedure's artifact checks |
+| A release | the version bump | `make check`. The dev→main PR that contains the bump runs CI, Docker, *Gate verify* and *Matrix verify* on its head SHA, and the release procedure's artifact checks |
 | Any other path | | no exemption: the gate plan classifies it into a row above before the work goes on, and a review that finds a path the plan left out treats it as a finding |
 
-**A green run carries across a change it does not test.** A full gate GREEN on commit X stands
-for a later commit Y of the same branch when every change from X to Y falls in a row whose checks
-include no full gate (documentation, static-check configuration, tests, or test tooling that
-leaves `run-gate.sh` and its commands alone), and those rows' checks pass on Y. A *Matrix verify*
-run carries only when no change from X to Y reaches what it runs or reads: `./internal/...` and
-`./cmd/...` with their tests, `go.mod` and `go.sum`, `tests/envmatrix/`, `tests/dot.env`,
-`tests/docker_files/` and `matrix-verify.yml`. A *Gate verify* run carries only when no change
-from X to Y needs a full gate or touches `gate-verify.yml` or `run-gate.sh`. A check a row
-requires is never met by a carry across that row's own change. The record names both commits:
-"gate GREEN at X, carried to Y; checks on Y: …". A red run never carries; it goes to the operator.
+**Baselines.** The integration inventory and gate timings in `tests/AGENTS.md` (*Measured baselines*)
+are re-measured once per dev→main PR, when tests were added or removed since the last measurement:
+from that PR's *Gate verify* integration counts, or from a local `gate-agent` run on its head SHA
+when the operator asks.
 
 **Each plan carries a gate plan.** It names, for each task, the check that exercises the task's
-change, and the PR's final checks from the table, so the gate runs are planned with the work.
+change, and the change's local checks from the table, so the checks are planned with the work.
 
 ## Sakila E2E Test Suite
 
@@ -592,8 +589,10 @@ make env-matrix ROWS="sql_mode_empty v84_oracle"  # some rows
 
 Run one row or a few locally while developing. The **full** matrix runs on GitHub through the
 *Matrix verify* workflow (`.github/workflows/matrix-verify.yml`), and the gate on every supported
-image through the *Gate verify* workflow (`.github/workflows/gate-verify.yml`). Each starts only
-from a push of its branch:
+image through the *Gate verify* workflow (`.github/workflows/gate-verify.yml`). Both start by
+themselves on a pull request into `main` (the dev→main PR), on its head SHA; each new push to that
+PR starts a run and cancels the earlier one. Ad hoc runs start from a push of a branch, on the
+operator's request only:
 
 ```bash
 git push origin <sha>:refs/heads/verify/<sha7>          # Matrix verify
@@ -619,21 +618,18 @@ git push origin --delete verify-gate/<sha7>
   `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
 - **When, and who:**
 
-  | Branch | When | Pushed by |
+  | Run | When | Started by |
   |---|---|---|
-  | `verify/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs)), after the reviews and the local gate, before the operator's verdict | the coordinating agent |
-  | `verify-gate/<sha7>` | A PR's final SHA when its change needs one ([Which checks a change needs](#which-checks-a-change-needs): a release PR, or a change to `gate-verify.yml` or `run-gate.sh`); any other SHA when the operator asks, for example after a change to the E2E setup | the coordinating agent; otherwise on the operator's request |
+  | *Matrix verify* and *Gate verify* (with CI and Docker) | A pull request into `main`, the dev→main PR: when it opens, is reopened or is marked ready, and on each new push to it | GitHub |
+  | `verify/<sha7>`, `verify-gate/<sha7>` | An ad hoc run, on the operator's request, for the SHA the operator names | the coordinating agent |
 
-  The repository is public: a push publishes the PR's commits before the verdicts, and deleting
-  the branch does not unpublish them. This standing authorization covers these two branches for
-  the PR's final SHA only; every other push waits for the operator's verdict. After each push,
-  confirm the run started (`gh run list --workflow matrix-verify.yml --branch verify/<sha7>`, or
-  `gate-verify.yml` and `verify-gate/<sha7>`), and on its summary check the heading's SHA and the
-  job count. Delete the branch after the run. A red run goes to the operator with its summary
-  table and is never re-run to get a green one; a red version row caused by a floating image tag
-  is reported as such, and the operator decides whether it blocks the PR.
-- *Matrix verify* replaces the local full matrix. Neither replaces the local gate on the final
-  SHA, or a green gate carried to it ([Which checks a change needs](#which-checks-a-change-needs)).
+  The repository is public: a push publishes its commits, and deleting the branch does not
+  unpublish them. A red run goes to the operator with its summary table and is never re-run to get
+  a green one; a red version row caused by a floating image tag is reported as such, and the
+  operator decides whether it blocks the PR.
+- *Matrix verify* replaces the local full matrix. On the dev→main PR, *Gate verify* replaces the
+  local gate. A change to `tests/scripts/run-gate.sh` or a command it runs also needs a local full
+  gate on its branch ([Which checks a change needs](#which-checks-a-change-needs)).
 
 ### Sakila E2E tests
 

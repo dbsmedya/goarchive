@@ -50,43 +50,47 @@ entry in that test, approved by the operator. `cmd/goarchive/cmd/version_test.go
 fixture, not the project version.
 
 **Releases are automatic and irreversible:** `release.yml` publishes on any pushed `v*` tag, and
-no tests run on a tag. The gate is the PR that contains the bump, and nothing lands after it
-passes. **Agents never create tags or releases; the operator does.** The release procedure
+no tests run on a tag. The gate is the dev→main PR that contains the bump as its last change, and
+nothing lands after it passes. **Agents never create tags or releases; the operator does.** The release procedure
 (tagging, version resolution, artifact checks, release notes) is `.ayder/RELEASING.md`.
 
 ### Release lines
 
-- **2.x is fixes only** (`../goarchive`): no features, refactors, tracking-schema changes or
-  config breaks. Features go to 3.0. Placement is decided in the roadmaps,
+- **2.x is fixes only** (branch `release/2.2`, checkout `../goarchive-v2`, which this checkout never
+  modifies): no features, refactors, tracking-schema changes or config breaks. Features go to 3.1.
+  Placement is decided in the roadmaps,
   `../goarchive/.ayder/roadmaps/roadmap_v2.x-community.md` and `roadmap_v3.md` (numbered design
   decisions in its §2; cite them rather than restating them).
 - **Port the test, not the patch.** A fix lands as a `test` commit, then a `fix` commit, never
   squashed. Moving a fix between lines cherry-picks the test and re-implements the fix. Never
   merge between lines.
 
-### The 3.0 line (this checkout)
+### The 3.1 line (this checkout)
 
-- This checkout is branch `v3`, the 3.0 line. `../goarchive` is the 2.x line: never modify it
-  from here.
+- This checkout is branch `dev/goarchive-3.1`, the 3.1 line.
 - The approved design is `.ayder/superpowers_20261007/specs/2026-10-07-3.0-core-design.md`.
 - The test containers db1/db2/db3 are dedicated to this checkout (R55). Run nothing else on
   them while `make test-reset`, `e2e` or the gate runs, and ask the operator before a reset
   drops a schema that is not the suite's own.
-- **Branches and PRs.** 3.0 PRs target `v3` on origin; 2.x stays frozen on `main` until `v3` is
-  merged onto it by its own PR. The 3.0-alpha PR is the first.
-- **Merge order for every PR into `v3`:** work on a branch (a `test` commit, then a `fix`
-  commit) → the reviews and their fixes: Fable's or Sonnet's final review for behaviour changes,
-  then Codex's MR verdict → the checks the change needs on the final SHA, and only those
-  (`tests/README.md` → *Which checks a change needs*): `gate-agent` GREEN (`tests/AGENTS.md`;
-  re-measure the baselines when tests change), or a green gate carried from an earlier commit; a
-  green *Matrix verify* run (`verify/<sha7>`) and a green *Gate verify* run (`verify-gate/<sha7>`)
-  when that section's table asks for them (a product change needs Matrix verify; a release PR,
-  the one that folds the version bump, or a change to `gate-verify.yml` or `run-gate.sh` needs
-  Gate verify). The coordinating agent pushes each, for the final SHA only, reads its
-  summary and deletes the branch, and never re-runs a red run on its own (`tests/README.md` → *The
-  full matrix runs on GitHub*); a fix after the gate goes back to Codex as a re-review → the
-  operator's verdict → push, open the PR, CI → merge. A release folds its version bump into its
-  last PR; the operator tags.
+- **Development flow.** The order of work. `tests/README.md` → *Which checks a change needs* says
+  what each change runs locally; *The full matrix runs on GitHub* says what GitHub runs.
+  1. `dev/goarchive-3.1` is the long-lived development branch on origin. Each change gets its own
+     branch cut from it, named `3.1/<id>-<topic>`. Change branches stay local.
+  2. On the change branch: a `test` commit, then a `fix` or `feat` commit (TDD). A behaviour change
+     first gets a spec and a lite plan from the Fable 5.2 agent. Codex's MR verdict comes before
+     the merge; a fix after a finding goes back to Codex as a re-review.
+  3. The coordinating agent merges the change branch into `dev/goarchive-3.1` with
+     `git merge --no-ff` and pushes `dev/goarchive-3.1`. CI runs on that push.
+  4. When the line is ready (a release, or when the operator asks), one PR
+     `dev/goarchive-3.1` → `main` is opened, only after the operator's verdict. GitHub runs CI,
+     Docker, *Gate verify* and *Matrix verify* on its head SHA; those runs are the release gate,
+     and a green CI alone is not. The PR is merged with a merge commit, never squashed.
+  5. The integration inventory and gate timings (`tests/AGENTS.md` → *Measured baselines*) are
+     re-measured once per such PR, when tests were added or removed since the last measurement.
+  6. `verify/<sha7>` and `verify-gate/<sha7>` pushes and `workflow_dispatch` runs are ad hoc, for
+     the operator's request only.
+  7. The version bump is the last change merged into `dev/goarchive-3.1` before the PR, so the PR
+     that contains it is the gate. The operator tags `main` after the merge; agents never tag.
 
 ## Build & guards
 

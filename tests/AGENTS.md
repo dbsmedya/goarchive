@@ -141,11 +141,12 @@ Use these only when a task asks for one layer; the gate runs them all in the rig
 task says why.
 
 The full environment matrix and the gate on every supported image run on GitHub, not here
-(`tests/README.md` → *The full matrix runs on GitHub*, which says when each runs). The coordinating
-agent, not the gate agent, pushes `verify/<sha7>` and `verify-gate/<sha7>` on the final SHA of a PR
-whose change needs them (`tests/README.md` → *Which checks a change needs*), confirms each run
-started, reads its summary table and deletes the branch. The same section says when a gate runs at
-all, and when a green gate carries to a later commit; a gate agent is given a SHA only when one must.
+(`tests/README.md` → *The full matrix runs on GitHub*, which says when each runs). They start by
+themselves on the dev→main pull request, and the coordinating agent reads their summary tables on
+that PR. The coordinating agent, not the gate agent, pushes `verify/<sha7>` or `verify-gate/<sha7>`
+only for an ad hoc run the operator asks for. The same section says when a gate runs at all; a gate
+agent is given a SHA only when a change's local checks call for a full gate
+(`tests/README.md` → *Which checks a change needs*) or the operator asks for one.
 
 ## Measured baselines
 
