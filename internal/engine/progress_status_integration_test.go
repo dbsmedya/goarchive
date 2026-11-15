@@ -44,8 +44,8 @@ func TestMySQLProgressForEveryRun(t *testing.T) {
 	if first < 0 {
 		t.Fatal("the run never reached a committed copy")
 	}
-	if st := seen[first]; st.Phase != PhaseRunning || st.RowsCopied != 15 || st.RowsDeleted != 0 || st.Batches != 0 || st.Step != "copy" {
-		t.Errorf("at the first committed copy: %+v, want running, 15 rows copied (3 orders, 6 lines, 6 notes), none deleted, no batch done, copying", st)
+	if st := seen[first]; st.Phase != PhaseRunning || st.RowsCopied != 15 || st.RowsDeleted != 0 || st.Batches != 0 || st.Step != "log" {
+		t.Errorf("at the first committed copy: %+v, want running, 15 rows copied (3 orders, 6 lines, 6 notes), none deleted, no batch done, and the step `log` (the log insert is the last step before the commit)", st)
 	}
 	// A delete is under way: the step is delete, on a table, with rows deleted.
 	var sawDelete bool
