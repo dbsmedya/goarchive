@@ -69,6 +69,10 @@ func ProfileFor(t jobspec.Type) Profile {
 type Config struct {
 	Source         *sql.DB
 	SourceDatabase string
+	// SourceServerUUID is the source's server_uuid, which the engine and validate read before
+	// preflight (database.ReadServerIdentity). It is the source's data identity unless the source
+	// is an ONLINE member of a group (Identity); empty only in tests that do not read it.
+	SourceServerUUID string
 
 	// Destination is the destination connection. Every job type needs it: the tracking
 	// tables live in JobSchema on the destination server (spec §6.1), purge included.
@@ -106,6 +110,9 @@ type Result struct {
 	Keys map[string]key.Def
 	// Caps are the effective statement caps (spec §4.3), in copy order.
 	Caps []Cap
+	// Group is what preflight read about Group Replication on both servers, and the source's
+	// identity. It is read on every preflight, whatever checks are skipped.
+	Group Group
 }
 
 // Run checks the job against both servers and returns the source key definitions.
@@ -141,7 +148,7 @@ func run(ctx context.Context, cfg Config, src, dst server) (*Result, error) {
 			return nil, err
 		}
 	}
-	return &Result{Keys: f.keys, Caps: f.caps}, nil
+	return &Result{Keys: f.keys, Caps: f.caps, Group: f.group}, nil
 }
 
 // stage is one ordered check. A failure stops the run, so a later check can never report
@@ -160,6 +167,11 @@ func stages(cfg Config) []stage {
 	deletes := policy && profile != ProfileNonDestructive
 
 	return []stage{
+		// The group facts come before every other statement, under SkipPolicy too: the source's
+		// ReplicationConfig first, then the plugin's state on each side, then the view (spec §4.2,
+		// In which order). The identity and the report depend on them, so no flag skips them.
+		{"GroupFacts", true, readGroupFacts},
+
 		// Structure first: the earliest actionable failure.
 		{"TablesExist", policy, checkTablesExist},
 		{"Keys", true, readKeys},

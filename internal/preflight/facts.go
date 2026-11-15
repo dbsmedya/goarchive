@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -36,6 +37,15 @@ type server interface {
 	RangeOptimizerMaxMemSize(ctx context.Context) (uint64, error)
 	// MaxAllowedPacket is the session's max_allowed_packet (read-only; the global's value).
 	MaxAllowedPacket(ctx context.Context) (uint64, error)
+	// ReplicationConfig is the server's read_only, super_read_only and server_id. It is the
+	// first statement preflight sends to the source (spec §4.2, In which order).
+	ReplicationConfig(ctx context.Context) (dbsrepl.Config, error)
+	// GroupReplication is the plugin's state, the configured group name and the transaction
+	// size limit. Its zero value is a server without the plugin.
+	GroupReplication(ctx context.Context) (dbsrepl.GroupReplication, error)
+	// GroupMembers is the server's view of its group. It needs SELECT on the view, so it is
+	// read only for a plugin that is ACTIVE with a group name.
+	GroupMembers(ctx context.Context) ([]dbsrepl.GroupMember, error)
 }
 
 // privileges judges the account's privileges. The library emits a finding for every
@@ -148,6 +158,18 @@ func (s *mysqlServer) MaxAllowedPacket(ctx context.Context) (uint64, error) {
 	return v, nil
 }
 
+func (s *mysqlServer) ReplicationConfig(ctx context.Context) (dbsrepl.Config, error) {
+	return dbsrepl.NewInspector(s.db).ReplicationConfig(ctx)
+}
+
+func (s *mysqlServer) GroupReplication(ctx context.Context) (dbsrepl.GroupReplication, error) {
+	return dbsrepl.NewInspector(s.db).GroupReplication(ctx)
+}
+
+func (s *mysqlServer) GroupMembers(ctx context.Context) ([]dbsrepl.GroupMember, error) {
+	return dbsrepl.NewInspector(s.db).GroupMembers(ctx)
+}
+
 type grantsJudge struct{ g validations.Grants }
 
 func (j grantsJudge) Tables(schema string, tables []string, p validations.Privilege) []validations.Finding {
@@ -198,6 +220,7 @@ type facts struct {
 	fkIn, fkOut, fkWithin        memo[validations.ForeignKeyResult]
 
 	// Results of earlier stages.
+	group   Group              // the group facts, read by the first stage
 	keys    map[string]key.Def // source keys, by job table
 	dstKeys map[string]key.Def // destination keys, set by checkDestinationKeys
 	caps    []Cap
