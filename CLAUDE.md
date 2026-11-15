@@ -130,6 +130,7 @@ CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Laye
 | `internal/mermaidascii/` | ASCII diagram rendering for plan command |
 | `internal/preflight/` | 3.0 preflight: checks by job type over dbsgomysql facts, key definitions, statement caps |
 | `internal/replication/` | Replication lag gate over the library's replica status |
+| `internal/testestate/` | Test support, not production: what the integration suites of different packages share on one estate: the replica's lock (one test at a time, across packages) and the base-state checks of the replica and of the group. Nothing in the binary imports it |
 | `internal/tracking/` | 3.0 tracking: the `3.0` schema label, the job registry and binding, the typed per-job log |
 | `internal/tuning/` | A run's runtime settings store: snapshots and revisions, the writer lock, the ceilings and the tolerance's step rule, the bounded audit queue. Every run reads one; only the control server writes it |
 | `internal/types/` | Temporal column metadata and the temporal read contracts |
