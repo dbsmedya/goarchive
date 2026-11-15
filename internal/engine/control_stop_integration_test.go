@@ -159,7 +159,7 @@ func TestMySQLControlStopWithError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	rep, err := e.runContext(t, ctx, cfg)
-	wantErr[*KeySetError](t, err)
+	_ = wantErr[*KeySetError](t, err) // only that it is one: the test reads the report next
 	if rep != nil && rep.Stopped {
 		t.Errorf("the report says Stopped after an error: %+v", rep)
 	}

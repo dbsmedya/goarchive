@@ -137,7 +137,7 @@ func TestMySQLGuardCopyOnly(t *testing.T) {
 	setJob(t, e, "j", "job_status = 1")
 	before := srcRows(t, e)
 	_, err := e.run(t, purge)
-	refusedBy(t, e, err, "notes", before, "j")
+	_ = refusedBy(t, e, err, "notes", before, "j") // the check is the point; the refusal's text is not read here
 	setJob(t, e, "j", "job_status = 3")
 	e.mustRun(t, purge)
 }
@@ -319,9 +319,9 @@ func TestMySQLGuardMutualBlock(t *testing.T) {
 	}
 	before := srcRows(t, e)
 	_, err = e.run(t, archive)
-	refusedBy(t, e, err, "", before, "notes")
+	_ = refusedBy(t, e, err, "", before, "notes")
 	_, err = e.run(t, purge)
-	refusedBy(t, e, err, "", before, "j")
+	_ = refusedBy(t, e, err, "", before, "j")
 	// The documented abandonment of notes' roots (README_JOBS_SCHEMA, "Abandoning logged roots").
 	execAll(t, e.dst, fmt.Sprintf("DELETE FROM archiver_job_log_%d WHERE ga_status = 4", notes.ID))
 	e.mustRun(t, archive)
