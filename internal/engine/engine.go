@@ -73,6 +73,11 @@ type Config struct {
 
 	// Lag is the replication lag gate; nil means none.
 	Lag LagGate
+	// TellSource is called once, when preflight returns and before the run's first call of Lag, with the source's member
+	// id when it is an ONLINE member of a group and "" when it is not: the gate is built before preflight has read the
+	// source's facts, and a group server is not judged without them (spec §4.3). The command supplies it when it has
+	// built a gate; nil is no telling.
+	TellSource func(memberID string)
 	// Replication is the job's replication block and ReplicaPools the pools opened on its servers,
 	// index-paired with its servers (database.Manager.Replicas): preflight's REPLICATION_TYPE_CHECK and
 	// the banner of a member source that no group server watches read them (GR C5). The gate is Lag.
@@ -257,6 +262,11 @@ func Run(ctx context.Context, cfg Config) (rep *Report, err error) {
 		cfg.Logger.Infof("Statement cap: %s: %d key tuples per statement", c, c.Tuples)
 	}
 	logGroupReport(cfg.Logger, res, cfg.Processing)
+	// The gate is told whether the source is a member before anything can call it: start is the first step that
+	// does, recovery's gate calls included.
+	if cfg.TellSource != nil {
+		cfg.TellSource(res.Group.SourceMemberID())
+	}
 	cfg.began = began
 	return start(ctx, cfg, tracking.Binding{
 		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,

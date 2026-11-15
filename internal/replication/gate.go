@@ -27,17 +27,29 @@ type statusReader interface {
 	ReplicaStatus(ctx context.Context) ([]dbsrepl.ChannelStatus, error)
 }
 
-// server is one monitored replica: its operator-facing identity, the reader
-// bound to its connection, and the channels this gate cares about.
+// server is one monitored server: its operator-facing identity and either the
+// reader bound to its connection and the channels this gate cares about (an
+// asynchronous replica), or its group probe (a Group Replication member).
 type server struct {
 	// id is the config's host:port, IPv6-safe. It is the only server identity
 	// that reaches a log line — never a DSN, user, or password.
 	id string
-	// reader reads this server's replication facts.
+	// reader reads this server's replication facts; nil for a group server.
 	reader statusReader
 	// channels selects the gated channels: empty means all of them, and ""
 	// inside the slice is the default channel.
 	channels []string
+	// group is set for a `type: group` server, and replaces reader and channels.
+	group *groupProbe
+}
+
+// kind is the server's type as the verdict record and the status report it.
+func (s server) kind() string {
+	if s.group != nil {
+		return "group"
+	}
+
+	return "async"
 }
 
 // Gate holds a job while any monitored replica fails replication policy. It
@@ -67,6 +79,8 @@ type Gate struct {
 	// CheckedAt. holdSince is when the current call began holding.
 	verdicts  []ServerVerdict
 	holdSince time.Time
+	// source is what the gate was told of the source (SetSource), which a group server's judgement needs.
+	source sourceState
 
 	// now and sleep are seams: injected in tests so TTL expiry, tick cadence
 	// and held durations need no wall clock. sleep waits for the duration, for
@@ -122,6 +136,23 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger, store 
 		if dbs[i] == nil {
 			return nil, fmt.Errorf("replication: nil connection for server %s", cfg.Servers[i].Addr())
 		}
+		if cfg.Servers[i].Type == "group" {
+			// The two bounds are required by the loader whenever a group server is listed; a construction that
+			// gets none is refused rather than judged by a bound nobody set.
+			if cfg.GroupApplierQueueWithin == nil || cfg.GroupCertifierQueueWithin == nil {
+				return nil, fmt.Errorf("replication: server %s is type group and needs group_applier_queue_within and group_certifier_queue_within",
+					cfg.Servers[i].Addr())
+			}
+			servers = append(servers, server{
+				id: cfg.Servers[i].Addr(),
+				group: &groupProbe{
+					reader:        dbsrepl.NewInspector(dbs[i]),
+					applierWithin: int64(*cfg.GroupApplierQueueWithin), certifierWithin: int64(*cfg.GroupCertifierQueueWithin),
+				},
+			})
+
+			continue
+		}
 		servers = append(servers, server{
 			id:       cfg.Servers[i].Addr(),
 			reader:   dbsrepl.NewInspector(dbs[i]),
@@ -170,6 +201,11 @@ func (g *Gate) logStartup() {
 		len(g.servers), st.SecondsBehindSourceWithin, config.CheckIntervalDuration(st.CheckInterval), g.ttl)
 
 	for _, srv := range g.servers {
+		if srv.group != nil {
+			g.logger.Infof("  server %s group: %s", srv.id, groupBounds(srv.group))
+
+			continue
+		}
 		g.logger.Infof("  server %s channels: %s", srv.id, renderChannelList(srv.channels))
 	}
 }
@@ -274,7 +310,19 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			if holding {
 				probe, release = withStop(ctx, stop)
 			}
-			status, err := srv.reader.ReplicaStatus(probe)
+			var (
+				status []dbsrepl.ChannelStatus
+				snap   groupSnapshot
+				table  string
+				err    error
+			)
+			if srv.group != nil {
+				// Both reads of a group server run on the one probe context: a stop that cancels it cancels
+				// whichever read is under way (LAG-1).
+				snap, table, err = srv.group.read(probe)
+			} else {
+				status, err = srv.reader.ReplicaStatus(probe)
+			}
 			release()
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
@@ -294,11 +342,19 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 
 			var cause holdCause
 			var detail string
-			var lag *int64
+			var lag, applier, certifier *int64
 			ok := true
 			switch {
+			case err != nil && srv.group != nil:
+				ok, cause, detail = false, classify(err), groupReadDetail(table, err)
 			case err != nil:
 				ok, cause, detail = false, classify(err), sanitizeLine(err.Error())
+			case srv.group != nil:
+				applier, certifier = largestQueues(snap.stats)
+				ps := evaluateGroup(snap.members, snap.stats, srv.group.applierWithin, srv.group.certifierWithin, g.currentSource())
+				if len(ps) > 0 {
+					ok, cause, detail = false, causeUnhealthy, renderProblems(ps, tolerance)
+				}
 			default:
 				lag = lagOf(status, srv.channels)
 				if ps := evaluate(status, srv.channels, tolerance); len(ps) > 0 {
@@ -320,7 +376,7 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 				failed = true
 				g.transition(holds, &firstHold, srv.id, cause, detail, interval)
 			}
-			g.record(i, ok, cause, detail, lag, tolerance, firstHold)
+			g.record(i, ok, cause, detail, lag, applier, certifier, tolerance, firstHold)
 			if !ok {
 				allOK = false
 			}
@@ -588,9 +644,16 @@ type ServerVerdict struct {
 	// Detail is the rendered line the hold log shows for the cause, and empty for a
 	// healthy server.
 	Detail string
+	// Type is the server's type: "async" for a replica, "group" for a Group Replication member. A server not yet
+	// probed has it too.
+	Type string
 	// Lag is the largest Seconds_Behind_Source among the gated channels, in seconds;
-	// nil when a gated channel reports NULL or the read failed.
+	// nil when a gated channel reports NULL or the read failed, and always nil for a group server.
 	Lag *int64
+	// ApplierQueue and CertifierQueue are, for a group server, the largest applier queue and the largest
+	// certification queue in its view at the last probe, in transactions; nil when it has not been probed or its
+	// read failed. Always nil for an asynchronous server.
+	ApplierQueue, CertifierQueue *int64
 	// Tolerance is the tolerance the verdict was judged by, in seconds.
 	Tolerance int64
 	// CheckedAt is the time of the probe.
@@ -616,13 +679,10 @@ func (g *Gate) Record() Record {
 
 	rec := Record{HoldingSince: g.holdSince, LastPass: g.lastPass}
 	for i, srv := range g.servers {
-		v := ServerVerdict{Server: srv.id}
+		v := ServerVerdict{Server: srv.id, Type: srv.kind()}
 		if i < len(g.verdicts) {
 			v = g.verdicts[i]
-			if v.Lag != nil {
-				lag := *v.Lag
-				v.Lag = &lag
-			}
+			v.Lag, v.ApplierQueue, v.CertifierQueue = copyInt(v.Lag), copyInt(v.ApplierQueue), copyInt(v.CertifierQueue)
 		}
 		rec.Servers = append(rec.Servers, v)
 	}
@@ -630,9 +690,22 @@ func (g *Gate) Record() Record {
 	return rec
 }
 
+// copyInt returns a copy of the number n points to, so a reader of the record holds no pointer into the gate.
+func copyInt(n *int64) *int64 {
+	if n == nil {
+		return nil
+	}
+	c := *n
+
+	return &c
+}
+
 // record writes server i's verdict, and since when the call holds, under the mutex.
-func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag *int64, tolerance int64, holdSince time.Time) {
-	v := ServerVerdict{Server: g.servers[i].id, Healthy: ok, Lag: lag, Tolerance: tolerance, CheckedAt: g.now()}
+func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag, applier, certifier *int64, tolerance int64, holdSince time.Time) {
+	v := ServerVerdict{
+		Server: g.servers[i].id, Type: g.servers[i].kind(), Healthy: ok, Lag: lag,
+		ApplierQueue: applier, CertifierQueue: certifier, Tolerance: tolerance, CheckedAt: g.now(),
+	}
 	if !ok {
 		v.Cause, v.Detail = cause.String(), detail
 	}
@@ -643,7 +716,7 @@ func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag *int64
 	if g.verdicts == nil {
 		g.verdicts = make([]ServerVerdict, len(g.servers))
 		for j := range g.servers {
-			g.verdicts[j].Server = g.servers[j].id
+			g.verdicts[j].Server, g.verdicts[j].Type = g.servers[j].id, g.servers[j].kind()
 		}
 	}
 	g.verdicts[i] = v

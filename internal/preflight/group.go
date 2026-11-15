@@ -40,6 +40,18 @@ func configured(g dbsrepl.GroupReplication) bool {
 	return g.PluginStatus == "ACTIVE" && g.GroupName != ""
 }
 
+// SourceMemberID is what the engine hands the replication gate when preflight returns (spec §4.3): the source's own member
+// id when it is an ONLINE member of a group, and "" for every other source, a plain server, a member that is not ONLINE
+// and a server with no row of its own included. "" tells the gate that the source is no member, so its source rule is not
+// applied; a gate that is never told holds every group server.
+func (g Group) SourceMemberID() string {
+	if !onlineOwn(g.Members) {
+		return ""
+	}
+
+	return ownRow(g.Members).MemberID
+}
+
 // ownRow returns the view's row that describes the queried server, or nil.
 func ownRow(members []dbsrepl.GroupMember) *dbsrepl.GroupMember {
 	for i := range members {

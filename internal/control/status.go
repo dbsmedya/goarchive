@@ -68,15 +68,20 @@ type TrackerSource interface{ Status() TrackerStatus }
 // ServerVerdict is the gate's last verdict on one server. A server never probed has a zero
 // CheckedAt.
 type ServerVerdict struct {
-	Server  string
+	Server string
+	// Type is "async" or "group". A verdict without one is an asynchronous server's.
+	Type    string
 	Healthy bool
 	// Cause is unreachable, unreadable or unhealthy, and empty for a healthy server.
 	Cause, Detail string
 	// Lag is the largest lag among the gated channels in seconds; nil when it is NULL or the read
-	// failed.
-	Lag       *int64
-	Tolerance int64
-	CheckedAt time.Time
+	// failed, and always nil for a group server.
+	Lag *int64
+	// ApplierQueue and CertifierQueue are a group server's two largest queues at the last probe; nil when it
+	// has not been probed or its read failed, and always nil for an asynchronous server.
+	ApplierQueue, CertifierQueue *int64
+	Tolerance                    int64
+	CheckedAt                    time.Time
 }
 
 // GateRecord is the gate's last-verdict record. HoldingSince is zero when the gate is not holding.
@@ -103,6 +108,9 @@ type Info struct {
 	// configured value that is not a setting.
 	ReplicationEnabled bool
 	CacheTTL           int
+	// GroupApplierQueueWithin and GroupCertifierQueueWithin are the configured group bounds, nil when
+	// no group server is listed.
+	GroupApplierQueueWithin, GroupCertifierQueueWithin *int
 }
 
 // view renders the status from its sources. The store and the tracker are required; gate is nil
@@ -208,13 +216,16 @@ type pauseJSON struct {
 }
 
 type verdictJSON struct {
-	Server     string  `json:"server"`
-	Healthy    *bool   `json:"healthy"`
-	Cause      string  `json:"cause"`
-	Detail     string  `json:"detail"`
-	LagSeconds *int64  `json:"lag_seconds"`
-	Tolerance  int64   `json:"tolerance"`
-	CheckedAt  *string `json:"checked_at"`
+	Server         string  `json:"server"`
+	Type           string  `json:"type"`
+	Healthy        *bool   `json:"healthy"`
+	Cause          string  `json:"cause"`
+	Detail         string  `json:"detail"`
+	LagSeconds     *int64  `json:"lag_seconds"`
+	ApplierQueue   *int64  `json:"applier_queue"`
+	CertifierQueue *int64  `json:"certifier_queue"`
+	Tolerance      int64   `json:"tolerance"`
+	CheckedAt      *string `json:"checked_at"`
 }
 
 type holdJSON struct {
@@ -248,11 +259,13 @@ type settingJSON struct {
 }
 
 type replicationJSON struct {
-	Enabled    bool          `json:"enabled"`
-	Used       bool          `json:"used"`
-	CacheTTL   int           `json:"cache_ttl"`
-	LastPassAt *string       `json:"last_pass_at"`
-	Servers    []verdictJSON `json:"servers"`
+	Enabled                   bool          `json:"enabled"`
+	Used                      bool          `json:"used"`
+	CacheTTL                  int           `json:"cache_ttl"`
+	GroupApplierQueueWithin   *int          `json:"group_applier_queue_within"`
+	GroupCertifierQueueWithin *int          `json:"group_certifier_queue_within"`
+	LastPassAt                *string       `json:"last_pass_at"`
+	Servers                   []verdictJSON `json:"servers"`
 }
 
 // statusJSON is the object of status-json, part of the protocol contract (spec §4.3): adding a
@@ -284,7 +297,10 @@ type statusJSON struct {
 func verdicts(in []ServerVerdict) []verdictJSON {
 	out := []verdictJSON{}
 	for _, s := range in {
-		j := verdictJSON{Server: s.Server, Cause: s.Cause, Detail: s.Detail, LagSeconds: s.Lag, Tolerance: s.Tolerance, CheckedAt: nullable(s.CheckedAt)}
+		j := verdictJSON{
+			Server: s.Server, Type: s.kind(), Cause: s.Cause, Detail: s.Detail, LagSeconds: s.Lag,
+			ApplierQueue: s.ApplierQueue, CertifierQueue: s.CertifierQueue, Tolerance: s.Tolerance, CheckedAt: nullable(s.CheckedAt),
+		}
 		if !s.CheckedAt.IsZero() {
 			healthy := s.Healthy
 			j.Healthy = &healthy
@@ -312,6 +328,7 @@ func (v *view) jsonLine() (string, error) {
 		Settings: map[string]settingJSON{},
 		Replication: replicationJSON{
 			Enabled: v.info.ReplicationEnabled, Used: r.hasGate, CacheTTL: v.info.CacheTTL,
+			GroupApplierQueueWithin: v.info.GroupApplierQueueWithin, GroupCertifierQueueWithin: v.info.GroupCertifierQueueWithin,
 			Servers: verdicts(r.gate.Servers),
 		},
 		Changes: r.snap.Revision,
@@ -470,7 +487,11 @@ func (v *view) replicationLines(r read) []string {
 	if !r.gate.LastPass.IsZero() {
 		last = fmt.Sprintf("last pass %s ago (%s)", FormatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
 	}
-	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last)}
+	header := fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last)
+	if a, c := v.info.GroupApplierQueueWithin, v.info.GroupCertifierQueueWithin; a != nil && c != nil {
+		header += fmt.Sprintf(", group queue bounds: applier %d, certifier %d", *a, *c)
+	}
+	lines := []string{header}
 	for _, s := range r.gate.Servers {
 		lines = append(lines, replicationIndent+verdictText(s, r.now))
 	}
@@ -485,15 +506,34 @@ func verdictText(s ServerVerdict, now time.Time) string {
 		return s.Server + " not checked yet"
 	}
 	age, at := FormatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
-	lag := "lag unknown"
-	if s.Lag != nil {
-		lag = fmt.Sprintf("lag %ds", *s.Lag)
-	}
 	verdict := "healthy"
 	if s.Cause != "" {
 		verdict = fmt.Sprintf("%s (%s)", s.Cause, s.Detail)
 	}
+	if s.kind() == "group" {
+		// A group server has no lag and no tolerance: its line says its two queues at the last probe.
+		queue := func(n *int64) string {
+			if n == nil {
+				return "unknown"
+			}
+			return fmt.Sprintf("%d", *n)
+		}
+		return fmt.Sprintf("%s %s, group, applier queue %s, certifier queue %s, checked %s ago (%s)",
+			s.Server, verdict, queue(s.ApplierQueue), queue(s.CertifierQueue), age, at)
+	}
+	lag := "lag unknown"
+	if s.Lag != nil {
+		lag = fmt.Sprintf("lag %ds", *s.Lag)
+	}
 	return fmt.Sprintf("%s %s, %s, tolerance %ds, checked %s ago (%s)", s.Server, verdict, lag, s.Tolerance, age, at)
+}
+
+// kind is the server's type: a verdict that names none is an asynchronous server's.
+func (s ServerVerdict) kind() string {
+	if s.Type == "" {
+		return "async"
+	}
+	return s.Type
 }
 
 // changesText counts the runtime changes the run has accepted (the store's revision).
