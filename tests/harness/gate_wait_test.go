@@ -1,3 +1,7 @@
+//go:build !windows
+
+// Unix only: these tests run the gate wait script in its own process group (Setpgid) and signal it with syscall.Kill, which Windows lacks.
+
 package harness
 
 import (
