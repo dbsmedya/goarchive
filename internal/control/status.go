@@ -477,20 +477,23 @@ func (v *view) replicationLines(r read) []string {
 	return lines
 }
 
-// verdictText is one server's last verdict on one line, with its age and the time it was checked.
+// verdictText is one server's last verdict on one line: the verdict, the measured lag (or that it is
+// unknown) and the tolerance it was judged by, which are not always in a cause's detail and can differ
+// from the current setting, and its age and the time it was checked.
 func verdictText(s ServerVerdict, now time.Time) string {
 	if s.CheckedAt.IsZero() {
 		return s.Server + " not checked yet"
 	}
 	age, at := FormatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
-	if s.Cause != "" {
-		return fmt.Sprintf("%s %s (%s), checked %s ago (%s)", s.Server, s.Cause, s.Detail, age, at)
-	}
 	lag := "lag unknown"
 	if s.Lag != nil {
 		lag = fmt.Sprintf("lag %ds", *s.Lag)
 	}
-	return fmt.Sprintf("%s healthy, %s, tolerance %ds, checked %s ago (%s)", s.Server, lag, s.Tolerance, age, at)
+	verdict := "healthy"
+	if s.Cause != "" {
+		verdict = fmt.Sprintf("%s (%s)", s.Cause, s.Detail)
+	}
+	return fmt.Sprintf("%s %s, %s, tolerance %ds, checked %s ago (%s)", s.Server, verdict, lag, s.Tolerance, age, at)
 }
 
 // changesText counts the runtime changes the run has accepted (the store's revision).
