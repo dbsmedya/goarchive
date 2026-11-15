@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
+
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
@@ -97,10 +99,21 @@ type Config struct {
 	// must be at least 1.
 	Processing config.ProcessingConfig
 
+	// Replication is the job's replication block, and ReplicaPools the pools opened on its servers,
+	// index-paired with Replication.Servers (database.Manager.Replicas). They matter to an archive and a
+	// purge with the block enabled: REPLICATION_TYPE_CHECK reads each `type: group` server through its pool,
+	// and the banner needs the block alone (GR C5).
+	Replication  config.ReplicationConfig
+	ReplicaPools []*sql.DB
+
 	Logger *logger.Logger
 	// Banner emits a warning with a run banner's visibility (R45): on stderr and in the log,
 	// past the level and file_only. Nil logs it with Logger.Warn (JSN-1).
 	Banner func(string)
+
+	// groupRead reads the GroupReplication fact of server i of Replication.Servers. Nil reads it through
+	// ReplicaPools; a test supplies the answers.
+	groupRead func(ctx context.Context, i int) (dbsrepl.GroupReplication, error)
 }
 
 // Result is what a passing preflight learned.
@@ -139,6 +152,9 @@ func run(ctx context.Context, cfg Config, src, dst server) (*Result, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = logger.NewDefault()
 	}
+	if cfg.groupRead == nil {
+		cfg.groupRead = poolGroupRead(cfg.ReplicaPools)
+	}
 	f := newFacts(cfg, src, dst)
 	for _, st := range stages(cfg) {
 		if !st.enabled {
@@ -165,6 +181,7 @@ func stages(cfg Config) []stage {
 	policy := !cfg.SkipPolicy
 	destination := policy && profile != ProfileSourceOnly
 	deletes := policy && profile != ProfileNonDestructive
+	gated := cfg.Replication.Enabled && profile != ProfileNonDestructive
 
 	return []stage{
 		// The group facts come before every other statement, under SkipPolicy too: each side's
@@ -173,6 +190,11 @@ func stages(cfg Config) []stage {
 		// the report depend on them, and no flag skips either check.
 		{"ReadOnly", true, checkReadOnly},
 		{"GroupFacts", true, readGroupFacts},
+		// The replication block's group servers, for the jobs the gate serves: an archive and a purge with
+		// the block enabled (GR C5). The check is a policy check; the banner is information and is given
+		// whatever is skipped.
+		{"ReplicationType", policy && gated, checkReplicationType},
+		{"ReplicationBanner", gated, warnUnmonitoredGroup},
 
 		// Structure first: the earliest actionable failure.
 		{"TablesExist", policy, checkTablesExist},

@@ -146,6 +146,8 @@ func (c *Config) validateReplication() ValidationErrors {
 		}
 	}
 
+	errors = append(errors, c.validateGroupBounds()...)
+
 	seenAddr := make(map[string]bool, len(c.Replication.Servers))
 	for i, server := range c.Replication.Servers {
 		prefix := fmt.Sprintf("replication.servers[%d]", i)
@@ -191,10 +193,19 @@ func (c *Config) validateReplication() ValidationErrors {
 		}
 		seenAddr[addr] = true
 
-		if server.Type != "async" {
+		if server.Type != "async" && server.Type != "group" {
 			errors = append(errors, ValidationError{
 				Field:   prefix + ".type",
-				Message: fmt.Sprintf("unsupported replication type %q for server %s; supported: async", server.Type, addr),
+				Message: fmt.Sprintf("unsupported replication type %q for server %s; supported: async, group", server.Type, addr),
+			})
+		}
+
+		// Channels select asynchronous channels, and a group has none to select.
+		if server.Type == "group" && len(server.Channels) > 0 {
+			errors = append(errors, ValidationError{
+				Field: prefix + ".channels",
+				Message: fmt.Sprintf("server %s is type group and takes no channels: channels select asynchronous replication channels, "+
+					"and a group has none to select", addr),
 			})
 		}
 
@@ -217,6 +228,32 @@ func (c *Config) validateReplication() ValidationErrors {
 		}
 	}
 
+	return errors
+}
+
+// validateGroupBounds judges the two group bounds: both are required, each with its own message, when a server of
+// type group is listed (the block's other rules apply whether or not it is enabled), and a value that is set is
+// validated whether or not one is. There is no default (spec §4.1).
+func (c *Config) validateGroupBounds() ValidationErrors {
+	var errors ValidationErrors
+	hasGroup := false
+	for _, server := range c.Replication.Servers {
+		hasGroup = hasGroup || server.Type == "group"
+	}
+	for _, b := range []struct {
+		key   string
+		value *int
+	}{
+		{"group_applier_queue_within", c.Replication.GroupApplierQueueWithin},
+		{"group_certifier_queue_within", c.Replication.GroupCertifierQueueWithin},
+	} {
+		switch {
+		case b.value == nil && hasGroup:
+			errors = append(errors, ValidationError{Field: "replication." + b.key, Message: b.key + " is required when a server is type group"})
+		case b.value != nil && *b.value < 0:
+			errors = append(errors, ValidationError{Field: "replication." + b.key, Message: b.key + " cannot be negative"})
+		}
+	}
 	return errors
 }
 
