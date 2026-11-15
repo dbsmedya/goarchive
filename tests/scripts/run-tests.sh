@@ -8,9 +8,9 @@
 # Options:
 #   -h, --help          Show this help message
 #   --setup             Setup/reset test environment (docker + databases)
-#   --sakila            Run the working E2E tests (01, 03-09, 13-17)
+#   --sakila            Run the working E2E tests (01, 03-09, 13-17, 20)
 #   --sakila-examples   Run the validation-demo tests (02, 10, 11, 12, 18, 19)
-#   -t, --test NUM      Run only specific E2E test (1-17)
+#   -t, --test NUM      Run only specific E2E test (1-20)
 #   --unit-only         Run only Go unit tests
 #   --integration-only  Run only Go integration tests
 #   --fmt               Check Go code formatting with gofmt
@@ -84,7 +84,7 @@ fi
 #
 # Sourcing only DEFINES functions, so the estate variables further down this file
 # do not need to exist yet -- they are read when a function is called.
-for _lib in log query assert estate runner tracking interrupt replication golayer registry engine; do
+for _lib in log query assert estate runner tracking interrupt replication control golayer registry engine; do
     if [ ! -f "$TESTS_DIR/e2e/lib/$_lib.sh" ]; then
         echo "ERROR: missing harness library $TESTS_DIR/e2e/lib/$_lib.sh" >&2
         exit 1
@@ -120,7 +120,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -h, --help          Show this help message"
             echo "  --setup             Setup/reset test environment (docker + databases)"
-            echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold, 14-16 key matrix, 17 purge stop during a hold)"
+            echo "  --sakila            Run the working E2E tests (01 film tree, 03 payment, 04 rental->payment, 05 payment+sha256, 06 payment purge, 07 rental->payment copy-only, 08 graceful resume, 09 crash replay, 13 purge replication hold, 14-16 key matrix, 17 purge stop during a hold, 20 archive driven over its control socket)"
             echo "  --sakila-examples   Run the validation-demonstration tests (02, 10, 11, 12, 18, 19)"
             echo "                      These are DESIGNED to fail preflight; success"
             echo "                      here means the failure matches documented expectation."
@@ -243,7 +243,7 @@ main() {
     # each category's README. A list of tests in the dispatcher is a list that
     # goes stale, which is how this comment came to omit test 07.
     if [ "$SAKILA" = true ]; then
-        run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 17" "working"
+        run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 17 20" "working"
         exit 0
     fi
 

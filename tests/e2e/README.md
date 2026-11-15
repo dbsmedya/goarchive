@@ -18,7 +18,7 @@ the file.
 tests/e2e/
 ├── lib/                    the harness: shared, written once
 ├── validation/    02 10 11 12 18 19  configs that MUST fail preflight
-├── archive/       01 03 04 05 14  copy → verify → delete
+├── archive/       01 03 04 05 14 20  copy → verify → delete
 ├── purge/         06 13 15        exact deletion and live replication hold
 ├── copy-only/     07 16           copy without deleting
 └── resume/        08 09           interrupt a live run, then finish it
@@ -69,6 +69,7 @@ orphan_checks="payment:rental_id:rental:rental_id"
 | `interrupt_after_batches` | *(resume only)* which batch to interrupt at |
 | `interrupt_expect_dest` | *(resume only)* destination rows required **exactly** at that point |
 | `replication_hold` | `stopped-applier` for the working purge replication witness; cannot be combined with `interrupt` |
+| `control_socket` | `driven` for the archive that is run three times over its runtime control socket (test 20); needs `mode="working"`, `command="archive"` and no `interrupt` |
 
 Do **not** put `--force-triggers` anywhere. `run_archive_job` applies it per
 command, and `copy-only` does not accept the flag at all. A validation demo's
@@ -120,6 +121,23 @@ within 10 seconds, the stop line, the stopped closing entry and an unchanged sou
 then restores the applier and runs a second purge, which must complete without
 recovery.
 
+### The control socket declaration
+
+Test20 declares `control_socket="driven"`, with `mode="working"` and `command="archive"`. Anything else
+is refused before the fixture reset, as `replication_hold` is, and the variable is local to each test
+and in the suite's leakage check.
+
+`lib/control.sh` owns the procedure. It makes a short private directory under `/tmp` (a socket path is
+limited to 103 bytes on macOS), writes two copies of the rendered config with that directory in place
+of the template's `__SOCKET_DIR__` (mode 0600: they hold the estate's password), runs the job three
+times and removes everything on every path out. Run 1 is driven over the socket, with
+`goarchive control` and with the documented `nc -U` and `socat` lines, and stopped (exit 3); run 2 is
+killed with SIGKILL, which leaves a stale socket (`control` exits 5); run 3 replaces it and completes.
+The engine hands the standard assertions (verification, pacing floor, end state) **run 3's own output
+file**, because they read one run's closing entry and an earlier run's must never satisfy them. The test
+needs `jq`, `nc` and `socat`; a missing tool fails it. `tests/harness`'s
+`TestHarnessControlSocketDeclaration` checks the declaration's refusals and routing without the estate.
+
 ## Adding a test
 
 1. **Write `../configs/testNN_<name>.yaml.template`.** The `.template` is the only
@@ -145,7 +163,7 @@ recovery.
 
 3. **Wire `NN` into the ordered dispatch list** in `../scripts/run-tests.sh` →
    `main`:
-   - working → `run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 NN" "working"`
+   - working → `run_e2e_suite "1 3 4 5 6 7 8 9 13 14 15 16 17 20 NN" "working"`
    - demos → `run_e2e_suite "2 10 11 12 18 19 NN" "validation demos"`
 
 4. **Update the catalogue in `../README.md`** and the category's `README.md`.
