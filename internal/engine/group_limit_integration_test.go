@@ -72,9 +72,9 @@ func lowerGroupLimit(t *testing.T, bytes int) {
 	}
 }
 
-// groupCommitFailure asserts err is a GroupCommitError of the given side and commit, over MySQL error 3100
+// groupCommitFailure asserts err is a GroupCommitError of the given side and commit and known limit, over MySQL error 3100
 // (asserted by its number and by the wrap, never by the server's text), and returns it.
-func groupCommitFailure(t *testing.T, err error, side string, commit Commit) *GroupCommitError {
+func groupCommitFailure(t *testing.T, err error, side string, commit Commit, limit uint64) *GroupCommitError {
 	t.Helper()
 	var gce *GroupCommitError
 	if !errors.As(err, &gce) {
@@ -84,8 +84,8 @@ func groupCommitFailure(t *testing.T, err error, side string, commit Commit) *Gr
 	if !errors.As(err, &me) || me.Number != 3100 {
 		t.Errorf("the chain holds %v, want MySQL error 3100", me)
 	}
-	if gce.Side != side || gce.Commit != commit || !gce.Limit.Known || gce.Limit.Bytes != limitBytes {
-		t.Errorf("GroupCommitError = side %q commit %d limit %+v, want %s, commit %d, a known limit of %d", gce.Side, gce.Commit, gce.Limit, side, commit, limitBytes)
+	if gce.Side != side || gce.Commit != commit || !gce.Limit.Known || gce.Limit.Bytes != limit {
+		t.Errorf("GroupCommitError = side %q commit %d limit %+v, want %s, commit %d, a known limit of %d", gce.Side, gce.Commit, gce.Limit, side, commit, limit)
 	}
 	return gce
 }
@@ -111,7 +111,8 @@ func TestMySQLSourceLimitFailsTheDeleteChunk(t *testing.T) {
 			cfg := e.config(t, job(t, typ, bigRowsJob))
 			cfg.Processing = config.ProcessingConfig{BatchSize: 20, BatchDeleteSize: 100}
 			_, err := e.run(t, cfg)
-			gce := groupCommitFailure(t, err, "source", CommitDelete)
+			t.Logf("the error: %v", err)
+			gce := groupCommitFailure(t, err, "source", CommitDelete, limitBytes)
 			if gce.Setting != "batch_delete_size" || gce.Value != 100 || gce.Limit.Member != preflight.MemberOnline {
 				t.Errorf("GroupCommitError = %s=%d, member %d; want batch_delete_size=100 on an ONLINE member", gce.Setting, gce.Value, gce.Limit.Member)
 			}
@@ -163,7 +164,8 @@ func TestMySQLDestinationLimitFailsTheCopyTransaction(t *testing.T) {
 	cfg := e.config(t, job(t, jobspec.Archive, bigRowsJob))
 	cfg.Processing = config.ProcessingConfig{BatchSize: 20, BatchDeleteSize: 100}
 	_, err := e.run(t, cfg)
-	gce := groupCommitFailure(t, err, "destination", CommitCopy)
+	t.Logf("the error: %v", err)
+	gce := groupCommitFailure(t, err, "destination", CommitCopy, limitBytes)
 	if gce.Setting != "batch_size" || gce.Value != 20 || gce.Limit.Member != preflight.MemberUnread {
 		t.Errorf("GroupCommitError = %s=%d, member %d; want batch_size=20 on a destination whose view is not read", gce.Setting, gce.Value, gce.Limit.Member)
 	}
