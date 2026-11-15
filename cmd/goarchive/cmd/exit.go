@@ -132,10 +132,10 @@ func finish(err error, stderr io.Writer) int {
 	switch {
 	case errors.As(err, &done):
 	case diagJSON != nil:
-		diagJSON.Always().Errorw("Command failed", "error", err.Error())
+		diagJSON.Always().Errorw("Command failed", "error", failureText(err))
 		_ = diagJSON.Sync()
 	default:
-		_, _ = fmt.Fprintln(stderr, "Error:", err)
+		_, _ = fmt.Fprintln(stderr, "Error:", failureText(err))
 	}
 	return code
 }
