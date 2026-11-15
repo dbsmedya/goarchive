@@ -44,7 +44,7 @@ func (w *world) ordered() *[]string {
 }
 
 // groupCalls are the facts of the group set, as the shared list spells them.
-var groupCalls = []string{"src.ReplicationConfig", "src.GroupReplication", "dst.GroupReplication", "src.GroupMembers"}
+var groupCalls = []string{"src.ReplicationConfig", "dst.ReplicationConfig", "src.GroupReplication", "dst.GroupReplication", "src.GroupMembers"}
 
 // deniedView is the library's error for a source account without SELECT on the view (M7).
 func deniedView() error {
@@ -52,9 +52,9 @@ func deniedView() error {
 		Message: "SELECT command denied to user 'ga_src'@'192.168.65.1' for table 'replication_group_members'"}}
 }
 
-// TestGroupFactsComeBeforeEveryOtherRead is spec §4.2's order: the source's ReplicationConfig is
-// preflight's first statement, then each side's plugin state, then the source's view, and only
-// for a member. No table or catalog read of any stage comes before them.
+// TestGroupFactsComeBeforeEveryOtherRead is spec §4.2's order: each side's ReplicationConfig is that
+// side's first statement (the source's first, GR C4), then each side's plugin state, then the
+// source's view, and only for a member. No table or catalog read of any stage comes before them.
 func TestGroupFactsComeBeforeEveryOtherRead(t *testing.T) {
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
 		for _, member := range []bool{false, true} {
@@ -65,7 +65,7 @@ func TestGroupFactsComeBeforeEveryOtherRead(t *testing.T) {
 				}
 				order := w.ordered()
 				w.mustPass()
-				want := []string{"src.ReplicationConfig", "src.GroupReplication", "dst.GroupReplication"}
+				want := []string{"src.ReplicationConfig", "dst.ReplicationConfig", "src.GroupReplication", "dst.GroupReplication"}
 				if member {
 					want = append(want, "src.GroupMembers")
 				}
@@ -92,7 +92,7 @@ func TestGroupFactsAreReadWhenEveryCheckIsSkipped(t *testing.T) {
 			w.asMember("ONLINE", "PRIMARY")
 			order := w.ordered()
 			res := w.mustPass()
-			if len(*order) < 4 || !slices.Equal((*order)[:4], groupCalls) {
+			if len(*order) < len(groupCalls) || !slices.Equal((*order)[:len(groupCalls)], groupCalls) {
 				t.Fatalf("under SkipPolicy the first reads were %v, want %v", *order, groupCalls)
 			}
 			if res.Group.Source.GroupName != groupName || len(res.Group.Members) != 2 || res.Group.Identity != groupName {
@@ -187,6 +187,8 @@ func TestAFailedGroupReadIsNotAnAnswer(t *testing.T) {
 		after  []string // the reads that must not have been made
 	}{
 		{"the source's configuration", func(w *world) { w.src.configErr = boom }, "the source's replication configuration",
+			[]string{"dst.ReplicationConfig", "src.GroupReplication", "dst.GroupReplication", "src.GroupMembers", "src.Tables"}},
+		{"the destination's configuration", func(w *world) { w.dst.configErr = boom }, "the destination's replication configuration",
 			[]string{"src.GroupReplication", "dst.GroupReplication", "src.GroupMembers", "src.Tables"}},
 		{"the source's plugin state", func(w *world) { w.src.groupErr = boom }, "the source's Group Replication state",
 			[]string{"dst.GroupReplication", "src.GroupMembers", "src.Tables"}},
@@ -262,9 +264,13 @@ func TestTheResultCarriesTheGroupFacts(t *testing.T) {
 		w := healthy(t, jobspec.Archive)
 		w.asMember("ONLINE", "PRIMARY")
 		w.src.config = dbsrepl.Config{ReadOnly: false, SuperReadOnly: false, ServerID: 1}
+		w.dst.config = dbsrepl.Config{ReadOnly: false, SuperReadOnly: false, ServerID: 4}
 		w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true}
 		res := w.mustPass()
 		g := res.Group
+		if g.DestinationConfig != w.dst.config {
+			t.Errorf("destination configuration = %+v, want %+v", g.DestinationConfig, w.dst.config)
+		}
 		if g.SourceConfig != w.src.config || g.Source != w.src.group || g.Destination != w.dst.group || !slices.Equal(g.Members, w.src.members) {
 			t.Errorf("the result holds %+v, want what the servers returned", g)
 		}
