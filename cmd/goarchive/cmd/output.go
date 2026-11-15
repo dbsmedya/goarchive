@@ -327,6 +327,8 @@ func printExplanation(w io.Writer, name string, typ jobspec.Type, file string, d
 			p("    %s  channels: %s\n", sv.Addr(), describeChannels(sv.Channels))
 		}
 	}
+	line, _ := controlReport(doc, spec, name)
+	p("  %s\n", line)
 	p("\n")
 
 	printCaps(w, ex.Preflight.Caps)
