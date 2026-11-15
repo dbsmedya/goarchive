@@ -322,6 +322,11 @@ Pair a small `batch_delete_size` with a non-zero `delete_sleep_seconds` when rep
 not source load, limits you. Both accept fractional seconds and can be set per job
 ([per-job overrides](README_CONFIGURATION.md#per-job-overrides-and-precedence)).
 
+Each `DELETE` after the first of a batch sleeps `delete_sleep_seconds` first, and only then is the
+[replication gate](#replication-gating) asked, so the gate's answer is the latest one when the
+statement runs: a replica that fell behind during the pause holds that `DELETE`, not the one
+after it. A stop request does not shorten the pause; the batch in flight still finishes.
+
 ### Memory
 
 Go sets no memory limit from cgroups. `GOMEMLIMIT` is a soft limit on the memory the Go runtime
@@ -397,8 +402,10 @@ rm /var/run/goarchive/pause.flag      # resume
 ## Replication gating
 
 With `replication.enabled: true` ([options](README_CONFIGURATION.md#replication)), GoArchive
-checks every configured replica **before every delete chunk**, recovery's included, and before a
-purge batch logs its roots, and **holds the job** while any of them is unhealthy. The same run
+checks every configured replica **immediately before every delete chunk**, recovery's included
+(after that chunk's `delete_sleep_seconds` pause, so the check is the last step before the
+statement), and before a purge batch logs its roots, and **holds the job** while any of them is
+unhealthy. The same run
 continues once the whole fleet is healthy again: a hold is a pause, not a failure. Copy-only
 never deletes, so it is never gated; throttle it with `sleep_seconds` or pause it with the
 [sentinel](#pausing-a-run-sentinel_file).
