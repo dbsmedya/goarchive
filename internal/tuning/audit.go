@@ -20,11 +20,24 @@ const (
 	KindPause  Kind = "pause"
 	KindResume Kind = "resume"
 	KindStop   Kind = "stop"
+	// KindNote is a best-effort entry of the control server that is not a change: a refusal, a
+	// refused peer, an accept error, a recovered panic, a lost identity. It takes a free place of
+	// the queue like a change does, but a note that finds none is counted by its sender, not queued.
+	KindNote Kind = "note"
+)
+
+// Level is how serious an entry is.
+type Level uint8
+
+const (
+	LevelInfo Level = iota
+	LevelWarn
+	LevelError
 )
 
 // Event is one accepted change, captured under the writer lock and immutable: the revision it
 // created, for a setting its key and the value it actually replaced and its new value, who asked
-// and when.
+// and when. A KindNote carries its Level and Text instead, and no revision.
 type Event struct {
 	Kind     Kind
 	Revision uint64
@@ -32,6 +45,8 @@ type Event struct {
 	Old, New string
 	Peer     Peer
 	At       time.Time
+	Level    Level
+	Text     string
 }
 
 // Audit is the bounded queue between the store and the emitter that writes its events (D17). A
