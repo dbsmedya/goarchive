@@ -467,8 +467,8 @@ func TestFormatDuration(t *testing.T) {
 		{time.Minute, "1m00s"}, {2*time.Minute + 10*time.Second, "2m10s"}, {6*time.Minute + 2*time.Second, "6m02s"},
 		{time.Hour, "1h00m00s"}, {3*time.Hour + 4*time.Minute + 5*time.Second, "3h04m05s"}, {-time.Second, "0s"},
 	} {
-		if got := formatDuration(tc.d); got != tc.want {
-			t.Errorf("formatDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		if got := FormatDuration(tc.d); got != tc.want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", tc.d, got, tc.want)
 		}
 	}
 }

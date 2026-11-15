@@ -355,13 +355,13 @@ func (v *view) text() []string {
 	state := r.state()
 	switch state {
 	case "held":
-		state += " " + formatDuration(r.now.Sub(r.gate.HoldingSince))
+		state += " " + FormatDuration(r.now.Sub(r.gate.HoldingSince))
 	case "paused":
-		state += " " + formatDuration(r.now.Sub(st.WaitingSince))
+		state += " " + FormatDuration(r.now.Sub(st.WaitingSince))
 	}
 	lines := []string{fmt.Sprintf("%s (%s): %s, batch %d, roots %d, copied %d, deleted %d, elapsed %s",
 		v.info.Job, v.info.JobType, state, st.Batches, st.Roots, st.RowsCopied, st.RowsDeleted,
-		formatDuration(r.now.Sub(v.info.StartedAt)))}
+		FormatDuration(r.now.Sub(v.info.StartedAt)))}
 
 	const indent = "             "
 	label := func(name, text string) { lines = append(lines, fmt.Sprintf("  %-11s%s", name+":", text)) }
@@ -378,7 +378,7 @@ func (v *view) text() []string {
 
 	if failing := r.failing(); len(failing) > 0 {
 		for i, s := range failing {
-			text := fmt.Sprintf("%s %s (%s), checked %s ago", s.Server, s.Cause, s.Detail, formatDuration(r.now.Sub(s.CheckedAt)))
+			text := fmt.Sprintf("%s %s (%s), checked %s ago", s.Server, s.Cause, s.Detail, FormatDuration(r.now.Sub(s.CheckedAt)))
 			if i == 0 {
 				label("hold", text)
 			} else {
@@ -415,7 +415,11 @@ func (v *view) text() []string {
 	lines = append(lines, v.replicationLines(r)...)
 	label("changes", changesText(r.snap.Revision))
 	if e := st.Estimate; e != nil {
-		label("progress", fmt.Sprintf("about %d roots, %.0f%%, ETA %s", e.Roots, e.Percent, formatDuration(e.ETA)))
+		eta := "unknown"
+		if e.ETAKnown {
+			eta = FormatDuration(e.ETA)
+		}
+		label("progress", fmt.Sprintf("about %d roots, %.0f%%, ETA %s", e.Roots, e.Percent, eta))
 	}
 	for i, t := range st.Tables {
 		text := fmt.Sprintf("%s copied %d, deleted %d", t.Name, t.Copied, t.Deleted)
@@ -448,7 +452,7 @@ func (v *view) replicationLines(r read) []string {
 	}
 	last := "last pass never"
 	if !r.gate.LastPass.IsZero() {
-		last = fmt.Sprintf("last pass %s ago (%s)", formatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
+		last = fmt.Sprintf("last pass %s ago (%s)", FormatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
 	}
 	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last)}
 	for _, s := range r.gate.Servers {
@@ -462,7 +466,7 @@ func verdictText(s ServerVerdict, now time.Time) string {
 	if s.CheckedAt.IsZero() {
 		return s.Server + " not checked yet"
 	}
-	age, at := formatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
+	age, at := FormatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
 	if s.Cause != "" {
 		return fmt.Sprintf("%s %s (%s), checked %s ago (%s)", s.Server, s.Cause, s.Detail, age, at)
 	}
@@ -495,15 +499,15 @@ func pauseText(r read) string {
 	}
 	switch list := strings.Join(inputs, ", "); {
 	case !r.tracker.WaitingSince.IsZero():
-		return fmt.Sprintf("waiting for %s (%s)", formatDuration(r.now.Sub(r.tracker.WaitingSince)), list)
+		return fmt.Sprintf("waiting for %s (%s)", FormatDuration(r.now.Sub(r.tracker.WaitingSince)), list)
 	case list != "":
 		return "requested (" + list + ")"
 	}
 	return "none"
 }
 
-// formatDuration shows whole seconds: 5s, 2m10s, 6m02s, 1h00m00s. A negative duration is 0s.
-func formatDuration(d time.Duration) string {
+// FormatDuration shows whole seconds: 5s, 2m10s, 6m02s, 1h00m00s. A negative duration is 0s.
+func FormatDuration(d time.Duration) string {
 	d = max(d, 0).Truncate(time.Second)
 	h, m, s := int(d/time.Hour), int(d/time.Minute)%60, int(d/time.Second)%60
 	switch {
