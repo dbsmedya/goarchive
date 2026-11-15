@@ -124,7 +124,7 @@ func TestJobNameRuleWithControl(t *testing.T) {
 	for _, control := range []string{"", "    control:\n      enabled: true\n"} {
 		_, err := parseWith(t, "", controlJob(`"a b"`, control))
 		var ve config.ValidationErrors
-		if err == nil || !errors.As(err, &ve) || !hasError(ve, `jobs."a b"`, "spaces") {
+		if err == nil || !errors.As(err, &ve) || !hasError(ve, jobField("a b"), "spaces") {
 			t.Errorf("a name with a space, control %q: Parse() = %v, want validateJobNames' refusal", control, err)
 		}
 	}

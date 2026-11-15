@@ -14,6 +14,7 @@ type Config struct {
 	Processing  ProcessingConfig  `yaml:"processing"`
 	Safety      SafetyConfig      `yaml:"safety"`
 	Logging     LoggingConfig     `yaml:"logging"`
+	Control     ControlConfig     `yaml:"control"`
 }
 
 // DatabaseConfig represents a MySQL database connection configuration.
@@ -104,6 +105,37 @@ type ProcessingConfig struct {
 	// this file exists, processing pauses and re-checks every second until the
 	// file is removed. Empty (default) disables the pause switch.
 	SentinelFile string `yaml:"sentinel_file"`
+}
+
+// ControlConfig is the control block (TEL-1, spec §4.1): whether a run listens on its control
+// socket, and the directory of the socket. It is off by default, and nothing but the file turns it
+// on: there is no flag and no environment variable.
+type ControlConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// SocketDir is an absolute path. Empty means <home>/.goarchive/run, where <home> is the home
+	// directory the system's user database records for the run's effective user.
+	SocketDir string `yaml:"socket_dir"`
+}
+
+// ControlOverrides is the per-job control block. Pointer fields distinguish "not set, inherit
+// global" (nil) from an explicit value, so a job can switch control off under a global true.
+type ControlOverrides struct {
+	Enabled   *bool   `yaml:"enabled,omitempty"`
+	SocketDir *string `yaml:"socket_dir,omitempty"`
+}
+
+// Apply merges the job's overrides over global, field by field.
+func (o *ControlOverrides) Apply(global ControlConfig) ControlConfig {
+	if o == nil {
+		return global
+	}
+	if o.Enabled != nil {
+		global.Enabled = *o.Enabled
+	}
+	if o.SocketDir != nil {
+		global.SocketDir = *o.SocketDir
+	}
+	return global
 }
 
 // SafetyConfig represents safety settings for archive operations.

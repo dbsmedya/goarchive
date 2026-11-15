@@ -2,10 +2,12 @@ package jobspec
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/dbsmedya/dbsgomysql/pkg/sqlutil"
 	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/controlpath"
 )
 
 // maxRelationDepth is kept from 2.x.
@@ -58,6 +60,8 @@ func validateJob(shared *config.Config, name string, s *Spec) config.ValidationE
 	if s.Logging != nil {
 		errs = append(errs, config.ValidateLoggingConfig(p+".logging", s.EffectiveLogging(shared.Logging))...)
 	}
+
+	errs = append(errs, validateControl(shared, name, p, s)...)
 
 	seen := map[string]string{}
 	if s.RootTable != "" {
@@ -198,4 +202,28 @@ func fillReferences(parentKey Columns, rels []Relation) {
 
 func invalidVerification(field string, v Verification) config.ValidationError {
 	return config.ValidationError{Field: field, Message: fmt.Sprintf("verification must be sha256, count or none, not %q", string(v))}
+}
+
+// validateControl checks a job's control block and, for a job with control enabled, the rules that
+// follow from the file alone (spec §4.1): the job's name can be a file name (and, on Windows, is not a
+// reserved device name), and with socket_dir set the socket's path fits the platform's limit. The
+// default directory's length depends on the user and is the run's check, at its start.
+func validateControl(shared *config.Config, name, p string, s *Spec) config.ValidationErrors {
+	var errs config.ValidationErrors
+	if s.Control != nil {
+		errs = append(errs, config.ValidateControlConfig(p+".control", s.EffectiveControl(shared.Control))...)
+	}
+	eff := s.EffectiveControl(shared.Control)
+	if !eff.Enabled {
+		return errs
+	}
+	if err := controlpath.JobNameError(name); err != nil {
+		return append(errs, config.ValidationError{Field: p + ".control", Message: err.Error()})
+	}
+	if eff.SocketDir != "" && filepath.IsAbs(eff.SocketDir) {
+		if _, err := controlpath.Resolve(true, eff.SocketDir, name, -1); err != nil {
+			errs = append(errs, config.ValidationError{Field: p + ".control", Message: err.Error()})
+		}
+	}
+	return errs
 }

@@ -33,6 +33,7 @@ type document struct {
 	Safety       safetyBlock              `yaml:"safety"`
 	Verification Verification             `yaml:"verification"`
 	Logging      config.LoggingConfig     `yaml:"logging"`
+	Control      config.ControlConfig     `yaml:"control"`
 }
 
 type safetyBlock struct {
@@ -91,6 +92,7 @@ func Parse(data []byte) (*Document, error) {
 		Processing:  doc.Processing,
 		Safety:      config.SafetyConfig{DisableForeignKeyChecks: doc.Safety.DisableForeignKeyChecks},
 		Logging:     doc.Logging,
+		Control:     doc.Control,
 	}
 	shared.Normalize()
 	if err := shared.ValidateShared(); err != nil {

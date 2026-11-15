@@ -74,6 +74,7 @@ type Spec struct {
 	Processing   *config.ProcessingOverrides `yaml:"processing"`
 	Verification *Verification               `yaml:"verification"`
 	Logging      *LoggingOverrides           `yaml:"logging"`
+	Control      *config.ControlOverrides    `yaml:"control"`
 }
 
 // Relation is one child table and the columns that tie it to its parent (spec §5, §7.3).
@@ -96,6 +97,11 @@ func (s *Spec) ResumeEnabled() bool {
 // EffectiveProcessing merges the job's processing overrides over global.
 func (s *Spec) EffectiveProcessing(global config.ProcessingConfig) config.ProcessingConfig {
 	return s.Processing.Apply(global)
+}
+
+// EffectiveControl merges the job's control overrides over global, field by field: the job wins.
+func (s *Spec) EffectiveControl(global config.ControlConfig) config.ControlConfig {
+	return s.Control.Apply(global)
 }
 
 // EffectiveVerification is the job's verification, or global when the job sets none.
