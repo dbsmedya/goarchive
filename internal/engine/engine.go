@@ -28,6 +28,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // LagGate is the replication lag gate (internal/replication's *Gate). It applies to archive
@@ -50,8 +51,16 @@ type Config struct {
 	// JobSchema is destination.job_schema, which holds the tracking tables (spec §6.1).
 	JobSchema string
 
-	// Processing is the job's effective processing block (Spec.EffectiveProcessing).
+	// Processing is the job's effective processing block (Spec.EffectiveProcessing). It is the
+	// run's starting values: preflight proved its statement bounds, and the settings store's
+	// ceilings are its sizes.
 	Processing config.ProcessingConfig
+	// Tuning is the settings store the run reads: batch_size once per batch and per recovery
+	// page, batch_delete_size immediately before each DELETE, the sleeps at the start of each
+	// sleep and on each change, and the socket pause beside the sentinel file. Nil means a store
+	// that never changes, which is the configuration's behaviour. A store must start at the
+	// values of Processing.
+	Tuning *tuning.Store
 	// Verification is the job's effective verification, after any --verification.
 	Verification jobspec.Verification
 	// DisableForeignKeyChecks is safety.disable_foreign_key_checks: the destination copy
@@ -146,6 +155,30 @@ func (c *Config) validate() error {
 		return fmt.Errorf("engine: job %q needs batch_size and batch_delete_size of at least 1", c.Name)
 	case c.Spec.Type != jobspec.Purge && !c.Verification.Valid():
 		return fmt.Errorf("engine: job %q has verification %q", c.Name, c.Verification)
+	}
+	return c.checkTuning()
+}
+
+// checkTuning refuses a settings store that starts anywhere but at the job's processing values:
+// its starting values are the ceilings of the two sizes, and a ceiling other than the
+// configuration would let a size past what preflight proved.
+func (c *Config) checkTuning() error {
+	if c.Tuning == nil {
+		return nil
+	}
+	st, p := c.Tuning.Start(), c.Processing
+	for _, d := range []struct {
+		key         tuning.Key
+		store, file string
+	}{
+		{tuning.BatchSize, st.Text(tuning.BatchSize), tuning.Settings{BatchSize: p.BatchSize}.Text(tuning.BatchSize)},
+		{tuning.BatchDeleteSize, st.Text(tuning.BatchDeleteSize), tuning.Settings{BatchDeleteSize: p.BatchDeleteSize}.Text(tuning.BatchDeleteSize)},
+		{tuning.SleepSeconds, st.Text(tuning.SleepSeconds), tuning.Settings{SleepSeconds: p.SleepSeconds}.Text(tuning.SleepSeconds)},
+		{tuning.DeleteSleepSeconds, st.Text(tuning.DeleteSleepSeconds), tuning.Settings{DeleteSleepSeconds: p.DeleteSleepSeconds}.Text(tuning.DeleteSleepSeconds)},
+	} {
+		if d.store != d.file {
+			return fmt.Errorf("engine: job %q: the settings store starts at %s %s, but the job's processing block has %s", c.Name, d.key, d.store, d.file)
+		}
 	}
 	return nil
 }

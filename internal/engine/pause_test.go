@@ -27,20 +27,28 @@ func TestStopRequested(t *testing.T) {
 	}
 }
 
+// TestInterruptibleSleep is the old interruptibleSleep's test, on its replacement: pollSleep
+// with no change signal waits as it did.
 func TestInterruptibleSleep(t *testing.T) {
 	stop := make(chan struct{})
 	close(stop)
 	start := time.Now()
-	if err := interruptibleSleep(context.Background(), stop, 3*time.Second); err != nil || time.Since(start) > time.Second {
+	if err := pollSleep(context.Background(), stop, 3*time.Second, nil); err != nil || time.Since(start) > time.Second {
 		t.Errorf("a stop did not end the sleep: %v after %v", err, time.Since(start))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := interruptibleSleep(ctx, nil, time.Hour); !errors.Is(err, context.Canceled) {
+	if err := pollSleep(ctx, nil, time.Hour, nil); !errors.Is(err, context.Canceled) {
 		t.Errorf("a cancelled context = %v, want context.Canceled", err)
 	}
-	if err := interruptibleSleep(context.Background(), nil, 0); err != nil {
+	if err := pollSleep(context.Background(), nil, 0, nil); err != nil {
 		t.Errorf("a zero sleep = %v", err)
+	}
+	changed := make(chan struct{})
+	close(changed)
+	start = time.Now()
+	if err := pollSleep(context.Background(), nil, 3*time.Second, changed); err != nil || time.Since(start) > time.Second {
+		t.Errorf("a change did not end the poll: %v after %v", err, time.Since(start))
 	}
 }
 

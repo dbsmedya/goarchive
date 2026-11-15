@@ -24,7 +24,7 @@ import (
 //   - A third signal hits the restored default handler and terminates the process.
 //
 // The returned context must be used for all DB work; the stop channel must be
-// checked at batch boundaries (see stopRequested / interruptibleSleep).
+// checked at batch boundaries (see stopRequested / followSleep).
 func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) (context.Context, <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stop := make(chan struct{})
