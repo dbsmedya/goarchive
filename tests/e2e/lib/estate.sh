@@ -76,8 +76,9 @@ setup_environment() {
     if [ "$SKIP_DOCKER" = false ]; then
         log_info "Stopping existing docker containers and clearing data volumes..."
         cd "$TESTS_DIR"
-        # `-v` removes the db1_data/db2_data/db3_data named volumes. Without it,
-        # --setup does NOT give you a clean database.
+        # `reset` is `docker compose down -v` followed by `up -d` (tests/scripts/estate.sh), for the
+        # estate's topology (TOPOLOGY, default plain). `-v` removes the db1_data/db2_data/db3_data named
+        # volumes (the group estate's own). Without it, --setup does NOT give you a clean database.
         #
         # This previously read `docker compose down` followed by
         # `rm -rf "$TESTS_DIR/docker_files/db_data"` — but the directory has
@@ -85,10 +86,14 @@ setup_environment() {
         # existed, so --setup printed "Cleaning up database data..." and cleaned
         # up nothing. It is why orphaned state survived a --setup run and
         # resurfaced as "legacy GoArchive tracking tables detected".
-        docker compose down -v 2>/dev/null || true
+        #
+        # It refuses while the OTHER estate is running: one estate is up at a time.
+        if ! "$SCRIPT_DIR/estate.sh" reset; then
+            log_error "Could not reset the test estate"
+            exit 1
+        fi
 
         log_info "Starting docker containers..."
-        docker compose up -d
         
         log_info "Waiting for databases to be ready..."
         sleep 10
