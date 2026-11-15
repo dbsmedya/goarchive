@@ -20,7 +20,7 @@ func lookupHome(uid int) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read only: a failed close loses nothing
 	return homeFromPasswd(f, uid)
 }
 
