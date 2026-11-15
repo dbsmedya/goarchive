@@ -89,8 +89,15 @@ type recorder struct {
 
 func newEnv(t *testing.T, name string) env {
 	t.Helper()
-	ss, src := scratch(t, "TEST_SOURCE", name)
-	ds, dst := scratch(t, "TEST_DEST", name)
+	return newEnvOn(t, name, "TEST_SOURCE", "TEST_DEST")
+}
+
+// newEnvOn is newEnv with the source on the server srcPrefix names and the destination on dstPrefix's.
+// The group estate's tests swap them to make a group member the destination (GR C3).
+func newEnvOn(t *testing.T, name, srcPrefix, dstPrefix string) env {
+	t.Helper()
+	ss, src := scratch(t, srcPrefix, name)
+	ds, dst := scratch(t, dstPrefix, name)
 	e := env{src: src, dst: dst, srcSchema: ss, dstSchema: ds,
 		rec: &recorder{source: map[string]bool{}, destination: map[string]bool{}}}
 	// Registered after scratch's cleanups, so it runs before the schemas are dropped.
