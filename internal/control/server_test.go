@@ -494,10 +494,10 @@ func TestPartialStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the lock file: %v", err)
 	}
-	defer lock.Close()
 	if err := lockFile(lock); err != nil {
 		t.Errorf("the lock is still held after the failed start: %v", err)
 	}
+	_ = lock.Close() // the test's own hold, released before the next start
 	// And the same directory is usable at once.
 	o.tune.afterBind = nil
 	srv, err := Start(o)

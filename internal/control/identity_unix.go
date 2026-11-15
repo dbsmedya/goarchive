@@ -35,3 +35,15 @@ func identityOfInfo(fi os.FileInfo) (identity, error) {
 	}
 	return identity{volume: uint64(st.Dev), index: uint64(st.Ino), captured: true}, nil
 }
+
+// inspect looks at path without following a final symbolic link, and returns what it found with its
+// identity, both from the one Lstat: the type that was judged and the identity that is later
+// compared are of the same object, however fast the path changes.
+func inspect(path string) (os.FileInfo, identity, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, identity{}, err
+	}
+	id, err := identityOfInfo(fi)
+	return fi, id, err
+}
