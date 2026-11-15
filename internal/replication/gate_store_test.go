@@ -687,6 +687,18 @@ func TestGatePassRevalidatedAfterTheFinalLog(t *testing.T) {
 	if countWith(obs.infos(), "gate settings changed") != 1 {
 		t.Errorf("info lines = %#v, want one line saying that the settings changed while the pass was written, so the pass above does not stand", obs.infos())
 	}
+	// What the docs promise of this late case (README_OPERATIONS, What can change while it runs): the
+	// entries already written stand, and the per-server hold they ended is gone, so the repeat hold is a
+	// new entry, not a continuation of the first.
+	if n := countWith(obs.infos(), "replication recovered:"); n != 2 {
+		t.Errorf("info lines = %#v, want the recovery written before the setter and the one that follows the repeat hold", obs.infos())
+	}
+	if n := countWith(obs.infos(), "replication gate passed:"); n != 2 {
+		t.Errorf("info lines = %#v, want the pass written before the setter, which stands, and the final one", obs.infos())
+	}
+	if countWith(obs.warns(), "(held ") != 0 {
+		t.Errorf("warn lines = %#v, want the repeat hold as a new entry: the one the early recovery ended is gone", obs.warns())
+	}
 	// The pass that stands is cached under the revision it was judged by.
 	before := r.calls
 	if err := h.gate.WaitForLag(context.Background(), nil); err != nil || r.calls != before {
