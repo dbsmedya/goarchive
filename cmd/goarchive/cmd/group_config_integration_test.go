@@ -20,7 +20,7 @@ func groupBlock(s server) string {
 }
 
 // TestMySQLAGroupServerOnAPlainServerIsRefused: validate and dry-run refuse a `type: group` server that is no group
-// member with REPLICATION_TYPE_CHECK, naming it; the interim refusal of the gate does not decide for them.
+// member with REPLICATION_TYPE_CHECK, naming it, as a run does at its start.
 func TestMySQLAGroupServerOnAPlainServerIsRefused(t *testing.T) {
 	f := orderFixture(t, "grptype")
 	plain := serverFor(t, "TEST_DEST")
@@ -36,16 +36,16 @@ func TestMySQLAGroupServerOnAPlainServerIsRefused(t *testing.T) {
 	}
 }
 
-// TestMySQLARunWithAGroupServerIsRefusedByTheGate: the interim refusal at the gate's construction: exit 1 before
-// preflight, so before anything is read of the job's tables or written to the tracking tables.
-func TestMySQLARunWithAGroupServerIsRefusedByTheGate(t *testing.T) {
+// TestMySQLARunWithAGroupServerOnAPlainServerIsRefusedByThePreflightCheck: a run is refused at its start by
+// REPLICATION_TYPE_CHECK, as validate and dry-run are: the gate no longer refuses a group server (GR C6), so
+// preflight decides. Exit 1, and nothing is written to the tracking tables.
+func TestMySQLARunWithAGroupServerOnAPlainServerIsRefusedByThePreflightCheck(t *testing.T) {
 	f := orderFixture(t, "grpgate")
-	appendConfig(t, f, groupBlock(serverFor(t, "TEST_DEST")))
-	for _, args := range [][]string{{"archive", "-c", f.config, "--job", "archive_orders"}} {
-		_, errOut, code := mainStreams(t, args...)
-		if code != 1 || !strings.Contains(errOut, "is listed with type: group, which the replication gate does not probe yet (not built yet)") {
-			t.Errorf("%v: code %d, stderr:\n%s\nwant exit 1 and the gate's refusal", args, code, errOut)
-		}
+	plain := serverFor(t, "TEST_DEST")
+	appendConfig(t, f, groupBlock(plain))
+	_, errOut, code := mainStreams(t, "archive", "-c", f.config, "--job", "archive_orders")
+	if code != 1 || !strings.Contains(errOut, "REPLICATION_TYPE_CHECK") || strings.Contains(errOut, "not built yet") {
+		t.Errorf("archive: code %d, stderr:\n%s\nwant exit 1 and REPLICATION_TYPE_CHECK, with no mention of a gate that is not built", code, errOut)
 	}
 	if got := scalar(t, f.src, "SELECT COUNT(*) FROM orders"); got != 4 {
 		t.Errorf("source orders = %d, want 4 untouched", got)

@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/control"
 	"github.com/dbsmedya/goarchive/v3/internal/controlpath"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
@@ -99,13 +100,10 @@ func (s *gateSlot) Record() control.GateRecord {
 	out := control.GateRecord{HoldingSince: rec.HoldingSince, LastPass: rec.LastPass}
 	for _, v := range rec.Servers {
 		sv := control.ServerVerdict{
-			Server: v.Server, Healthy: v.Healthy, Cause: v.Cause, Detail: v.Detail,
+			Server: v.Server, Type: v.Type, Healthy: v.Healthy, Cause: v.Cause, Detail: v.Detail,
 			Tolerance: v.Tolerance, CheckedAt: v.CheckedAt,
 		}
-		if v.Lag != nil {
-			lag := *v.Lag
-			sv.Lag = &lag
-		}
+		sv.Lag, sv.ApplierQueue, sv.CertifierQueue = copyCount(v.Lag), copyCount(v.ApplierQueue), copyCount(v.CertifierQueue)
 		out.Servers = append(out.Servers, sv)
 	}
 	return out
@@ -230,6 +228,7 @@ func startControl(p controlParams) (*controlRun, error) {
 		configFile = GetConfigFile()
 	}
 	repl := p.doc.Shared.Replication
+	groupApplier, groupCertifier := groupBounds(repl)
 	opts := control.Options{
 		Job: p.name, Dir: filepath.Dir(path), DefaultDir: eff.SocketDir == "", Euid: os.Geteuid(),
 		Store: p.store,
@@ -237,6 +236,7 @@ func startControl(p controlParams) (*controlRun, error) {
 			Version: Version, Job: p.name, JobType: string(p.typ), ConfigFile: configFile, PID: os.Getpid(),
 			StartedAt: p.started, SentinelFile: p.spec.EffectiveProcessing(p.doc.Shared.Processing).SentinelFile,
 			ReplicationEnabled: repl.Enabled, CacheTTL: repl.CacheTTL,
+			GroupApplierQueueWithin: groupApplier, GroupCertifierQueueWithin: groupCertifier,
 		},
 		Tracker:  trackerSource{p.tracker},
 		Shutdown: p.shutdown,
@@ -283,4 +283,29 @@ func (c *controlRun) close() error {
 	}
 	c.end()
 	return c.srv.Close()
+}
+
+// copyCount returns a copy of the number n points to: a status read holds nothing of the gate's.
+func copyCount(n *int64) *int64 {
+	if n == nil {
+		return nil
+	}
+	c := *n
+
+	return &c
+}
+
+// groupBounds are the configured group_applier_queue_within and group_certifier_queue_within when a group server is
+// listed, and nil for each otherwise: the status reports the two bounds only where they mean something.
+func groupBounds(r config.ReplicationConfig) (applier, certifier *int) {
+	for _, s := range r.Servers {
+		if s.Type != "group" || r.GroupApplierQueueWithin == nil || r.GroupCertifierQueueWithin == nil {
+			continue
+		}
+		a, c := *r.GroupApplierQueueWithin, *r.GroupCertifierQueueWithin
+
+		return &a, &c
+	}
+
+	return nil, nil
 }

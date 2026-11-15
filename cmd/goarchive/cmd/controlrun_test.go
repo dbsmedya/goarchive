@@ -637,3 +637,28 @@ func TestControlSinkRoutes(t *testing.T) {
 		}
 	})
 }
+
+// TestGateSlotCarriesTheGroupFields (GR C6): the adapter that hands the gate's record to the control server copies
+// the kind of each server and its two queues, which status and status-json report; a nil queue stays nil.
+func TestGateSlotCarriesTheGroupFields(t *testing.T) {
+	applier, certifier := int64(4210), int64(3)
+	var slot gateSlot
+	slot.set(fakeRecorder{rec: replication.Record{Servers: []replication.ServerVerdict{
+		{Server: "replica1:3306", Type: "async", Healthy: true},
+		{Server: "gr2:3306", Type: "group", Healthy: true, ApplierQueue: &applier, CertifierQueue: &certifier},
+		{Server: "gr3:3306", Type: "group"},
+	}}})
+	got := slot.Record().Servers
+	if got[0].Type != "async" || got[0].ApplierQueue != nil || got[0].CertifierQueue != nil {
+		t.Errorf("the asynchronous verdict = %+v, want its type and no queue", got[0])
+	}
+	if got[1].Type != "group" || got[1].ApplierQueue == nil || *got[1].ApplierQueue != 4210 || got[1].CertifierQueue == nil || *got[1].CertifierQueue != 3 {
+		t.Errorf("the group verdict = %+v, want its type and both queues", got[1])
+	}
+	if got[1].ApplierQueue == &applier {
+		t.Error("the adapter shares the gate's pointer: a status read must hold a copy")
+	}
+	if got[2].Type != "group" || got[2].ApplierQueue != nil || got[2].CertifierQueue != nil {
+		t.Errorf("a group server never probed = %+v, want its type and no queue", got[2])
+	}
+}

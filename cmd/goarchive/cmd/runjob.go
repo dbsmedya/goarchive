@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -176,11 +175,8 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	}
 	defer func() { _ = mgr.Close() }()
 	var lag engine.LagGate
+	var tellSource func(string)
 	if doc.Shared.Replication.Enabled {
-		if gerr := refuseGroupServers(doc.Shared.Replication); gerr != nil {
-			failed(nil)
-			return nil, false, gerr
-		}
 		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log, store)
 		if gerr != nil {
 			failed(nil)
@@ -188,6 +184,9 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		}
 		ctl.setGate(g)
 		lag = g
+		// The gate is built before preflight has read the source's facts, so the engine hands it the source's member
+		// id when preflight returns (spec §4.3).
+		tellSource = g.SetSource
 	}
 	rep, err = engine.Run(ctx, engine.Config{
 		Name: o.job, Spec: spec,
@@ -197,7 +196,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		Verification:            verification,
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
-		Lag: lag, Stop: stop, Logger: log,
+		Lag: lag, TellSource: tellSource, Stop: stop, Logger: log,
 		Replication: doc.Shared.Replication, ReplicaPools: mgr.Replicas,
 		Tuning: store, Tracker: tracker,
 		Banner:   func(b string) { emitBanners(log, stderr, []string{b}) },
@@ -222,22 +221,4 @@ func copyOrder(spec *jobspec.Spec) []string {
 		out = append(out, n.Table)
 	}
 	return out
-}
-
-// refuseGroupServers is the interim refusal of GR C5: the replication gate does not probe a `type: group` server
-// until C6, so a run that would build the gate with one listed is refused, and no group server goes unjudged. It
-// is called where the gate is built, so validate and dry-run, which build none, are not affected.
-// C6 removes it and its test.
-func refuseGroupServers(cfg config.ReplicationConfig) error {
-	if !cfg.Enabled {
-		return nil
-	}
-	for i, s := range cfg.Servers {
-		if s.Type == "group" {
-			return fmt.Errorf("replication.servers[%d] %s is listed with type: group, which the replication gate does not probe yet (not built yet): "+
-				"a run with a group server listed is refused, so that no group server goes unjudged. Remove it from replication.servers to run; "+
-				"validate and dry-run are not affected", i, s.Addr())
-		}
-	}
-	return nil
 }

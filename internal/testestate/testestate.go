@@ -201,9 +201,11 @@ func checkReplica(cfg config.DatabaseConfig) error {
 			break
 		}
 	}
-	return fmt.Errorf("the estate's replica (%s:%d) is not in its base state: %s. A test that changed it did not restore it: "+
-		"a killed test process skips its cleanups. Restore it by hand (SET GLOBAL super_read_only = 0; SET GLOBAL read_only = 0; "+
-		"STOP REPLICA; CHANGE REPLICATION SOURCE TO SOURCE_DELAY = 0; START REPLICA)", cfg.Host, cfg.Port, strings.Join(problems, "; "))
+	return fmt.Errorf("the estate's replica (%s:%d) is not in its base state: %s. Either a test that changed it did not restore it "+
+		"(a killed test process skips its cleanups), or the estate was started a moment ago and the replica's I/O thread is still in its "+
+		"reconnect wait (up to 60 s, Connect_Retry): wait for Replica_IO_Running: Yes and run again. To restore it by hand: "+
+		"SET GLOBAL super_read_only = 0; SET GLOBAL read_only = 0; STOP REPLICA; CHANGE REPLICATION SOURCE TO SOURCE_DELAY = 0; START REPLICA",
+		cfg.Host, cfg.Port, strings.Join(problems, "; "))
 }
 
 // replicaState is what differs from the replica's base state, read through the library's facts. The
