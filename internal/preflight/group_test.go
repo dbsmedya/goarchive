@@ -164,6 +164,18 @@ func TestAMissingGrantRefusesBeforeAnyTableRead(t *testing.T) {
 	}
 }
 
+// TestAMissingGrantRefusesUnderSkipPolicy (pin): the skip flag skips policy checks, never the
+// acquisition of the facts, and a view that cannot be read leaves the identity unknown, so the
+// refusal stands under it. It passes when written: it pins what the first stage does with the
+// flag, which the docs state.
+func TestAMissingGrantRefusesUnderSkipPolicy(t *testing.T) {
+	w := healthy(t, jobspec.Archive)
+	w.cfg.SkipPolicy = true
+	w.asMember("ONLINE", "PRIMARY")
+	w.src.membersErr = deniedView()
+	w.refused("SOURCE_GROUP_VIEW_PERMISSION_CHECK")
+}
+
 // TestAFailedGroupReadIsNotAnAnswer: a group fact that cannot be read fails preflight as "could
 // not find out" (a plain error, not a check), naming the read, and nothing after it runs.
 func TestAFailedGroupReadIsNotAnAnswer(t *testing.T) {
