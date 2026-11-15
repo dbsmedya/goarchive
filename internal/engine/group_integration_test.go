@@ -41,6 +41,20 @@ func requireGroupMemberSource(t *testing.T) {
 	}
 }
 
+// grantGroupView gives a source account SELECT on the group's view when the server is a Group
+// Replication member (spec §4.2, GR C2): every source account of these tests is meant to get past
+// that read, and to be refused for what its test leaves out. account is quoted, 'user'@'%'.
+func grantGroupView(t *testing.T, admin *sql.DB, account string) {
+	t.Helper()
+	g, err := dbsrepl.NewInspector(admin).GroupReplication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.PluginStatus == "ACTIVE" && g.GroupName != "" {
+		execAll(t, admin, "GRANT SELECT ON performance_schema.replication_group_members TO "+account)
+	}
+}
+
 // openAccount opens a pool on a test server as another account, as goarchive opens its own.
 func openAccount(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	t.Helper()
@@ -73,6 +87,10 @@ func TestMySQLAMissingGrantIsRefusedBeforeAnyLock(t *testing.T) {
 		"GRANT SELECT ON `mysql`.* TO "+account)
 	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS "+account) })
 
+	var before int
+	if err := e.src.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM r").Scan(&before); err != nil || before == 0 {
+		t.Fatalf("seeded roots = %d (%v), want some", before, err)
+	}
 	cfg := e.config(t, job(t, jobspec.Archive, keyJob))
 	cfg.Source = openAccount(t, "TEST_SOURCE", e.srcSchema, user, pass)
 	e.record(cfg)
@@ -93,8 +111,8 @@ func TestMySQLAMissingGrantIsRefusedBeforeAnyLock(t *testing.T) {
 		t.Error("a tracking table exists after a refusal before any lock")
 	}
 	var roots int
-	if err := e.src.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM r").Scan(&roots); err != nil || roots != 4 {
-		t.Errorf("source roots = %d (%v), want the 4 seeded rows untouched", roots, err)
+	if err := e.src.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM r").Scan(&roots); err != nil || roots != before {
+		t.Errorf("source roots = %d (%v), want the %d seeded rows untouched", roots, err, before)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
@@ -96,7 +97,24 @@ func acctCreate(t *testing.T, prefix string, admin *sql.DB, suffix, schema strin
 	for _, g := range grants {
 		execAll(t, admin, strings.ReplaceAll(g, "{{A}}", account))
 	}
+	// A source account on a Group Replication member also needs the view (spec §4.2, GR C2): each
+	// of these accounts is meant to get past that read, and to be refused for what its test
+	// leaves out. TestMySQLAMissingGrantRefusesAMemberSource makes its account without it.
+	if prefix == "TEST_SOURCE" && isMember(t, admin) {
+		execAll(t, admin, "GRANT SELECT ON performance_schema.replication_group_members TO "+account)
+	}
 	return acctOpen(t, prefix, schema, user, pass)
+}
+
+// isMember reports whether the server behind db is configured for Group Replication: the plugin
+// is ACTIVE and a group name is set.
+func isMember(t *testing.T, db *sql.DB) bool {
+	t.Helper()
+	g, err := dbsrepl.NewInspector(db).GroupReplication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g.PluginStatus == "ACTIVE" && g.GroupName != ""
 }
 
 // acctRole creates the role for suffix on the server behind admin with grants, {{R}}
