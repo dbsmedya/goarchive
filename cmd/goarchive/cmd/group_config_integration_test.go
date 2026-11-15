@@ -82,9 +82,13 @@ func TestMySQLAMemberSourceWithOnlyAnAsynchronousReplicaGetsTheBanner(t *testing
 }
 
 // TestMySQLAPlainSourceWithReplicationGetsNoBanner: replication enabled with only an asynchronous replica is as it
-// was: no banner on a source that is no member.
+// was: no banner on a source that is no member. The source is on the destination's server, a plain server on
+// every estate: TEST_SOURCE is a member on the group estate.
 func TestMySQLAPlainSourceWithReplicationGetsNoBanner(t *testing.T) {
-	f := orderFixture(t, "plainnobanner")
+	f := newFixtureOn(t, "TEST_DEST", "plainnobanner", orderJobs)
+	mustExec(t, f.src, orderDDL...)
+	mustExec(t, f.dst, orderDDL...)
+	seed(t, f)
 	appendConfig(t, f, replicationBlock(t, 30))
 	_, errOut, _ := mainStreams(t, "validate", "-c", f.config, "--job", "archive_orders")
 	if strings.Contains(errOut, "no server of type group is monitored") {
