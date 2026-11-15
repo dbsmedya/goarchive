@@ -418,3 +418,101 @@ func containsAny(problems []string, want string) bool {
 	}
 	return false
 }
+
+// TestExpectedSkipsResolveByPackageAndReceiver (Codex S1 findings 2 and 3): a list entry is a
+// function of one package, and a call to a method is not a call to every method of that name.
+// A path in backticks after names in a row qualifies them: "`TestShared` (`internal/a`)".
+func TestExpectedSkipsResolveByPackageAndReceiver(t *testing.T) {
+	const skips = `t.Skip("x")`
+	for _, tc := range []struct {
+		name  string
+		list  string            // the rows of the table
+		files map[string]string // package directory under internal -> the declarations of its test file
+		want  []string          // each a problem containing it; none for no problem
+	}{
+		{
+			"a qualified row names its own package",
+			"| `TestShared` (`internal/a`) | x |",
+			map[string]string{"a": "func TestShared(t *testing.T) { " + skips + " }"},
+			nil,
+		},
+		{
+			"an unlisted namesake in another package",
+			"| `TestShared` (`internal/a`) | x |",
+			map[string]string{
+				"a": "func TestShared(t *testing.T) { " + skips + " }",
+				"b": "func TestShared(t *testing.T) { " + skips + " }",
+			},
+			[]string{"internal/b/x_test.go"},
+		},
+		{
+			"a stale qualified row kept alive by a namesake elsewhere",
+			"| `TestShared` (`internal/a`), `TestShared` (`internal/b`) | x |",
+			map[string]string{
+				"a": "func TestShared(t *testing.T) {}",
+				"b": "func TestShared(t *testing.T) { " + skips + " }",
+			},
+			[]string{"TestShared in internal/a, which no longer skips"},
+		},
+		{
+			"a name in two packages needs its package",
+			"| `TestShared` | x |",
+			map[string]string{
+				"a": "func TestShared(t *testing.T) { " + skips + " }",
+				"b": "func TestShared(t *testing.T) { " + skips + " }",
+			},
+			[]string{"TestShared is declared in internal/a, internal/b"},
+		},
+		{
+			"a name in one package needs none",
+			"| `TestShared` | x |",
+			map[string]string{
+				"a": "func TestShared(t *testing.T) { " + skips + " }",
+				"b": "func TestOther(t *testing.T) {}",
+			},
+			nil,
+		},
+		{
+			"a listed helper still covers its callers in its own package",
+			"| `hold` (`internal/a`) | x |",
+			map[string]string{
+				"a": "func hold(t *testing.T) { " + skips + " }\nfunc TestUses(t *testing.T) { hold(t) }",
+				"b": "func hold(t *testing.T) {}\nfunc TestOrdinary(t *testing.T) { hold(t) }",
+			},
+			nil,
+		},
+		{
+			"two receivers that share a method name",
+			"| `TestListed` | x |",
+			map[string]string{"a": `type unavailable struct{}
+func (unavailable) prepare(t *testing.T) { ` + skips + ` }
+type ready struct{}
+func (ready) prepare(t *testing.T) {}
+func TestListed(t *testing.T) { unavailable{}.prepare(t) }
+func TestOrdinary(t *testing.T) { ready{}.prepare(t) }`},
+			nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFixture(t, filepath.Join(root, "tests", "README.md"),
+				"## Expected skips\n\n| Test | Why |\n|---|---|\n"+tc.list+"\n")
+			for dir, decls := range tc.files {
+				writeFixture(t, filepath.Join(root, "internal", dir, "x_test.go"),
+					"package "+dir+"\n\nimport \"testing\"\n\n"+decls+"\n")
+			}
+			problems := expectedSkipProblems(t, root)
+			if len(tc.want) == 0 {
+				if len(problems) > 0 {
+					t.Errorf("problems %q, want none", problems)
+				}
+				return
+			}
+			for _, w := range tc.want {
+				if !containsAny(problems, w) {
+					t.Errorf("problems %q, want one containing %q", problems, w)
+				}
+			}
+		})
+	}
+}
