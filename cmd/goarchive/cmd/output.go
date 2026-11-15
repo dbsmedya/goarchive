@@ -84,10 +84,14 @@ func status(rep *engine.Report, err error) string {
 }
 
 // printReport prints the closing block (spec §3.5): the status and the duration, the roots,
-// then the counts as a table, one row per table in copy order, one column per kind of count.
-func printReport(w io.Writer, name string, typ jobspec.Type, order []string, rep *engine.Report, err error) {
+// then the counts as a table, one row per table in copy order, one column per kind of count. changes
+// is the runtime-changes line (runtimeChanges), listed under roots, and empty when nothing was accepted.
+func printReport(w io.Writer, name string, typ jobspec.Type, order []string, rep *engine.Report, err error, changes string) {
 	_, _ = fmt.Fprintf(w, "Job %s (%s): %s in %.3fs\n", name, typ, status(rep, err), rep.Elapsed.Seconds())
 	_, _ = fmt.Fprintf(w, "  roots: %d in %d %s\n", rep.Roots, rep.Batches, plural(rep.Batches, "batch", "batches"))
+	if changes != "" {
+		_, _ = fmt.Fprintf(w, "  runtime changes: %s\n", changes)
+	}
 	if rep.Recovered > 0 {
 		_, _ = fmt.Fprintf(w, "  recovered: %d logged roots finished by replay\n", rep.Recovered)
 	}
@@ -170,9 +174,13 @@ func plural(n int, one, many string) string {
 // at error level without the stack trace the logger attaches there. A file log's closing entry
 // is FileOnly: the closing block and the failure summary carry the outcome to the console
 // (spec §3.3). always writes it past the level filter: under --progress on a JSON console log
-// the entry is the closing block.
-func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, always bool) {
+// the entry is the closing block. changes is the runtime-changes line, the closing block's too, carried
+// as a field when the run accepted a change.
+func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, always bool, changes string) {
 	fields := []any{"job_type", string(typ)}
+	if changes != "" {
+		fields = append(fields, "runtime_changes", changes)
+	}
 	if rep != nil {
 		fields = append(fields, "roots", rep.Roots, "batches", rep.Batches)
 		if rep.Recovered > 0 {
@@ -217,11 +225,11 @@ func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err er
 
 // endRun logs how a run ended (logOutcome). p is the value recovered from a panic, nil if
 // the run returned: a panicking run has no error and no report yet, so the panic is its error.
-func endRun(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, p any, always bool) {
+func endRun(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err error, p any, always bool, changes string) {
 	if p != nil {
 		err = fmt.Errorf("panic: %v", p)
 	}
-	logOutcome(log, typ, rep, err, always)
+	logOutcome(log, typ, rep, err, always, changes)
 }
 
 func sortedKeys[K interface{ ~string | ~uint16 }, V any](m map[K]V) []K {

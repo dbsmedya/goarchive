@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dbsmedya/goarchive/v3/internal/control"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
@@ -65,8 +66,9 @@ func runE(f func(c *cobra.Command, args []string) error) func(*cobra.Command, []
 
 // exitCode maps an outcome to its exit code. Precedence: a clean stop (only ever returned
 // without an error), then contention, then usage, then failure. Contention is a lock another
-// session holds, or an unfinished-work refusal whose every blocker is live; a refusal held by a
-// stopped job waits for that job's rerun, so it is a failure (EXC-1).
+// session holds, a control socket in use by a live run (its lock held, or a socket that answered),
+// or an unfinished-work refusal whose every blocker is live; a refusal held by a stopped job waits
+// for that job's rerun, so it is a failure (EXC-1).
 func exitCode(err error) int {
 	if err == nil {
 		return exitOK
@@ -77,7 +79,8 @@ func exitCode(err error) int {
 	var running *engine.JobRunningError
 	var table *engine.TableLockedError
 	var schema *tracking.SchemaLockedError
-	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &schema) {
+	var socket *control.InUseError
+	if errors.As(err, &running) || errors.As(err, &table) || errors.As(err, &schema) || errors.As(err, &socket) {
 		return exitNotStarted
 	}
 	var overlap *engine.OverlapError
