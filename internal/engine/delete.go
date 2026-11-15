@@ -27,18 +27,23 @@ import (
 //
 // Recovery's replay shares this path. A purge's gate before its roots are logged is separate.
 func (r *run) deleteTree(ctx context.Context, t *tree) error {
+	r.reached(atDeleteTree)
 	issued := false
 	for _, n := range r.tree.DeleteOrder() {
 		c := newChunkCursor(t.keys[n.Table])
 		for !c.done() {
 			if issued {
+				r.reached(atDeleteSleep)
 				if err := followSleep(ctx, nil, r.tune, func(s tuning.Settings) float64 { return s.DeleteSleepSeconds }); err != nil {
 					return err
 				}
+				r.reached(atDeleteSlept)
 			}
+			r.reached(atDeleteGate)
 			if err := r.waitForLag(ctx); err != nil {
 				return err
 			}
+			r.reached(atDeleteGated)
 			chunk, err := r.deleteNext(ctx, n.Table, c)
 			if err != nil {
 				return err
@@ -61,7 +66,9 @@ func (r *run) deleteNext(ctx context.Context, table string, c *chunkCursor) ([]k
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
+	r.reached(atDeleteSession)
 	chunk := c.take(r.deleteChunk(table))
+	r.reached(atDeleteIssue)
 	if err := r.deleteOne(ctx, conn, table, chunk); err != nil {
 		return nil, err
 	}

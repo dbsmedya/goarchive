@@ -117,6 +117,18 @@ const (
 	// The run's own job-lock session has lost the lock, and its final status is about to be
 	// written on a fresh session that takes the lock again first (Codex P1).
 	atFinalWrite point = "final-write"
+
+	// The boundaries of the delete path, for a test that proves D16's order (spec §4.5): in each
+	// deleteTree call, the first DELETE has no sleep before it, and every later one is sleep, gate
+	// decision, source session, chunk and statement, in that order. Observation only: nothing waits
+	// at them and nothing depends on them.
+	atDeleteTree    point = "delete-tree"    // a deleteTree call begins: a batch's or a page's deletes
+	atDeleteSleep   point = "delete-sleep"   // the inter-delete sleep begins
+	atDeleteSlept   point = "delete-slept"   // the sleep ends
+	atDeleteGate    point = "delete-gate"    // the gate decision begins
+	atDeleteGated   point = "delete-gated"   // the gate decision returned
+	atDeleteSession point = "delete-session" // a source session was taken
+	atDeleteIssue   point = "delete-issue"   // the chunk is taken and the statement goes out next
 )
 
 // Report is what a run did.
