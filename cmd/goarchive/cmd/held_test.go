@@ -21,10 +21,10 @@ const heldStop = "the server held a statement of this run while a newly elected 
 	"and the session's wait_timeout passed first (MySQL error 3781). The statement did not run. " +
 	"Run again when the primary is writable; the next run recovers what the log holds."
 
-// err3781 is the error a held statement ends with (M5's direct client, fact 22).
+// err3781 is the error a held statement ends with, as M5's direct client got it (README_COMPAT, M5).
 func err3781() error {
 	return &mysql.MySQLError{Number: 3781, SQLState: [5]byte{'H', 'Y', '0', '0', '0'},
-		Message: "Timeout on wait for view after joining group"}
+		Message: "Timeout exceeded for held statement while new Group Replication primary member is applying backlog."}
 }
 
 // TestHeldStatementTimeout: the error chain of a preflight statement, a recovery statement and a batch
