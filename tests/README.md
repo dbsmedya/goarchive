@@ -1017,6 +1017,8 @@ test no table names or a listed test in a place whose table does not name it. A 
 runner's summary counts the `--- SKIP` lines of tests and subtests alike. A table's rows are not that
 count: a row can group several tests or subtests, and a row marked *conditional* is a SKIP line only
 where its condition holds. Count the lines a place prints, from the rows that apply to it.
+In every table, *Where it runs* is where the test runs and does not skip, so a test can be in a place's list
+of skips and have another place, or only one, in that column.
 
 - A test in a file built for another OS (`*_linux_test.go`, `*_windows_test.go`, `//go:build
   !windows`) is not compiled elsewhere. It neither runs nor skips, and is not listed.
@@ -1043,7 +1045,7 @@ system's). The last two are *conditional* on a tool, and a Mac without `socat` p
 | `TestPeerUIDOtherUser` | needs a test process running as uid 0: it starts the server half as uid 12345 and connects as root | a root container (L1, L4) |
 | `TestSameUserOnlyOtherUID` | needs uid 0: it starts the control server as root, opens its directory and socket to others (the test's own change to its own temporary files; the directory rules keep others out otherwise) and connects as uid 12345. `TestJudgePeer` is the rule's every case on any host | a root container (L1, L4) |
 | `TestControlEndpointChecks/the_directory_belongs_to_another_user` | needs root, to give a directory to another uid. The owner rule itself is also checked, for every user, against the shared judging function | a root container (L1) |
-| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | needs a uid with no user-database entry, with `USER` and `HOME` set: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing | L5 only |
+| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | needs a uid with no user-database entry, with `USER` and `HOME` set: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. Every uid of the other places has an entry (a Mac's, a container's root or its non-root user, an Ubuntu runner's), so it skips there | L5 only: the container run of that name under *The control socket's platform tests*, which no workflow makes |
 | `TestShellClientsReturnWhenTheServerCloses/socat` | *conditional*: `socat` is not on the `PATH`. A Mac that has it prints no line; a Mac without it does. Of the places below, GitHub's *Check* job, *Gate verify*'s integration job and the matrix rows have none | a Mac with `socat`; L1, which installs it with `apt-get` |
 | `TestShellClientsReturnWhenTheServerCloses/nc` | *conditional*: no OpenBSD `nc` on the `PATH`. macOS and the Ubuntu runners ship one, so only L3 (below) prints this line | a Mac, L1, GitHub Linux |
 
