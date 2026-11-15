@@ -654,8 +654,8 @@ func TestSummary(t *testing.T) {
 	mustSet(t, s, BatchDeleteSize, "500") // restored
 	mustSet(t, s, SleepSeconds, "2")
 	mustSet(t, s, SleepSeconds, "2") // unchanged
-	refusalOf(t, s, BatchSize, "5000")
-	refusalOf(t, s, DeleteSleepSeconds, "abc")
+	_ = refusalOf(t, s, BatchSize, "5000")
+	_ = refusalOf(t, s, DeleteSleepSeconds, "abc")
 
 	if _, err := s.Pause(peer); err != nil {
 		t.Fatal(err)
@@ -782,7 +782,7 @@ func TestAuditEvents(t *testing.T) {
 	s := newStore(func(o *Options) { o.Now = clk.Now; o.RequestStop = func() {} })
 	mustSet(t, s, BatchDeleteSize, "100")
 	clk.Advance(time.Second)
-	refusalOf(t, s, BatchSize, "5000")
+	_ = refusalOf(t, s, BatchSize, "5000")
 	mustSet(t, s, SleepSeconds, "1") // unchanged
 	if _, err := s.Pause(Peer{UID: -1}); err != nil {
 		t.Fatal(err)
@@ -866,7 +866,8 @@ func TestAuditQueueIsBounded(t *testing.T) {
 // control server's best-effort entries share them.
 func TestAuditReservation(t *testing.T) {
 	a := NewAudit(2)
-	if !a.Reserve() || !a.Reserve() {
+	first, second := a.Reserve(), a.Reserve()
+	if !first || !second {
 		t.Fatal("two reservations failed in a queue of two")
 	}
 	if a.Reserve() {

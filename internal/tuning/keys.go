@@ -101,15 +101,7 @@ func (s Settings) whole(k Key) int {
 	return 0
 }
 
-// decimal returns a sleep's value.
-func (s Settings) decimal(k Key) float64 {
-	if k == DeleteSleepSeconds {
-		return s.DeleteSleepSeconds
-	}
-	return s.SleepSeconds
-}
-
-// with returns s with one whole-number setting replaced.
+// withWhole returns s with one whole-number setting replaced.
 func (s Settings) withWhole(k Key, v int) Settings {
 	switch k {
 	case BatchSize:

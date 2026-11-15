@@ -191,7 +191,7 @@ func (s *Store) Set(k Key, text string, peer Peer) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	old, now := cur.Settings.Text(k), next.Text(k)
+	old, now := cur.Text(k), next.Text(k)
 	if next == cur.Settings {
 		return Change{Unchanged: true, Key: k, Old: old, New: old, Effect: k.Effect()}, nil
 	}
