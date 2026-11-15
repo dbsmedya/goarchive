@@ -410,3 +410,36 @@ func TestSizeLimits(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceMemberID (GR C6, spec §4.3): what the engine hands the replication gate when preflight returns. The
+// source's own member id when it is an ONLINE member, and "" for every other source: a plain server, a member that
+// is not ONLINE, a plugin that is active with no row of its own, and the anonymous row a server reports before Group
+// Replication ever ran on it. "" is the telling that the source is no member, so the gate's source rule is not applied.
+func TestSourceMemberID(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(w *world)
+		want  string
+	}{
+		{"a plain server", func(*world) {}, ""},
+		{"an ONLINE primary", func(w *world) { w.asMember("ONLINE", "PRIMARY") }, sourceUUID},
+		{"an ONLINE secondary", func(w *world) { w.asMember("ONLINE", "SECONDARY") }, sourceUUID},
+		{"a member that is RECOVERING", func(w *world) { w.asMember("RECOVERING", "SECONDARY") }, ""},
+		{"a member whose view has no row of its own", func(w *world) {
+			w.asMember("ONLINE", "PRIMARY")
+			w.src.members[0].Self = false
+		}, ""},
+		{"the anonymous row", func(w *world) {
+			w.asMember("ONLINE", "PRIMARY")
+			w.src.members = []dbsrepl.GroupMember{{ChannelName: "group_replication_applier", State: "OFFLINE", Self: true}}
+		}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := healthy(t, jobspec.Archive)
+			tc.setup(w)
+			if got := w.mustPass().Group.SourceMemberID(); got != tc.want {
+				t.Errorf("SourceMemberID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

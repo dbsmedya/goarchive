@@ -557,6 +557,18 @@ func TestStatusTextCoversTheJSON(t *testing.T) {
 				},
 			})
 		}},
+		{"a gated fleet with group servers: healthy, unhealthy, a failed read and never probed", func(f *statusFixture) {
+			counted(f, TrackerStatus{Phase: PhaseRunning, Step: "delete", Table: "orders"})
+			f.view.info.GroupApplierQueueWithin, f.view.info.GroupCertifierQueueWithin = ip(1000), ip(500)
+			checked := statusNow.Add(-3 * time.Second)
+			f.gate.set(GateRecord{HoldingSince: statusNow.Add(-90 * time.Second), LastPass: statusNow.Add(-time.Hour), Servers: []ServerVerdict{
+				{Server: "replica1:3306", Type: "async", Healthy: true, Lag: i64(0), Tolerance: 10, CheckedAt: checked},
+				{Server: "gr2:3306", Type: "group", Healthy: true, Tolerance: 10, CheckedAt: checked, ApplierQueue: i64(12), CertifierQueue: i64(3)},
+				{Server: "gr3:3306", Type: "group", Cause: "unhealthy", Detail: "GROUP_REPLICATION_APPLIER_QUEUE_WITHIN: over", Tolerance: 10, CheckedAt: checked, ApplierQueue: i64(4210), CertifierQueue: i64(0)},
+				{Server: "gr4:3306", Type: "group", Cause: "unreadable", Detail: "denied", Tolerance: 10, CheckedAt: checked},
+				{Server: "gr5:3306", Type: "group"},
+			}})
+		}},
 		{"a run that does not use the gate, replication enabled", func(f *statusFixture) {
 			f.view.gate = nil
 			counted(f, TrackerStatus{Phase: PhaseRunning})
@@ -692,11 +704,31 @@ func statusParityNeedles(t *testing.T, f *statusFixture, j map[string]any) map[s
 	if lp, ok := r["last_pass_at"].(string); ok {
 		needles["replication"] = append(needles["replication"], lp)
 	}
+	if a, ok := r["group_applier_queue_within"].(float64); ok {
+		needles["replication"] = append(needles["replication"], fmt.Sprintf("applier %d", int64(a)), fmt.Sprintf("certifier %d", int64(r["group_certifier_queue_within"].(float64))))
+	}
 	for _, v := range r["servers"].([]any) {
 		sv := v.(map[string]any)
 		name := str(sv["server"])
 		if sv["healthy"] == nil {
 			needles["replication"] = append(needles["replication"], name+" not checked yet")
+			continue
+		}
+		if sv["type"] == "group" {
+			// A group server's line says its verdict, its detail and its two queues instead of a lag and a tolerance.
+			queue := func(k string) string {
+				if sv[k] == nil {
+					return "unknown"
+				}
+				return fmt.Sprint(num(sv[k]))
+			}
+			parts := []string{name, "applier queue " + queue("applier_queue"), "certifier queue " + queue("certifier_queue"), "checked ", str(sv["checked_at"])}
+			if cause := str(sv["cause"]); cause != "" {
+				parts = append(parts, " "+cause+" (", str(sv["detail"]))
+			} else {
+				parts = append(parts, name+" healthy")
+			}
+			needles["replication"] = append(needles["replication"], strings.Join(parts, "\x00"))
 			continue
 		}
 		// One line says it all: the server, its verdict and the detail of a cause, the measured lag or
