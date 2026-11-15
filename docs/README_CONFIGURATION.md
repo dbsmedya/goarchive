@@ -21,6 +21,7 @@ as [`configs/archiver.yaml.example`](../configs/archiver.yaml.example).
 - [`safety:`](#safety)
 - [`verification:`](#verification)
 - [`logging:`](#logging)
+- [`control:`](#control)
 - [Per-job overrides and precedence](#per-job-overrides-and-precedence)
 - [Identifier rules](#identifier-rules)
 
@@ -40,8 +41,10 @@ its line; a YAML parse error reports the line where the parser has one:
 - **Each job type accepts only the settings it uses** ([`jobs:`](#jobs)).
 
 Only `--log-level`, `--log-format` and `--verification` override the file. Batch sizes, sleeps
-and the sentinel file are file-only, deliberately: one file holds many jobs, and one CLI value
-cannot suit them all. `goarchive validate` loads the file and runs preflight for every job, or
+and the sentinel file are file-only at the start of a run, deliberately: one file holds many jobs,
+and one CLI value cannot suit them all. A run that has [runtime control](README_OPERATIONS.md#runtime-control)
+enabled can change some of them while it works; a runtime change is **run-scoped**: it lasts until the run
+ends, and the next run starts from the file again. `goarchive validate` loads the file and runs preflight for every job, or
 for one with `--job`.
 
 ---
@@ -332,15 +335,66 @@ logrotate's `copytruncate`, or between runs.
 
 ---
 
+## `control:`
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `enabled` | `true`: the run listens on its control socket. `false`: nothing listens | `false` |
+| `socket_dir` | The directory of the socket. An absolute path | `<home>/.goarchive/run` |
+
+What the socket is for, its protocol and its security:
+[Runtime control](README_OPERATIONS.md#runtime-control).
+
+- **Only the file enables it.** There is no flag and no environment variable, and it is off by default.
+  It can be set per job ([below](#per-job-overrides-and-precedence)); `archive`, `purge` and `copy-only` bind
+  the socket, and `validate`, `dry-run`, `plan` and `list-jobs` never do.
+- **`socket_dir` is an absolute path.** A relative path is refused when the file loads, since it would
+  depend on the directory the run was started from, and cron and a shell differ there. So is a path that
+  begins with `~`, with its own message: the file expands no `~`.
+- **The default is `<home>/.goarchive/run`**, where `<home>` is the home directory the system's user
+  database records for the user the run runs as. It is not `$HOME`: cron, a service manager and a shell can
+  each carry another one, and the place must not depend on how the run was started. A user with no entry in
+  the user database, or no absolute home in it, has no default, and an enabled run is refused before it
+  connects, naming the user and the remedy: set `socket_dir`. The published image's user has none, so an
+  enabled run in the image needs `socket_dir`. A job with control off causes no lookup and creates nothing;
+  a job with `socket_dir` set causes no lookup, and its run checks the directory, or creates its last
+  element with mode `0700`.
+- **The socket is `<socket_dir>/<job>.sock`.** With control enabled the job's name is a file name, so it must
+  match `[A-Za-z0-9_-][A-Za-z0-9_.-]*`, or the file is refused at load. The path is limited by the
+  platform to 103 bytes on macOS and 107 on Linux and Windows; what that leaves for the name is
+  `limit − len(socket_dir) − 1 − 5` bytes. A path over the limit is refused at load when `socket_dir` is set,
+  and at the start of the run for the default directory.
+
+### Windows
+
+Runtime control works on Windows on a best-effort basis, as the log file's mode does: the socket is an
+AF_UNIX socket (Windows 10 version 1803 and later), `socket_dir` must be an absolute Windows path, and the
+default directory is `<profile>\.goarchive\run`, where `<profile>` is the profile directory Windows records
+for the account, not `%USERPROFILE%` or `%LOCALAPPDATA%`; an account with no profile directory has no
+default. Not enforced there: the directory's owner and mode, the socket's mode, and the same-user rule
+([Security](README_OPERATIONS.md#security)).
+
+On Windows a job with control enabled may not carry a reserved device name. Windows reserves `CON`, `PRN`,
+`AUX`, `NUL`, `COM1` to `COM9` and `LPT1` to `LPT9` in every directory, in any letter case and, by Microsoft's
+naming rules, also when an extension follows, so `<job>.sock` would name a device, not a file. A job whose
+name, taken up to its first `.` and compared without regard to case, is one of them is refused when the file
+loads, with the job and the reserved name in the message: rename the job. `con`, `Nul` and `com1.daily` are
+refused; `console`, `com10` and `daily.con` are not. The rule applies on Windows only, and to jobs with control
+enabled.
+
+---
+
 ## Per-job overrides and precedence
 
-`processing`, `verification` and `logging` may be set per job:
+`processing`, `verification`, `logging` and `control` may be set per job:
 
 - **`processing`** — each field the job sets wins, even `0`; each it omits keeps the global value.
   The merged result is validated per job.
 - **`verification`** — the job's value wins over the global one.
 - **`logging`** — each of `level`, `format`, `output` and `file_only` the job sets wins; each it
   omits keeps the global value.
+- **`control`** — each of `enabled` and `socket_dir` the job sets wins; each it omits keeps the global
+  value, so a job can switch control off under a global `true` and on under a global `false`.
 
 ```yaml
 processing:
@@ -358,6 +412,7 @@ jobs:
 | `logging.output`, `logging.file_only` | — | ✅ | ✅ |
 | `verification` | `--verification` | ✅ | ✅ |
 | `processing.*` | — | ✅ | ✅ |
+| `control.*` | — | ✅ | ✅ |
 | `safety.*`, `replication.*` | — | — | ✅ |
 
 A CLI flag wins over the job, which wins over the global block.

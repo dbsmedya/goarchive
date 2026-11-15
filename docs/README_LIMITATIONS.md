@@ -236,11 +236,6 @@ There is no checkpoint, so a copy-only rerun with `resume: true` reads the whole
 again to skip the roots it copied before; on a very large range that costs a full scan per run
 ([Resume semantics](README_OPERATIONS.md#resume-semantics)).
 
-#### No built-in metrics
-
-There is no metrics endpoint. Use the [`--progress` display](README_OPERATIONS.md#progress-display),
-the structured logs and the [tracking tables](README_JOBS_SCHEMA.md).
-
 #### Data loss on misconfiguration is possible
 
 Validation checks structure, not intent: a job with the wrong `where` deletes the wrong rows.

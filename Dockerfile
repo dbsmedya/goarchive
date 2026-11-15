@@ -41,8 +41,10 @@ COPY --from=builder /app/goarchive /usr/local/bin/goarchive
 
 WORKDIR /work
 
-# A numeric user with no passwd entry: GoArchive reads no home directory or user name, and a
-# numeric USER is what Kubernetes runAsNonRoot accepts. Override it with docker run --user.
+# A numeric user with no passwd entry, and so no home directory: GoArchive reads a home directory only
+# for the default control-socket directory, which this user does not have (an enabled run in the image
+# sets control.socket_dir, for example /work/control). A numeric USER is what Kubernetes runAsNonRoot
+# accepts. Override it with docker run --user.
 USER 65532:65532
 
 ENTRYPOINT ["/usr/local/bin/goarchive"]

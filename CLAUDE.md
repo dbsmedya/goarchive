@@ -118,8 +118,10 @@ CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Laye
 | Directory | Purpose |
 |-----------|---------|
 | `cmd/` | CLI command implementations (Cobra) |
-| `internal/config/` | The shared configuration blocks (source, destination, replication, processing, safety, logging) and their validation; `internal/jobspec` loads the file |
-| `internal/database/` | Database connection management, signal handling |
+| `internal/config/` | The shared configuration blocks (source, destination, replication, processing, safety, logging, control) and their validation; `internal/jobspec` loads the file |
+| `internal/control/` | The runtime control socket of a run (TEL-1): the listener and its lifecycle, the lock and identity checks, the protocol, the command table, the status, the audit emitter. Imports neither `engine` nor `replication`: `cmd` adapts their types to its read interfaces |
+| `internal/controlpath/` | Where a run's control socket lives and whether a thing found there may be used: the path, the job-name and length rules, the judging of a directory and a socket. Imports nothing of goarchive, so the loader, the run and the client share one answer |
+| `internal/database/` | Database connection management, signal handling (`Shutdown`: two-phase stop, also requested from code) |
 | `internal/engine/` | 3.0 run engine: one run loop for archive, purge and copy-only; startup, recovery, discovery, copy and verification, deletes, INSERT diagnostics |
 | `internal/jobspec/` | 3.0 job model: strict config loading, job rules, the table tree and the `references` projection |
 | `internal/key/` | 3.0 key model: key definitions from MySQL facts, typed keys, key SQL shapes, statement cap |
@@ -129,6 +131,7 @@ CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Laye
 | `internal/preflight/` | 3.0 preflight: checks by job type over dbsgomysql facts, key definitions, statement caps |
 | `internal/replication/` | Replication lag gate over the library's replica status |
 | `internal/tracking/` | 3.0 tracking: the `3.0` schema label, the job registry and binding, the typed per-job log |
+| `internal/tuning/` | A run's runtime settings store: snapshots and revisions, the writer lock, the ceilings and the tolerance's step rule, the bounded audit queue. Every run reads one; only the control server writes it |
 | `internal/types/` | Temporal column metadata and the temporal read contracts |
 
 SQL identifier quoting and validation now live in the **library**
@@ -178,6 +181,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Moving from 2.x to 3.0: tracking tables, config and flag changes | `docs/README_UPGRADING_3_0.md` |
 | MySQL server behaviours that change how GoArchive binds keys (compatibility issues) | `docs/README_COMPAT.md` |
 | Character sets: the session pin, the supported and refused lists, converting a column | `docs/README_CHARSETS.md` |
+| Runtime control: enabling and the path, the protocol contract (version, grammar, actions, settings, reason words, `status-json` fields), when a change applies, the ceilings, the tolerance's step rule, security | `docs/README_OPERATIONS.md` → *Runtime control* (the `control:` block: `docs/README_CONFIGURATION.md`) |
 
 ### Where behavior lives in code
 
@@ -223,6 +227,18 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | Sticky `root_table` and job type; log-key and binding checks | `internal/tracking/job.go` → `(*Store).Attach` |
 | Per-job logging inheritance | `cmd/goarchive/cmd/root.go` → `effectiveJobLogging` |
 | Log files created owner-only (`0600`); a run's closing log entry (completed, stopped, failed) | `internal/logger/logger.go` → `New`; `cmd/goarchive/cmd/output.go` → `logOutcome`, called from `runJob` (`runjob.go`) |
+| Runtime settings store: the writer lock, the shared per-value validators, the ceilings (D7), the tolerance's step rule (D15) over the gate's completed rounds, the terminal transition | `internal/tuning/store.go` → `Store.Set`, `candidate`, `raise`, `RoundCompleted`, `Terminal`; `internal/config/validation.go` → `ValidateBatchSize`… `ValidateCheckInterval` |
+| The gate on the store: tolerance and interval read per probe round, a pass valid only for its gate revision, a replaced-revision pass discarded with LAG-1's hold state kept, the per-server verdict record | `internal/replication/gate.go` → `WaitForLag`, `wait`, `cachedPass`, `Record` |
+| Control socket start, end and lifecycle: directory check or creation, lock, live/stale/undecided decision (only `ECONNREFUSED` is stale), bind with auto-unlink off, removal by identity, the fixed end order | `internal/control/server.go` → `Start`, `clearStaleSocket`, `Ending`, `Drain`, `Close`; `startup.go` → `prepareDir`, `classifyStartAttempt`, `removeIfSame`; `identity*.go` → `identityAt`, `sameFile`, `inspect` |
+| The identity watch (directory, lock, socket once a minute; reports, repairs nothing) | `internal/control/watch.go` → `checkIdentities` |
+| Protocol framing and lexical form; the command table and its reason words; replies | `internal/control/protocol.go` → `readRequest`, `parseRequest`, `reply.wire`; `commands.go` → `commands.execute` |
+| Same user only (D11) | `internal/control/peer.go` → `judgePeer`; `platform_*.go` → `peerUID` |
+| The audit emitter: the one place the control server writes output, the bounded queue, the cutoff and drain, the raise WARNING through `Banner` | `internal/control/emitter.go` → `emitter`; `internal/tuning/audit.go` → `Audit` |
+| The status: the state word's precedence, `status` text, `status-json` | `internal/control/status.go` → `view.text`, `view.jsonLine`, `read.state` |
+| The progress tracker every run has, fed at each commit | `internal/engine/progress.go` → `Progress`, `Progress.Status` |
+| A stop requested from code (the socket's `stop`), handed to the signal goroutine | `internal/database/signal.go` → `Shutdown.RequestFirst` |
+| The control socket in a run: the settings store and tracker every run builds, the server before connect, the adapters, the end order, the closing line, exit 4, the `Control socket:` entry | `cmd/goarchive/cmd/controlrun.go` → `newRunStore`, `startControl`, `controlRun.end`, `runtimeChanges`, `logControlSocket`; `runjob.go` → `runJob`; `exit.go` → `exitCode` |
+| Job-name rule for a control socket, with Windows' reserved device names | `internal/controlpath/controlpath.go` → `JobNameError`, `ReservedOnWindows`; `internal/jobspec/validate.go` → `validateControl` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
 

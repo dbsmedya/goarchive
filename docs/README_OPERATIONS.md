@@ -19,6 +19,11 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 - [Tuning throughput](#tuning-throughput)
 - [Pausing a run: `sentinel_file`](#pausing-a-run-sentinel_file)
 - [Replication gating](#replication-gating)
+- [Runtime control](#runtime-control)
+  - [Enabling it and where the socket is](#enabling-it-and-where-the-socket-is)
+  - [The protocol contract](#the-protocol-contract)
+  - [When a change applies](#when-a-change-applies)
+  - [Security](#security)
 - [Crash recovery](#crash-recovery)
 - [Resume semantics](#resume-semantics)
 - [Concurrency and locking](#concurrency-and-locking)
@@ -94,6 +99,10 @@ archive and purge jobs; `verification: count`, `verification: none` and
 entry on stderr, in the log's format; otherwise it is a plain `WARNING:` line. `dry-run` and
 `validate` print them too.
 
+A replication lag tolerance raised above its configured value over the
+[control socket](#the-tolerances-step-rule-and-the-warning) is reported the same way, each time it is
+raised, while the run is going: one `WARNING:` line on stderr and a log entry, whatever the log level.
+
 ### Progress display
 
 A bare `--progress` reports every 30 seconds; `--progress=10s` or `--progress=1m30s` sets the
@@ -126,10 +135,11 @@ pushes the rest of its own line. With the log as JSON on the console, each line 
   `--progress` to proceed.
 - `copied_rows` and `deleted_rows` count rows of every table: archive shows both, copy-only
   `copied_rows`, purge `deleted_rows`.
-- While the [sentinel](#pausing-a-run-sentinel_file) pauses the run, `eta=paused` and
-  `[PAUSED: sentinel file "…" present]` are shown.
-- `elapsed` counts from the run's start, so the last line agrees with the closing block's
-  duration; the ETA's rate counts from the first batch, so startup and recovery do not slow it.
+- While the run is [paused](#pausing-a-run-sentinel_file), `eta=paused` and `[PAUSED: …]` are shown, naming
+  what holds it: `control socket`, `sentinel file "…" present`, or both. A change of the reason during a
+  pause is logged.
+- `elapsed` counts from the run's start (when the command began the run, before it connected), so the
+  last line agrees with the closing block's duration; the ETA's rate counts from the first batch, so startup and recovery do not slow it.
 - Once the first batch has started, one final line is printed on every exit; a run that ends
   naturally shows `remaining=0`. A run that stops or fails during startup or recovery prints no
   progress line.
@@ -195,6 +205,20 @@ continue`, or `failed` (the error follows on stderr). Purge shows `deleted`, cop
 and `verified`; under `verification: none` there is no `verified` column. `recovered`, `skipped`
 and accepted conversions are listed under `roots`.
 
+A run whose [control socket](#runtime-control) accepted changes lists them under `roots` too, and the run's
+closing log entry carries the same line as its `runtime_changes` field:
+
+```text
+  runtime changes: batch_delete_size 500 -> 100 (2 changes); paused 1 time for 4m10s
+```
+
+For each setting that was changed it names the configured value, the final value and the number of
+changes (a setting changed and then restored is still listed); a lag tolerance that ends above its
+configured value is marked, as in `seconds_behind_source_within 10 -> 40 (3 changes, above the configured
+value)`. A run that accepted nothing prints and logs nothing new. A run's console is otherwise unchanged
+with control enabled: the socket's path is in the log only (`Control socket: <path>`), and a successful
+cron-style run stays silent.
+
 **Exit codes.**
 
 | Code | Meaning |
@@ -203,7 +227,7 @@ and accepted conversions are listed under `roots`.
 | 1 | Failed: a check refused, a stopped job's unfinished work holds this run's tables, or the run failed part way. Read stderr and the log |
 | 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job |
 | 3 | Stopped before the end of the `where` range, without error (a graceful stop): the next run continues |
-| 4 | Not started: another live run holds the job, a source table, or work on the same data, or is still creating a new tracking schema. Nothing was done |
+| 4 | Not started: another live run holds the job, a source table, or work on the same data, is still creating a new tracking schema, or serves the job's control socket. Nothing was done |
 
 ```bash
 goarchive archive -c archiver.yaml -j archive_old_orders
@@ -214,7 +238,8 @@ case $? in
 esac
 ```
 
-A stop that meets an error exits 1.
+A stop that meets an error exits 1. A [`stop` over the control socket](#graceful-shutdown) changes no rule: the
+code is decided as for a signal, and `OK` to the request acknowledges it, not an outcome.
 
 **Containers.** Keep the default logging, JSON to stdout, and `docker logs` and log drivers read
 the run with no file or mount. On a Linux host, a log file on a mounted directory belongs to the
@@ -248,7 +273,9 @@ batch of root keys, and prints a report:
   that count takes; the range can change before the run.
 - **Copy order** and **delete order**, with each table's rows in the first batch.
 - **Settings** the run would use: `processing`, the verification (after `--verification`), the
-  foreign-key checks, the replication gate and its servers.
+  foreign-key checks, the replication gate and its servers, and the
+  [control socket](#enabling-it-and-where-the-socket-is): `control socket: <path>`, with the default
+  directory marked as the invoking user's, or `off`. `validate` prints the same line under each job.
 - The **statement caps**.
 - **Plans for the first batch**: the root fetch, then each child table's first discovery chunk,
   each statement as sent (the `where` as written, the `LIMIT` and the number of parent tuples in
@@ -400,6 +427,15 @@ rm /var/run/goarchive/pause.flag      # resume
 - A first `Ctrl-C` or `SIGTERM` ends the pause and stops the run; a second signal cancels at
   once.
 
+**A second input: the control socket.** With [runtime control](#runtime-control) enabled, `pause` over the
+socket holds the run at the same places, and `resume` ends it; the sentinel file and the socket pause are two
+inputs to one wait, and the run waits while either holds. `pause` takes effect at the next boundary and the
+batch in flight finishes first. `resume` with the sentinel file still present clears the socket pause and
+says so: the run stays paused, and its log says `Pause continues: control socket pause cleared, but sentinel
+file … is still present`. A socket pause lives in the process: it ends with the run, and a rerun starts
+unpaused, while the sentinel file persists across runs. The pause lines in the log and the `[PAUSED: …]`
+reason name the inputs that hold, and `status` shows how long a pause has lasted.
+
 ---
 
 ## Replication gating
@@ -441,11 +477,334 @@ hold lines do:
 replication hold ended by a stop request; job held 2h14m5s
 ```
 
+### What can change while it runs
+
+With [runtime control](#runtime-control), `seconds_behind_source_within` and `check_interval` can be
+changed while the run goes, and a change applies to every `DELETE` whose gate decision has not yet been
+made. A probe round judges every server by the tolerance it loaded when it began, and a pass is valid only
+for the settings it was judged under: a round that passes while the tolerance is lowered is discarded and
+judged again at once, so a delete is never let through on a verdict made under settings that have since been
+replaced. A hold that is waiting for its next check wakes at once when a gate setting changes, and goes on
+waiting for the time that is left when another setting does. A tolerance raised above its configured value goes
+one step at a time ([the step rule](#the-tolerances-step-rule-and-the-warning)). `cache_ttl` is startup
+configuration only: over the socket it is an unknown key.
+
 ### `cache_ttl` and the bounded detection delay
 
 A **passing** verdict is cached for `cache_ttl` seconds, so a fast loop does not re-query healthy
 replicas before every chunk; failures are never cached. For up to `cache_ttl` seconds after a
 pass, a replica that has just become unhealthy is not noticed. `cache_ttl: 0` checks every time.
+
+---
+
+## Runtime control
+
+A run can listen on a Unix socket. While it works you can look at it, pause it, stop it, and change how
+fast it goes: slow it down when the source is loaded or a replica lags, and bring it back up when the
+pressure is gone. Nothing listens unless the configuration says so. The protocol is a public contract
+(below), so a script can talk to a run with nothing but a tool that speaks to a Unix socket.
+
+A socket changes only what is run-scoped: a change lasts until the run ends, and the next run starts from
+the file again ([how configuration is loaded](README_CONFIGURATION.md#how-configuration-is-loaded)).
+
+### Enabling it and where the socket is
+
+```yaml
+control:
+  enabled: true
+  socket_dir: /home/archiver/.goarchive/run   # optional
+```
+
+`control` is off by default, and only the file turns it on: there is no flag and no environment
+variable. It can be set per job, and the job's value wins
+([options](README_CONFIGURATION.md#control), [per-job overrides](README_CONFIGURATION.md#per-job-overrides-and-precedence)).
+`archive`, `purge` and `copy-only` bind the socket; `validate`, `dry-run`, `plan` and `list-jobs` never
+bind or create anything.
+
+- **The socket** is `<socket_dir>/<job>.sock`, with its lock `<job>.lock` beside it: one socket per job
+  name in a directory. Two configuration files that give the same job name the same directory name one
+  socket, and the second run exits 4.
+- **The default directory** is `<home>/.goarchive/run`, where `<home>` is the home directory that the
+  system's user database records for the user the run runs as, never `$HOME`: cron, a service manager and a
+  shell can each carry another `$HOME`, and the place must not depend on how the run was started. A user
+  with no entry in that database, or no absolute home in it, has no default: the run is refused before it
+  connects to anything, saying so, and `control.socket_dir` is the remedy. The published image's user has
+  no entry.
+- **The job's name** is used as a file name, so with control enabled it must match
+  `[A-Za-z0-9_-][A-Za-z0-9_.-]*`; otherwise the file is refused when it is loaded (exit 2). On Windows a
+  name that is a reserved device name is refused too ([Windows](README_CONFIGURATION.md#windows)).
+- **The path's length** is limited by the platform to 103 bytes on macOS and 107 on Linux and Windows,
+  counted over the whole path. What that leaves for the job's name is `limit − len(socket_dir) − 1 − 5`
+  bytes (the separator and `.sock`). A path over the limit is refused when the file is loaded if
+  `socket_dir` is set, and at the start of the run for the default directory.
+
+**Where you read the path.** It is never printed on a run's console, which stays as it is: a successful
+cron-style run is silent with control enabled.
+
+- Before the run: `validate` prints `control socket: <path>` under each job and `dry-run` in its
+  *Settings* section. The default directory depends on the user, so the line says that the path is the
+  invoking user's. A job with control off prints `off`; a job whose path cannot be formed prints why, and
+  `validate` fails it, as a run would refuse to start it.
+- During the run: the log holds one entry, `Control socket: <path>`, at every `level`, in the log's own
+  stream and never on the console tee.
+- Over the socket: `status` and `status-json` carry it as `socket`.
+
+**Starting.** The socket is bound after the run's log exists and before it connects to MySQL, so `status`
+answers during preflight and startup. A socket that cannot be bound fails the run there, naming the path
+and the reason; nothing was connected or changed. The failures:
+
+- A live run already serves the socket (its lock is held, or the lock was free and something answered on
+  the socket): the run exits **4**, "not started", naming the lock file or the socket.
+- Every other failure exits 1: the directory rules below, no default directory for this user, a path over
+  the limit under the default directory, something at the socket path that is not a socket, a socket the
+  run cannot tell is stale.
+
+A socket left by a run that was killed is replaced by the next start. GoArchive removes a socket only
+when its lock is held and a connection to it is refused; it never removes anything that is not a socket,
+and at the end of a run it removes only its own.
+
+### The protocol contract
+
+The socket speaks **protocol 1**. The version is an integer, reported as the first body line of `help`
+(`protocol 1`) and in `status-json` as `"protocol": 1`. It covers everything in this section.
+
+- Adding an action, a setting, an error reason or a `status-json` field keeps the version. A client must
+  ignore fields and body lines it does not know.
+- Renaming or removing any of them, or changing the grammar or the meaning of a reply, raises it.
+- A change to the protocol is a behaviour change, and updates this section in the same change; a test
+  compares the tables below with the server's.
+
+**A request** is one line, `token`, `token=number` or `token=?`, ended by a line feed, on one connection;
+the server reads up to the first line feed (at most 4096 bytes with it), acts on that line, writes its
+reply and closes.
+
+```text
+line     = token | token "=" number | token "=?"
+token    = lower *( lower | digit | "_" | "-" )
+number   = 1*digit [ "." 1*digit ]
+```
+
+- A bare token is an action; `token=number` sets a setting; `token=?` reads it. A number has no sign, no
+  exponent, no leading or trailing point and no space: `0.5` and `10` are numbers; `.5`, `5.`, `+5`, `-5`,
+  `1e3`, `.nan` and `.inf` are not. Nothing is trimmed into validity: a space, a tab, a CR, an uppercase
+  letter or an empty line breaks the form.
+- **What follows the first line feed is not a request.** It is discarded, never run and never refused.
+  No half-close is needed: a client may close its writing side after the line or leave it open, and the
+  reply comes either way. A request with no line feed is not a request: `ERR malformed` if the stream
+  ends first or 4096 bytes arrive without one, and a connection closed at the deadline with no reply if
+  neither happens within it.
+- A client sends one line and nothing more. One that sends more may find the connection reset instead of
+  closed cleanly, because the server closed with input unread; it must not rely on a clean close.
+- **The reply** is `OK` and a body, or one line `ERR <reason> <message>`. Every line ends with a line feed
+  and the server closes after the reply, so the end of the stream is the end of the reply. A reply whose
+  last byte is not a line feed was cut inside a line; one cut exactly at a line boundary cannot be told
+  from a complete one. A script that reads `status-json` parses the body as one JSON object and checks its
+  `protocol` field. Replies never contain credentials, DSNs, key values or the job's `where`.
+- A setter's body is `key: <old> -> <new>, <when it takes effect>`, or `key: <value> (unchanged)`; a
+  getter's body is `key=<value>`, a line that is itself a valid setter. An integer setting is written in
+  digits, a sleep as the shortest plain decimal that reads back to the same value, never with an exponent.
+- **A failed exchange says nothing about the request.** The server acts on the line before it replies. If
+  the connection fails before you have read the reply, you do not know the outcome: the failure means
+  neither a refusal nor that a change was undone. Read the value back with a getter or `status-json`.
+- Each connection has a 5-second deadline on its reads and writes, at most 8 connections are handled at
+  once, and the others wait.
+
+**Actions.**
+
+| Action | Effect |
+|---|---|
+| `help` | `protocol 1` on the first body line, then the actions and settings this run accepts, one line each |
+| `status` | The state as text: a summary line, then labelled lines |
+| `status-json` | The same as one JSON object on one line |
+| `pause` | Pause before the next batch or recovery page; a batch in flight finishes first |
+| `resume` | End a socket pause |
+| `stop` | Stop gracefully, as the first `SIGTERM` does |
+
+**Settings.** The names are the configuration keys.
+
+| Setting | Takes | Job types |
+|---|---|---|
+| `batch_size` | a whole number | all |
+| `batch_delete_size` | a whole number | archive and purge |
+| `sleep_seconds` | a number of seconds | all |
+| `delete_sleep_seconds` | a number of seconds | archive and purge |
+| `seconds_behind_source_within` | a whole number of seconds | archive and purge, with `replication.enabled` |
+| `check_interval` | a whole number of seconds | archive and purge, with `replication.enabled` |
+
+`help` lists only the settings the run accepts, and a refused setting's getter is refused the same way.
+`cache_ttl` is not a setting: over the socket it is an unknown key. Left out on purpose: anything that
+takes SQL, a host, a URL or a path (the sentinel file included); `verification`, `--force-triggers`,
+foreign-key checks, the preflight bypass; `replication.enabled`, the server list; an abort command.
+
+**Errors.** `ERR` is followed by one reason word, then a message for a person. A script branches on the
+word and never parses the message, which may be reworded without a protocol change. The words are a
+closed list; a later addition keeps the version, so **a client must treat a well-formed reason it does not
+know as a refusal**.
+
+| Reason | Meaning |
+|---|---|
+| `denied` | The connection did not come from the run's user |
+| `malformed` | The request does not have the form: no line feed before the end of input, over 4096 bytes, a character outside the grammar, a value that is not a number |
+| `unknown` | The form is met; the action or setting is not one this protocol has |
+| `inapplicable` | The setting exists and this run does not use it |
+| `ending` | The run is ending; nothing is changed any more |
+| `invalid` | The number is not a value this setting can take: a fraction for a whole-number setting, a number too large to hold, or one the configuration file would refuse |
+| `ceiling` | A size above the run's starting value |
+| `step` | A tolerance raise breaks the step rule; the message says the largest value accepted now, or that the replicas have not yet been checked under the current tolerance |
+| `busy` | The run's log is not keeping up; nothing was changed. Try again |
+
+A request that fails in more than one way gets the first word that applies, in the order of this table:
+`denied`, `malformed`, `unknown`, `inapplicable`, `ending`, `invalid`, `ceiling` or `step`, `busy`. `status`
+and the getters are never `ending`, `busy`, `ceiling` or `step`.
+
+```text
+→ batch_delete_size=100
+← OK
+← batch_delete_size: 500 -> 100, from the next DELETE
+
+→ batch_size=5000
+← ERR ceiling batch_size 5000 is above this run's configured 1000; the control socket never raises this setting above the run's configuration: change the file and run the job again
+```
+
+**`status-json`** is one object. Times are RFC 3339 in UTC and durations are seconds; what a run does not
+have is `null`. `<name>` is a table's or a setting's name. The counters count committed work and never go
+down within a run; a new run starts from zero, so a collector treats a changed `pid` or `started_at` as a
+reset.
+
+| Field | Content |
+|---|---|
+| `protocol` | `1` |
+| `version` | The GoArchive version |
+| `job` | The job's name |
+| `job_type` | `archive`, `purge` or `copy-only` |
+| `config_file` | The absolute path of the configuration file the run loaded |
+| `pid` | The run's process id |
+| `socket` | The socket's path |
+| `started_at` | When the run began |
+| `now` | When this snapshot was taken |
+| `elapsed_seconds` | `now` minus `started_at` |
+| `state` | One word: `ending`, `stopping`, `held`, `paused`, `recovering`, `running` or `starting`, by that precedence |
+| `stop_requested` | A stop was requested, by a signal or over the socket |
+| `activity.step` | `fetch`, `discover`, `copy`, `delete`, `log`, `sleep` or `wait`; `activity` is `null` when the run does nothing yet |
+| `activity.table` | The table the step works on, where it has one |
+| `pause.requested[]` | The inputs that ask for a pause: `socket`, `sentinel` |
+| `pause.waiting_since` | When the loop began waiting in the pause gate; `null` when it is not waiting |
+| `pause.sentinel_file` | The configured sentinel file, when there is one |
+| `hold.since` | When the replication gate began holding the job; `hold` is `null` when it is not |
+| `hold.servers[].server` | A server that holds the job, as `host:port` |
+| `hold.servers[].healthy` | Its health at its last check |
+| `hold.servers[].cause` | `unreachable`, `unreadable` or `unhealthy` |
+| `hold.servers[].detail` | The reason as the hold's log line gives it |
+| `hold.servers[].lag_seconds` | The largest lag among the gated channels; `null` when a channel reports NULL or the read failed |
+| `hold.servers[].tolerance` | The tolerance it was judged by |
+| `hold.servers[].checked_at` | When it was last probed |
+| `counters.batches` | Batches completed |
+| `counters.roots` | Roots in completed batches |
+| `counters.roots_skipped` | Roots a copy-only resume left alone |
+| `counters.roots_recovered` | Roots recovery replayed |
+| `counters.rows_copied` | Rows committed to the destination |
+| `counters.rows_deleted` | Rows deleted from the source and committed, recovery's included |
+| `tables.<name>.copied` | Rows committed to the destination, per table |
+| `tables.<name>.deleted` | Rows deleted from the source, per table |
+| `progress.roots_estimate` | The optimizer's estimate of the roots in range; `progress` is `null` without `--progress` and before the estimate is read |
+| `progress.percent` | The share done, capped at 100 |
+| `progress.eta` | The time left in seconds; `null` while it cannot be told |
+| `settings.<name>.value` | The value in force, for each setting the run accepts |
+| `settings.<name>.configured` | The value the run started with |
+| `replication.enabled` | `replication.enabled` in the configuration |
+| `replication.used` | Whether this run uses the gate |
+| `replication.cache_ttl` | The configured `cache_ttl`, which is not a setting |
+| `replication.last_pass_at` | When the gate last passed; `null` if it has not |
+| `replication.servers[].server` | Each server's last verdict: `host:port` |
+| `replication.servers[].healthy` | Healthy or not; `null` until it is first probed |
+| `replication.servers[].cause` | `unreachable`, `unreadable` or `unhealthy`; empty when healthy |
+| `replication.servers[].detail` | The rendered reason; empty when healthy |
+| `replication.servers[].lag_seconds` | The largest lag among the gated channels, or `null` |
+| `replication.servers[].tolerance` | The tolerance the verdict was judged by |
+| `replication.servers[].checked_at` | When the server was probed; `null` until it is |
+| `changes` | How many runtime changes this run has accepted |
+
+The gate is synchronous: outside a probe, `status` shows each server's last verdict and its age, not a
+live value, and reading it never probes. `status` and `status-json` write no log entry and query nothing;
+a collector may poll every second.
+
+### When a change applies
+
+| Setting | Read | A change applies |
+|---|---|---|
+| `batch_size` | Once at the top of each batch and of each recovery page | From the next batch or page. That one value is the fetch limit, the end test and the chunk size of every read, discovery and verification statement of the batch |
+| `batch_delete_size` | Immediately before each DELETE is built, after its sleep and its gate decision | From the next DELETE to be issued, the one a hold is holding included |
+| `sleep_seconds`, `delete_sleep_seconds` | At the start of each sleep, and again on each change | At once: a sleep in progress ends when the time already slept reaches the new value |
+| `seconds_behind_source_within`, `check_interval` | Once per probe round | To every DELETE whose gate decision has not yet been made, one sleeping before its decision included |
+
+Nothing pauses inside a batch: `pause` takes effect at the next boundary and the batch in flight finishes,
+and `status` shows `running` with the pause listed as requested until the loop is actually waiting.
+
+**The size ceilings.** `batch_size` and `batch_delete_size` may be lowered, and raised again up to the
+value the run started with, never above it; a value above is `ERR ceiling`. The socket slows a run down
+when the server is loaded or replication lags, and brings it back; the run's configuration is the ceiling.
+The reasons: preflight proved the statement sizes only up to the configured values, so a larger size would
+send statements that `MAX_ALLOWED_PACKET_CHECK` never judged; a typo that raises a size is refused, while
+one that lowers it makes the run slow, visibly, and one command undoes it; and the starting value is what
+`dry-run` showed and what memory was planned for. Growing a run beyond its configuration needs a stop and
+a rerun with a changed file. Sleeps and `check_interval` have no ceiling or floor beyond the file's rules
+(not negative, finite and small enough to be a duration; `check_interval` positive).
+
+#### The tolerance's step rule and the warning
+
+`seconds_behind_source_within` is lowered freely, and a raise back up to the
+configured value is accepted in one command. Above the configured value a raise goes **one step at a time**:
+the new value is at most the current value plus one step (the configured tolerance, or 1 when it is 0), and
+only after the gate has probed the replicas under the current tolerance, so each step is judged before the
+next is accepted. With a configured tolerance of 10 and a replica 42 seconds behind, you send 20, 30, 40 and
+50, each after the gate has probed at the previous value; `50` sent first is refused:
+
+```text
+Error: step: seconds_behind_source_within 50 is more than one step above the current 10; the largest
+value accepted now is 20 (the configured 10 is the step)
+```
+
+A raise above the configured value is reported loudly, as the run banners are: one `WARNING:` line on
+stderr and a log entry, whatever the log level. The status shows `value` and `configured`, and the closing
+output marks a final value above the configuration.
+
+**What the log records.** Every accepted change is one log entry, past the level filter, with the setting,
+the old and new values, the revision, the time, and the peer's user id and process id where the platform
+gives them; `pause`, `resume` and `stop` are logged the same way. A refused request and a refused peer are
+warnings, best effort when the log is not keeping up: an accepted change is never dropped, and when the log
+cannot take another entry the next change is refused with `busy` instead. A run that accepted changes ends
+with one more line in its closing entry and in the closing block, for each setting changed its configured
+value, its final value and its number of changes, and the pauses with their time
+([Output and exit codes](#output-and-exit-codes)).
+
+### Security
+
+The socket is protected by its directory and by a check of who connects.
+
+- **The directory is private.** On Linux and macOS a socket directory that exists must be a real directory,
+  not a symbolic link, owned by the user the run runs as, with no group or other permission bit. GoArchive
+  creates the last element of `socket_dir` (or `.goarchive` and `run` under the home for the default) with
+  mode `0700`, and never changes the mode or owner of a directory it did not create: `socket_dir: /tmp` is a
+  refused mistake, not one silently repaired. The socket is created inside it with mode `0600`.
+- **Same user only.** The run accepts a connection only from its own user: on Linux and macOS the kernel's
+  record of the peer's user id must equal the run's, and every other user is refused with `ERR denied`,
+  uid 0 included, because the superuser can open a `0600` socket in a `0700` directory. A connection whose
+  credentials cannot be read is refused the same way, and the refusal is logged with the user id. A run
+  started by uid 0 is no special case: only uid 0 controls it. There is no group mode and no list of
+  further operators. Connect as the OS user that runs the job.
+- **Use a dedicated, unprivileged OS user for jobs**, as the published image does (uid `65532`), so that
+  pausing or tuning a run never needs a privileged account.
+- **Windows** is best effort, as for log files. The socket is an AF_UNIX socket (Windows 10 version 1803
+  and later); the default directory is `<profile>\.goarchive\run`, where `<profile>` is the profile
+  directory Windows records for the account. Not enforced there: the directory's owner and mode, the
+  socket's mode, and the same-user rule, since there are no peer credentials; a change is logged without a
+  user id. The rules that keep another run's or another program's file from being removed are the same on
+  every platform.
+- **Do not put `socket_dir` in a directory that is cleaned by age**, or exclude it from the cleaner. The
+  run checks once a minute that its directory, its lock and its socket are still the ones it created; if one
+  was removed or replaced it logs it loudly, once, and repairs nothing: it does not create a new lock or
+  bind a new socket, the run itself continues, and a signal still stops it. A live socket still refuses a
+  second start even if its lock file is gone.
 
 ---
 
@@ -505,6 +864,14 @@ the gate has seen an unhealthy replica, a signal ends the hold at once. The clos
 included. A second signal cancels at once: the open transaction rolls back, the log ends with
 `Run failed`, the cancellation and the counts so far, and the next run's recovery finishes what
 the log holds. A third terminates the process.
+
+A `stop` over the [control socket](#runtime-control) is the first phase, exactly as the first `SIGTERM` is:
+the same log line and the same stop, so the same boundary stop and the same immediate end of a replication
+hold. `OK` acknowledges the request, not an outcome: the exit code is decided as for a signal (3 if the run
+stopped before the end of the `where` range without an error, 0 if the batch in flight was the last short
+batch and the run completed, 1 if an error met the stop). A second `stop` says it is already stopping, and no
+socket command cancels a run: a real signal after a `stop` is the second phase. `status` answers until the
+run ends.
 
 ---
 
