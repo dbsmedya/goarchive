@@ -414,3 +414,18 @@ func TestMakeE2ERefusesTheGroupEstate(t *testing.T) {
 		t.Errorf("make e2e TOPOLOGY=group called docker before refusing: %s", b)
 	}
 }
+
+// TestEstateScriptIsExecutable: tests/e2e/lib/estate.sh (the E2E harness's setup) and any caller that is
+// not a `bash` command line run tests/scripts/estate.sh by its path, as it runs check-servers.sh and
+// setup-replication.sh. Its mode in the repository must say it can be run.
+func TestEstateScriptIsExecutable(t *testing.T) {
+	for _, name := range []string{"estate.sh", "check-servers.sh", "setup-replication.sh", "require-containers-up.sh"} {
+		fi, err := os.Stat(filepath.Join("..", "scripts", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&0o111 == 0 {
+			t.Errorf("tests/scripts/%s is mode %v: the harness runs it by its path", name, fi.Mode().Perm())
+		}
+	}
+}
