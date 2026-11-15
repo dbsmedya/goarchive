@@ -60,6 +60,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUERY="$SCRIPT_DIR/mysql-query.sh"
 
+# ESTATE_REPLICA names the topology's replica in every message below: db3, or gr-replica on the group estate.
+# shellcheck source=topology.sh
+. "$SCRIPT_DIR/topology.sh"
+
 SOURCE_PORT="${TEST_SOURCE_PORT:-3305}"
 REPLICA_PORT="${TEST_REPLICA_PORT:-3308}"
 
@@ -203,13 +207,13 @@ STATUS="$(read_status)" || exit 1
 if [ -n "$STATUS" ]; then
     if compare_status; then
         wait_for_catchup || exit 1
-        echo "setup-replication.sh: db3 is already replicating from ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING}) and caught up — nothing to do."
+        echo "setup-replication.sh: ${ESTATE_REPLICA} is already replicating from ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING}) and caught up — nothing to do."
         exit 0
     fi
 
     cat >&2 <<EOF
 
-setup-replication.sh: db3 already has a replication config, and it DIVERGES
+setup-replication.sh: ${ESTATE_REPLICA} already has a replication config, and it DIVERGES
 from what this estate requires (mismatches above).
 
 This script does not repair it. Re-pointing a live replica would silently
@@ -222,7 +226,7 @@ Decide what the current state is, then either fix it deliberately or reset it:
     tests/scripts/mysql-query.sh ${REPLICA_PORT} "RESET REPLICA ALL;"
     tests/scripts/setup-replication.sh
 
-(The remediation above discards db3's replication config. It does not touch
+(The remediation above discards ${ESTATE_REPLICA}'s replication config. It does not touch
 its data.)
 EOF
     exit 1
@@ -232,18 +236,18 @@ fi
 
 if [ "$REPL_POSITIONING" = "snapshot" ]; then
     cat >&2 <<EOF
-setup-replication.sh: REPL_POSITIONING=snapshot, but db3 has no replication
+setup-replication.sh: REPL_POSITIONING=snapshot, but ${ESTATE_REPLICA} has no replication
 config and this script implements only the GTID attach.
 
-A snapshot attach must seed db3 from a db1 dump and then supply the matching
+A snapshot attach must seed ${ESTATE_REPLICA} from a ${SOURCE_HOST_INTERNAL} dump and then supply the matching
 binary-log coordinates; performing it with SOURCE_AUTO_POSITION=0 and no seed
-would replicate onto divergent data. Seed db3 and attach it by hand, or set
+would replicate onto divergent data. Seed ${ESTATE_REPLICA} and attach it by hand, or set
 REPL_POSITIONING=gtid (this estate has gtid_mode=ON on both servers).
 EOF
     exit 1
 fi
 
-echo "setup-replication.sh: attaching db3 -> ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING})..."
+echo "setup-replication.sh: attaching ${ESTATE_REPLICA} -> ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING})..."
 
 # Host scope '%' because compose network addresses are dynamic. Narrowing it is
 # a later operator call, not a default this script should make.
@@ -289,5 +293,5 @@ fi
 
 wait_for_catchup || exit 1
 
-echo "setup-replication.sh: db3 is replicating from ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING}); both threads running, caught up."
+echo "setup-replication.sh: ${ESTATE_REPLICA} is replicating from ${SOURCE_HOST_INTERNAL}:${SOURCE_PORT_INTERNAL} (${REPL_POSITIONING}); both threads running, caught up."
 exit 0
