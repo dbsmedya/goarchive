@@ -278,7 +278,7 @@ run_control_socket_job() (
         log_error "CONTROL_FINAL: the socket file is left after a completed run"
         return 1
     fi
-    expect finished 5 "" "no control socket at $sock" status || return 1
+    expect finished 5 "" "no control socket at \"$sock\"" status || return 1
     witness "the final run completed; control against its path exits 5"
     return 0
 )

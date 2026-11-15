@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -398,7 +399,7 @@ func TestControlExitCodes(t *testing.T) {
 		dir := shortTemp(t)
 		path := filepath.Join(dir, "j.sock")
 		code, out, errs := runMain(t, "control", path, "status")
-		failing(t, "nothing at the path", code, out, errs, 5, "no control socket at "+path)
+		failing(t, "nothing at the path", code, out, errs, 5, "no control socket at "+strconv.Quote(path))
 		code, out, errs = runMain(t, "control", filepath.Join(dir, "nodir", "j.sock"), "status")
 		failing(t, "no directory", code, out, errs, 5, "no control socket at ")
 		if !strings.Contains(errs, "not running") || !strings.Contains(errs, "not enabled") || !strings.Contains(errs, "path is wrong") {
@@ -416,8 +417,8 @@ func TestControlExitCodes(t *testing.T) {
 		}
 		code, out, errs := runMain(t, "control", l.Path, "status")
 		failing(t, "a stale socket", code, out, errs, 5, "stale")
-		if !strings.Contains(errs, l.Path) {
-			t.Errorf("the message does not name the path: %q", errs)
+		if !strings.Contains(errs, strconv.Quote(l.Path)) {
+			t.Errorf("the message does not name the path, quoted: %q", errs)
 		}
 	})
 	t.Run("7 for a malformed reply", func(t *testing.T) {
@@ -544,8 +545,8 @@ func TestControlClassifyDialError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := classifyConnect("/s", tc.err)
-			if got == nil || got.code != tc.code || !strings.Contains(got.Error(), tc.msg) || !strings.Contains(got.Error(), "/s") {
-				t.Errorf("classifyConnect(%v) = %v (code %d), want code %d and %q naming the path", tc.err, got, codeOf(got), tc.code, tc.msg)
+			if got == nil || got.code != tc.code || !strings.Contains(got.Error(), tc.msg) || !strings.Contains(got.Error(), strconv.Quote("/s")) {
+				t.Errorf("classifyConnect(%v) = %v (code %d), want code %d and %q naming the path, quoted", tc.err, got, codeOf(got), tc.code, tc.msg)
 			}
 		})
 	}
@@ -585,8 +586,8 @@ func TestControlEndpointChecks(t *testing.T) {
 		t.Helper()
 		code, out, errs := runMain(t, "control", path, "status")
 		failing(t, want, code, out, errs, 8, want)
-		if !strings.Contains(errs, path) {
-			t.Errorf("the message does not name the path %s: %q", path, errs)
+		if !strings.Contains(errs, strconv.Quote(path)) {
+			t.Errorf("the message does not name the path %s, quoted: %q", strconv.Quote(path), errs)
 		}
 		if l != nil {
 			if reqs, _ := l.sent(); l.connections() != 0 || len(reqs) != 0 {
@@ -734,5 +735,43 @@ func TestControlPrintedPath(t *testing.T) {
 	var st map[string]any
 	if err := json.Unmarshal([]byte(out), &st); err != nil || st["socket"] != printed || ctl.srv.Path() != printed {
 		t.Errorf("status-json socket = %v (%v), the server's path %s, the printed path %s: want all three equal", st["socket"], err, ctl.srv.Path(), printed)
+	}
+}
+
+// TestControlDiagnosticsQuoteThePath (Codex batch 2 finding 5): every diagnostic that names a path
+// names it with %q, as the startup and endpoint messages do. A Windows path with spaces and backslashes
+// is then unambiguous, and a path with a control character cannot split a message into more lines. The
+// copyable path in normal output (status, validate, the log entry) is not a diagnostic and stays plain.
+func TestControlDiagnosticsQuoteThePath(t *testing.T) {
+	for _, path := range []string{
+		`C:\Users\run ner\AppData\j.sock`, // a Windows path with a space and backslashes
+		"/tmp/a\nb\x1b[31m.sock",          // a control character and an escape
+	} {
+		quoted := strconv.Quote(path)
+		var generic error = &net.OpError{Op: "dial", Net: "unix", Addr: &net.UnixAddr{Name: path, Net: "unix"}, Err: errors.New("boom\nsecond line")}
+		c := controlClient{limits: controlLimits{dial: time.Second, exchange: 2 * time.Second, maxReply: 1 << 20}}
+		for name, err := range map[string]*controlError{
+			"no socket":          noSocket(path),
+			"refused endpoint":   refusedEndpoint(path, "its directory "+strconv.Quote(path)+" is a symbolic link"),
+			"stale":              classifyConnect(path, syscall.ECONNREFUSED),
+			"missing":            classifyConnect(path, fs.ErrNotExist),
+			"deadline":           classifyConnect(path, context.DeadlineExceeded),
+			"permission":         classifyConnect(path, fs.ErrPermission),
+			"an unknown error":   classifyConnect(path, generic),
+			"exchange timeout":   c.exchangeError(path, os.ErrDeadlineExceeded),
+			"exchange transport": c.exchangeError(path, generic),
+		} {
+			msg := err.Error()
+			if !strings.Contains(msg, quoted) {
+				t.Errorf("%s, path %q: the message %q does not name the path quoted as %s", name, path, msg, quoted)
+			}
+			if strings.ContainsAny(msg, "\n\r\x1b") {
+				t.Errorf("%s, path %q: the message holds a raw control character, which can split or repaint a diagnostic: %q", name, path, msg)
+			}
+		}
+		_, merr := judgeReply(path, []byte("garbage\n"), 1<<20)
+		if msg := merr.Error(); !strings.Contains(msg, quoted) || strings.ContainsAny(msg, "\n\x1b") {
+			t.Errorf("malformed reply, path %q: %q", path, msg)
+		}
 	}
 }

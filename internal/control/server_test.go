@@ -649,3 +649,26 @@ func TestSourcesAreRead(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestInUseErrorQuotesPaths (Codex batch 2 finding 5): the contention message names the lock or socket
+// path and the directory with %q, as the startup messages do: a Windows path with spaces and backslashes
+// is unambiguous, and a path with a control character cannot split the message into lines. The job's name
+// was already quoted.
+func TestInUseErrorQuotesPaths(t *testing.T) {
+	for _, tc := range []struct{ path, dir string }{
+		{`C:\Users\run ner\job.lock`, `C:\Users\run ner`},
+		{"/tmp/a\nb/job.lock", "/tmp/a\nb"},
+	} {
+		for _, lock := range []bool{true, false} {
+			msg := (&InUseError{Path: tc.path, Lock: lock, Job: "j", Dir: tc.dir}).Error()
+			for _, want := range []string{strconv.Quote(tc.path), strconv.Quote(tc.dir), `the job "j"`, "already uses this socket directory"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("lock=%v: %q lacks %s", lock, msg, want)
+				}
+			}
+			if strings.ContainsAny(msg, "\n\r") {
+				t.Errorf("lock=%v: the message holds a raw line break: %q", lock, msg)
+			}
+		}
+	}
+}
