@@ -16,9 +16,12 @@ import (
 // keys, and each DELETE goes through the same five steps, in this order (D16):
 //
 //  1. the sleep, delete_sleep_seconds, only after a DELETE was already issued in this batch;
-//     it is not ended by a stop (nil stop), so the batch in flight always finishes;
-//  2. the replication lag gate, so that its decision is the latest thing known about the
-//     replicas when the statement runs, not a moment from before the sleep;
+//     a first stop does not shorten it (nil stop). After it a healthy gate lets the batch
+//     finish; a hold ends under LAG-1's rule, and the next run's recovery finishes the
+//     unfinished batch;
+//  2. the replication lag gate, whose decision is made after the sleep and just before the
+//     statement, not before the sleep. The decision may be a pass still valid in the gate's
+//     cache (cache_ttl), which lets the DELETE go without a new probe;
 //  3. a source session taken for the chunk, so no session sits idle through a sleep or a hold
 //     (LAG-1);
 //  4. the chunk: min(batch_delete_size, the statement cap) keys from the offset, asked for
@@ -27,18 +30,23 @@ import (
 //
 // Recovery's replay shares this path. A purge's gate before its roots are logged is separate.
 func (r *run) deleteTree(ctx context.Context, t *tree) error {
+	r.reached(atDeleteTree)
 	issued := false
 	for _, n := range r.tree.DeleteOrder() {
 		c := newChunkCursor(t.keys[n.Table])
 		for !c.done() {
 			if issued {
+				r.reached(atDeleteSleep)
 				if err := followSleep(ctx, nil, r.tune, func(s tuning.Settings) float64 { return s.DeleteSleepSeconds }); err != nil {
 					return err
 				}
+				r.reached(atDeleteSlept)
 			}
+			r.reached(atDeleteGate)
 			if err := r.waitForLag(ctx); err != nil {
 				return err
 			}
+			r.reached(atDeleteGated)
 			chunk, err := r.deleteNext(ctx, n.Table, c)
 			if err != nil {
 				return err
@@ -61,7 +69,9 @@ func (r *run) deleteNext(ctx context.Context, table string, c *chunkCursor) ([]k
 		return nil, err
 	}
 	defer func() { _ = conn.Close() }()
+	r.reached(atDeleteSession)
 	chunk := c.take(r.deleteChunk(table))
+	r.reached(atDeleteIssue)
 	if err := r.deleteOne(ctx, conn, table, chunk); err != nil {
 		return nil, err
 	}

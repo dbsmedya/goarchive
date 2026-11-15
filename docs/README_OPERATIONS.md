@@ -323,9 +323,12 @@ not source load, limits you. Both accept fractional seconds and can be set per j
 ([per-job overrides](README_CONFIGURATION.md#per-job-overrides-and-precedence)).
 
 Each `DELETE` after the first of a batch sleeps `delete_sleep_seconds` first, and only then is the
-[replication gate](#replication-gating) asked, so the gate's answer is the latest one when the
-statement runs: a replica that fell behind during the pause holds that `DELETE`, not the one
-after it. A stop request does not shorten the pause; the batch in flight still finishes.
+[replication gate](#replication-gating) asked, so the gate decision comes after the pause, just
+before the statement. The decision may be a pass that is still valid in the gate's cache
+(`cache_ttl`), which lets the `DELETE` go without a new check. A first stop request does not shorten
+the pause. After it, a healthy gate lets the batch finish; if the gate sees an unhealthy replica, the
+hold ends at once ([Graceful shutdown](#graceful-shutdown)) and the next run's
+[recovery](#crash-recovery) finishes the unfinished batch.
 
 ### Memory
 

@@ -23,11 +23,13 @@ const (
 	helperPathEnv = "GC_CONTROL_PATH"
 )
 
-// TestHelperProcess is the helper's entry point; it does nothing in a normal run.
+// TestHelperProcess is the helper's entry point: it does nothing in a normal run, and returns at
+// once. It does not skip: a skip would show as SKIP in every run of the package, among the skips
+// that mean a host cannot run a test (TEL1-M1).
 func TestHelperProcess(t *testing.T) {
 	role := os.Getenv(helperRoleEnv)
 	if role == "" {
-		t.Skip("entry point of the helper processes of the other tests")
+		return
 	}
 	path := os.Getenv(helperPathEnv)
 	switch role {

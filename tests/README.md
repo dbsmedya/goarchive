@@ -506,7 +506,8 @@ docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/go
 
 # L5: an effective uid with no user-database entry, USER and HOME set. Build the test binary
 # first, then run it as that user, so that the go tool itself touches nothing under that HOME
-GOOS=linux CGO_ENABLED=0 go test -c -o /tmp/l5/controlpath.test ./internal/controlpath/   # GOARCH of the Docker host
+GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \
+  go test -c -o /tmp/l5/controlpath.test ./internal/controlpath/
 docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/controlpath.test \
   golang:1.26.8 -test.run 'TestHomeIgnoresEnvironment|TestHomeOfUnknownUID' -test.v
 ```
