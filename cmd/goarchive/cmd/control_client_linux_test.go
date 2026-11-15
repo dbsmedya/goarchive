@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"net"
 	"syscall"
 	"testing"
 )
@@ -24,6 +25,10 @@ func listenNoAccept(t *testing.T, path string, backlog int) {
 		t.Fatal(err)
 	}
 }
+
+// closing accepts and closes at once without reading: with the request unread, Linux resets the
+// connection under the client (spec §4.3).
+func closing(_ *testListener, c net.Conn) { _ = c.Close() }
 
 // TestControlResetBeforeTheReply (spec §7 row 76, Linux): a listener that closes with the request
 // unread resets the connection, and the client exits 9 with nothing on stdout. On macOS the same close

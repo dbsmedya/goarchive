@@ -170,10 +170,6 @@ func silent(tl *testListener, c net.Conn) {
 	_, _ = readConn(c)
 }
 
-// closing accepts and closes at once without reading: with the request unread, Linux resets the
-// connection under the client (spec §4.3).
-func closing(_ *testListener, c net.Conn) { _ = c.Close() }
-
 // withLimits sets the client's bounds for one test.
 func withLimits(t *testing.T, l controlLimits) {
 	t.Helper()
