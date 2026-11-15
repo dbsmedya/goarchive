@@ -57,8 +57,19 @@ type fixture struct {
 
 func newFixture(t *testing.T, name string, jobs string) fixture {
 	t.Helper()
-	ss, ds := serverFor(t, "TEST_SOURCE"), serverFor(t, "TEST_DEST")
+	return newFixtureOn(t, "TEST_SOURCE", name, jobs)
+}
+
+// newFixtureOn is newFixture with the source on the server srcPrefix names. A source on the
+// destination's server (a plain server on every estate) gets a schema of its own name, so the
+// pair is two schemas of one server.
+func newFixtureOn(t *testing.T, srcPrefix, name string, jobs string) fixture {
+	t.Helper()
+	ss, ds := serverFor(t, srcPrefix), serverFor(t, "TEST_DEST")
 	f := fixture{srcName: fmt.Sprintf("ga3m6_%s_%d", name, os.Getpid()), dstName: fmt.Sprintf("ga3m6_%s_%d", name, os.Getpid())}
+	if srcPrefix == "TEST_DEST" {
+		f.srcName = fmt.Sprintf("ga3m6_%ssrc_%d", name, os.Getpid())
+	}
 	for _, p := range []struct {
 		s      server
 		schema string
