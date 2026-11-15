@@ -161,10 +161,7 @@ func newlyElectedPrimary(t *testing.T) {
 // the run after its socket serves and the run has gone on for two seconds without ending.
 func heldCopyOnly(t *testing.T, name string) *liveRun {
 	t.Helper()
-	if os.Getenv("CI") == "true" {
-		t.Skip("a held run is stopped with real signals, which the CI environment does not take")
-	}
-	requireGroupMemberSource(t)
+	requireGroupMemberSource(t) // group-only: on GitHub's plain pairs it skips here, before any signal is sent
 	f, dir := controlRunFixture(t, name, "processing:\n  batch_size: 10\n  batch_delete_size: 100\n")
 	setLogging(t, f, "logging:\n  level: warn\n  format: json\n  output: stderr\n") // the stop's two lines are warnings
 	newlyElectedPrimary(t)
