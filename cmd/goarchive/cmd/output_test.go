@@ -296,6 +296,7 @@ var dryRunGolden = strings.Join([]string{
 	"  replication lag gate: on, hold above 10s, check every 5s, cache 15s",
 	"    replica1:3306  channels: <default>",
 	"    replica2:3306  channels: <default>",
+	"  control socket: off",
 	"",
 	"Statement caps (key tuples per statement):",
 	"  source       by key     orders (id): 16000",

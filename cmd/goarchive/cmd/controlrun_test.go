@@ -501,3 +501,53 @@ func TestStartControlRefusals(t *testing.T) {
 		t.Errorf("startControl over an open directory = %v (exit %d), want a failure naming it", err, exitCode(err))
 	}
 }
+
+// TestReportsPrintSocketPath (spec §7 row 71): dry-run prints the control socket in its Settings section
+// and validate under the job: the path a job with control enabled would use, the default directory
+// marked as the invoking user's, `off` for a job with control off; a job whose path cannot be formed
+// prints the reason, and validate fails it.
+func TestReportsPrintSocketPath(t *testing.T) {
+	render := func(doc *jobspec.Document, name string) string {
+		var out strings.Builder
+		printExplanation(&out, name, jobspec.Archive, "c.yaml", doc, doc.Jobs[name], jobspec.VerifySHA256, dryRunExplanation())
+		return out.String()
+	}
+	section := func(report string) string {
+		_, after, _ := strings.Cut(report, "Settings\n")
+		before, _, _ := strings.Cut(after, "\n\nStatement caps")
+		return before
+	}
+
+	off := parseDoc(t, "", "", "job", jobspec.Archive)
+	if got := section(render(off, "job")); !strings.Contains(got, "\n  control socket: off") {
+		t.Errorf("dry-run, control off, Settings:\n%s\nwant `control socket: off`", got)
+	}
+	set := parseDoc(t, "", controlYAML("/run/goarchive"), "job", jobspec.Archive)
+	if got := section(render(set, "job")); !strings.Contains(got, "\n  control socket: /run/goarchive/job.sock") || strings.Contains(got, "invoking user") {
+		t.Errorf("dry-run, socket_dir set, Settings:\n%s\nwant its path with no remark about a default", got)
+	}
+	def := parseDoc(t, "control:\n  enabled: true\n", "", "job", jobspec.Archive)
+	line, _ := controlReport(def, def.Jobs["job"], "job")
+	if got := section(render(def, "job")); !strings.Contains(got, "\n  "+line) {
+		t.Errorf("dry-run, the default, Settings:\n%s\nwant %q", got, line)
+	}
+	long := strings.Repeat("n", 120)
+	over := parseDoc(t, "control:\n  enabled: true\n", "", long, jobspec.Archive)
+	if got := section(render(over, long)); !strings.Contains(got, "\n  control socket: none: ") {
+		t.Errorf("dry-run, a path that cannot be formed, Settings:\n%s\nwant the reason", got)
+	}
+
+	// validate: a line under the job; a job that cannot start fails.
+	var out strings.Builder
+	if !printControlLine(&out, off, off.Jobs["job"], "job") || out.String() != "   control socket: off\n" {
+		t.Errorf("validate, control off: %q", out.String())
+	}
+	out.Reset()
+	if !printControlLine(&out, set, set.Jobs["job"], "job") || out.String() != "   control socket: /run/goarchive/job.sock\n" {
+		t.Errorf("validate, socket_dir set: %q", out.String())
+	}
+	out.Reset()
+	if printControlLine(&out, over, over.Jobs[long], long) || !strings.Contains(out.String(), "   control socket: none: ") || !strings.Contains(out.String(), "FAILED") {
+		t.Errorf("validate, a path that cannot be formed: %q, want the reason and a failure", out.String())
+	}
+}
