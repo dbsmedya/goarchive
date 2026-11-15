@@ -73,7 +73,7 @@ func TestMySQLProgressForEveryRun(t *testing.T) {
 	for _, n := range rep.Deleted {
 		deleted += n
 	}
-	if st.Batches != rep.Batches || st.Roots != rep.Roots || st.RowsCopied != copied || st.RowsDeleted != deleted || st.Phase != PhaseRunning {
+	if st.Batches != int64(rep.Batches) || st.Roots != rep.Roots || st.RowsCopied != copied || st.RowsDeleted != deleted || st.Phase != PhaseRunning {
 		t.Errorf("final status = %+v, want it equal to the report %+v", st, rep)
 	}
 	for _, tc := range st.Tables {
