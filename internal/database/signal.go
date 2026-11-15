@@ -31,20 +31,32 @@ import (
 // and closes the stop channel as it does for a signal, so a socket handler never writes the log line
 // and never waits for it (D17). A real signal after it is the second phase.
 func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) *Shutdown {
-	ctx, cancel := context.WithCancel(context.Background())
-	s := &Shutdown{ctx: ctx, stop: make(chan struct{}), first: make(chan struct{}, 1)}
-
 	sigChan := make(chan os.Signal, 2)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	s, dispatch := newShutdown(onFirst, onSecond, sigChan)
 
 	go func() {
 		// Once both phases are consumed, restore the default handler so a third
 		// signal hard-terminates as an emergency escape hatch.
 		defer signal.Stop(sigChan)
+		dispatch()
+	}()
 
+	return s
+}
+
+// newShutdown builds a Shutdown and the dispatcher that runs its two phases from sigs and from
+// RequestFirst; the caller starts the dispatcher. It is the one place the phases are decided, and
+// it takes the signal channel as an argument so a test can queue both inputs before the dispatcher
+// runs, which the real signal goroutine cannot be made to wait for.
+func newShutdown(onFirst, onSecond func(os.Signal), sigs <-chan os.Signal) (*Shutdown, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Shutdown{ctx: ctx, stop: make(chan struct{}), first: make(chan struct{}, 1)}
+
+	return s, func() {
 		// Phase 1: cooperative stop — close stop, keep the work context alive.
 		select {
-		case sig := <-sigChan:
+		case sig := <-sigs:
 			if onFirst != nil {
 				onFirst(sig)
 			}
@@ -60,16 +72,14 @@ func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) *Shutdown {
 
 		// Phase 2: hard cancel on the next signal.
 		select {
-		case sig := <-sigChan:
+		case sig := <-sigs:
 			if onSecond != nil {
 				onSecond(sig)
 			}
 			cancel()
 		case <-ctx.Done():
 		}
-	}()
-
-	return s
+	}
 }
 
 // Shutdown is the two-phase shutdown of a run.
