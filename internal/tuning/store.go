@@ -2,6 +2,7 @@ package tuning
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -300,10 +301,19 @@ func (s *Store) raise(snap *Snapshot, v int) *Refusal {
 	if configured == 0 {
 		step, why = 1, "the configured tolerance is 0, so the step is 1"
 	}
-	if limit := max(configured, cur+step); v > limit {
+	if limit := max(configured, saturatingAdd(cur, step)); v > limit {
 		return refuse(ReasonStep, fmt.Sprintf("%s %d is more than one step above the current %d; the largest value accepted now is %d (%s)", SecondsBehindSourceWithin, v, cur, limit, why))
 	}
 	return nil
+}
+
+// saturatingAdd is a + b for non-negative a and b, at most the largest int: a sum that would
+// wrap is the largest int, so a limit built from it is never smaller than its parts.
+func saturatingAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // Pause sets the socket pause. The batch or page in flight finishes first; the engine's pause
