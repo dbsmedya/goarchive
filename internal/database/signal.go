@@ -23,11 +23,16 @@ import (
 //     by status-aware replay on the next run.
 //   - A third signal hits the restored default handler and terminates the process.
 //
-// The returned context must be used for all DB work; the stop channel must be
-// checked at batch boundaries (see stopRequested / followSleep).
-func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) (context.Context, <-chan struct{}) {
+// The context must be used for all DB work; the stop channel must be checked at batch boundaries
+// (see stopRequested / followSleep).
+//
+// The first phase can also be requested from code: RequestFirst is the control socket's `stop`
+// (spec §4.7). It returns at once by handing the request to the signal goroutine, which runs onFirst
+// and closes the stop channel as it does for a signal, so a socket handler never writes the log line
+// and never waits for it (D17). A real signal after it is the second phase.
+func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) *Shutdown {
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := make(chan struct{})
+	s := &Shutdown{ctx: ctx, stop: make(chan struct{}), first: make(chan struct{}, 1)}
 
 	sigChan := make(chan os.Signal, 2)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
@@ -43,7 +48,12 @@ func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) (context.Context, 
 			if onFirst != nil {
 				onFirst(sig)
 			}
-			close(stop)
+			close(s.stop)
+		case <-s.first:
+			if onFirst != nil {
+				onFirst(codeRequest{})
+			}
+			close(s.stop)
 		case <-ctx.Done():
 			return
 		}
@@ -59,5 +69,43 @@ func SetupGracefulShutdown(onFirst, onSecond func(os.Signal)) (context.Context, 
 		}
 	}()
 
-	return ctx, stop
+	return s
 }
+
+// Shutdown is the two-phase shutdown of a run.
+type Shutdown struct {
+	ctx   context.Context
+	stop  chan struct{}
+	first chan struct{}
+}
+
+// Context is the work context: it stays alive through the first phase and is cancelled by the second.
+func (s *Shutdown) Context() context.Context { return s.ctx }
+
+// Stop is the stop channel: it closes when the first phase begins.
+func (s *Shutdown) Stop() <-chan struct{} { return s.stop }
+
+// StopRequested reports whether the first phase has been taken, by a signal or from code.
+func (s *Shutdown) StopRequested() bool {
+	select {
+	case <-s.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequestFirst asks for the first phase from code, as a signal does. It never blocks, and a request
+// after the phase is taken, or one already pending, does nothing.
+func (s *Shutdown) RequestFirst() {
+	select {
+	case s.first <- struct{}{}:
+	default:
+	}
+}
+
+// codeRequest stands for a signal in onFirst when the first phase was asked for from code.
+type codeRequest struct{}
+
+func (codeRequest) String() string { return "control socket stop request" }
+func (codeRequest) Signal()        {}

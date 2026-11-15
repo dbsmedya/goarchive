@@ -138,12 +138,13 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		}
 	}
 
-	ctx, stop := database.SetupGracefulShutdown(
+	shutdown := database.SetupGracefulShutdown(
 		func(os.Signal) {
 			log.Warn("Stop requested: the current batch finishes, then the run stops. Signal again to cancel at once.")
 		},
 		func(os.Signal) { log.Warn("Cancelling the run now; the next run recovers what the log holds.") },
 	)
+	ctx, stop := shutdown.Context(), shutdown.Stop()
 	mgr, err := connect(ctx, doc)
 	if err != nil {
 		failed(nil)
