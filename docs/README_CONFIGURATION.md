@@ -343,7 +343,9 @@ logrotate's `copytruncate`, or between runs.
 | `socket_dir` | The directory of the socket. An absolute path | `<home>/.goarchive/run` |
 
 What the socket is for, its protocol and its security:
-[Runtime control](README_OPERATIONS.md#runtime-control).
+[Runtime control](README_OPERATIONS.md#runtime-control). The command that talks to it is
+[`goarchive control`](README_OPERATIONS.md#the-client-goarchive-control), which finds the run by its socket
+path and reads no configuration file.
 
 - **Only the file enables it.** There is no flag and no environment variable, and it is off by default.
   It can be set per job ([below](#per-job-overrides-and-precedence)); `archive`, `purge` and `copy-only` bind

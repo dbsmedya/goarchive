@@ -71,13 +71,24 @@ usual mode for a file holding passwords) needs `--user "$(id -u):$(id -g)"` too,
 group-readable mode; a host directory mounted over `/work` keeps its own permissions, not the
 image's. With the default logging (JSON to stdout), every line goes to `docker logs`
 as one JSON object; an error also prints one `Error:` line on stderr. A foreground `docker run`
-returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work);
+returns goarchive's exit code (0 done, 1 failed, 2 usage, 3 stopped, 4 another run holds the work; the
+control client adds 5 to 9);
 for a detached container, read the number `docker wait <name>` prints, not `docker wait`'s own
 exit status. `docker stop` stops a run gracefully if the batch in flight finishes before Docker's
 deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batch's duration. A stop
 during a replication hold ends the hold without waiting for the replicas, though it may wait for one
 replica check in progress
 ([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
+To use [runtime control](docs/README_OPERATIONS.md#runtime-control) in the image, set a socket
+directory in the file: the image's user has no home directory, so it has no default one, and a run with
+control enabled and no `socket_dir` is refused, naming it. Use the directory `/work/control`, which the
+run creates private to the user the container runs as, and talk to the run from inside the container:
+
+```bash
+# archiver.yaml: control.enabled: true, control.socket_dir: /work/control
+docker exec <container> goarchive control /work/control/<job>.sock status
+```
+
 On a Linux host, a log file is created with mode `0600`, owned by the user the container runs as
 ([log files](docs/README_CONFIGURATION.md#logging)). To write one to a mounted directory and
 read it as yourself, run the container as yourself. Create the directory first: Docker creates

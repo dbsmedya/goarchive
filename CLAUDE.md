@@ -117,7 +117,7 @@ CLI (Cobra) → Config (internal/jobspec) → Preflight → Engine → Data Laye
 
 | Directory | Purpose |
 |-----------|---------|
-| `cmd/` | CLI command implementations (Cobra) |
+| `cmd/` | CLI command implementations (Cobra), including `goarchive control`, the client of a run's control socket (`control.go`) |
 | `internal/config/` | The shared configuration blocks (source, destination, replication, processing, safety, logging, control) and their validation; `internal/jobspec` loads the file |
 | `internal/control/` | The runtime control socket of a run (TEL-1): the listener and its lifecycle, the lock and identity checks, the protocol, the command table, the status, the audit emitter. Imports neither `engine` nor `replication`: `cmd` adapts their types to its read interfaces |
 | `internal/controlpath/` | Where a run's control socket lives and whether a thing found there may be used: the path, the job-name and length rules, the judging of a directory and a socket. Imports nothing of goarchive, so the loader, the run and the client share one answer |
@@ -239,6 +239,8 @@ The one thing `docs/` structurally cannot carry — internal symbols, for naviga
 | A stop requested from code (the socket's `stop`), handed to the signal goroutine | `internal/database/signal.go` → `Shutdown.RequestFirst` |
 | The control socket in a run: the settings store and tracker every run builds, the server before connect, the adapters, the end order, the closing line, exit 4, the `Control socket:` entry | `cmd/goarchive/cmd/controlrun.go` → `newRunStore`, `startControl`, `controlRun.end`, `runtimeChanges`, `logControlSocket`; `runjob.go` → `runJob`; `exit.go` → `exitCode` |
 | Job-name rule for a control socket, with Windows' reserved device names | `internal/controlpath/controlpath.go` → `JobNameError`, `ReservedOnWindows`; `internal/jobspec/validate.go` → `validateControl` |
+| The client: `goarchive control`. The command line is judged and spelled before connecting (`controlLine`); the endpoint is looked at without following links (`checkEndpoint`, the judging functions of `controlpath`); a failed connect is classified by the client's own deadline and the server's refusal predicate (`classifyConnect`, `control.IsRefused`, `isQueueFull` per platform); the reply's envelope is judged and nothing in its body (`judgeReply`); every failure is a `*controlError` that `exitCode` maps to 1 or 5 to 9 | `cmd/goarchive/cmd/control.go` → `controlLine`, `controlClient.ask`, `checkEndpoint`, `classifyConnect`, `judgeReply`; `control_other.go`, `control_windows.go` → `isQueueFull`; `exit.go` → `controlError`, `exitCode` |
+| The client's help is the server's table | `internal/control/commands.go` → `HelpTable`, `(*commands).help`; the client's request limit is `control.MaxRequest` |
 | Config identifier rule (`[A-Za-z0-9_]+`) | library → `sqlutil.IsSimpleIdentifier`, called from `internal/config/validation.go` |
 | Integer display-width normalization (`bigint(20)` ≡ `bigint`) | library, unexported; goarchive reads `ColumnSpec.NormalizedType` |
 
