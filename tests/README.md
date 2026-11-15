@@ -719,9 +719,11 @@ git push origin --delete verify-gate/<sha7>
   other workflow's jobs. A Gate verify image counts as a gate only when both its parts carry that
   evidence, each naming its own part; an image with one part fails the run. Every job's evidence
   directory is an artifact.
-  A gate's integration count is two passes short of the local baseline, with two more skips:
-  `TestSetupGracefulShutdown_TwoPhase` and `TestStopPhases` skip themselves where `CI=true`, which
-  GitHub sets ([Expected skips](#expected-skips), *GitHub Linux*).
+  A gate's integration count is three passes short of a local one on a machine that has `socat`, with
+  three more skips: `TestSetupGracefulShutdown_TwoPhase` and `TestStopPhases` skip themselves where
+  `CI=true`, which GitHub sets, and the `socat` subtest of `TestShellClientsReturnWhenTheServerCloses`
+  skips because the integration job installs no `socat` ([Expected skips](#expected-skips),
+  *GitHub Linux*).
 - **When, and who:**
 
   | Run | When | Started by |
@@ -910,8 +912,9 @@ A test that cannot run on its host **skips with its reason**, and the skip is th
 there. This is the one list of them, by the place a run happens. Hold a run's `--- SKIP` lines against
 that place's table: a SKIP the table names is expected, and any other is a finding, whether it is a
 test no table names or a listed test in a place whose table does not name it. A `SKIP=n` in a
-runner's summary counts the `--- SKIP` lines of tests and subtests alike, so a table's rows are its
-count (a row that names two subtests is two).
+runner's summary counts the `--- SKIP` lines of tests and subtests alike. A table's rows are not that
+count: a row can group several tests or subtests, and a row marked *conditional* is a SKIP line only
+where its condition holds. Count the lines a place prints, from the rows that apply to it.
 
 - A test in a file built for another OS (`*_linux_test.go`, `*_windows_test.go`, `//go:build
   !windows`) is not compiled elsewhere. It neither runs nor skips, and is not listed.
@@ -919,14 +922,19 @@ count (a row that names two subtests is two).
   exclusions are named under *GitHub matrix rows*.
 - **The guard.** `TestExpectedSkipsAreListed` (`tests/harness`, part of `make check`) fails when a
   test that skips is not named in the first column of a table here, and when a name there is no longer
-  a test or no longer skips. It reads tests, not subtests: a row that names `Test/sub` names `Test`,
-  and which subtests skip is the row's own account. A new `t.Skip` comes with a row in the place it
-  skips; a skip that no place should ever meet goes in *No place above*.
+  a test or no longer skips. A name is one function of one package: when two packages declare it, the
+  row gives the package, as a path in backticks after the names it qualifies in the same cell (the
+  rows below do); a method is `Receiver.name`. The guard reads tests, not subtests: a row that names
+  `Test/sub` names `Test`, and which subtests skip is the row's own account. It does not tell which
+  receiver a call through a method name that several receivers of a package share goes to, so such a
+  skip is covered by a listed test or method that may reach it. A new `t.Skip` comes with a row in
+  the place it skips; a skip that no place should ever meet goes in *No place above*.
 
 ### make check on a Mac
 
-`make check` runs `go test ./...` without the `integration` tag, and needs no database. The rows
-below are the SKIP lines on a Mac with `socat` installed (`brew install socat`; `nc` is the system's).
+`make check` runs `go test ./...` without the `integration` tag, and needs no database. The first
+four rows are the SKIP lines of a Mac with `socat` installed (`brew install socat`; `nc` is the
+system's). The last two are *conditional* on a tool, and a Mac without `socat` prints one more line.
 
 | Test | Why it skips | Where it runs |
 |---|---|---|
@@ -934,7 +942,8 @@ below are the SKIP lines on a Mac with `socat` installed (`brew install socat`; 
 | `TestSameUserOnlyOtherUID` | needs uid 0: it starts the control server as root, opens its directory and socket to others (the test's own change to its own temporary files; the directory rules keep others out otherwise) and connects as uid 12345. `TestJudgePeer` is the rule's every case on any host | a root container (L1, L4) |
 | `TestControlEndpointChecks/the_directory_belongs_to_another_user` | needs root, to give a directory to another uid. The owner rule itself is also checked, for every user, against the shared judging function | a root container (L1) |
 | `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | needs a uid with no user-database entry, with `USER` and `HOME` set: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing | L5 only |
-| `TestShellClientsReturnWhenTheServerCloses/nc`, `TestShellClientsReturnWhenTheServerCloses/socat` | `nc` (the OpenBSD one) and `socat` on the `PATH`; each subtest skips on a host without its tool, so a Mac without `socat` has one SKIP line more | a Mac with `socat`, L1, and Gate verify's runners, which install both |
+| `TestShellClientsReturnWhenTheServerCloses/socat` | *conditional*: `socat` is not on the `PATH`. A Mac that has it prints no line; a Mac without it does. Of the places below, GitHub's *Check* job, *Gate verify*'s integration job and the matrix rows have none | a Mac with `socat`; L1, which installs it with `apt-get` |
+| `TestShellClientsReturnWhenTheServerCloses/nc` | *conditional*: no OpenBSD `nc` on the `PATH`. macOS and the Ubuntu runners ship one, so only L3 (below) prints this line | a Mac, L1, GitHub Linux |
 
 ### Integration on the local estate
 
@@ -976,15 +985,24 @@ from the job's log.
 | `TestDefaultDirectoryCreation`, `TestDirectoryRules`, `TestControlEndpointChecks/the_directory_has_group_or_other_bits`, `TestControlEndpointChecks/the_owner_rule_is_the_shared_judging_function`, `TestControlEndpointChecks/the_directory_belongs_to_another_user` | directory modes and owners are not enforced on Windows (the last also needs root) | Linux and macOS |
 | `TestNotASocket`, `TestControlEndpointChecks/the_directory_is_a_symbolic_link`, `TestControlEndpointChecks/the_socket_path_is_a_symbolic_link_to_a_socket` | creating a symbolic link needs a privilege on Windows | Linux and macOS |
 | `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | Windows refuses to remove a lock file the run holds open (`being used by another process`) and to rename a directory with open handles (`Access is denied`), so these cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows | Linux and macOS |
-| `TestShellClientsReturnWhenTheServerCloses` | the published lines are for a POSIX shell | a Mac with `socat`, L1 and Gate verify |
+| `TestShellClientsReturnWhenTheServerCloses` | the published lines are for a POSIX shell | a Mac with `socat`, L1 |
 | `TestHomeOfUnknownUID` | Windows takes the profile of the process token, not a uid (elsewhere it skips if uid 12345 has an entry, which no place here has) | Linux and macOS |
 
 ### GitHub Linux
 
-The CI job *Check* (`make check` on an Ubuntu runner: a non-root user, `CI=true`, `nc` but no `socat`)
-skips what *make check on a Mac* lists, with `TestShellClientsReturnWhenTheServerCloses/socat` for
-the missing tool, and these two. *Gate verify* runs the gate on six images, with both tools
-installed: it skips what *Integration on the local estate* lists, and these two.
+An Ubuntu runner has a non-root user, `CI=true` and `nc`, and has `socat` only where the workflow
+installs it. Read from the workflows as written:
+
+- **The CI job *Check*** (`make check`, `ci.yml`) installs no tool. It skips what *make check on a
+  Mac* lists, with the `socat` subtest of `TestShellClientsReturnWhenTheServerCloses` (a Mac without
+  `socat` would print it too), and the two rows below.
+- ***Gate verify*** (`gate-verify.yml`) runs each image as two jobs that start together
+  (`run-gate.sh --part`). The **integration** job (the static checks, the unit stage and the
+  integration stage) installs MySQL Shell and no shell-client tool, so the `socat` subtest skips in
+  both stages. Its unit stage skips what *Check* skips; its integration stage skips what
+  *Integration on the local estate* lists, with the `socat` subtest and the two rows below. The
+  **e2e** job runs the shell E2E tests and the validation demos, no Go test, so it prints none of
+  these lines; it installs `nc` and `socat` for E2E test 20, which fails, not skips, without them.
 
 | Test | Why it skips | Where it runs |
 |---|---|---|
@@ -993,9 +1011,10 @@ installed: it skips what *Integration on the local estate* lists, and these two.
 
 ### GitHub matrix rows
 
-A row job runs the integration inventory on a throwaway pair, on an Ubuntu runner with `CI=true` and
-no `socat`. It skips what *GitHub Linux* lists for *Check*, and **the row tests of** *Integration on the
-local estate* **on every row but their own**. These skip on a row instead:
+A row job runs the integration inventory on a throwaway pair, on an Ubuntu runner with `CI=true` that
+`matrix-verify.yml` gives no `socat`. It skips what *GitHub Linux* lists for the *Check* job, and **the
+row tests of** *Integration on the local estate* **on every row but their own**. These skip on a row
+instead:
 
 | Test | Why it skips | Where it runs |
 |---|---|---|
