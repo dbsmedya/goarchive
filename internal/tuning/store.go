@@ -2,6 +2,7 @@ package tuning
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,6 +67,11 @@ type Store struct {
 
 	cur atomic.Pointer[Snapshot]
 
+	// round is the newest gate revision a completed probe round was judged under, plus one: zero
+	// means the gate has completed no round. The gate writes it without the writer lock, and the
+	// step rule reads it under that lock.
+	round atomic.Uint64
+
 	// mu is the writer lock: every mutation and the terminal transition take it.
 	mu        sync.Mutex
 	terminal  bool
@@ -113,6 +119,24 @@ func (s *Store) Load() *Snapshot { return s.cur.Load() }
 
 // Start returns the starting values.
 func (s *Store) Start() Settings { return s.start }
+
+// RoundCompleted tells the store that the gate completed a probe round judged under gate revision
+// rev, whether the round passed or failed. It is the input of D15's one step per probe round:
+// a raise above the configured tolerance is accepted only when a round completed under the
+// current gate revision. The gate never takes the writer lock; this is one atomic write, and
+// only the newest revision is kept, so a round that ends late and was judged under an older
+// revision cannot take back what a newer one gave.
+func (s *Store) RoundCompleted(rev uint64) {
+	for {
+		old := s.round.Load()
+		if old > rev || s.round.CompareAndSwap(old, rev+1) {
+			return
+		}
+	}
+}
+
+// roundUnder reports whether a probe round completed under gate revision rev.
+func (s *Store) roundUnder(rev uint64) bool { return s.round.Load() == rev+1 }
 
 // Audit returns the queue of accepted changes' events.
 func (s *Store) Audit() *Audit { return s.audit }
@@ -187,7 +211,7 @@ func (s *Store) Set(k Key, text string, peer Peer) (Change, error) {
 		return Change{}, errEnding
 	}
 	cur := s.cur.Load()
-	next, err := s.candidate(cur.Settings, k, text)
+	next, err := s.candidate(cur, k, text)
 	if err != nil {
 		return Change{}, err
 	}
@@ -213,7 +237,8 @@ func (s *Store) Set(k Key, text string, peer Peer) (Change, error) {
 // candidate returns the settings with k set to text, or the refusal. It passes the value
 // through the functions the file is validated with, so that the file and the socket cannot
 // drift apart.
-func (s *Store) candidate(cur Settings, k Key, text string) (Settings, *Refusal) {
+func (s *Store) candidate(snap *Snapshot, k Key, text string) (Settings, *Refusal) {
+	cur := snap.Settings
 	if !k.whole() {
 		v, bad := parseDecimal(k, text)
 		if bad != nil {
@@ -249,13 +274,46 @@ func (s *Store) candidate(cur Settings, k Key, text string) (Settings, *Refusal)
 	if ceiling := s.start.whole(k); k.size() && v > ceiling {
 		return cur, refuse(ReasonCeiling, fmt.Sprintf("%s %d is above this run's configured %d; the control socket never raises this setting above the run's configuration: change the file and run the job again", k, v, ceiling))
 	}
-	if configured := s.start.SecondsBehindSourceWithin; k == SecondsBehindSourceWithin && v > configured {
-		// Lowering is always accepted, and so is a raise up to the configured value. A raise
-		// above it is one step per completed probe round (spec §4.6); the store is not told of
-		// a round yet, so none has completed under the current tolerance.
-		return cur, refuse(ReasonStep, fmt.Sprintf("%s %d is above the configured %d; a raise above it is accepted one step at a time, and only after the replicas have been checked under the current tolerance, which has not happened", k, v, configured))
+	if k == SecondsBehindSourceWithin {
+		if r := s.raise(snap, v); r != nil {
+			return cur, r
+		}
 	}
 	return cur.withWhole(k, v), nil
+}
+
+// raise judges a new lag tolerance by D15's step rule (spec §4.6). Lowering is always accepted,
+// down to 0, and so is a raise up to the configured value, which restores the configuration. A
+// raise above the configured value needs both: a probe round completed under the current gate
+// revision, so the replicas were judged at the present tolerance before the next step; and one
+// step, at most the current value plus the configured tolerance (1 when that is 0), or, from a
+// value below the configuration, whichever is higher of the configured value and that sum. A
+// value equal to the current one is no raise: the caller answers it as unchanged.
+func (s *Store) raise(snap *Snapshot, v int) *Refusal {
+	cur, configured := snap.SecondsBehindSourceWithin, s.start.SecondsBehindSourceWithin
+	if v <= cur || v <= configured {
+		return nil
+	}
+	if !s.roundUnder(snap.GateRevision) {
+		return refuse(ReasonStep, fmt.Sprintf("%s %d is above the configured %d; the replicas have not yet been checked under the current tolerance %d, and a raise above the configuration is accepted only after the gate has completed a probe round under it", SecondsBehindSourceWithin, v, configured, cur))
+	}
+	step, why := configured, fmt.Sprintf("the configured %d is the step", configured)
+	if configured == 0 {
+		step, why = 1, "the configured tolerance is 0, so the step is 1"
+	}
+	if limit := max(configured, saturatingAdd(cur, step)); v > limit {
+		return refuse(ReasonStep, fmt.Sprintf("%s %d is more than one step above the current %d; the largest value accepted now is %d (%s)", SecondsBehindSourceWithin, v, cur, limit, why))
+	}
+	return nil
+}
+
+// saturatingAdd is a + b for non-negative a and b, at most the largest int: a sum that would
+// wrap is the largest int, so a limit built from it is never smaller than its parts.
+func saturatingAdd(a, b int) int {
+	if a > math.MaxInt-b {
+		return math.MaxInt
+	}
+	return a + b
 }
 
 // Pause sets the socket pause. The batch or page in flight finishes first; the engine's pause

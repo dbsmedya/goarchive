@@ -122,7 +122,7 @@ never gated. Absent, monitoring is off.
 |--------|-------------|---------|
 | `enabled` | Turn replication gating on | `false` |
 | `seconds_behind_source_within` | Lag tolerance in seconds; `0` demands exact sync. Not negative | `10` |
-| `check_interval` | Seconds between re-checks while holding; positive **when enabled** | `5` |
+| `check_interval` | Seconds between re-checks while holding; positive **when enabled**, and at most `9223372036` (the interval must fit a duration) | `5` |
 | `cache_ttl` | Seconds a **passing** verdict stays fresh; `0` checks every time. Not negative | `15` |
 | `servers` | The replicas to monitor; at least one **when enabled** | — |
 

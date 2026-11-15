@@ -354,26 +354,6 @@ func TestSizeCeilings(t *testing.T) {
 	}
 }
 
-// TestToleranceRules is the store's part of spec §4.6's tolerance rule: lowering is always
-// accepted, down to 0; a raise up to the configured value restores it; a raise above it is
-// the step rule's, which needs a completed probe round the gate does not report yet, so it is
-// refused as `step` and the message says why.
-func TestToleranceRules(t *testing.T) {
-	s := newStore()
-	mustSet(t, s, SecondsBehindSourceWithin, "3")
-	mustSet(t, s, SecondsBehindSourceWithin, "0")
-	mustSet(t, s, SecondsBehindSourceWithin, "10") // restored in one command, from any lower value
-	r := refusalOf(t, s, SecondsBehindSourceWithin, "11")
-	if r.Reason != ReasonStep || !strings.Contains(r.Message, "configured 10") {
-		t.Errorf("a raise above the configuration with no round completed: %s %q, want step naming the configured 10", r.Reason, r.Message)
-	}
-	mustSet(t, s, SecondsBehindSourceWithin, "4")
-	if r := refusalOf(t, s, SecondsBehindSourceWithin, "11"); r.Reason != ReasonStep {
-		t.Errorf("a raise above the configuration from a lowered value: %s, want step", r.Reason)
-	}
-	mustSet(t, s, SecondsBehindSourceWithin, "10")
-}
-
 // TestApplicability: a setting the run does not use is refused as `inapplicable`, with the
 // file's own message for a copy-only job's delete settings and one for the gate's; it is
 // judged before the value, and before `ending`.

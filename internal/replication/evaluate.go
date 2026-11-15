@@ -91,3 +91,26 @@ func observedNames(snapshot []dbsrepl.ChannelStatus) []string {
 
 	return names
 }
+
+// lagOf is the largest Seconds_Behind_Source among the channels the server gates, in
+// seconds. It is nil when a gated channel reports NULL, or when there is none, since
+// no number then stands for the lag.
+func lagOf(snapshot []dbsrepl.ChannelStatus, selected []string) *int64 {
+	filtered, _ := selectChannels(snapshot, selected)
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	var largest int64
+	for i := range filtered {
+		lag := filtered[i].SecondsBehindSource
+		if !lag.Valid {
+			return nil
+		}
+		if i == 0 || lag.Int64 > largest {
+			largest = lag.Int64
+		}
+	}
+
+	return &largest
+}

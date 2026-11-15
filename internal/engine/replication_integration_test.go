@@ -19,12 +19,21 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/replication"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // liveGate is the real replication gate over the estate's replica (db3), checked every
 // second with no cache, so a stopped or lagging applier holds the next delete chunk. within
 // is the lag it tolerates, in seconds.
 func liveGate(t *testing.T, within int) (*replication.Gate, func(stmt string)) {
+	t.Helper()
+	return liveGateStore(t, within, nil)
+}
+
+// liveGateStore is liveGate reading its tolerance and interval from store, as the command will
+// wire it (TEL-1 C4b); nil is a store that never changes. The store starts at within and a check
+// interval of one second.
+func liveGateStore(t *testing.T, within int, store *tuning.Store) (*replication.Gate, func(stmt string)) {
 	t.Helper()
 	replica := openServer(t, "TEST_REPLICA", "", nil)
 	port, _ := strconv.Atoi(os.Getenv("TEST_REPLICA_PORT"))
@@ -34,7 +43,7 @@ func liveGate(t *testing.T, within int) (*replication.Gate, func(stmt string)) {
 			Host: os.Getenv("TEST_REPLICA_HOST"), Port: port,
 			User: os.Getenv("TEST_REPLICA_USER"), Password: os.Getenv("TEST_REPLICA_PASSWORD"),
 		}},
-	}, []*sql.DB{replica}, gateLogger(t))
+	}, []*sql.DB{replica}, gateLogger(t), store)
 	if err != nil {
 		t.Fatal(err)
 	}

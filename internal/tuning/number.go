@@ -2,7 +2,6 @@ package tuning
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 )
 
@@ -34,13 +33,16 @@ func decimalText(s string) bool {
 	return digits(s)
 }
 
-// parseWhole reads the number of a whole-number setting.
+// parseWhole reads the number of a whole-number setting. The settings are ints, in the file and
+// in Settings, so it reads up to the range of an int and no further: the bound of each setting
+// belongs to the per-value validators and the ceilings, so that the file and the setter refuse
+// exactly the same values. Digits that overflow an int are `invalid`.
 func parseWhole(k Key, text string) (int, *Refusal) {
 	if !digits(text) {
 		return 0, refuse(ReasonInvalid, fmt.Sprintf("%s must be a whole number of plain digits, not %s", k, quoted(text)))
 	}
 	n, err := strconv.Atoi(text)
-	if err != nil || n > math.MaxInt32 {
+	if err != nil {
 		return 0, refuse(ReasonInvalid, fmt.Sprintf("%s %s is too large", k, text))
 	}
 	return n, nil
