@@ -394,7 +394,7 @@ func (s *Server) judge(c net.Conn) (tuning.Peer, error) {
 // whatever it has to log goes to the emitter, which never blocks it. A panic is recovered, reported
 // as an error and closes this connection only.
 func (s *Server) serve(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	peer := tuning.Peer{UID: -1}
 	defer func() {
 		if r := recover(); r != nil {

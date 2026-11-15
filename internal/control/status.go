@@ -347,10 +347,10 @@ func (v *view) text() []string {
 	r := v.read()
 	st := r.tracker
 	state := r.state()
-	switch {
-	case state == "held":
+	switch state {
+	case "held":
 		state += " " + formatDuration(r.now.Sub(r.gate.HoldingSince))
-	case state == "paused":
+	case "paused":
 		state += " " + formatDuration(r.now.Sub(st.WaitingSince))
 	}
 	lines := []string{fmt.Sprintf("%s (%s): %s, batch %d, roots %d, copied %d, deleted %d, elapsed %s",
