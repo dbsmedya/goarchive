@@ -478,11 +478,20 @@ make test-down                              # the plain estate: stops it, keeps 
 make test-up TOPOLOGY=group                 # creates tests/.env.group from tests/dot.env.group if absent
 set -a; source tests/.env.group; set +a     # not tests/.env: the ports differ
 TOPOLOGY=group bash tests/scripts/run-tests.sh --setup --skip-docker   # seeds gr1 with Sakila, loads gr-dest, attaches gr-replica to gr1
-go test -tags=integration ./internal/... ./cmd/... -count=1            # the integration stage, with gr1 as the source
+go test -p 1 -tags=integration ./internal/... ./cmd/... -count=1       # the integration stage, with gr1 as the source, one package at a time
 ```
 
 (`run-tests.sh --setup` alone, without `--skip-docker`, resets the estate first, as it does for the plain one.)
 
+- **Run the stage one package at a time: `-p 1`.** `go test` runs the packages of a stage at the same time
+  (that is its default), and on this estate a test changes what every other test writes to: a primary switch
+  makes gr1 read-only for all of them, a lowered `group_replication_transaction_size_limit` lowers the limit
+  for every writer, a read-only `gr-dest` refuses every job's tracking tables. A lock cannot say "everyone
+  else waits" without starving the others, so the stage is run package by package, and the tests inside a
+  package already run one after another (no integration test calls `t.Parallel`:
+  `TestIntegrationTestsDoNotRunInParallel`). Run side by side, a test of one package failed registering its
+  job because a test of another had made `gr-dest` read-only. Each group test also begins by reading the group's base state, and fails, naming what differs, when a killed run left it
+  changed ([Servers the suites share](#servers-the-suites-share)).
 - **The image** is one per series, `GA_ESTATE_IMAGE` (the plain estate's variable too): `mysql:8.0`,
   `mysql:8.4` (the default), `mysql:9.7`, or `percona/percona-server` of the same series. A data directory
   belongs to its series: change the image with `make test-reset TOPOLOGY=group`. The setup loads the
@@ -660,6 +669,37 @@ pins as a real global is. A few files open a raw pool on purpose: the `internal/
 tests, the engine's UTC refusal and INSERT diagnostics backstop, the trigger-visibility pool and
 the charset probes. `TestIntegrationPoolsUseOpenPool` (`tests/harness`) lists each one with its
 reason and fails on a raw open in any other integration test file.
+
+#### Servers the suites share
+
+`go test` runs the packages of the integration stage at the same time, and they share the estate's servers. Four
+rules keep a test from meeting another's state:
+
+- **On the plain estate no test changes a global of db1 or db2**, which every package's tests write to. A test
+  that needs a read-only server uses db3 (below); a server setting a suite needs on its own throwaway server is
+  an [environment matrix](#environment-matrix) row.
+- **The replica (db3, and `gr-replica` on the group estate) is one test's at a time, across packages.** The
+  helper that opens its pool in each package (`openServer`, `recorded`, `acctOpen`, `serverFor`) takes
+  `internal/testestate`'s lock first: one `GET_LOCK` on the replica itself, held on a session until the test's
+  cleanups have run, so a test that stops the applier, sets `SOURCE_DELAY`, makes the replica read-only or
+  depends on its lag cannot be disturbed, and a killed test process gives the lock back with its connection.
+  A subtest uses its test's claim. The one test of `internal/database` that names the replica only connects to
+  it as a stand-in member and takes no lock. The lock does not stop another package writing to db1, whose events
+  the replica holds back or applies; a test that reads the lag allows for that.
+- **A test reads the base state, and does not trust it.** When the replica's lock is taken, the replica's state is read
+  through the library and the test fails, naming what differs, if `read_only` or `super_read_only` is on, a thread
+  of the default channel is not running or `SOURCE_DELAY` is not 0. Each group test, after it has found the
+  source to be a member, does the same for the group: gr1 `PRIMARY` with three members `ONLINE`,
+  `group_replication_transaction_size_limit` at 150000000 and `group_replication_consistency` at the series' own
+  value on every member. A test that takes a server in a changed state **fails**: it does not skip and it does not go
+  on. A killed test process skips its cleanups, so this is how what it left is found. Put the state right by hand with
+  the statements the message names, and run again.
+- **Nothing is written to the replica by a test.** A statement on a replica is a transaction of its own that its
+  source does not have, and replication fails on it later. A schema or an account a test needs there is created on the
+  source and reaches the replica by replication; a test that runs preflight against the replica as a destination
+  checks afterwards that the replica holds no transaction of its own.
+
+No integration test calls `t.Parallel` (`TestIntegrationTestsDoNotRunInParallel`).
 
 #### Interrupted runs
 
