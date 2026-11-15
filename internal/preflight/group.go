@@ -72,7 +72,7 @@ func Identity(g dbsrepl.GroupReplication, members []dbsrepl.GroupMember, serverU
 type Membership int
 
 const (
-	memberUnset Membership = iota // no limit is known: nothing is said
+	_ Membership = iota // the zero value: no limit is known, nothing is said
 	// MemberOnline is a source whose own row in its view was ONLINE.
 	MemberOnline
 	// MemberNotRunning is a source whose plugin is ACTIVE and whose own row was not ONLINE.
