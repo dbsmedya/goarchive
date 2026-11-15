@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 )
@@ -50,37 +52,92 @@ func onlyStatement(t *testing.T, log *statementLog, what string) {
 	}
 }
 
-// TestMySQLADestinationThatIsReadOnlyRefusesEveryJobType is spec §8's *read-only destination*, plain half: every
-// job type against a destination whose super_read_only is on is refused before any other destination statement;
-// with read_only alone on, the outcome is today's (root may write, so preflight passes).
+// errantGTIDs are the transactions the replica has executed that its source has not: the ones made on the
+// replica itself. A statement of a test on the replica is one, and it breaks replication from then on. The
+// replica's set is read first, so the source's, read after it, holds everything the replica could have applied.
+func errantGTIDs(t *testing.T, replica, source *sql.DB) string {
+	t.Helper()
+	var onReplica, onSource, errant string
+	ctx := context.Background()
+	if err := replica.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&onReplica); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.QueryRowContext(ctx, "SELECT @@GLOBAL.gtid_executed").Scan(&onSource); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.QueryRowContext(ctx, "SELECT GTID_SUBTRACT(?, ?)", onReplica, onSource).Scan(&errant); err != nil {
+		t.Fatal(err)
+	}
+	return errant
+}
+
+// replicatedAccount creates, on the source, an account that may do what preflight asks of a destination (the
+// grants of "with CREATE it passes" in permissions_integration_test.go) on schema, and waits until the replica has
+// it. The statements run on the source and reach the replica by replication: none is ever sent to the replica.
+// It returns the account's name and password and drops the account, on the source, when the test ends.
+func replicatedAccount(t *testing.T, admin, replica *sql.DB, suffix, schema string) (user, pass string) {
+	t.Helper()
+	user = acctName(suffix)
+	pass = fmt.Sprintf("ga7p-%d-%d", os.Getpid(), time.Now().UnixNano())
+	account := "'" + user + "'@'%'"
+	execAll(t, admin, "DROP USER IF EXISTS "+account, "CREATE USER "+account+" IDENTIFIED BY '"+pass+"'",
+		"GRANT CREATE, SELECT, INSERT, UPDATE, TRIGGER ON `"+schema+"`.* TO "+account)
+	t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), "DROP USER IF EXISTS "+account) })
+	waitReplica(t, admin, replica)
+	return user, pass
+}
+
+// TestMySQLADestinationThatIsReadOnlyRefusesEveryJobType is spec §8's *read-only destination*, plain half, on the
+// estate's replica: every job type against a destination whose super_read_only is on is refused before any other
+// destination statement, also under a skip flag; with read_only alone on, the outcome is today's, preflight passes.
+//
+// The destination is the replica because no test changes a global of db1 or db2, which every package's tests write
+// to. The job's schema is created on the source and reaches the replica by replication; the account that
+// preflight runs as there has no SUPER and no CONNECTION_ADMIN, is created on the source too, and the test checks
+// that the replica holds no transaction of its own afterwards. Nothing but preflight's reads reaches the replica.
 func TestMySQLADestinationThatIsReadOnlyRefusesEveryJobType(t *testing.T) {
+	replica := openServer(t, "TEST_REPLICA", "") // the replica is this test's, whole, before anything else is made
+	admin := openServer(t, "TEST_SOURCE", "")
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
 		t.Run(string(typ), func(t *testing.T) {
-			s, d, spec := orderPair(t, "rodst"+string(typ), typ)
-			var srcLog, dstLog statementLog
-			src, dst := recorded(t, "TEST_SOURCE", schemaOf(t, s), &srcLog), recorded(t, "TEST_DEST", schemaOf(t, d), &dstLog)
-			cfg := Config{Source: src, SourceDatabase: schemaOf(t, s), Destination: dst, DestinationDatabase: schemaOf(t, d), JobSchema: schemaOf(t, d),
-				Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing}
-
-			makeReadOnly(t, "TEST_DEST", "super_read_only")
-			_, err := Run(context.Background(), cfg)
-			e := refusedWith(t, err, "DEST_READ_ONLY_CHECK")
-			// turning super_read_only on turns read_only on with it, and the message names both
-			if !strings.Contains(e.Message, "read_only and super_read_only are ON") || !strings.Contains(e.Message, "the destination is read-only") {
-				t.Errorf("the refusal does not say which variables are on:\n%s", e.Message)
+			const cs = "CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
+			s := scratch(t, "TEST_SOURCE", "rodst"+string(typ))
+			execAll(t, s, orderTables(cs)...)
+			schema := schemaOf(t, s)
+			user, pass := replicatedAccount(t, admin, replica, "rodst"+string(typ), schema)
+			errantBefore := errantGTIDs(t, replica, admin)
+			spec := job(t, typ, orderJob)
+			cfg := func(dst *sql.DB) Config {
+				return Config{Source: s, SourceDatabase: schema, Destination: dst, DestinationDatabase: schema, JobSchema: schema,
+					Spec: spec, Verification: jobspec.VerifyCount, Processing: defaultProcessing}
 			}
-			onlyStatement(t, &dstLog, "the destination")
 
-			// with the policy checks skipped it is still refused
-			cfg.SkipPolicy = true
-			_, err = Run(context.Background(), cfg)
-			_ = refusedWith(t, err, "DEST_READ_ONLY_CHECK")
-		})
-		t.Run(string(typ)+"/read_only alone", func(t *testing.T) {
-			s, d, spec := orderPair(t, "rodstro"+string(typ), typ)
-			makeReadOnly(t, "TEST_DEST", "read_only")
-			if _, err := runOn(t, s, d, spec); err != nil {
-				t.Errorf("Run() with read_only alone on the destination = %v, want today's outcome: success", err)
+			t.Run("super_read_only", func(t *testing.T) {
+				var dstLog statementLog
+				c := cfg(recorded(t, "TEST_REPLICA", schema, &dstLog))
+				makeReadOnly(t, "TEST_REPLICA", "super_read_only")
+				_, err := Run(context.Background(), c)
+				e := refusedWith(t, err, "DEST_READ_ONLY_CHECK")
+				// turning super_read_only on turns read_only on with it, and the message names both
+				if !strings.Contains(e.Message, "read_only and super_read_only are ON") || !strings.Contains(e.Message, "the destination is read-only") {
+					t.Errorf("the refusal does not say which variables are on:\n%s", e.Message)
+				}
+				onlyStatement(t, &dstLog, "the destination")
+
+				// with the policy checks skipped it is still refused
+				c.SkipPolicy = true
+				_, err = Run(context.Background(), c)
+				_ = refusedWith(t, err, "DEST_READ_ONLY_CHECK")
+			})
+			t.Run("read_only alone", func(t *testing.T) {
+				c := cfg(acctOpen(t, "TEST_REPLICA", schema, user, pass))
+				makeReadOnly(t, "TEST_REPLICA", "read_only")
+				if _, err := Run(context.Background(), c); err != nil {
+					t.Errorf("Run() with read_only alone on the destination = %v, want today's outcome: success", err)
+				}
+			})
+			if got := errantGTIDs(t, replica, admin); got != errantBefore {
+				t.Errorf("the replica holds transactions of its own after the test: %q, before %q", got, errantBefore)
 			}
 		})
 	}
