@@ -19,6 +19,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run the group facts of spec §4.2 against real servers (GR C2). The recording ones
@@ -109,6 +110,9 @@ func (c *recConn) CheckNamedValue(nv *driver.NamedValue) error {
 // session checks, and records every statement it sends in log.
 func recorded(t *testing.T, prefix, schema string, log *statementLog) *sql.DB {
 	t.Helper()
+	if prefix == "TEST_REPLICA" {
+		testestate.LockReplica(t)
+	}
 	port, _ := strconv.Atoi(os.Getenv(prefix + "_PORT"))
 	cfg := config.DatabaseConfig{Host: os.Getenv(prefix + "_HOST"), Port: port, User: os.Getenv(prefix + "_USER"),
 		Password: os.Getenv(prefix + "_PASSWORD"), Database: schema, TLS: "disable"}
@@ -140,6 +144,7 @@ func requireMemberSource(t *testing.T) {
 	if g.PluginStatus != "ACTIVE" || g.GroupName == "" {
 		t.Skip("the source is not a Group Replication member: this test runs on the group estate (TOPOLOGY=group)")
 	}
+	testestate.RequireGroupBase(t) // a group a killed test left changed is not built on
 }
 
 // orderPair is a source and a destination with the order tables and the job's spec.

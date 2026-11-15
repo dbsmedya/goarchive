@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
+
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run spec §4.7's report block through the commands (GR C2): a member source gets the
@@ -25,6 +27,7 @@ func requireGroupMemberSource(t *testing.T) {
 	if g.PluginStatus != "ACTIVE" || g.GroupName == "" {
 		t.Skip("the source is not a Group Replication member: this test runs on the group estate (TOPOLOGY=group)")
 	}
+	testestate.RequireGroupBase(t) // a group a killed test left changed is not built on
 }
 
 // blockLines returns the Group Replication block of out, from its heading to its sizes line.

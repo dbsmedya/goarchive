@@ -16,6 +16,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run the 3.0 preflight against MySQL: the source on TEST_SOURCE_* (db1) and
@@ -26,6 +27,9 @@ import (
 // openServer opens a pool on one test server as goarchive opens its own.
 func openServer(t *testing.T, prefix, schema string) *sql.DB {
 	t.Helper()
+	if prefix == "TEST_REPLICA" {
+		testestate.LockReplica(t) // the replica is one test's at a time, across packages (internal/testestate)
+	}
 	host, user, pass := os.Getenv(prefix+"_HOST"), os.Getenv(prefix+"_USER"), os.Getenv(prefix+"_PASSWORD")
 	port, _ := strconv.Atoi(os.Getenv(prefix + "_PORT"))
 	if host == "" || user == "" || port == 0 {
