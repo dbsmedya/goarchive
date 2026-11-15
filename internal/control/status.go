@@ -35,11 +35,13 @@ type TableCounts struct {
 	Deleted int64
 }
 
-// Estimate is the optimizer's estimate of the roots in range, which only a --progress run reads.
+// Estimate is the optimizer's estimate of the roots in range, which only a --progress run reads. The
+// ETA is told only when ETAKnown: before the first root, or past the estimate, none can be.
 type Estimate struct {
-	Roots   int64
-	Percent float64
-	ETA     time.Duration
+	Roots    int64
+	Percent  float64
+	ETA      time.Duration
+	ETAKnown bool
 }
 
 // TrackerStatus is what the engine's progress tracker reports. The counters count committed work
@@ -235,9 +237,9 @@ type tableJSON struct {
 }
 
 type progressJSON struct {
-	RootsEstimate int64   `json:"roots_estimate"`
-	Percent       float64 `json:"percent"`
-	ETA           float64 `json:"eta"`
+	RootsEstimate int64    `json:"roots_estimate"`
+	Percent       float64  `json:"percent"`
+	ETA           *float64 `json:"eta"`
 }
 
 type settingJSON struct {
@@ -324,7 +326,11 @@ func (v *view) jsonLine() (string, error) {
 		j.Tables[t.Name] = tableJSON{Copied: t.Copied, Deleted: t.Deleted}
 	}
 	if e := st.Estimate; e != nil {
-		j.Progress = &progressJSON{RootsEstimate: e.Roots, Percent: e.Percent, ETA: e.ETA.Seconds()}
+		j.Progress = &progressJSON{RootsEstimate: e.Roots, Percent: e.Percent}
+		if e.ETAKnown {
+			eta := e.ETA.Seconds()
+			j.Progress.ETA = &eta
+		}
 	}
 	if r.hasGate {
 		j.Replication.LastPassAt = nullable(r.gate.LastPass)
