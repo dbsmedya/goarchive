@@ -360,11 +360,6 @@ func TestAMixedFleetIsOneRound(t *testing.T) {
 
 // The existing revision tests (TEL-1), run with a mixed fleet: a group server that is always healthy beside the
 // replica the original test scripts. The judgement of the replica and every claim about the pass are the same.
-
-func healthyGroupPeer() fleetMember {
-	return groupOnly(&fakeGroupReader{responses: []groupResult{okGroup()}})
-}
-
 func TestMixedFleetCachedPassRevision(t *testing.T) {
 	r := &fakeReader{responses: []readerResult{okRes(healthySnapshot())}}
 	g := &fakeGroupReader{responses: []groupResult{okGroup()}}

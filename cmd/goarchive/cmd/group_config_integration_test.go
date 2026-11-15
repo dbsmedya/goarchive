@@ -20,7 +20,7 @@ func groupBlock(s server) string {
 }
 
 // TestMySQLAGroupServerOnAPlainServerIsRefused: validate and dry-run refuse a `type: group` server that is no group
-// member with REPLICATION_TYPE_CHECK, naming it; the interim refusal of the gate does not decide for them.
+// member with REPLICATION_TYPE_CHECK, naming it, as a run does at its start.
 func TestMySQLAGroupServerOnAPlainServerIsRefused(t *testing.T) {
 	f := orderFixture(t, "grptype")
 	plain := serverFor(t, "TEST_DEST")
