@@ -2,6 +2,7 @@ package control
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -131,7 +132,7 @@ func TestShutdownPendingTick(t *testing.T) {
 	if got := len(f.sink.snapshot()); got != written {
 		t.Errorf("%d entries after the drain, want %d: the tick wrote after it was joined", got, written)
 	}
-	if err := f.srv.Close(); err != nil && !strings.Contains(err.Error(), f.path()) {
+	if err := f.srv.Close(); err != nil && !strings.Contains(err.Error(), strconv.Quote(f.path())) {
 		t.Errorf("Close() = %v", err)
 	}
 }

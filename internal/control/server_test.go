@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -443,8 +444,8 @@ func TestEndRemovesOwnSocket(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := f.srv.Close()
-		if err == nil || !strings.Contains(err.Error(), f.path()) {
-			t.Errorf("Close() = %v, want an error naming the file it left", err)
+		if err == nil || !strings.Contains(err.Error(), strconv.Quote(f.path())) {
+			t.Errorf("Close() = %v, want an error naming the file it left (quoted: %s)", err, strconv.Quote(f.path()))
 		}
 		if b, rerr := os.ReadFile(f.path()); rerr != nil || string(b) != "someone else's" {
 			t.Errorf("the file is %q, %v after Close, want it left as it was", b, rerr)

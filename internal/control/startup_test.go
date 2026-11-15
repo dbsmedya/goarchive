@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -321,8 +322,8 @@ func TestDefaultDirectoryRefusals(t *testing.T) {
 
 	missing := filepath.Join(shortDir(t), "no-such-home")
 	o.Dir = filepath.Join(missing, ".goarchive", "run")
-	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), missing) {
-		t.Errorf("Start() under a missing home = %v, want it named", err)
+	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), strconv.Quote(missing)) {
+		t.Errorf("Start() under a missing home = %v, want it named (quoted: %s)", err, strconv.Quote(missing))
 	}
 	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
 		t.Errorf("a missing home was created: %v", err)
