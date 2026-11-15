@@ -276,14 +276,29 @@ func ValidateSecondsBehindSourceWithin(v int) error {
 	return nil
 }
 
-// ValidateCheckInterval judges a check_interval value: positive. The file applies it only
-// when replication is enabled, which is the only time the setting exists; the message says so.
+// ValidateCheckInterval judges a check_interval value: positive, and small enough that its
+// seconds convert to a duration (TEL-1 C4b; as SLP-1 does for the sleeps). The file applies it
+// only when replication is enabled, which is the only time the setting exists; the message says
+// so.
 func ValidateCheckInterval(v int) error {
-	if v <= 0 {
+	switch {
+	case v <= 0:
 		return errors.New("check_interval must be positive when replication is enabled")
+	case int64(v) > maxIntervalSeconds:
+		return fmt.Errorf("check_interval is too large: an interval must fit a duration (at most %d seconds)", maxIntervalSeconds)
 	}
 	return nil
 }
+
+// maxIntervalSeconds is the largest whole number of seconds that converts to a duration:
+// math.MaxInt64 nanoseconds is 9223372036.854775807 seconds, so 9223372036 is the last whole one.
+const maxIntervalSeconds = math.MaxInt64 / int64(time.Second)
+
+// CheckIntervalDuration converts a configured check_interval to a duration. It is the one
+// conversion: the gate waits by it and ValidateCheckInterval judges by the same bound, so every
+// interval the validator accepts converts in range. A value it refuses has no defined
+// conversion; callers hold validated values.
+func CheckIntervalDuration(seconds int) time.Duration { return time.Duration(seconds) * time.Second }
 
 // ValidateSleepSeconds judges a sleep_seconds value (SLP-1, D14): not negative, finite, and
 // small enough to be a time.Duration.

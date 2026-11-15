@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// maxIntervalSeconds is the largest whole number of seconds that converts to a duration:
+// intervalLimit is the largest whole number of seconds that converts to a duration:
 // math.MaxInt64 nanoseconds is 9223372036.854775807 seconds.
-var maxIntervalSeconds int64 = math.MaxInt64 / int64(time.Second)
+var intervalLimit int64 = math.MaxInt64 / int64(time.Second)
 
 // TestCheckIntervalDuration (TEL-1 C4b, the coordinator's call from C4a's finding): one
 // conversion of a configured check_interval to a duration, used by the validator and by the
@@ -32,8 +32,8 @@ func TestCheckIntervalDuration(t *testing.T) {
 	if strconv.IntSize < 64 {
 		t.Skip("an int of this size cannot reach the duration bound")
 	}
-	if d := CheckIntervalDuration(int(maxIntervalSeconds)); d <= 0 || d != time.Duration(maxIntervalSeconds)*time.Second {
-		t.Errorf("CheckIntervalDuration(%d) = %v: the largest accepted interval wrapped", maxIntervalSeconds, d)
+	if d := CheckIntervalDuration(int(intervalLimit)); d <= 0 || d != time.Duration(intervalLimit)*time.Second {
+		t.Errorf("CheckIntervalDuration(%d) = %v: the largest accepted interval wrapped", intervalLimit, d)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestCheckIntervalBound(t *testing.T) {
 	if strconv.IntSize < 64 {
 		t.Skip("an int of this size cannot reach the duration bound")
 	}
-	limit := int(maxIntervalSeconds)
+	limit := int(intervalLimit)
 	if err := ValidateCheckInterval(limit); err != nil {
 		t.Errorf("ValidateCheckInterval(%d) = %v, want the largest interval that fits accepted", limit, err)
 	}
