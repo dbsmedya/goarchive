@@ -36,6 +36,7 @@ func (r *run) deleteTree(ctx context.Context, t *tree) error {
 		c := newChunkCursor(t.keys[n.Table])
 		for !c.done() {
 			if issued {
+				r.progress.at("sleep", "")
 				r.reached(atDeleteSleep)
 				if err := followSleep(ctx, nil, r.tune, func(s tuning.Settings) float64 { return s.DeleteSleepSeconds }); err != nil {
 					return err
@@ -47,12 +48,14 @@ func (r *run) deleteTree(ctx context.Context, t *tree) error {
 				return err
 			}
 			r.reached(atDeleteGated)
+			r.progress.at("delete", n.Table)
 			chunk, err := r.deleteNext(ctx, n.Table, c)
 			if err != nil {
 				return err
 			}
 			issued = true
 			r.report.Deleted[n.Table] += int64(len(chunk))
+			r.progress.deleted(n.Table, int64(len(chunk)))
 			r.reached(atDeleted)
 		}
 	}

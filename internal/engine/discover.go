@@ -34,6 +34,7 @@ func (r *run) discover(ctx context.Context, src queryer, roots []key.Key) (*tree
 }
 
 func (r *run) discoverChild(ctx context.Context, src queryer, n *jobspec.Node, parents []key.Key) ([]key.Key, error) {
+	r.progress.at("discover", n.Table)
 	stmts, err := r.discoveryStatements(n, parents)
 	if err != nil {
 		return nil, err

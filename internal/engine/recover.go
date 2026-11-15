@@ -66,6 +66,7 @@ func (r *run) recover(ctx context.Context) error {
 			return err
 		}
 		r.report.Recovered += int64(len(roots))
+		r.progress.recovered(int64(len(roots)))
 		if len(roots) < size {
 			return nil
 		}
@@ -245,6 +246,7 @@ func (r *run) dropLogged(ctx context.Context, roots []key.Key) ([]key.Key, error
 	keep := without(roots, logged)
 	skipped := len(roots) - len(keep)
 	r.report.Skipped += int64(skipped)
+	r.progress.skipped(int64(skipped))
 	if skipped > 0 {
 		r.log.Infof("Resume: skipped %d roots of %s this job already copied", skipped, r.root.Table)
 	}

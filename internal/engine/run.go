@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
@@ -34,7 +33,7 @@ type run struct {
 	locks *locks
 
 	report   *Report
-	progress *progressTracker // nil unless --progress is on
+	progress *Progress // the run's tracker: cfg.Tracker, or one of its own
 
 	// tune is the settings store: cfg.Tuning, or a store that never changes. size is the
 	// batch_size the loop or a recovery page loaded for the batch or page in flight; every
@@ -75,7 +74,10 @@ func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *trackin
 		keys: res.Keys, caps: capsOf(res), job: job,
 		report: &Report{Copied: map[string]int64{}, Deleted: map[string]int64{}, Conversions: map[string]map[uint16]uint64{},
 			Verified: map[string]int64{}},
-		tune: cfg.Tuning, size: cfg.Processing.BatchSize,
+		tune: cfg.Tuning, size: cfg.Processing.BatchSize, progress: cfg.Tracker,
+	}
+	if r.progress == nil {
+		r.progress = NewProgress(cfg.began)
 	}
 	if r.tune == nil {
 		p := cfg.Processing
@@ -167,9 +169,11 @@ func (r *run) pauseGate() *sentinelGate {
 
 // execute recovers the job's logged work, then runs the loop.
 func (r *run) execute(ctx context.Context) error {
+	r.progress.setPhase(PhaseRecovering)
 	if err := r.recover(ctx); err != nil {
 		return fmt.Errorf("engine: recovery: %w", err)
 	}
+	r.progress.setPhase(PhaseRunning)
 	if r.report.Stopped {
 		return nil
 	}
@@ -195,12 +199,7 @@ func (r *run) startProgress(ctx context.Context) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("engine: --progress estimate on %s: %w", r.root.Table, err)
 	}
-	began := r.cfg.began
-	if began.IsZero() {
-		began = time.Now()
-	}
-	r.progress = newProgressTracker(total, began)
-	r.trackProgress()
+	r.progress.setEstimate(total)
 	out := r.cfg.Out
 	if out == nil {
 		out = os.Stdout
@@ -211,18 +210,6 @@ func (r *run) startProgress(ctx context.Context) (func(), error) {
 	}
 	rep.start()
 	return rep.stop, nil
-}
-
-// trackProgress feeds the run's totals to the progress tracker.
-func (r *run) trackProgress() {
-	var copied, deleted int64
-	for _, n := range r.report.Copied {
-		copied += n
-	}
-	for _, n := range r.report.Deleted {
-		deleted += n
-	}
-	r.progress.update(r.report.Roots+r.report.Skipped, copied, deleted)
 }
 
 // loop runs batches from the start of the where range (spec §6.5): each fetch continues
@@ -243,6 +230,7 @@ func (r *run) loop(ctx context.Context) error {
 			return nil
 		}
 		size := r.loadSize()
+		r.progress.at("fetch", r.root.Table)
 		roots, err := r.fetch(ctx, r.cfg.Source, last, size)
 		if err != nil {
 			return err
@@ -254,18 +242,18 @@ func (r *run) loop(ctx context.Context) error {
 		last = roots[len(roots)-1]
 		if err := r.batch(ctx, roots); err != nil {
 			if errors.Is(err, errHoldStopped) {
-				r.trackProgress()
 				r.report.Stopped = true
 				return nil
 			}
 			return fmt.Errorf("engine: batch %d: %w", r.report.Batches+1, err)
 		}
 		r.report.Batches++
-		r.trackProgress()
+		r.progress.addBatch()
 		if len(roots) < size {
 			r.progress.markComplete()
 			return nil
 		}
+		r.progress.at("sleep", "")
 		if err := followSleep(ctx, r.cfg.Stop, r.tune, func(s tuning.Settings) float64 { return s.SleepSeconds }); err != nil {
 			return err
 		}
@@ -337,6 +325,7 @@ func (r *run) batch(ctx context.Context, roots []key.Key) error {
 		}
 	}
 	r.report.Roots += int64(len(roots))
+	r.progress.addRoots(int64(len(roots)))
 	r.log.Infof("Batch %d: %d roots of %s (%s)", r.report.Batches+1, len(roots), r.root.Table, r.typ)
 	return nil
 }
@@ -385,6 +374,7 @@ func (r *run) waitForLag(ctx context.Context) error {
 	if r.cfg.Lag == nil || r.typ == jobspec.CopyOnly {
 		return nil
 	}
+	r.progress.at("wait", "")
 	err := r.cfg.Lag.WaitForLag(ctx, r.cfg.Stop)
 	switch {
 	case err == nil:
@@ -427,6 +417,7 @@ func (r *run) commit(ctx context.Context, tx *sql.Tx, at point) error {
 // logDeleting logs purge roots as deleting, in their own transaction, before any delete
 // (spec §6.3). A root the log already holds fails as RecurringRootError (RKP-2).
 func (r *run) logDeleting(ctx context.Context, roots []key.Key) error {
+	r.progress.at("log", "")
 	return r.inDestinationTx(ctx, func(tx *sql.Tx) error {
 		return r.logInsertError(r.job.Insert(ctx, tx, tracking.StatusDeleting, roots))
 	})
@@ -434,6 +425,7 @@ func (r *run) logDeleting(ctx context.Context, roots []key.Key) error {
 
 // complete moves roots from status from to completed after their deletes (spec §6.3).
 func (r *run) complete(ctx context.Context, from tracking.Status, roots []key.Key) error {
+	r.progress.at("log", "")
 	return r.inDestinationTx(ctx, func(tx *sql.Tx) error {
 		return r.job.Transition(ctx, tx, from, tracking.StatusCompleted, roots)
 	})
