@@ -34,6 +34,16 @@ GRANT PROCESS ON *.* TO '<user>'@'<host>';                                  -- a
 
 `PROCESS` is server-wide by definition; MySQL has no narrower scope for it.
 
+A source that is a **Group Replication member** also needs, for every job type:
+
+```sql
+GRANT SELECT ON performance_schema.replication_group_members TO '<user>'@'<host>';  -- a source that is a Group Replication member
+```
+
+Without it the job is refused before anything is locked
+([`SOURCE_GROUP_VIEW_PERMISSION_CHECK`](README_VALIDATION.md#source_group_view_permission_check)).
+A source without Group Replication needs nothing more.
+
 ### Destination — tracking tables in the destination database (default)
 
 When `job_schema` is unset it is `destination.database`, so one grant covers the data and the
@@ -81,6 +91,7 @@ preflight.
 | **Source** | `SELECT` | ✅ | ✅ | ✅ | Reading rows |
 | **Source** | `DELETE` | ✅ | ✅ | — | Deleting archived rows |
 | **Source** | `TRIGGER` | ✅ | ✅ | — | Listing DELETE triggers (`DELETE_TRIGGER_VISIBILITY_CHECK`) |
+| **Source** (a Group Replication member only) | `SELECT` on `performance_schema.replication_group_members` | ✅ | ✅ | ✅ | Reading the group's view ([`SOURCE_GROUP_VIEW_PERMISSION_CHECK`](README_VALIDATION.md#source_group_view_permission_check)) |
 | **Source** | `PROCESS` (global) | ✅ | ✅ | — | Proving foreign-key metadata complete (`FK_COVERAGE_VISIBILITY_CHECK`); not needed on MySQL 8.0.40 (below) |
 | **Destination** (data) | `INSERT` | ✅ | — | ✅ | Copying rows |
 | **Destination** (data) | `SELECT` | ✅ | — | ✅ | Reading copies back under `verification: sha256` or `count`, and archive recovery's check of what the destination holds |
@@ -111,10 +122,14 @@ preflight.
 - **The session character set needs no privilege.** The `SET NAMES` every connection runs, and
   the read of its result ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)),
   are session statements any account may run.
-- **The source facts need no privilege.** The unfinished-work guard reads the source's
-  `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql; neither
-  needs a grant beyond connecting
-  ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)).
+- **The source facts need no privilege, but one.** The unfinished-work guard reads the source's
+  `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql, and preflight
+  reads the source's `read_only` settings and each side's plugin state and transaction size limit;
+  none of these needs a grant beyond connecting
+  ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)). The one that does is
+  the source's view of its group, `performance_schema.replication_group_members`, read only from
+  a server whose plugin is `ACTIVE` with a group name
+  ([Group Replication](README_OPERATIONS.md#group-replication)).
 - **`SESSION_VARIABLES_ADMIN`** also lets the account change other restricted session variables,
   so raising the global `max_error_count` is usually the better remedy. The recipes above do not
   include it.

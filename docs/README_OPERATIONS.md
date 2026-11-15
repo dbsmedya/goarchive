@@ -19,6 +19,7 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 - [Tuning throughput](#tuning-throughput)
 - [Pausing a run: `sentinel_file`](#pausing-a-run-sentinel_file)
 - [Replication gating](#replication-gating)
+- [Group Replication](#group-replication)
 - [Runtime control](#runtime-control)
   - [Enabling it and where the socket is](#enabling-it-and-where-the-socket-is)
   - [The client: `goarchive control`](#the-client-goarchive-control)
@@ -532,6 +533,58 @@ replicas before every chunk; failures are never cached. For up to `cache_ttl` se
 pass, a replica that has just become unhealthy is not noticed. `cache_ttl: 0` checks every time.
 
 ---
+
+## Group Replication
+
+Every preflight, `validate` and `dry-run` included, starts by reading the Group Replication facts of
+both servers. This section says what is read, in which order, what `validate`, `dry-run` and a run
+print from it, and the one grant it asks for. A pair of servers without Group Replication reads
+the same facts, finds no group and prints nothing.
+
+### What is read
+
+In this order, before preflight reads any table or catalog, and whatever is skipped
+(`--skip-dangerously-validate-preflight-allow-experimental` skips checks, never these reads):
+
+1. **The source's configuration:** `read_only`, `super_read_only` and `server_id`. It is the first
+   statement preflight sends to the source.
+2. **Each side's plugin state:** whether the Group Replication plugin is `ACTIVE`, the group name it
+   is configured with, and its `group_replication_transaction_size_limit`.
+3. **The source's view of its group**, only when its plugin is `ACTIVE` and a group name is set:
+   each member with its state and role, and which row is the source's own. A server that is not
+   configured for a group is never asked for it.
+
+A read that fails stops preflight with the error, as any failed inspection does. Only the third
+read needs a grant: `SELECT` on `performance_schema.replication_group_members`
+([Permissions](README_PERMISSIONS.md#source)). Without it the job is refused with
+[`SOURCE_GROUP_VIEW_PERMISSION_CHECK`](README_VALIDATION.md#source_group_view_permission_check),
+exit 1, before anything is locked, copied or replayed.
+
+### What you see
+
+`validate`, `dry-run` and a run print one block when the source or the destination is configured
+for a group, and nothing otherwise. `validate` prints it under `PASSED`, `dry-run` ahead of the
+statement caps, and a run logs it once, as one entry:
+
+```text
+Group Replication:
+  source:      member of group 8a94f357-…, ONLINE, PRIMARY; transaction size limit 150000000 bytes
+  destination: Group Replication plugin not active
+  sizes:       batch_size 1000, batch_delete_size 500 (each transaction must fit the limit of its side)
+```
+
+- **`source`** says `member of group …` with the state and role the group reports, when the
+  source's own row is `ONLINE`. A source whose plugin is `ACTIVE` with a name but that is not an
+  `ONLINE` member reads `configured for group …, not a running member (state OFFLINE)`, or
+  `(no row of its own in its view)`. A source without the plugin reads `Group Replication plugin
+  not active`.
+- **`destination`** has no state or role: its view is not read. A destination configured for a group
+  reads `configured for group …`.
+- **The limit** is the server's `group_replication_transaction_size_limit`, as the server reports it.
+  A transaction larger than it fails at its commit (error 3100), so each batch's copy transaction and
+  each delete chunk must fit the limit of the server they run on; `sizes` is the job's own
+  `batch_size` and `batch_delete_size`. `0` is the server's own "no limit" for this variable, and
+  `unknown` means the server did not report it.
 
 ## Runtime control
 

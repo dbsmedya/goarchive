@@ -49,6 +49,12 @@ PK_COLUMN_CHECK: The configured primary_key must list the PRIMARY KEY's columns,
 key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_id, line_no))])
 ```
 
+Preflight's first statements are not checks: it reads the
+[Group Replication facts](README_OPERATIONS.md#group-replication) of both servers (the source's
+configuration, each side's plugin state and, for a source that is a member, its view of the group)
+before it reads any table. They are read whatever is skipped, and they are what `validate`, `dry-run`
+and a run print as the Group Replication block.
+
 Preflight computes each key-addressed statement's cap, the most key tuples it carries, and fails
 when a cap cannot be computed. `validate` and `dry-run` print the caps; a run logs one
 `Statement cap:` line per statement.
@@ -62,6 +68,7 @@ type.
 
 | Check | archive | purge | copy-only |
 |-------|:-------:|:-----:|:---------:|
+| `SOURCE_GROUP_VIEW_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ |
 | `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ |
 | `KEY_TYPE_UNSUPPORTED` | ✅ | ✅ | ✅ |
@@ -90,6 +97,10 @@ type.
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ |
 | `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ |
 
+- **`SOURCE_GROUP_VIEW_PERMISSION_CHECK`** is the one check of preflight's first stage, which reads the
+  [Group Replication facts](README_OPERATIONS.md#group-replication) before any table. It refuses only a
+  source that is a Group Replication member whose account cannot read the group's view; a source
+  without the plugin is never asked, and nothing is refused.
 - **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
   it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
 - **Copy-only** deletes nothing, so no cascade can fire: it skips the foreign-key visibility
@@ -457,6 +468,23 @@ Table-scoped checks name `TABLE(state)`, e.g. `orders(unconfirmed)`;
 tests four privileges on one schema. Each fix is a
 [grant recipe](README_PERMISSIONS.md#grant-recipes).
 
+### `SOURCE_GROUP_VIEW_PERMISSION_CHECK`
+
+A source that is a Group Replication member (its plugin is `ACTIVE` and a group name is set)
+needs `SELECT` on `performance_schema.replication_group_members`: GoArchive reads the group's
+view to tell whether the source is a running member. It is not one of the provable-grant checks
+above: the server's own refusal (error 1142) is the answer, so it has no states, and it is the
+first read of preflight, so nothing has been locked, copied or replayed when it fails. A source
+without the plugin is never asked and needs nothing. Runs for every job type.
+
+```
+SOURCE_GROUP_VIEW_PERMISSION_CHECK: The source is configured for Group Replication group
+8a94f357-…, and its account cannot read the group's view (replication: group_members: Error 1142
+(42000): SELECT command denied to user 'ga_src'@'…' for table 'replication_group_members').
+GoArchive reads the view to tell whether the source is a running member of the group; grant it
+directly to the account (GRANT SELECT ON performance_schema.replication_group_members TO <user>)
+```
+
 ### `SOURCE_SELECT_PERMISSION_CHECK`
 
 The source account needs `SELECT` on every job table. Runs for every job type.
@@ -703,7 +731,10 @@ The keys are still read from MySQL; a run still checks the job's log key and bin
 foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK.
 ```
 
-Still enforced on a run: the [connection checks](#connection-checks), `PRIMARY_KEY_CHECK`,
+Still enforced on a run: the [connection checks](#connection-checks), the
+[Group Replication facts](README_OPERATIONS.md#group-replication) and so
+`SOURCE_GROUP_VIEW_PERMISSION_CHECK` (the identity and the report depend on them, so no flag skips
+their reads), `PRIMARY_KEY_CHECK`,
 `KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the statement caps (computed from the source keys
 and, for archive and copy-only, the destination keys, which must be readable), the job's
 [startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. The JSON
