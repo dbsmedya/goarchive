@@ -522,7 +522,7 @@ func TestAStopCancelsAHeldGroupProbeInEitherRead(t *testing.T) {
 		block func(res *groupResult)
 		reads []string
 	}{
-		{"the view read", func(res *groupResult) { res.blockMembers = true }, []string{"members", "members"}},
+		{"the view read", func(res *groupResult) { res.blockMembers = true }, []string{"members", "stats", "members"}},
 		{"the stats read", func(res *groupResult) { res.blockStats = true }, []string{"members", "stats", "members", "stats"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
