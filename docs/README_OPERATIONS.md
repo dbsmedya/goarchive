@@ -508,10 +508,20 @@ for the settings it was judged under: a round that passes while the tolerance is
 judged again at once, so a delete is never let through on a verdict made under settings that have since been
 replaced. The settings are read once more as the very last step of a pass, after the line that says the job
 is resuming has been written and after a cached pass has been looked up, so a change made while those were
-under way is not missed. When a change does outdate a round, the log says so (`replication gate settings
-changed: the fleet is judged again at once`), a server that looked recovered in a round that was discarded is
-not logged as recovered until a round that stands finds it so, and its hold keeps counting from where it began. A hold that is waiting for its next check wakes at once when a gate setting changes, and goes on
-waiting for the time that is left when another setting does. A tolerance raised above its configured value goes
+under way is not missed. What the log shows depends on when the change is found:
+
+- **A round that passes under settings replaced while it ran** is discarded without a line. A server that
+  looked recovered in it is not logged as recovered: that line waits for a round that stands. The call
+  judges again at once, and a server that still fails continues its hold from where it began.
+- **A failing round whose wait a gate setting cuts short** says so: `replication gate settings changed: the
+  fleet is judged again at once, not in 5s`, since the hold line before it had said `retrying in 5s`.
+- **A change that arrives while a pass's own entries are being written** finds the "recovered" and "job
+  resuming" lines already out. They stay, and one more line says that the pass above does not stand
+  (`replication gate settings changed while the pass was being written: …`). The call's hold, and so the
+  rules for a stop, go on from where the call began to hold; the per-server hold entries that those
+  "recovered" lines ended are gone, so a server that still fails at the new settings starts a new one.
+
+A tolerance raised above its configured value goes
 one step at a time ([the step rule](#the-tolerances-step-rule-and-the-warning)). `cache_ttl` is startup
 configuration only: over the socket it is an unknown key.
 

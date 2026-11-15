@@ -208,17 +208,23 @@ type holdInfo struct {
 // the round's gate revision. A pass is valid only for the gate revision it was
 // judged under: a cached pass of an older revision never hits, and a round that
 // passes under a revision replaced while it ran is discarded, recording and
-// returning nothing, and the next round runs at once. The call's hold state is
-// kept through a discard, so the stop rules above are unchanged by it, and a server
-// that looked recovered in a discarded round is not logged as recovered: it is, when a
-// round that stands finds it so. The decision to return is the last act of a pass: the
-// revision is read again after the entry that says the job resumes is written and the
-// gate's mutex is taken, and a pass found outdated then is discarded like any other, with
-// one line saying so; nothing that can wait follows the read. After a failing round the
-// wait for the interval ends at once when a gate setting changed (and the log says so),
-// and goes on for the time left when another setting did. Every completed round, passing
-// or failing, is reported to the store, which is what lets a raise of the tolerance above
-// its configured value take its next step.
+// returning nothing, and the next round runs at once. That discard is silent: the
+// servers that looked recovered in the round are not logged as recovered, and stay in
+// the call's hold map, so their hold goes on from where it began. The call's own hold
+// state, when it began to hold, is kept through any discard, so the stop rules above
+// are unchanged by it.
+//
+// The decision to return is the last act of a pass: the revision is read again after
+// the entries that say the servers recovered and the job resumes are written and the
+// gate's mutex is taken; nothing that can wait follows the read. A setting that changes
+// while those entries are written therefore outdates a pass whose entries already stand.
+// They are not retracted: one further line says that the pass does not stand, and the
+// call keeps holding from its own start, but the per-server hold records those entries
+// ended are gone, so a server that still fails starts a new one. After a failing round
+// the wait for the interval ends at once when a gate setting changed (and the log says
+// so), and goes on for the time left when another setting did. Every completed round,
+// passing or failing, is reported to the store, which is what lets a raise of the
+// tolerance above its configured value take its next step.
 func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
@@ -344,6 +350,8 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 
 				return nil
 			}
+			// A setting changed while the entries above were written. They are out and stay; this
+			// line says that the pass they describe does not stand.
 			if !firstHold.IsZero() {
 				g.logger.Infow("replication gate settings changed while the pass was being written: the pass above does not stand, and the fleet is judged again at once", logger.Live)
 			}
