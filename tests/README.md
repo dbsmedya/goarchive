@@ -497,6 +497,10 @@ skip is the intended result there. Each is a unit test and needs no database.
 | `TestStartLeavesAFullQueueSocket` | Linux: a live listener whose queue is full answers `EAGAIN` at once. On macOS the same listener answers `ECONNREFUSED`, the answer for no listener, which the design accepts (spec §4.2), so there is no test there | Linux: L1, L3 and CI's Ubuntu runner |
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | a platform that lets a lock file the run holds open be removed, and a directory with open handles be renamed | Linux and macOS. They skip on Windows, which refuses both (`being used by another process`, `Access is denied`), so those cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows |
+| `TestControlFullQueueIsExit9AtOnce` (`cmd/goarchive/cmd`) | a listener whose queue is full, which fails a connect at once: `EAGAIN` on Linux, `WSAENOBUFS` on Windows | Linux (L1 to L3) and the Windows job. There is no test on macOS, where a full queue is refused |
+| `TestControlResetBeforeTheReply` | Linux: closing a connection with the request unread resets it | Linux only: macOS ends the stream cleanly, which the client reads as an empty reply |
+| `TestControlExitCodes/9_for_a_permission_error_on_connect` | a non-root uid, so that a socket with no permission bits refuses it | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
+| `TestControlEndpointChecks/the_directory_belongs_to_another_user` | root, to give a directory to another uid | a root container (L1). It skips elsewhere; the owner rule itself is also checked, for every user, against the shared judging function |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
 | `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
@@ -529,12 +533,13 @@ The container runs use the Go release of `go.mod`'s toolchain line, with a writa
 # L1: as root, cgo as the image has it. L2: the same with -e CGO_ENABLED=0
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   bash -c 'apt-get update -qq && apt-get install -y -qq netcat-openbsd socat &&
-           go test ./internal/control/... ./internal/controlpath/ -count=1 -v'
+           go test ./internal/control/... ./internal/controlpath/ -count=1 -v &&
+           go test ./cmd/goarchive/cmd/ -run TestControl -count=1 -v'
 
 # L3: a non-root uid with an entry
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   bash -c 'useradd -m tester && mkdir /tmp/gocache-t /tmp/gopath-t && chown tester /tmp/gocache-t /tmp/gopath-t &&
-           su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v"'
+           su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v && go test ./cmd/goarchive/cmd/ -run TestControl -count=1 -v"'
 
 # L4: a connection between uid 0 and another uid, in both directions (the run of L1 includes it)
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
