@@ -298,7 +298,10 @@ func TestStatusSettingsFollowApplicability(t *testing.T) {
 }
 
 // TestStatusText (spec §4.8): the first body line is the summary and the rest is the same content
-// in labelled lines, as the spec's example shows them.
+// in labelled lines. The spec's example lines come first, as it shows them and in its order; the
+// content its JSON has that the example does not show follows them: the replication gate, the
+// changes accepted, and the per-table counts. (progress is one more line, when there is an
+// estimate; TestStatusTextOtherStates shows it.)
 func TestStatusText(t *testing.T) {
 	f := newStatusFixture(t, archiveApplies)
 	if _, err := f.store.Set(tuning.BatchDeleteSize, "100", testPeer); err != nil {
@@ -314,9 +317,90 @@ func TestStatusText(t *testing.T) {
 		"  pause:     none",
 		"  settings:  batch_size 1000   batch_delete_size 100 (configured 500)   sleep_seconds 1   delete_sleep_seconds 0",
 		"             seconds_behind_source_within 10   check_interval 5",
+		"  replication: enabled, used, cache_ttl 15s, last pass 5m00s ago (2026-11-15T12:01:02Z)",
+		"               replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s), checked 3s ago (2026-11-15T12:05:59Z)",
+		"  changes:   1 accepted runtime change",
+		"  tables:    orders copied 12000, deleted 11000",
+		"             order_details copied 52920, deleted 50500",
 	}, "\n")
 	if got != want {
 		t.Errorf("status text:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestStatusTextReplication: the replication line says whether the replication block is enabled and
+// whether this run uses the gate; for a run that does, the configured cache_ttl, when the last pass
+// was, and one line per server with its last verdict and when it was checked.
+func TestStatusTextReplication(t *testing.T) {
+	f := newStatusFixture(t, archiveApplies)
+	lag := int64(0)
+	checked := statusNow.Add(-3 * time.Second)
+	f.gate.set(GateRecord{Servers: []ServerVerdict{
+		{Server: "replica2:3306", Healthy: true, Lag: &lag, Tolerance: 10, CheckedAt: checked},
+		{Server: "replica3:3306", Cause: "unreachable", Detail: "dial tcp: connection refused", Tolerance: 10, CheckedAt: checked},
+		{Server: "replica4:3306"},
+	}})
+	text := strings.Join(f.view.text(), "\n")
+	for _, want := range []string{
+		"  replication: enabled, used, cache_ttl 15s, last pass never",
+		"               replica2:3306 healthy, lag 0s, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica3:3306 unreachable (dial tcp: connection refused), checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica4:3306 not checked yet",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status text lacks %q:\n%s", want, text)
+		}
+	}
+
+	// Enabled in the file, but this run does not use the gate (a copy-only job): said so.
+	f = newStatusFixture(t, copyOnlyApplies)
+	f.view.gate = nil
+	if got := strings.Join(f.view.text(), "\n"); !strings.Contains(got, "  replication: enabled, not used by this run") {
+		t.Errorf("a run that does not use the gate:\n%s", got)
+	}
+	f.view.info.ReplicationEnabled = false
+	if got := strings.Join(f.view.text(), "\n"); !strings.Contains(got, "  replication: not enabled") {
+		t.Errorf("a run without replication:\n%s", got)
+	}
+}
+
+// TestStatusTextTail: after the spec's example lines come replication, changes, progress (only when
+// there is an estimate) and tables (only when there is a table), in that order; a run that has
+// accepted nothing says `none`.
+func TestStatusTextTail(t *testing.T) {
+	f := newStatusFixture(t, noGateApplies)
+	f.view.gate = nil
+	f.tracker.set(TrackerStatus{Phase: PhaseRunning, Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute},
+		Tables: []TableCounts{{Name: "orders", Copied: 1, Deleted: 2}}})
+	text := strings.Join(f.view.text(), "\n")
+	last := -1
+	for _, label := range []string{"  settings:", "  replication:", "  changes:   none", "  progress:  about 20000 roots, 60%, ETA 4m00s", "  tables:    orders copied 1, deleted 2"} {
+		at := strings.Index(text, label)
+		if at < 0 || at < last {
+			t.Fatalf("%q is not after the lines before it (at %d, after %d):\n%s", label, at, last, text)
+		}
+		last = at
+	}
+
+	// Without an estimate and without a table those two lines are absent.
+	f.tracker.set(TrackerStatus{Phase: PhaseRunning})
+	text = strings.Join(f.view.text(), "\n")
+	for _, label := range []string{"  progress:", "  tables:"} {
+		if strings.Contains(text, label) {
+			t.Errorf("status text has %q with nothing to say:\n%s", label, text)
+		}
+	}
+	if !strings.Contains(text, "  changes:   none") {
+		t.Errorf("a run with no change:\n%s", text)
+	}
+	if _, err := f.store.Set(tuning.BatchSize, "10", testPeer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Pause(testPeer); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.view.text(), "\n"); !strings.Contains(got, "  changes:   2 accepted runtime changes") {
+		t.Errorf("two accepted changes:\n%s", got)
 	}
 }
 
