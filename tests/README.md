@@ -10,7 +10,7 @@ integration, and Sakila end-to-end (E2E) tests.
 | **Everything** | **The full gate, in the only correct order** | **`make gate`** |
 | **Unit** | Fast, in-memory; no DB required. Preflight stages consume injected `dbsgomysql` facts — see [Testing Reference](../docs/README_TESTING.md#unit-tests) | `go test ./... -count=1` |
 | **Integration** | Real-DB tests behind the `integration` build tag | `make test-integration`, or `./scripts/run-tests.sh --setup --integration-only` |
-| **Sakila E2E (working)** | Archive, purge, copy-only and interrupt/resume runs that complete (tests 01, 03–09 and 13–17) | `make e2e` (reset + seed + run) |
+| **Sakila E2E (working)** | Archive, purge, copy-only, interrupt/resume and control-socket runs that complete (tests 01, 03–09, 13–17 and 20) | `make e2e` (reset + seed + run) |
 | **Sakila E2E (demos)** | Configs that intentionally fail preflight (tests 02, 10, 11, 12, 18, 19) | `make e2e-examples` |
 
 ### `make gate` — use this rather than assembling the steps
@@ -119,9 +119,9 @@ change, and the change's local checks from the table, so the checks are planned 
 
 ## Sakila E2E Test Suite
 
-Nineteen focused tests: thirteen working runs — five archives, four purges, two
+Twenty focused tests: fourteen working runs — six archives, four purges, two
 copy-onlys and two interrupt/resume tests — and six preflight-guardrail
-demonstrations. Sixteen run on Sakila; three (14–16) run on the **key-matrix
+demonstrations. Seventeen run on Sakila; three (14–16) run on the **key-matrix
 fixture**, tables with the key types Sakila lacks.
 
 **Each test is a declaration file under `tests/e2e/<category>/`, grouped by the
@@ -162,6 +162,7 @@ through the real CLI.
 | **15** | `test15_keymatrix_binary.yaml` | `km_blob` (`BINARY(16)`) → `km_blob_ref` | Key matrix, **purge**: keys whose bytes are not valid UTF-8 |
 | **16** | `test16_keymatrix_latin1.yaml` | `km_name` (`latin1` `VARCHAR`) → `km_name_tag` | Key matrix, **copy-only**: non-ASCII `latin1` keys, verified by sha256 and logged in a `latin1` key column |
 | **17** | `test17_purge_replication_stop.yaml` | `payment`, the same selected slice as 13 | Stops the replica applier, observes the purge's hold, sends **one `SIGTERM`**: exit 3 within 10 s with the stop line and the stopped closing entry, the source unchanged. The hold is before the purge logs its roots, so a second purge completes with nothing to recover. |
+| **20** | `test20_control_socket.yaml` | `payment`, `payment_id <= 500` → 499 rows, run **three times** | **The runtime control socket, end to end** (TEL-1). The harness (`lib/control.sh`) runs one archive job over a short private `socket_dir`: `dry-run`'s printed path is the log's and `status-json`'s; `goarchive control` reads `status` and `status-json`, pauses (state `paused`), resumes, lowers `batch_delete_size` with `-s`, reads it back with `-g` and is refused above the ceiling (exit 1); a **second start** of the job from a second config file with the same job name and `socket_dir` exits **4**; the doc's `nc -U` and `socat` lines send `status-json` and a setter; `stop` ends the run with exit **3**, its closing entry carries the runtime changes, and the socket file is gone. The rerun is **killed with SIGKILL**: `control` exits **5** with the stale-socket message and the file is left; the next run replaces the stale socket, completes, and removes it; `control` against that path exits 5. The standard assertions (sha256 verification, exact rows, no orphans) read the **final** run's own output. Needs `jq`, `nc` (OpenBSD) and `socat` |
 
 > **03 and 05 are the same archive with different verification methods.** That is
 > deliberate: a failure in 05 alone isolates to the method. Keep them in step — if
@@ -259,6 +260,11 @@ add a test, derive the floor from the phases that command actually executes, not
 from the shape of the formula.
 
 **13 and 17 sleep nothing.** The length of a hold is the harness's, not the run's.
+
+**20's floor is 0.0 s.** It runs three times (stopped, killed, finished) and the assertions read only
+the last, which is what remains after a stop and a kill: its elapsed time has no full-slice floor. The
+sleeps (`sleep_seconds: 2`, ten batches of 50) are there to keep the first run alive while the harness
+drives it, not to be asserted.
 
 **This is a one-sided bound, which is why it is safe to assert.** A slow or loaded
 machine can only push the measured time *up*, so it can never fail.
@@ -369,7 +375,11 @@ tracked `tests/dot.env` and says so; the template's defaults work against the co
 (`brew install mysql-shell`) and **jq** (`brew install jq`; preinstalled on GitHub's Ubuntu
 runners) — the runner checks for both up front and stops with install instructions if one is
 missing. The E2E assertions read each run's closing JSON log entry with jq, and the harness's
-own tests (`tests/harness`) need it too.
+own tests (`tests/harness`) need it too. **Test 20** also needs **`nc`** (the OpenBSD one) and
+**`socat`**, because it sends the documented control-socket lines as a script without the binary would:
+a Mac has the system `nc` and needs `brew install socat`; Ubuntu needs `apt-get install netcat-openbsd
+socat` (`gate-verify.yml` installs both before the E2E part). The harness fails the test, not skips it,
+when one is missing.
 
 `run-tests.sh` sources `tests/.env` for you. If you invoke `go test -tags=integration`
 **directly**, load it yourself first:
@@ -487,6 +497,10 @@ skip is the intended result there. Each is a unit test and needs no database.
 | `TestStartLeavesAFullQueueSocket` | Linux: a live listener whose queue is full answers `EAGAIN` at once. On macOS the same listener answers `ECONNREFUSED`, the answer for no listener, which the design accepts (spec §4.2), so there is no test there | Linux: L1, L3 and CI's Ubuntu runner |
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | a platform that lets a lock file the run holds open be removed, and a directory with open handles be renamed | Linux and macOS. They skip on Windows, which refuses both (`being used by another process`, `Access is denied`), so those cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows |
+| `TestControlFullQueueIsExit9AtOnce` (`cmd/goarchive/cmd`) | a listener whose queue is full, which fails a connect at once: `EAGAIN` on Linux, `WSAENOBUFS` on Windows | Linux (L1 to L3) and the Windows job. There is no test on macOS, where a full queue is refused |
+| `TestControlResetBeforeTheReply` | Linux: closing a connection with the request unread resets it | Linux only: macOS ends the stream cleanly, which the client reads as an empty reply |
+| `TestControlExitCodes/9_for_a_permission_error_on_connect` | a non-root uid, so that a socket with no permission bits refuses it | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
+| `TestControlEndpointChecks/the_directory_belongs_to_another_user` | root, to give a directory to another uid | a root container (L1). It skips elsewhere; the owner rule itself is also checked, for every user, against the shared judging function |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
 | `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
@@ -519,12 +533,13 @@ The container runs use the Go release of `go.mod`'s toolchain line, with a writa
 # L1: as root, cgo as the image has it. L2: the same with -e CGO_ENABLED=0
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   bash -c 'apt-get update -qq && apt-get install -y -qq netcat-openbsd socat &&
-           go test ./internal/control/... ./internal/controlpath/ -count=1 -v'
+           go test ./internal/control/... ./internal/controlpath/ -count=1 -v &&
+           go test ./cmd/goarchive/cmd/ -run TestControl -count=1 -v'
 
 # L3: a non-root uid with an entry
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   bash -c 'useradd -m tester && mkdir /tmp/gocache-t /tmp/gopath-t && chown tester /tmp/gocache-t /tmp/gopath-t &&
-           su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v"'
+           su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v && go test ./cmd/goarchive/cmd/ -run TestControl -count=1 -v"'
 
 # L4: a connection between uid 0 and another uid, in both directions (the run of L1 includes it)
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
@@ -732,7 +747,7 @@ git push origin --delete verify-gate/<sha7>
 ### Sakila E2E tests
 
 ```bash
-# The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–17)
+# The whole procedure — test-reset, then e2e-setup, then the working tests (01, 03–09, 13–17, 20)
 make e2e
 
 # Validation demos (02, 10, 11, 12, 18, 19) — preflight MUST fail. Needs a seeded estate.

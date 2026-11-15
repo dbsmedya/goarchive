@@ -1,0 +1,58 @@
+# Test 20: a payment archive driven over its runtime control socket (TEL-1 C7)
+#
+# The harness (lib/control.sh, control_socket="driven") runs this job three times: driven with
+# `goarchive control`, `nc -U` and `socat`, then stopped over the socket (exit 3); rerun and killed
+# with SIGKILL (a stale socket); and run once more to completion, which replaces the stale socket.
+#
+# WHY THESE NUMBERS: the harness has to catch the run alive for several seconds, three times. 499 rows
+# (MEASURED: payment_id is not contiguous, so <= 500 is not 500) in batches of 50 are ten batches,
+# and sleep_seconds 2 puts a pause of two seconds between them: about 18 s of sleeping in all, so the
+# first run is still going when the harness has paused it, resumed it, changed a setting, started a
+# second copy of the job, spoken to the socket in three ways and stopped it. batch_delete_size is 100
+# so that the harness can lower it (a size can only go down from the configured value).
+#
+# __SOCKET_DIR__ is NOT a value to edit: the harness writes two copies of this config with a short
+# private directory in its place (a socket path is limited to 103 bytes on macOS) and removes them.
+# Run directly, this template's rendered config is refused by validate: the directory is not absolute.
+#
+# This template is the tracked source of truth. run-tests.sh renders it to
+# test20_control_socket.yaml on every run, substituting the MYSQL_ROOT_PASSWORD placeholder from
+# tests/.env. Edit this file, never the generated .yaml -- that one is gitignored (it holds a real
+# password) and is overwritten.
+
+source:
+  host: 127.0.0.1
+  port: 3305
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila
+
+destination:
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  password: ${MYSQL_ROOT_PASSWORD}
+  database: sakila_archive
+
+safety:
+  disable_foreign_key_checks: true
+
+control:
+  enabled: true
+  socket_dir: __SOCKET_DIR__
+
+# run_archive_job extracts the job name with `grep -A 1 "^jobs:" | tail -1`, so
+# the job key must be the very next line -- no comment, and no trailing comment
+# on the key itself, or the extracted name comes out mangled.
+jobs:
+  archive-payment-control:
+    job_type: archive
+    root_table: payment
+    primary_key: payment_id
+    where: "payment_id <= 500"
+    verification: sha256
+    processing:
+      batch_size: 50
+      batch_delete_size: 100
+      sleep_seconds: 2
+      delete_sleep_seconds: 0

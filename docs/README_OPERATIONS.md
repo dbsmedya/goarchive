@@ -21,9 +21,11 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 - [Replication gating](#replication-gating)
 - [Runtime control](#runtime-control)
   - [Enabling it and where the socket is](#enabling-it-and-where-the-socket-is)
+  - [The client: `goarchive control`](#the-client-goarchive-control)
   - [The protocol contract](#the-protocol-contract)
   - [When a change applies](#when-a-change-applies)
   - [Security](#security)
+  - [Docker and systemd](#docker-and-systemd)
 - [Crash recovery](#crash-recovery)
 - [Resume semantics](#resume-semantics)
 - [Concurrency and locking](#concurrency-and-locking)
@@ -42,6 +44,7 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 | `plan` | The relation tree, copy order and delete order, with the processing and verification settings, without connecting | no |
 | `list-jobs` | The jobs in the file, with their type, keys and relations, without connecting | no |
 | `version` | The version, commit, Go version and platform | no |
+| `control <socket-path> …` | Send one request to a running job's [control socket](#the-client-goarchive-control): an action, `-s <key>=<value>` or `-g <key>`. Reads no configuration file | no |
 | `completion <shell>` | A shell completion script (`bash`, `zsh`, `fish`, `powershell`) on stdout | no |
 | `help [command]` | Help for any command, as `--help` | no |
 
@@ -60,6 +63,9 @@ archive job before connecting.
 | `--log-level <level>` | — | Override the log level (`debug`, `info`, `warn`, `error`) |
 | `--log-format <format>` | — | Override the log format (`json`, `text`) |
 | `-h`, `--help` | — | Help for the command |
+
+`control` is the one command that refuses `-c`/`--config`, set before or after it: it finds the run by its
+socket path and reads no file ([the client](#the-client-goarchive-control)).
 
 `goarchive -v` or `goarchive --version` prints the version on one line; `goarchive version` adds
 the commit, Go version and platform.
@@ -80,6 +86,7 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | `validate` | `-j`, `--job` · `--verification` · `--force-triggers` |
 | `dry-run` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` |
 | `plan` | `-j`, `--job` |
+| `control` | `-s`, `--set` · `-g`, `--get` (one action, or one of these; `-c`/`--config` is refused) |
 
 | Flag | Meaning |
 |------|---------|
@@ -88,6 +95,8 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)). Under `validate` and `dry-run` it has no effect on a copy-only job and prints no warning there |
 | `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
 | `--progress[=<interval>]` | Periodic progress, a start line and a closing block ([Progress display](#progress-display), [Output and exit codes](#output-and-exit-codes)) |
+| `-s`, `--set <key>=<value>` | `control` only: change one setting of a running job, sent as `<key>=<value>`. Given once per call |
+| `-g`, `--get <key>` | `control` only: read one setting of a running job, sent as `<key>=?`. Given once per call |
 
 Before a run starts, each setting that weakens its checks is reported once on stderr, whatever
 the log level, and recorded in the log:
@@ -223,11 +232,16 @@ cron-style run stays silent.
 
 | Code | Meaning |
 |---|---|
-| 0 | Done: the run exhausted the `where` range, or `validate`, `dry-run`, `plan`, `list-jobs` or `version` printed its result |
-| 1 | Failed: a check refused, a stopped job's unfinished work holds this run's tables, or the run failed part way. Read stderr and the log |
-| 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job |
+| 0 | Done: the run exhausted the `where` range, or `validate`, `dry-run`, `plan`, `list-jobs` or `version` printed its result, or `control` printed a run's `OK` reply |
+| 1 | Failed: a check refused, a stopped job's unfinished work holds this run's tables, or the run failed part way. Read stderr and the log. For `control`: the run answered `ERR`, refusing the request, and **1 always means that** there |
+| 2 | Usage or configuration error, found before anything connected: a flag, the config file, an unknown job; for `control`, a malformed command line ([the client](#the-client-goarchive-control)) |
 | 3 | Stopped before the end of the `where` range, without error (a graceful stop): the next run continues |
 | 4 | Not started: another live run holds the job, a source table, or work on the same data, is still creating a new tracking schema, or serves the job's control socket. Nothing was done |
+| 5 | `control` only. No socket: nothing is at the path, or a socket file is there and the connection is refused because nothing listens on it, as after a run that was killed. The message names the path: the job is not running, control is not enabled for it, or the path is wrong |
+| 6 | `control` only. Timeout: the client's own deadline passed. The connection was not made within 5 seconds, or the exchange did not finish within 10 |
+| 7 | `control` only. Malformed reply: the first line is neither `OK` nor `ERR <reason> <message>`, an `ERR` line is followed by more, the reply is empty, does not end with a line feed, or is over 1 MiB. Nothing is printed |
+| 8 | `control` only. Refused endpoint: the client's own check of the socket's directory or of the socket failed ([the client](#the-client-goarchive-control)); nothing was connected or sent |
+| 9 | `control` only. Transport failure: any other failure to connect or to exchange, for example a permission error on connect, or a connection reset before the reply was complete |
 
 ```bash
 goarchive archive -c archiver.yaml -j archive_old_orders
@@ -236,6 +250,14 @@ case $? in
   4)   exit 0 ;;              # another run holds the work: try later
   *)   exit 1 ;;              # failed or misused: read stderr and the log
 esac
+```
+
+`goarchive control` never returns 3 or 4, which describe a run; 5 to 9 are its own, so that a collector
+that polls `status-json` between cron runs can tell "no run answers at this path" (5) from every other way
+of failing to get an answer, without reading stderr:
+
+```bash
+goarchive control "$SOCK" status-json || [ $? -eq 5 ]   # a run that is not there is not an error
 ```
 
 A stop that meets an error exits 1. A [`stop` over the control socket](#graceful-shutdown) changes no rule: the
@@ -563,6 +585,72 @@ A socket left by a run that was killed is replaced by the next start. GoArchive 
 when its lock is held and a connection to it is refused; it never removes anything that is not a socket,
 and at the end of a run it removes only its own.
 
+### The client: `goarchive control`
+
+```text
+goarchive control <socket-path> <action>
+goarchive control <socket-path> -s|--set <key>=<value>
+goarchive control <socket-path> -g|--get <key>
+```
+
+```bash
+goarchive control /home/archiver/.goarchive/run/orders_archive.sock status-json
+goarchive control /home/archiver/.goarchive/run/orders_archive.sock -s batch_delete_size=200
+goarchive control /home/archiver/.goarchive/run/orders_archive.sock -g batch_size
+docker exec <container> goarchive control /work/control/orders_archive.sock status
+```
+
+- **The socket path locates the run, and nothing else does.** It is the first argument: the path that
+  `validate` and `dry-run` print and that the run's log records. There is no `-c`, no `-j` and no
+  directory flag, and the client reads no configuration file. An explicitly set `-c`/`--config`, before
+  or after `control`, is a usage error (exit 2), because a flag that is accepted and ignored would be an
+  ambiguity.
+- **Three forms, one request per call.** An action is the second argument: `status`, `status-json`,
+  `pause`, `resume`, `stop` or `help`. A setter is `-s`/`--set` with `<key>=<value>`, a getter is
+  `-g`/`--get` with `<key>`, and a call takes exactly one of the three. The protocol has no multi-key
+  request, and several requests for one command line could be accepted in part and refused in part, so a
+  change is one call: each is accepted or refused on its own, and logged on its own.
+- **The client only spells the line.** An action is sent as written, `-s k=v` as `k=v` and `-g k` as
+  `k=?` ([the grammar](#the-protocol-contract)).
+- **Names are judged by the run, not by the client.** An action or setting the run does not know, or
+  does not use, comes back as the run's `ERR` and exit 1. `goarchive control --help` lists the actions
+  and settings from the same table the run's `help` is built from, so a client and a run of different
+  versions cannot disagree about which names exist.
+- **Usage errors (exit 2)** are found before connecting: no socket path; no action and no flag; more
+  than one of an action, `-s` and `-g`; a repeated `-s` or `-g`, in the short or the long form; more than
+  two arguments; a second argument containing `=` (use `-s <key>=<value>`); a `-s` value without `=`, or
+  with an empty key or value; a `-g` key that is empty or contains `=`; a socket path over the platform's
+  limit; a request line over 4096 bytes or with a newline.
+
+**It checks where it is about to connect.** The run's same-user rule proves the client to the run;
+nothing in it proves the run to the client, and a client that connected to whatever is at a path would take
+another account's `OK` for the run's. So before it connects, on Linux and macOS, it looks, without
+following links and without changing anything: the socket's directory must be a real directory (not a
+symbolic link), owned by the user the client runs as, with no group or other permission bit (the rule the
+run itself starts under), and the path must be a socket, not a symbolic link and not another type. If
+either fails, the client connects to nothing, sends nothing, creates and repairs nothing, and exits **8**
+with a message naming the path and what it found. A path with nothing at it is not that case: it is "no
+socket" (exit 5). On Windows the checks that depend on an owner and a mode are not made.
+
+**What it prints.** It sends the line, reads the reply until the run closes the connection, and:
+
+1. on `OK` prints the body on stdout, without the `OK` line;
+2. on `ERR <reason> <message>` prints `Error: <reason>: <message>` on stderr and exits 1, including for
+   a reason word it does not know;
+3. prints nothing on stdout unless the reply's envelope is whole: a first line that is `OK`, and a last
+   byte that is a line feed. A reply that fails either test is never printed in part (exit 7).
+
+The client judges the envelope and nothing inside the body, since the names are the run's. So it cannot
+detect a reply cut exactly at a line boundary, and its exit 0 means "a well-formed `OK` reply", not "a
+complete snapshot": a script that reads `status-json` parses the body as one JSON object and checks its
+`protocol` field. A failure after the connection was made (exit 6 or 9) says nothing about the request: the
+run acts on the line before it replies, so a setter may have been applied. Read it back with `-g` or
+`status-json`.
+
+Run it as the OS user that runs the job ([Security](#security)). It reads no stdin, loads no file, opens
+no MySQL connection, and writes nothing but its output. Its exit codes are 0, 1 and 2 as for a run, and
+5 to 9 ([Output and exit codes](#output-and-exit-codes)).
+
 ### The protocol contract
 
 The socket speaks **protocol 1**. The version is an integer, reported as the first body line of `help`
@@ -728,6 +816,21 @@ The gate is synchronous: outside a probe, `status` shows each server's last verd
 live value, and reading it never probes. `status` and `status-json` write no log entry and query nothing;
 a collector may poll every second.
 
+**Without the binary.** Two lines send a request with tools that speak to a Unix socket. They are the
+lines the E2E test runs, against a run of the real binary, with the OpenBSD `nc` and `socat` 1.8: each
+sends one line and returns with the reply, because the run closes the connection after it. Neither needs a
+flag for the end of input.
+
+```bash
+printf 'status-json\n' | nc -U /home/archiver/.goarchive/run/orders_archive.sock
+printf 'batch_delete_size=100\n' | socat - UNIX-CONNECT:/home/archiver/.goarchive/run/orders_archive.sock
+```
+
+A script reads the reply to the end and checks it as the client does: the first line is `OK` or one
+`ERR <reason> <message>` line, and the last byte is a line feed. An `nc` of another family (a traditional
+netcat) was not tried; one that keeps waiting for the end of input is not reading the run's close, and
+`socat` or `goarchive control` is the tool to use there.
+
 ### When a change applies
 
 | Setting | Read | A change applies |
@@ -805,6 +908,45 @@ The socket is protected by its directory and by a check of who connects.
   was removed or replaced it logs it loudly, once, and repairs nothing: it does not create a new lock or
   bind a new socket, the run itself continues, and a signal still stops it. A live socket still refuses a
   second start even if its lock file is gone.
+
+### Docker and systemd
+
+**Docker.** The image's user (uid `65532`) has no home directory, so it has no default socket directory:
+with control enabled and no `control.socket_dir`, a run in the image is refused, before it connects to
+anything, with a message that names `control.socket_dir`. Point it at a directory under `/work`, the
+image's working directory, which any user can write:
+
+```yaml
+control:
+  enabled: true
+  socket_dir: /work/control
+```
+
+The run creates `/work/control` with mode `0700` for the user the container runs as, and only that user can
+use the socket, so use the client from inside the container, as the same user:
+
+```bash
+docker exec <container> goarchive control /work/control/orders_archive.sock status
+```
+
+The path is `<socket_dir>/<job>.sock`, the one `validate`, `dry-run` and the log show. The container's
+log is the place to read it for a running one (`docker logs`, with the default JSON logging).
+
+**systemd.** Let systemd make the socket directory, owned by the service's user and private, and clean it
+up when the service stops:
+
+```ini
+[Service]
+User=archiver
+RuntimeDirectory=goarchive
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/bin/goarchive archive -c /etc/goarchive/archiver.yaml -j orders_archive
+```
+
+with `socket_dir: /run/goarchive` in the file. That directory satisfies the directory rules
+([Security](#security)) and is not one a cleaner removes by age. Talk to the run as the service's user:
+`sudo -u archiver goarchive control /run/goarchive/orders_archive.sock status`. `systemctl stop` sends
+`SIGTERM`, a [graceful stop](#graceful-shutdown), like a `stop` over the socket.
 
 ---
 

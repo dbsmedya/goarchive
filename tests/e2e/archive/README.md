@@ -11,6 +11,7 @@ the verify stage ran by the declared method over every copied row.
 | 04 | `rental` → `payment`, one batch | the graph case: a two-level tree where the child must be copied after its parent |
 | 05 | `payment`, sha256 | the same archive as 03 with **one** variable changed |
 | 14 | `km_line (order_id, line_no)` → items → notes | the key matrix's composite root, with a grandchild on a three-column foreign key |
+| 20 | `payment`, 499 rows, three runs | the runtime control socket end to end: driven with `goarchive control`, `nc -U` and `socat`, stopped (exit 3), killed (a stale socket, exit 5) and finished; a second start of the job exits 4. The assertions read the final run only |
 
 **03 and 05 differ only in the verification method.** That is the point: a failure
 in 05 alone isolates to sha256, and if 05's `verify_method` ever reads `count` it
@@ -20,6 +21,10 @@ has silently become a copy of 03.
 catch a child copied without its parent — which no row count can see, because the
 configs must disable FK checks and the destination therefore accepts an orphan
 silently. 14's checks name composite columns (`order_id+line_no`).
+
+**20 is an archive that is not asked to be fast.** Its `sleep_seconds` keeps the first run alive while
+the harness drives it, and its floor is 0.0: the assertions read the last of three runs, which is what a
+stop and a kill leave. What it proves is in `lib/control.sh`'s header and `../README.md`'s catalogue.
 
 Post-conditions for this command are the strictest in the suite: rows must have
 left the source *and* arrived in the destination, both in exact numbers. See

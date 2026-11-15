@@ -22,6 +22,27 @@ const (
 	exitNotStarted = 4
 )
 
+// The codes of `goarchive control` (spec §4.11). It reuses 0 for an OK, 1 for the run's ERR and 2
+// for a usage error; 3 and 4 describe a run and are never returned by it. These are new, and used
+// by `control` only. 1 always means that a run answered ERR.
+const (
+	exitNoSocket        = 5 // nothing at the path, or a socket file that refuses: a run that was killed
+	exitTimeout         = 6 // the client's own deadline passed: the connection, or the exchange
+	exitMalformedReply  = 7 // the reply is not a well-formed OK or ERR
+	exitRefusedEndpoint = 8 // the client's own check of the directory or the socket failed
+	exitTransport       = 9 // any other failure to connect or to exchange
+)
+
+// controlError is a failure of `goarchive control` that carries its own exit code, so none falls
+// through to 1 (spec §4.11): a run's ERR is a controlError with code 1, and the others are 5 to 9.
+type controlError struct {
+	code int
+	err  error
+}
+
+func (e *controlError) Error() string { return e.err.Error() }
+func (e *controlError) Unwrap() error { return e.err }
+
 // usageError marks a usage or configuration error, found before anything connected.
 type usageError struct{ err error }
 
@@ -75,6 +96,10 @@ func exitCode(err error) int {
 	}
 	if errors.Is(err, errStopped) {
 		return exitStopped
+	}
+	var client *controlError
+	if errors.As(err, &client) {
+		return client.code
 	}
 	var running *engine.JobRunningError
 	var table *engine.TableLockedError

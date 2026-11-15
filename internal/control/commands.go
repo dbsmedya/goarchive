@@ -156,23 +156,51 @@ func (c *commands) sentinelPresent() bool {
 	return err == nil
 }
 
+// HelpLine is one line of the protocol's help: how a request is written, and what it does.
+type HelpLine struct{ Usage, What string }
+
+// Line is the line as help prints it.
+func (h HelpLine) Line() string { return fmt.Sprintf("%-34s %s", h.Usage, h.What) }
+
+// actionHelp is the actions, which every run accepts.
+var actionHelp = []HelpLine{
+	{"help", "this list"},
+	{"status", "the run's state as text"},
+	{"status-json", "the run's state as one JSON object"},
+	{"pause", "pause before the next batch or recovery page"},
+	{"resume", "end a socket pause"},
+	{"stop", "stop gracefully, as the first signal does"},
+}
+
+// getterHelp is the last line of help: any setting the run accepts can be read.
+var getterHelp = HelpLine{"<setting>=?", "read a setting"}
+
+func settingHelpLine(k tuning.Key) HelpLine {
+	return HelpLine{string(k) + settingArgument(k), settingHelp[k]}
+}
+
+// HelpTable is every line the protocol has: the actions, every setting, and the getter. A run's help
+// lists only the settings it uses (spec §4.4); this is the whole table, and the one the client prints
+// (spec §4.9), so a client and a run cannot disagree about which names exist.
+func HelpTable() []HelpLine {
+	table := append([]HelpLine(nil), actionHelp...)
+	for _, k := range tuning.Keys() {
+		table = append(table, settingHelpLine(k))
+	}
+	return append(table, getterHelp)
+}
+
 // help is the actions, then the setters this run accepts: only those (spec §4.4). Its first body
 // line is the protocol version.
 func (c *commands) help() reply {
-	line := func(name, what string) string { return fmt.Sprintf("%-34s %s", name, what) }
-	body := []string{
-		fmt.Sprintf("protocol %d", protocolVersion),
-		line("help", "this list"),
-		line("status", "the run's state as text"),
-		line("status-json", "the run's state as one JSON object"),
-		line("pause", "pause before the next batch or recovery page"),
-		line("resume", "end a socket pause"),
-		line("stop", "stop gracefully, as the first signal does"),
+	body := []string{fmt.Sprintf("protocol %d", protocolVersion)}
+	for _, h := range actionHelp {
+		body = append(body, h.Line())
 	}
 	for _, k := range c.store.ApplicableKeys() {
-		body = append(body, line(string(k)+settingArgument(k), settingHelp[k]))
+		body = append(body, settingHelpLine(k).Line())
 	}
-	body = append(body, line("<setting>=?", "read a setting"))
+	body = append(body, getterHelp.Line())
 	return okReply(body...)
 }
 

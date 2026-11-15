@@ -20,8 +20,9 @@ import (
 // status-json as "protocol".
 const protocolVersion = 1
 
-// maxRequest is the longest request in bytes, its LF included.
-const maxRequest = 4096
+// MaxRequest is the longest request in bytes, its LF included. The client judges its own line by
+// it (spec §4.9), so the two cannot disagree.
+const MaxRequest = 4096
 
 // The reason words the server judges itself, before it asks the store; the store's are
 // tuning.Reason's.
@@ -32,19 +33,19 @@ const (
 )
 
 // errNoLineFeed and errTooLong are the two ways a stream is not a request: it ended before an
-// LF, or it went on for maxRequest bytes without one. Both are `malformed`. Any other error of a
+// LF, or it went on for MaxRequest bytes without one. Both are `malformed`. Any other error of a
 // read (a reset, a passed deadline) is the transport's, and says nothing about the request.
 var (
 	errNoLineFeed = errors.New("the request ended before a line feed")
-	errTooLong    = fmt.Errorf("the request is longer than %d bytes", maxRequest)
+	errTooLong    = fmt.Errorf("the request is longer than %d bytes", MaxRequest)
 )
 
-// readRequest reads the first line of r: up to its first LF, at most maxRequest bytes with it. It
+// readRequest reads the first line of r: up to its first LF, at most MaxRequest bytes with it. It
 // returns the line without the LF. What follows the first LF is not a request: it is never read
 // further, never parsed and never refused, so a tail cannot undo or invalidate the first line's
 // change, and the outcome does not depend on packet timing.
 func readRequest(r io.Reader) (string, error) {
-	buf := make([]byte, maxRequest)
+	buf := make([]byte, MaxRequest)
 	n := 0
 	for {
 		m, err := r.Read(buf[n:])
@@ -52,7 +53,7 @@ func readRequest(r io.Reader) (string, error) {
 			return string(buf[:n+i]), nil
 		}
 		n += m
-		if n >= maxRequest {
+		if n >= MaxRequest {
 			return "", errTooLong
 		}
 		switch {

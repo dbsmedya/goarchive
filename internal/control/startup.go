@@ -36,7 +36,7 @@ func classifyStartAttempt(err error) startVerdict {
 		return startLive
 	case errors.As(err, &ne) && ne.Timeout(), errors.Is(err, os.ErrDeadlineExceeded):
 		return startUndecided
-	case isRefused(err):
+	case IsRefused(err):
 		return startStale
 	}
 	return startUndecided

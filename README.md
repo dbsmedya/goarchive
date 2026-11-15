@@ -109,7 +109,7 @@ Complete end-to-end archive, purge, and copy-only workflows:
 - **Dry-run mode** - Runs preflight, counts the rows the `where` range matches (a read of the whole range on the source), reads the first batch of root keys and shows MySQL's plan for the root fetch and each table's discovery query; takes no lock and writes nothing
 - **Copy-only mode** - Replicate a relational subgraph to another server without ever deleting from source; with `resume: true`, a rerun skips the roots the job already copied
 - **Graceful shutdown** - SIGTERM/SIGINT handling stops cleanly at a batch boundary
-- **Runtime control and status** - Opt in per job, and a run listens on a private Unix socket: ask it for its state, counters and replication verdicts as text or JSON, pause or stop it, and slow it down or bring it back while it works (batch sizes, sleeps and the replication tolerance, within the limits the configuration sets). The protocol is a documented, versioned contract, so a script or a collector needs no GoArchive binary ([Runtime control](docs/README_OPERATIONS.md#runtime-control))
+- **Runtime control and status** - Opt in per job, and a run listens on a private Unix socket: ask it for its state, counters and replication verdicts as text or JSON, pause or stop it, and slow it down or bring it back while it works (batch sizes, sleeps and the replication tolerance, within the limits the configuration sets). `goarchive control <socket-path> status` is the client, and the protocol is a documented, versioned contract, so a script or a collector needs no GoArchive binary ([Runtime control](docs/README_OPERATIONS.md#runtime-control))
 
 ## Quick Start
 

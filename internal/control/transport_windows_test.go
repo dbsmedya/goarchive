@@ -12,12 +12,12 @@ import (
 // What Windows was measured to do to a connect and to a close (CI run 43669762242, c-windows-1.md),
 // pinned. These pass or fail only on Windows; the other platforms' cases are in transport_test.go.
 
-// pinWindowsStale: a socket file with no listener is refused with WSAECONNREFUSED, and isRefused, which
+// pinWindowsStale: a socket file with no listener is refused with WSAECONNREFUSED, and IsRefused, which
 // the run's start and the client read it by, recognises that error as it really comes out of a dial.
 func pinWindowsStale(t *testing.T, err error) {
 	t.Helper()
-	if !errors.Is(err, windows.WSAECONNREFUSED) || !isRefused(err) {
-		t.Fatalf("got %v, want WSAECONNREFUSED, which isRefused recognises", err)
+	if !errors.Is(err, windows.WSAECONNREFUSED) || !IsRefused(err) {
+		t.Fatalf("got %v, want WSAECONNREFUSED, which IsRefused recognises", err)
 	}
 }
 
@@ -29,7 +29,7 @@ func pinWindowsSaturated(t *testing.T, err error) {
 	if !errors.Is(err, windows.WSAENOBUFS) {
 		t.Fatalf("got %v, want WSAENOBUFS", err)
 	}
-	if isRefused(err) {
+	if IsRefused(err) {
 		t.Fatalf("a full queue reads as a refusal: %v", err)
 	}
 	if isTimeout(err) {

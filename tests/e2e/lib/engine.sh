@@ -38,6 +38,15 @@
 # The three are required TOGETHER and fail closed as a group. (2.x's fourth,
 # root_pk, fed a checkpoint assertion; 3.0 keeps no cursor, R10.)
 #
+# THE CONTROL SOCKET ARM -- added by TEL-1 C7
+#
+#   control_socket          "" = today's behaviour | driven
+#
+# Setting it to `driven` turns STEP 3 into lib/control.sh's procedure: three runs of
+# one archive job, driven through its runtime control socket and the `goarchive control`
+# client, then killed and finished. The standard assertions read the FINAL run's own output.
+# It needs mode=working, command=archive and no `interrupt`, and is refused otherwise.
+#
 # Note this is a flag on mode="working", NOT a third mode. Every guard below is
 # gated on `mode == "working"`, so a new mode would silently bypass all of them and
 # a missed widening would fail OPEN. The resume tests keep every existing assertion
@@ -123,6 +132,7 @@ run_e2e_test() {
                                   # more than one table; see assert_no_orphans
                                   # for why exact counts do not cover this
     local replication_hold=""     # empty or stopped-applier; purge-only live hold witness
+    local control_socket=""       # empty or driven; archive-only control socket procedure
     local interrupt=""            # "" = single run | graceful | crash. Non-empty
                                   # selects the two-run resume arm; see lib/interrupt.sh
     local interrupt_after_batches=""  # which batch to interrupt at
@@ -173,6 +183,14 @@ run_e2e_test() {
     if [[ -n "$replication_hold" ]]; then
         if [[ ( "$replication_hold" != "stopped-applier" && "$replication_hold" != "stop-signal" ) || "$mode" != "working" || "$command" != "purge" || -n "$interrupt" ]]; then
             log_error "Test $test_num: replication_hold requires stopped-applier or stop-signal, mode=working, command=purge and no interrupt"
+            return 1
+        fi
+    fi
+
+    # A declared control socket procedure must never degrade to an ordinary working test.
+    if [[ -n "$control_socket" ]]; then
+        if [[ "$control_socket" != "driven" || "$mode" != "working" || "$command" != "archive" || -n "$interrupt" ]]; then
+            log_error "Test $test_num: control_socket requires driven, mode=working, command=archive and no interrupt"
             return 1
         fi
     fi
@@ -387,6 +405,21 @@ run_e2e_test() {
             if ! run_replication_hold_job "$config_file" "$log_file" "$replication_hold"; then
                 log_error "purge replication hold/release witness failed"
                 echo "Result: FAIL (replication hold/release)" >> "$log_file"
+                return 1
+            fi
+        elif [[ -n "$control_socket" ]]; then
+            # The procedure runs the job three times. The assertions below read ONE run's
+            # closing entry, so the final run's output goes to a file of its own, as run 2's
+            # does in the resume arm: an earlier run's entry must never satisfy them.
+            assert_log="$TESTS_DIR/results/test_${test_num}.final.log"
+            log_info "[STEP 3b] Running $command with its control socket driven (three runs)..."
+            if ! run_control_socket_job "$config_file" "$log_file" "$assert_log"; then
+                log_error "the control socket procedure failed"
+                end_time=$(date +%s)
+                duration=$((end_time - start_time))
+                echo "" >> "$log_file"
+                echo "Result: FAIL (control socket procedure)" >> "$log_file"
+                echo "Duration: ${duration}s" >> "$log_file"
                 return 1
             fi
         elif [[ -z "$interrupt" ]]; then
@@ -839,13 +872,13 @@ run_e2e_suite() {
         # That breakage has no other symptom. Every test would inherit the
         # previous one's values, every fail-closed guard would stop firing, and
         # the suite would keep reporting a pass.
-        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${replication_hold:-}${source_account:-}${force_triggers:-}${expected_detail:-}" ]]; then
+        if [[ -n "${expected_rows:-}${min_duration:-}${orphan_checks:-}${verify_method:-}${interrupt:-}${interrupt_after_batches:-}${interrupt_expect_dest:-}${replication_hold:-}${control_socket:-}${source_account:-}${force_triggers:-}${expected_detail:-}" ]]; then
             log_error "HARNESS SELF-CHECK FAILED: test $i leaked its variables out of run_e2e_test."
             log_error "  expected_rows='${expected_rows:-}' min_duration='${min_duration:-}'"
             log_error "  orphan_checks='${orphan_checks:-}' verify_method='${verify_method:-}'"
             log_error "  interrupt='${interrupt:-}' interrupt_after_batches='${interrupt_after_batches:-}'"
             log_error "  interrupt_expect_dest='${interrupt_expect_dest:-}'"
-            log_error "  replication_hold='${replication_hold:-}'"
+            log_error "  replication_hold='${replication_hold:-}' control_socket='${control_socket:-}'"
             log_error "  source_account='${source_account:-}' force_triggers='${force_triggers:-}' expected_detail='${expected_detail:-}'"
             log_error "  Per-test values must be local to run_e2e_test. Leaked, they carry into"
             log_error "  the next test and every fail-closed guard in the engine stops firing."
