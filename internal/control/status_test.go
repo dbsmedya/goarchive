@@ -578,6 +578,19 @@ func TestStatusTextCoversTheJSON(t *testing.T) {
 			f.view.info.ReplicationEnabled = false
 			counted(f, TrackerStatus{Phase: PhaseRunning})
 		}},
+		// status-json reports the configured group bounds whenever a group server is listed, so the text must say them
+		// where the gate is unused too (Codex batch 1, finding 2): a copy-only run, and a block that is not enabled.
+		{"a run that does not use the gate, replication enabled, with group bounds", func(f *statusFixture) {
+			f.view.gate = nil
+			f.view.info.GroupApplierQueueWithin, f.view.info.GroupCertifierQueueWithin = ip(1000), ip(500)
+			counted(f, TrackerStatus{Phase: PhaseRunning})
+		}},
+		{"a run that does not use the gate, replication not enabled, with group bounds", func(f *statusFixture) {
+			f.view.gate = nil
+			f.view.info.ReplicationEnabled = false
+			f.view.info.GroupApplierQueueWithin, f.view.info.GroupCertifierQueueWithin = ip(1000), ip(500)
+			counted(f, TrackerStatus{Phase: PhaseRunning})
+		}},
 	} {
 		t.Run(sc.name, func(t *testing.T) {
 			f := newStatusFixture(t, archiveApplies)

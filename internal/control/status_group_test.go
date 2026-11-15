@@ -111,3 +111,31 @@ func TestStatusTextForAGroupFleet(t *testing.T) {
 		t.Errorf("a run with no group server mentions queue bounds:\n%s", got)
 	}
 }
+
+// TestStatusTextSaysTheGroupBoundsWhereTheGateIsUnused (Codex batch 1, finding 2): the bounds are on the replication line
+// of a used gate, of a block that is enabled but not used by this run (a copy-only job with a group server listed) and of a
+// block that is not enabled; and on none of the three when no group server is listed.
+func TestStatusTextSaysTheGroupBoundsWhereTheGateIsUnused(t *testing.T) {
+	const bounds = ", group queue bounds: applier 1000, certifier 500"
+	for _, tc := range []struct {
+		name  string
+		setup func(f *statusFixture)
+		want  string
+	}{
+		{"enabled, not used by this run", func(f *statusFixture) { f.view.gate = nil }, "  replication: enabled, not used by this run, cache_ttl 15s" + bounds},
+		{"not enabled", func(f *statusFixture) { f.view.gate = nil; f.view.info.ReplicationEnabled = false }, "  replication: not enabled, cache_ttl 15s" + bounds},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStatusFixture(t, archiveApplies)
+			tc.setup(f)
+			f.view.info.GroupApplierQueueWithin, f.view.info.GroupCertifierQueueWithin = ip(1000), ip(500)
+			if text := strings.Join(f.view.text(), "\n"); !strings.Contains(text, tc.want) {
+				t.Errorf("status text lacks %q:\n%s", tc.want, text)
+			}
+			f.view.info.GroupApplierQueueWithin, f.view.info.GroupCertifierQueueWithin = nil, nil
+			if text := strings.Join(f.view.text(), "\n"); strings.Contains(text, "queue bounds") {
+				t.Errorf("with no group server listed the text mentions bounds:\n%s", text)
+			}
+		})
+	}
+}
