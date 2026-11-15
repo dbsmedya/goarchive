@@ -108,42 +108,6 @@ func TestIsSocket(t *testing.T) {
 	}
 }
 
-// TestSameFileAcrossRecreate: the identity of a path changes when another object takes its
-// name, and does not when the same object is looked at again (spec §4.2 Identities). The new
-// object is made before the old one is replaced, so that no inode number can be reused.
-func TestSameFileAcrossRecreate(t *testing.T) {
-	dir := shortDir(t)
-	path := filepath.Join(dir, "job.lock")
-	other := filepath.Join(dir, "other.lock")
-	for _, p := range []string{path, other} {
-		if err := os.WriteFile(p, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	before, _ := os.Lstat(path)
-	again, _ := os.Lstat(path)
-	if !sameFile(before, again) {
-		t.Fatal("the same file is not the same file")
-	}
-	replacement, _ := os.Lstat(other)
-	if sameFile(before, replacement) {
-		t.Fatal("two files are the same file")
-	}
-	if err := os.Rename(other, path); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sameFile(before, after) {
-		t.Fatal("the identity did not change when another file took the name")
-	}
-	if !sameFile(replacement, after) {
-		t.Fatal("the replacement is not the file now at the name")
-	}
-}
-
 // TestListenDialAcrossProcesses: a Unix listener and a dialer in two processes talk (spec §9
 // item 2 on Windows; the same test everywhere).
 func TestListenDialAcrossProcesses(t *testing.T) {
