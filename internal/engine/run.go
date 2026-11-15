@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-sql-driver/mysql"
+
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
@@ -27,7 +29,10 @@ type run struct {
 	keys map[string]key.Def              // every table's key, as the source reports it (preflight)
 	meta map[string]types.ColumnMetadata // every table's columns, as the source reports them
 	caps caps
-	job  *tracking.Job
+	// group is what preflight read about Group Replication at the start: the sides' size limits and
+	// the source's membership, for the message of a commit that the group refused (GRT-1).
+	group preflight.Group
+	job   *tracking.Job
 	// locks are the run's lock sets; every commit checks them (spec §4 step 4). Explain's
 	// run has none and never commits.
 	locks *locks
@@ -71,7 +76,7 @@ func capsOf(res *preflight.Result) caps {
 func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *tracking.Job, sourceDatabase string) (*run, error) {
 	r := &run{
 		cfg: cfg, log: cfg.Logger, typ: cfg.Spec.Type, tree: jobspec.NewTree(cfg.Spec),
-		keys: res.Keys, caps: capsOf(res), job: job,
+		keys: res.Keys, caps: capsOf(res), group: res.Group, job: job,
 		report: &Report{Copied: map[string]int64{}, Deleted: map[string]int64{}, Conversions: map[string]map[uint16]uint64{},
 			Verified: map[string]int64{}},
 		tune: cfg.Tuning, size: cfg.Processing.BatchSize, progress: cfg.Tracker,
@@ -133,11 +138,16 @@ func (r *run) discoveryChunk(table string) int {
 // holds it now, within the statement cap. It is read after the DELETE's sleep and gate decision
 // (deleteTree, step 4), so a size changed during either applies to this DELETE.
 func (r *run) deleteChunk(table string) int {
+	return min(r.deleteSetting(), r.caps.source[table])
+}
+
+// deleteSetting is batch_delete_size as the store holds it now.
+func (r *run) deleteSetting() int {
 	n := r.cfg.Processing.BatchDeleteSize
 	if r.tune != nil {
 		n = r.tune.Load().BatchDeleteSize
 	}
-	return min(n, r.caps.source[table])
+	return n
 }
 
 // pageSize is the batch_size of the batch or recovery page in flight: the value loadSize read
@@ -385,8 +395,10 @@ func (r *run) waitForLag(ctx context.Context) error {
 	return fmt.Errorf("engine: replication lag gate: %w", err)
 }
 
-// inDestinationTx runs f in a destination transaction and commits it through the guard.
-func (r *run) inDestinationTx(ctx context.Context, f func(*sql.Tx) error) error {
+// inDestinationTx runs f in a destination transaction and commits it through the guard. c says
+// which log write it is, and roots what the batch's roots are logged as when the commit fails, for the
+// message of a commit that Group Replication refused (GRT-1).
+func (r *run) inDestinationTx(ctx context.Context, c Commit, roots tracking.Status, f func(*sql.Tx) error) error {
 	tx, err := r.cfg.Destination.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -397,9 +409,48 @@ func (r *run) inDestinationTx(ctx context.Context, f func(*sql.Tx) error) error 
 	}
 	if err := r.commit(ctx, tx, atLogWritten); err != nil {
 		_ = tx.Rollback()
+		if g := r.groupCommitError(err, c, "log write", roots); g != nil {
+			return g
+		}
 		return err
 	}
 	return nil
+}
+
+// groupErrno is MySQL error 3100, the replication hook's failure ("Error on observer while running
+// replication hook 'before_commit'"), which Group Replication returns for a commit it refuses.
+const groupErrno = 3100
+
+// rootsStatus is what a batch's roots are logged as while its deletes run: copied for an archive,
+// deleting for a purge. A copy-only run deletes nothing.
+func (r *run) rootsStatus() tracking.Status {
+	if r.typ == jobspec.Purge {
+		return tracking.StatusDeleting
+	}
+	return tracking.StatusCopied
+}
+
+// groupCommitError returns err as a *GroupCommitError when it is MySQL error 3100 at commit c and the
+// limit of the side that commit ran on was known at the start; otherwise nil, and the caller keeps
+// the error as it was (spec §4.4, fact 12). what leads the message; roots is what the batch's roots are
+// logged as after a failure of c.
+func (r *run) groupCommitError(err error, c Commit, what string, roots tracking.Status) *GroupCommitError {
+	var me *mysql.MySQLError
+	if err == nil || !errors.As(err, &me) || me.Number != groupErrno {
+		return nil
+	}
+	g := &GroupCommitError{Commit: c, What: what, Roots: roots, Err: err}
+	if c == CommitDelete {
+		g.Side, g.Limit = "source", r.group.SourceSizeLimit()
+		g.Setting, g.Value = "batch_delete_size", r.deleteSetting()
+	} else {
+		g.Side, g.Limit = "destination", r.group.DestinationSizeLimit()
+		g.Setting, g.Value = "batch_size", r.pageSize()
+	}
+	if !g.Limit.Known {
+		return nil
+	}
+	return g
 }
 
 // commit is the guarded commit (spec §4 step 4): after the transaction's writes, the run
@@ -418,7 +469,7 @@ func (r *run) commit(ctx context.Context, tx *sql.Tx, at point) error {
 // (spec §6.3). A root the log already holds fails as RecurringRootError (RKP-2).
 func (r *run) logDeleting(ctx context.Context, roots []key.Key) error {
 	r.progress.at("log", "")
-	return r.inDestinationTx(ctx, func(tx *sql.Tx) error {
+	return r.inDestinationTx(ctx, CommitLogBefore, tracking.StatusDeleting, func(tx *sql.Tx) error {
 		return r.logInsertError(r.job.Insert(ctx, tx, tracking.StatusDeleting, roots))
 	})
 }
@@ -426,7 +477,7 @@ func (r *run) logDeleting(ctx context.Context, roots []key.Key) error {
 // complete moves roots from status from to completed after their deletes (spec §6.3).
 func (r *run) complete(ctx context.Context, from tracking.Status, roots []key.Key) error {
 	r.progress.at("log", "")
-	return r.inDestinationTx(ctx, func(tx *sql.Tx) error {
+	return r.inDestinationTx(ctx, CommitLogAfter, from, func(tx *sql.Tx) error {
 		return r.job.Transition(ctx, tx, from, tracking.StatusCompleted, roots)
 	})
 }

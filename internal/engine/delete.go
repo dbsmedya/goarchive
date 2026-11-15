@@ -132,6 +132,9 @@ func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []k
 		return fmt.Errorf("engine: delete from %s: %w", table, err)
 	}
 	if err := r.commit(ctx, tx, atDeleteWritten); err != nil {
+		if g := r.groupCommitError(err, CommitDelete, "delete from "+table, r.rootsStatus()); g != nil {
+			return g
+		}
 		return fmt.Errorf("engine: delete from %s: commit: %w", table, err)
 	}
 	return nil

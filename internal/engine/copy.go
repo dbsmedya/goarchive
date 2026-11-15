@@ -85,6 +85,9 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 		return r.logInsertError(err)
 	}
 	if err := r.commit(ctx, tx, atCopyWritten); err != nil {
+		if g := r.groupCommitError(err, CommitCopy, "copy transaction", st); g != nil {
+			return g
+		}
 		return fmt.Errorf("engine: commit the destination transaction: %w", err)
 	}
 	for table, n := range copied {
