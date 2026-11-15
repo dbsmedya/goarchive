@@ -238,7 +238,7 @@ func TestReplicationStagesByJobType(t *testing.T) {
 		if !has(cfg, "ReplicationType") || !has(cfg, "ReplicationBanner") {
 			t.Errorf("%s with replication: stages %v, want both", typ, enabledStages(cfg))
 		}
-		if i, j := slices.Index(enabledStages(cfg), "GroupFacts"), slices.Index(enabledStages(cfg), "ReplicationType"); !(i >= 0 && j > i) {
+		if i, j := slices.Index(enabledStages(cfg), "GroupFacts"), slices.Index(enabledStages(cfg), "ReplicationType"); i < 0 || j <= i {
 			t.Errorf("%s: ReplicationType must come after GroupFacts, whose facts it compares with (stages %v)", typ, enabledStages(cfg))
 		}
 		cfg.SkipPolicy = true
