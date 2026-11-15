@@ -14,8 +14,10 @@ image=$1 version=$2
 tmp=${RUNNER_TEMP:-$(mktemp -d)}
 fail() { echo "image-run-test: $*"; exit 1; }
 
-uid=$(docker run --rm --entrypoint /bin/sh "$image" -c 'id -u' 2>&1)
-[[ $uid == 65532 ]] || fail "the default user is $uid, want 65532"
+# Standard output only: Docker prints a platform warning on standard error when the image's platform is
+# not the host's, and that is not the uid. Standard error is kept for the failure message.
+uid=$(docker run --rm --entrypoint /bin/sh "$image" -c 'id -u' 2> "$tmp/uid.err")
+[[ $uid == 65532 ]] || fail "the default user is '$uid', want 65532 (docker said: $(tr '\n' ' ' < "$tmp/uid.err"))"
 
 out=$(docker run --rm --user 12345:12345 "$image" --version 2>&1)
 rc=$?
