@@ -16,9 +16,12 @@ import (
 // keys, and each DELETE goes through the same five steps, in this order (D16):
 //
 //  1. the sleep, delete_sleep_seconds, only after a DELETE was already issued in this batch;
-//     it is not ended by a stop (nil stop), so the batch in flight always finishes;
-//  2. the replication lag gate, so that its decision is the latest thing known about the
-//     replicas when the statement runs, not a moment from before the sleep;
+//     a first stop does not shorten it (nil stop). After it a healthy gate lets the batch
+//     finish; a hold ends under LAG-1's rule, and the next run's recovery finishes the
+//     unfinished batch;
+//  2. the replication lag gate, whose decision is made after the sleep and just before the
+//     statement, not before the sleep. The decision may be a pass still valid in the gate's
+//     cache (cache_ttl), which lets the DELETE go without a new probe;
 //  3. a source session taken for the chunk, so no session sits idle through a sleep or a hold
 //     (LAG-1);
 //  4. the chunk: min(batch_delete_size, the statement cap) keys from the offset, asked for

@@ -149,12 +149,12 @@ func TestMySQLDeleteSleepThenGate(t *testing.T) {
 	}
 }
 
-// TestMySQLDeleteSleepStop (spec §7): a first stop during the inter-delete sleep. The sleep is
-// not ended by it (the batch in flight always finishes, spec fact 8), and then the gate is asked.
-// With healthy replicas the gate passes, the batch finishes and the run ends stopped at the
-// boundary: a pin, true before the change too. With the replica's applier stopped during the
-// sleep, the gate sees it when the sleep ends and the hold ends at once through LAG-1's rule,
-// before the next DELETE; the next run's recovery finishes the batch.
+// TestMySQLDeleteSleepStop (spec §7): a first stop during the inter-delete sleep. The stop does not
+// shorten the sleep (spec fact 8), and then the gate is asked. With healthy replicas the gate passes
+// and the batch finishes; the run then ends stopped at the batch boundary: a pin, true before the
+// change too. With the replica's applier stopped during the sleep, the gate sees it when the sleep
+// ends, and the stop already requested ends the hold at once through LAG-1's rule, before the next
+// DELETE, leaving the batch unfinished; the next run's recovery finishes it.
 func TestMySQLDeleteSleepStop(t *testing.T) {
 	const sleep = time.Second
 	oldOrders := "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01'"
