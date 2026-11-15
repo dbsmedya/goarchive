@@ -683,14 +683,24 @@ func replicaLag(t *testing.T, replica *sql.DB) int64 {
 func TestMySQLControlToleranceRaisedSocket(t *testing.T) {
 	replica := delayedReplica(t, 20)
 	f, dir := controlRunFixture(t, "ctltol", "processing:\n  batch_size: 10\n  batch_delete_size: 100\n")
+	// The fixture's last write to the source is its seed. Those events are the ones this test's replica holds
+	// back for 20 s, so the lag the run meets is at least the time since now, and it cannot fall below the
+	// tolerance before they apply, about 20 s after this instant.
+	seeded := time.Now()
 	appendConfig(t, f, replicationBlock(t, 1))
-	deadline := time.Now().Add(30 * time.Second)
-	for replicaLag(t, replica) < 5 {
+	// The wait is for six seconds since the seed AND a lag of five. The lag alone is not enough: it is the age
+	// of the oldest event the replica has not applied, which can be an older event than this test's own (the
+	// previous test's, or another package's writes to the source, which the replica holds back as well). When
+	// those apply the lag falls to the age of the next event, and a hold that began on the old reading ends
+	// by itself before the first raise (found in GR C4's group run: the run was over 1.1 s after it started).
+	deadline := seeded.Add(30 * time.Second)
+	for time.Since(seeded) < 6*time.Second || replicaLag(t, replica) < 5 {
 		if time.Now().After(deadline) {
-			t.Fatal("the replica's lag never reached 5 s with SOURCE_DELAY set")
+			t.Fatalf("the replica's lag was %d s %v after the fixture's last write, want at least 5 s with SOURCE_DELAY set", replicaLag(t, replica), time.Since(seeded).Round(100*time.Millisecond))
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	t.Logf("the replica's lag is %d s, %v after the fixture's last write; the run starts", replicaLag(t, replica), time.Since(seeded).Round(100*time.Millisecond))
 	sock := filepath.Join(dir, "archive_orders.sock")
 	r := startLive(t, sock, "archive", "-c", f.config, "--job", "archive_orders", "--progress=1h")
 	r.waitState("held")
@@ -731,11 +741,15 @@ func TestMySQLControlToleranceRaisedSocket(t *testing.T) {
 			t.Fatal("the hold has not ended after 40 steps")
 		}
 	}
+	// Why the hold ended, whichever way: the lag when the raise loop was left.
+	t.Logf("the raise loop ended after %d raises, with the replica's lag at %d s, %v after the fixture's last write",
+		raises, replicaLag(t, replica), time.Since(seeded).Round(100*time.Millisecond))
 	if code := r.finish(); code != 0 {
 		t.Fatalf("exit %d, stderr:\n%s", code, r.errb.String())
 	}
 	if raises < 2 {
-		t.Errorf("raises = %d, want the hold to have gone on through at least two steps", raises)
+		t.Errorf("raises = %d, want the hold to have gone on through at least two steps (the replica's lag now: %d s, %v after the fixture's last write)",
+			raises, replicaLag(t, replica), time.Since(seeded).Round(100*time.Millisecond))
 	}
 	out := r.out.String() + r.errb.String()
 	if n := strings.Count(out, "WARNING: seconds_behind_source_within raised to "); n != raises {
