@@ -519,22 +519,29 @@ func TestControlClassifyDialError(t *testing.T) {
 	if !errors.As(eagain, &ne) || !ne.Timeout() {
 		t.Fatalf("precondition: EAGAIN is expected to report itself as a timeout, got %v", eagain)
 	}
-	for _, tc := range []struct {
+	type dialCase struct {
 		name string
 		err  error
 		code int
 		msg  string
-	}{
+	}
+	cases := []dialCase{
 		{"ECONNREFUSED", sys(syscall.ECONNREFUSED), 5, "stale"},
 		{"ENOENT", sys(syscall.ENOENT), 5, "no control socket"},
 		{"a missing path", dial(fs.ErrNotExist), 5, "no control socket"},
 		{"the dial deadline passed", dial(context.DeadlineExceeded), 6, "within"},
 		{"a deadline error", dial(os.ErrDeadlineExceeded), 6, "within"},
-		{"EAGAIN", eagain, 9, "busy"},
 		{"ETIMEDOUT", sys(syscall.ETIMEDOUT), 9, "/s"},
 		{"EACCES", sys(syscall.EACCES), 9, "permission"},
 		{"an error of no known kind", errors.New("boom"), 9, "boom"},
-	} {
+	}
+	// EAGAIN is the full-queue answer where isQueueFull knows it: Linux and macOS. Windows answers a full
+	// queue with WSAENOBUFS and never with EAGAIN, so a synthetic EAGAIN there is an error of no known
+	// kind (exit 9, not busy); TestControlClassifyWindowsFullQueue is the Windows case.
+	if runtime.GOOS != "windows" {
+		cases = append(cases, dialCase{"EAGAIN", eagain, 9, "busy"})
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := classifyConnect("/s", tc.err)
 			if got == nil || got.code != tc.code || !strings.Contains(got.Error(), tc.msg) || !strings.Contains(got.Error(), "/s") {
