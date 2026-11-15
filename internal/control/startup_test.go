@@ -202,6 +202,7 @@ func TestLiveLock(t *testing.T) {
 // second start obtains a lock on a new file, connects to the socket, finds it answering, refuses
 // (an InUseError) and leaves the socket untouched; the first server still answers.
 func TestLockNameRemoved(t *testing.T) {
+	skipUnlessHeldFilesRemovable(t)
 	a := startFixture(t, archiveApplies)
 	if err := os.Remove(a.lockPath()); err != nil {
 		t.Fatal(err)

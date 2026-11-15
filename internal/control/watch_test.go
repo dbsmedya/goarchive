@@ -31,6 +31,7 @@ func fastWatch(o *Options) { o.tune.watchEvery = 20 * time.Millisecond }
 // socket once each; the server creates nothing in the new directory; at its end it removes nothing
 // there; a second start in the new directory binds its own socket.
 func TestDirectoryReplaced(t *testing.T) {
+	skipUnlessHeldFilesRemovable(t)
 	f := startFixture(t, archiveApplies, fastWatch)
 	old := f.dir + ".old"
 	t.Cleanup(func() { _ = os.RemoveAll(old) })
@@ -77,18 +78,23 @@ func TestDirectoryReplaced(t *testing.T) {
 
 // TestIdentityCheckRepairsNothing (spec §7 row 22): after the lock name is lost no new lock file
 // appears and no entry claims protection; after the socket name is lost no new socket is bound.
+//
+// Where Windows will not remove the held lock file (heldFilesRemovable), the lock half is not run and
+// the socket half is.
 func TestIdentityCheckRepairsNothing(t *testing.T) {
 	f := startFixture(t, archiveApplies, fastWatch)
-	if err := os.Remove(f.lockPath()); err != nil {
-		t.Fatal(err)
+	if heldFilesRemovable {
+		if err := os.Remove(f.lockPath()); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, "the lock's loss to be reported", func() bool { return countEntries(f.sink, "Control lock lost") == 1 })
 	}
-	waitFor(t, "the lock's loss to be reported", func() bool { return countEntries(f.sink, "Control lock lost") == 1 })
 	if err := os.Remove(f.path()); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the socket's loss to be reported", func() bool { return countEntries(f.sink, "Control socket lost") == 1 })
 	time.Sleep(150 * time.Millisecond)
-	if _, err := os.Lstat(f.lockPath()); !os.IsNotExist(err) {
+	if _, err := os.Lstat(f.lockPath()); heldFilesRemovable && !os.IsNotExist(err) {
 		t.Errorf("a lock file appeared after the name was lost: %v", err)
 	}
 	if _, err := os.Lstat(f.path()); !os.IsNotExist(err) {
@@ -118,14 +124,23 @@ func TestIdentityUnchangedReportsNothing(t *testing.T) {
 // joined before the emitter stops; it writes nothing afterwards.
 func TestShutdownPendingTick(t *testing.T) {
 	f := startFixture(t, archiveApplies, func(o *Options) { o.tune.watchEvery = 5 * time.Millisecond })
-	if err := os.Remove(f.path()); err != nil {
-		t.Fatal(err)
+	// A loss for a tick to be due on as the end begins, and a second one after the end, which is
+	// nobody's to report. The second is the lock's; Windows will not remove a held lock file, so
+	// there the socket is the one lost after the end and nothing is pending when the end begins:
+	// the join is still shown, a tick caught mid-end is not.
+	afterEnd := f.lockPath()
+	if heldFilesRemovable {
+		if err := os.Remove(f.path()); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		afterEnd = f.path()
 	}
 	f.srv.Ending()
 	f.srv.Drain()
 	written := len(f.sink.snapshot())
 	// A loss after the end is nobody's to report.
-	if err := os.Remove(f.lockPath()); err != nil {
+	if err := os.Remove(afterEnd); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)

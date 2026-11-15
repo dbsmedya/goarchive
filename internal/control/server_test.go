@@ -457,6 +457,7 @@ func TestEndRemovesOwnSocket(t *testing.T) {
 // instance B starts and binds the same path; A ends: B's socket is still there and still answers,
 // because A removes by identity.
 func TestEndAfterTakeover(t *testing.T) {
+	skipUnlessHeldFilesRemovable(t)
 	a := startFixture(t, archiveApplies)
 	if err := os.Remove(a.lockPath()); err != nil {
 		t.Fatal(err)
