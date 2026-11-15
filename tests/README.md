@@ -103,7 +103,7 @@ touches, on its final commit; a mixed change needs the union:
 | Static-check configuration | `.golangci.yml` | `make check` |
 | Tests only | `*_test.go` | `make check`, and the changed packages' tests under `-tags=integration` on the estate |
 | Test tooling | `tests/scripts/`, `tests/harness/`, `tests/envmatrix/`, `.github/workflows/ci.yml`, `matrix-verify.yml`, `gate-verify.yml`, the `Makefile`'s test targets | `make check`; a full local gate (`gate-agent`) when `tests/scripts/run-gate.sh` or a command it runs changed. The matrix and gate runs are the dev→main PR's (*The full matrix runs on GitHub*) |
-| The estate and E2E | `tests/compose.yml`, `tests/dot.env`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | `make check`, and the changed packages' tests under `-tags=integration` on the estate; a full local gate when `run-gate.sh` or a command it runs changed. The E2E runs are the dev→main PR's *Gate verify* |
+| The estate and E2E | `tests/compose.yml`, `tests/compose.group.yml`, `tests/dot.env`, `tests/dot.env.group`, `tests/docker_files/`, `tests/e2e/`, `tests/configs/`, `tests/fixtures/`, `tests/sakila-db/` | `make check`, and the changed packages' tests under `-tags=integration` on the estate; a full local gate when `run-gate.sh` or a command it runs changed. The E2E runs are the dev→main PR's *Gate verify* |
 | Product code | `internal/`, `cmd/` outside `*_test.go`, `go.mod`, `go.sum` (dependencies and the toolchain line) | `make check`, and the changed packages' tests under `-tags=integration` on the estate. The dev→main PR's *Matrix verify* and *Gate verify* runs cover the full matrix and the gate |
 | Build and packaging | the `Makefile`'s build and release targets, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml`, `docker.yml` | `make check`. The dev→main PR's CI, Docker, *Gate verify* and *Matrix verify* runs, and the release procedure's artifact checks |
 | A release | the version bump | `make check`. The dev→main PR that contains the bump runs CI, Docker, *Gate verify* and *Matrix verify* on its head SHA, and the release procedure's artifact checks |
@@ -450,6 +450,68 @@ archives the two instants of Berlin's DST fall-back hour, which a zone-blind cop
 into one, across that boundary, and shows that a pool whose sessions run in Berlin time is
 refused before anything is read. The named-zone tables are loaded on every container by the
 Percona entrypoint.
+
+### The group estate
+
+A second test estate, for Group Replication. It has the plain estate's three roles, so the suites keep
+one vocabulary, and two more members of the group:
+
+| Container | Role | Host port | Server id |
+|---|---|---|---|
+| `gr1` | the group's primary, and the source | 3410, `TEST_SOURCE_PORT` | 1 |
+| `gr2`, `gr3` | the group's other members | 3411 and 3412, `TEST_GROUP_MEMBER2_PORT` and `TEST_GROUP_MEMBER3_PORT` | 2, 3 |
+| `gr-dest` | the destination: db2's settings, `+03:00` included | 3413, `TEST_DEST_PORT` | 4 |
+| `gr-replica` | an asynchronous replica of `gr1`, attached after seeding as db3 is | 3414, `TEST_REPLICA_PORT` | 5 |
+
+`gr-bootstrap` forms the group, three single-primary members, with the MySQL Shell AdminAPI
+(`tests/docker_files/gr-bootstrap.sh`, from dbsgomysql's own bootstrap), and idles. The library's copy in
+`tests/envmatrix/group/` stays unchanged: it is the matrix's `group_replication_source` row's.
+
+**One estate at a time.** `TOPOLOGY=plain` (the default) is db1 to db3 and `TOPOLOGY=group` is this one.
+`make test-up`, `test-down`, `test-status` and `test-reset`, the E2E harness's setup (`run-tests.sh --setup`)
+and the runners (`run-tests.sh`, `check-servers.sh`, `require-containers-up.sh`) take it. `test-up` and
+`test-reset` refuse while a container of the other estate is running, found by its name, and `test-down` of
+one never touches the other: each has its own compose file, project name (`ga-group`) and volumes.
+
+```bash
+make test-down                              # the plain estate: stops it, keeps its volumes
+make test-up TOPOLOGY=group                 # creates tests/.env.group from tests/dot.env.group if absent
+set -a; source tests/.env.group; set +a     # not tests/.env: the ports differ
+TOPOLOGY=group bash tests/scripts/run-tests.sh --setup --skip-docker   # seeds gr1 with Sakila, loads gr-dest, attaches gr-replica to gr1
+go test -tags=integration ./internal/... ./cmd/... -count=1            # the integration stage, with gr1 as the source
+```
+
+(`run-tests.sh --setup` alone, without `--skip-docker`, resets the estate first, as it does for the plain one.)
+
+- **The image** is one per series, `GA_ESTATE_IMAGE` (the plain estate's variable too): `mysql:8.0`,
+  `mysql:8.4` (the default), `mysql:9.7`, or `percona/percona-server` of the same series. A data directory
+  belongs to its series: change the image with `make test-reset TOPOLOGY=group`. The setup loads the
+  archive schema with the host's MySQL Shell (`scripts/dump_master.js`), which must support the server:
+  a Shell 8.4.10 stops at that step against a 9.7.4 server ("Unsupported MySQL Server 9.7.4 detected,
+  please upgrade the MySQL Shell first"), and `run-tests.sh --setup` exits 1. The gate pins its images
+  for the same reason (*The full matrix runs on GitHub*, below).
+- **`tests/.env.group`** is `tests/.env` pointed at the group, plus the two other members
+  (`TEST_GROUP_MEMBER{2,3}_{HOST,PORT,USER,PASSWORD}`) for tests that need them, and `REPL_SOURCE_HOST=gr1`,
+  the name by which `gr-replica` reaches its source. The compose file takes its ports from the same
+  variables, so they follow a variable and not a container. It is gitignored; `tests/dot.env.group` is the
+  tracked example.
+- **`make test-down TOPOLOGY=group` keeps the volumes.** The members are then all stopped, and none can
+  bootstrap the group; the next `make test-up TOPOLOGY=group` reboots it
+  (`dba.rebootClusterFromCompleteOutage`, about a minute). After any other failure,
+  `make test-reset TOPOLOGY=group`.
+- **The group is an InnoDB Cluster**: the AdminAPI adds the `mysql_innodb_cluster_metadata` schema and
+  `mysql_innodb_cluster_*` accounts to every member, and persists settings. Among them is
+  `group_replication_consistency`, which is `BEFORE_ON_PRIMARY_FAILOVER` on 8.4 and 9.7 and `EVENTUAL` on
+  8.0 here, each series' own default. No test may assume their absence or a value: a test that needs one
+  sets it (a server state) and restores it.
+- **A group refuses what it cannot certify.** A table without a primary key can be created but not written
+  to (`ERROR 3098`), and a table of another engine than InnoDB is refused the same way. The suites write
+  such tables only on a plain destination.
+- **The members' memory limits (1 GB for gr2 and gr3) suit the suites, not a transaction of 100 MB**: a
+  member was killed by the kernel's OOM handling under one. A measurement that needs a very large
+  transaction raises the limits first.
+- **No E2E yet.** The E2E configs name the plain estate's ports, so `make e2e` refuses `TOPOLOGY=group`.
+  No suite is copied for the group.
 
 ### 2. Build the binary
 
