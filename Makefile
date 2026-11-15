@@ -181,12 +181,18 @@ consumer-policy: ## Enforce production-query and unit wire-format boundaries
 
 # Run the integration tests against the local test estate (db1 source, db2 destination).
 # Load the estate's connection settings first: set -a; source tests/.env; set +a
+# With TOPOLOGY=group (the environment or the command line, and tests/.env.group loaded) the packages run one at a time, as
+# tests/README.md, The group estate, says they must: the group tests change state every package writes to.
 .PHONY: test-integration
 test-integration:
 	@if [ -z "$$TEST_SOURCE_HOST" ] || [ -z "$$TEST_DEST_HOST" ]; then \
 		echo "test-integration: load the test estate first: set -a; source tests/.env; set +a"; exit 2; \
 	fi
+ifeq ($(TOPOLOGY),group)
+	go test -p 1 -tags=integration ./internal/... ./cmd/... -count=1
+else
 	go test -tags=integration ./internal/... ./cmd/... -count=1
+endif
 
 # The environment matrix (tests/envmatrix, M7-8): the integration suites under one changed
 # MySQL environment at a time, on throwaway containers. ROWS="a b" runs some rows only.

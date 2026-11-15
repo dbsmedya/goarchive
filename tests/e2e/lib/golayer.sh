@@ -145,6 +145,14 @@ run_integration_tests() {
         GO_TEST_ARGS="./internal/... ./cmd/..."
     fi
 
+    # The group estate's packages run one at a time: its tests change state every package writes to (a primary
+    # switch, a lowered size limit, a read-only destination), which go test's default of running packages at once
+    # would let another package meet (tests/README.md, The group estate). The plain route is left exactly as it
+    # was: the gate runs through it. The array keeps the plain invocation free of any added word, and
+    # ${serial[@]+...} is the form an empty array takes under `set -u` on the Bash 3.2 of macOS.
+    local serial=()
+    [ "${TOPOLOGY:-plain}" = "group" ] && serial=(-p 1)
+
     run_go_layer "integration" \
-        go test -v -tags=integration -count=1 $GO_TEST_ARGS
+        go test -v ${serial[@]+"${serial[@]}"} -tags=integration -count=1 $GO_TEST_ARGS
 }

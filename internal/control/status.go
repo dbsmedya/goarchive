@@ -475,9 +475,9 @@ const replicationIndent = "               "
 func (v *view) replicationLines(r read) []string {
 	if !r.hasGate {
 		if !v.info.ReplicationEnabled {
-			return []string{fmt.Sprintf("  replication: not enabled, cache_ttl %ds", v.info.CacheTTL)}
+			return []string{fmt.Sprintf("  replication: not enabled, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText()}
 		}
-		return []string{fmt.Sprintf("  replication: enabled, not used by this run, cache_ttl %ds", v.info.CacheTTL)}
+		return []string{fmt.Sprintf("  replication: enabled, not used by this run, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText()}
 	}
 	enabled := "not enabled"
 	if v.info.ReplicationEnabled {
@@ -487,15 +487,22 @@ func (v *view) replicationLines(r read) []string {
 	if !r.gate.LastPass.IsZero() {
 		last = fmt.Sprintf("last pass %s ago (%s)", FormatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
 	}
-	header := fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last)
-	if a, c := v.info.GroupApplierQueueWithin, v.info.GroupCertifierQueueWithin; a != nil && c != nil {
-		header += fmt.Sprintf(", group queue bounds: applier %d, certifier %d", *a, *c)
-	}
-	lines := []string{header}
+	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last) + v.groupBoundsText()}
 	for _, s := range r.gate.Servers {
 		lines = append(lines, replicationIndent+verdictText(s, r.now))
 	}
 	return lines
+}
+
+// groupBoundsText is the configured group bounds at the end of the replication line, as status-json reports them under
+// replication, and nothing when no group server is listed. It ends the line of a used gate, of a block that is enabled and
+// not used by this run, and of one that is not enabled: a copy-only job or a disabled block can list group servers too.
+func (v *view) groupBoundsText() string {
+	a, c := v.info.GroupApplierQueueWithin, v.info.GroupCertifierQueueWithin
+	if a == nil || c == nil {
+		return ""
+	}
+	return fmt.Sprintf(", group queue bounds: applier %d, certifier %d", *a, *c)
 }
 
 // verdictText is one server's last verdict on one line: the verdict, the measured lag (or that it is
