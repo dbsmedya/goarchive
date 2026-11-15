@@ -486,9 +486,31 @@ skip is the intended result there. Each is a unit test and needs no database.
 | `TestStartLeavesAnUndecidedSocket` | a non-root uid: a socket with no permission bits refuses a connect with `EACCES` only to a user other than root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestStartLeavesAFullQueueSocket` | Linux: a live listener whose queue is full answers `EAGAIN` at once. On macOS the same listener answers `ECONNREFUSED`, the answer for no listener, which the design accepts (spec §4.2), so there is no test there | Linux: L1, L3 and CI's Ubuntu runner |
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
+| `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | a platform that lets a lock file the run holds open be removed, and a directory with open handles be renamed | Linux and macOS. They skip on Windows, which refuses both (`being used by another process`, `Access is denied`), so those cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
 | `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
+
+The transport tests (`transport_test.go`) pin what each platform does to a connect and a close; on
+Windows a refused connection is `WSAECONNREFUSED` (recognised by `isRefused`), a full queue is
+`WSAENOBUFS` (undecided: no macOS-like window), and closing with input unread is a reset.
+
+**Linting another OS's files.** `make lint` loads the host's build tags only, so a Linux- or
+Windows-tagged file is not linted on a Mac. Install the pinned linter with the repo's toolchain and run
+it per target; the host Go may be newer than `go.mod`'s `toolchain` line, which is a minimum, and the
+pinned linter cannot read a newer Go's export data when it cross-lints.
+
+```bash
+export GOTOOLCHAIN=go1.26.8
+GOBIN=/tmp/ga-bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4  # the Makefile's pin
+GOOS=linux   /tmp/ga-bin/golangci-lint run ./...                  # what CI's Check job runs
+GOOS=windows /tmp/ga-bin/golangci-lint run ./...
+```
+
+All three targets report 0 issues. A test file that can only run on Unix says so with `//go:build
+!windows` and a one-line reason (`internal/database/signal_test.go` and the gate tests in
+`tests/harness`, which signal a process group with `syscall.Kill`), so that the tree typechecks for
+Windows.
 
 The container runs use the Go release of `go.mod`'s toolchain line, with a writable `GOCACHE` and
 `GOPATH` under `/tmp`:

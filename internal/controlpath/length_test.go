@@ -79,7 +79,8 @@ func TestPathLength(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Resolve accepted %d bytes over the limit of %d: %q", len(want), limit, path)
 			}
-			for _, part := range []string{want, strconv.Itoa(len(want)), strconv.Itoa(limit)} {
+			// The message quotes the path (%q), which doubles a Windows path's backslashes.
+			for _, part := range []string{strconv.Quote(want), strconv.Itoa(len(want)), strconv.Itoa(limit)} {
 				if !strings.Contains(err.Error(), part) {
 					t.Errorf("the length message must name %q: %v", part, err)
 				}

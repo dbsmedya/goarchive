@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,6 +202,7 @@ func TestLiveLock(t *testing.T) {
 // second start obtains a lock on a new file, connects to the socket, finds it answering, refuses
 // (an InUseError) and leaves the socket untouched; the first server still answers.
 func TestLockNameRemoved(t *testing.T) {
+	skipUnlessHeldFilesRemovable(t)
 	a := startFixture(t, archiveApplies)
 	if err := os.Remove(a.lockPath()); err != nil {
 		t.Fatal(err)
@@ -321,8 +323,8 @@ func TestDefaultDirectoryRefusals(t *testing.T) {
 
 	missing := filepath.Join(shortDir(t), "no-such-home")
 	o.Dir = filepath.Join(missing, ".goarchive", "run")
-	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), missing) {
-		t.Errorf("Start() under a missing home = %v, want it named", err)
+	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), strconv.Quote(missing)) {
+		t.Errorf("Start() under a missing home = %v, want it named (quoted: %s)", err, strconv.Quote(missing))
 	}
 	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
 		t.Errorf("a missing home was created: %v", err)

@@ -1,3 +1,7 @@
+//go:build !windows
+
+// Unix only: the gate tests run the gate script in its own process group (Setpgid) and signal it with syscall.Kill, which Windows lacks.
+
 package harness
 
 import (
@@ -17,16 +21,6 @@ import (
 )
 
 var gateStages = []string{"estate", "fmt-check", "vet", "lint", "consumer-policy", "deadcode", "unit", "integration", "e2e", "e2e-examples"}
-
-func writeFixture(t *testing.T, path, data string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(data), 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
 
 // The subject is copied unchanged. Only the synthetic repository's commands and
 // PATH are controlled, and no ambient credentials or shell startup files leak in.
@@ -157,14 +151,6 @@ func gateRunDir(t *testing.T, root string, result gateResult, failure string) st
 	}
 	t.Fatalf("%s: current invocation did not identify its evidence directory; stdout=%s stderr=%s", failure, result.stdout, result.stderr)
 	return ""
-}
-func readFixture(t *testing.T, path string) string {
-	t.Helper()
-	b, e := os.ReadFile(path)
-	if e != nil {
-		t.Fatal(e)
-	}
-	return string(b)
 }
 func readTSV(t *testing.T, path, header string, rows int) [][]string {
 	t.Helper()
