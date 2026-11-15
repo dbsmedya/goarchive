@@ -413,3 +413,52 @@ func TestStatusActions(t *testing.T) {
 		t.Error("a status read changed the store")
 	}
 }
+
+// TestHelpTableIsTheServers (spec §4.9: the client's help is printed from the server's table): the
+// table the client prints is the one `help` is built from. For a run that uses every setting, help's
+// lines after the version are exactly the table's lines, in order; for a run that uses fewer, help's
+// lines are a subset of the table; and the table names every action and every setting the protocol has.
+func TestHelpTableIsTheServers(t *testing.T) {
+	var table []string
+	usages := map[string]bool{}
+	for _, h := range HelpTable() {
+		table = append(table, h.Line())
+		usages[strings.Fields(h.Usage)[0]] = true
+	}
+	for _, want := range []string{"help", "status", "status-json", "pause", "resume", "stop", "<setting>=?"} {
+		if !usages[want] {
+			t.Errorf("the table does not list %s: %q", want, table)
+		}
+	}
+	for _, k := range tuning.Keys() {
+		found := false
+		for u := range usages {
+			if strings.HasPrefix(u, string(k)+"=") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the table does not list the setting %s: %q", k, table)
+		}
+	}
+
+	store, _ := newTestStore(t, archiveApplies)
+	r := newCmds(store, "").do("help")
+	wantOK(t, r)
+	if got := strings.Join(r.body[1:], "\n"); got != strings.Join(table, "\n") {
+		t.Errorf("help for a run that uses every setting:\n%s\nthe table:\n%s", got, strings.Join(table, "\n"))
+	}
+
+	inTable := map[string]bool{}
+	for _, l := range table {
+		inTable[l] = true
+	}
+	store, _ = newTestStore(t, copyOnlyApplies)
+	r = newCmds(store, "").do("help")
+	wantOK(t, r)
+	for _, l := range r.body[1:] {
+		if !inTable[l] {
+			t.Errorf("a copy-only run's help line %q is not in the table", l)
+		}
+	}
+}
