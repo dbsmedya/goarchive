@@ -152,10 +152,11 @@ func orderPair(t *testing.T, name string, typ jobspec.Type) (src, dst *sql.DB, s
 	return src, dst, job(t, typ, orderJob)
 }
 
-// TestMySQLTheFirstStatementIsTheConfigurationRead is the source half of spec §8's *first read of
-// each side*, for every job type, on any source: the first statement preflight sends is the
-// library's ReplicationConfig read, then the plugin's state, then (a member only) the view, and
-// no catalog or table statement comes before them. The command validate runs the same Run.
+// TestMySQLTheFirstStatementIsTheConfigurationRead is spec §8's *first read of each side*, for every
+// job type, on any pair: the first statement preflight sends to the source is the library's
+// ReplicationConfig read, then the plugin's state, then (a member only) the view, and no catalog or
+// table statement comes before them; the first statement it sends to the destination is its
+// ReplicationConfig read (GR C4), then the plugin's state. The command validate runs the same Run.
 func TestMySQLTheFirstStatementIsTheConfigurationRead(t *testing.T) {
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
 		t.Run(string(typ), func(t *testing.T) {
@@ -187,8 +188,14 @@ func TestMySQLTheFirstStatementIsTheConfigurationRead(t *testing.T) {
 					t.Errorf("a statement naming %s was sent at %d, before the group facts: %q", tableRead, i, got[i])
 				}
 			}
-			if len(dstLog.all()) == 0 {
-				t.Error("the destination recorded no statement: the recording did not run")
+			gotD := dstLog.all()
+			if len(gotD) < 2 || !strings.Contains(gotD[0], "@@GLOBAL.read_only, @@GLOBAL.super_read_only") || !strings.Contains(gotD[1], "information_schema.PLUGINS") {
+				t.Fatalf("the destination's first statements were %q, want the configuration read first, then the plugin's state", gotD[:min(len(gotD), 2)])
+			}
+			for _, tableRead := range []string{"TABLES", "COLUMNS", "STATISTICS", "`orders`", "`order_lines`"} {
+				if i := slices.IndexFunc(gotD, func(q string) bool { return strings.Contains(q, tableRead) }); i >= 0 && i < 2 {
+					t.Errorf("a destination statement naming %s was sent at %d, before the group facts: %q", tableRead, i, gotD[i])
+				}
 			}
 		})
 	}
