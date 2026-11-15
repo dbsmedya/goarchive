@@ -154,7 +154,7 @@ func (s *Store) Applies(k Key) (bool, string) { return s.applies.applies(k) }
 // ApplicableKeys returns the settings the run uses, in listing order.
 func (s *Store) ApplicableKeys() []Key {
 	var out []Key
-	for _, k := range keys {
+	for _, k := range Keys() {
 		if ok, _ := s.applies.applies(k); ok {
 			out = append(out, k)
 		}

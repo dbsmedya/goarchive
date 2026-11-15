@@ -64,10 +64,6 @@ func ReservedOnWindows(name string) (device string, reserved bool) {
 	return device, windowsDevices[device]
 }
 
-// MaxLen is the usable length of a socket path in bytes: the platform's sun_path less its
-// terminating NUL. Go's SockaddrUnix refuses a name of len(raw.Path) bytes or more.
-func MaxLen() int { return maxLen }
-
 // CheckLength reports whether path fits a socket address. Bytes are counted, not characters.
 // It is the one limit: the run and the client both call it, so they cannot disagree.
 func CheckLength(path string) error {
