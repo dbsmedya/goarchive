@@ -24,6 +24,7 @@ type Logger struct {
 	*zap.SugaredLogger
 	base      *zap.Logger
 	always    *zap.SugaredLogger // the same streams, every level (Always)
+	audit     *zap.SugaredLogger // always's streams, and the console tee (Audit)
 	logFile   *os.File
 	filePath  string
 	console   bool // the log stream is stdout or stderr
@@ -74,10 +75,11 @@ func New(cfg *config.LoggingConfig, opts Options) (*Logger, error) {
 		stderr = os.Stderr
 	}
 	l := &Logger{json: cfg.Format == "json", closeOnce: &sync.Once{}}
-	var cores, always []zapcore.Core
+	var cores, always, audit []zapcore.Core
 	add := func(ws zapcore.WriteSyncer) {
 		cores = append(cores, stripCore{zapcore.NewCore(buildEncoder(cfg.Format), ws, level)})
 		always = append(always, stripCore{zapcore.NewCore(buildEncoder(cfg.Format), ws, zapcore.DebugLevel)})
+		audit = append(audit, always[len(always)-1])
 	}
 
 	switch cfg.Output {
@@ -101,12 +103,14 @@ func New(cfg *config.LoggingConfig, opts Options) (*Logger, error) {
 		add(zapcore.AddSync(file))
 		if opts.Tee && !cfg.FileOnly {
 			cores = append(cores, &teeCore{level: level, w: stderr})
+			audit = append(audit, &teeCore{level: level, w: stderr})
 		}
 	}
 
 	l.base = zap.New(zapcore.NewTee(cores...), zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 	l.SugaredLogger = l.base.Sugar()
 	l.always = zap.New(zapcore.NewTee(always...), zap.AddCaller()).Sugar()
+	l.audit = zap.New(zapcore.NewTee(audit...), zap.AddCaller()).Sugar()
 	return l, nil
 }
 
@@ -124,6 +128,13 @@ func NewDefault() *Logger {
 // Always writes past the level filter, to the log's own streams (never the tee): the output
 // --progress asks for, the R45 banners, and an error on a JSON stderr (spec §3.4a).
 func (l *Logger) Always() *zap.SugaredLogger { return l.always }
+
+// Audit writes past the level filter, as Always does, and also to the console tee by the tee's own
+// policy: an entry marked Live always, a warning or an error when the configured level keeps it, and
+// never a FileOnly one or any entry of a log without the tee. The file or console stream gets the entry
+// once. It is for entries an operator must be able to see during a run whatever the level (the control
+// socket's accepted changes and refusals); an entry that must never reach the tee uses Always.
+func (l *Logger) Audit() *zap.SugaredLogger { return l.audit }
 
 // Console reports a log on stdout or stderr; ConsoleJSON one in JSON (setup C); ConsoleStderr
 // one on stderr. File is the log file's path, empty for a console log.
@@ -179,6 +190,7 @@ func (l *Logger) with(args ...interface{}) *Logger {
 	c := *l
 	c.SugaredLogger = l.With(args...)
 	c.always = l.always.With(args...)
+	c.audit = l.audit.With(args...)
 	return &c
 }
 

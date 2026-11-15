@@ -112,13 +112,15 @@ func (s *gateSlot) Record() control.GateRecord {
 }
 
 // logSink writes the server's audit entries to the run's log, past the level filter as the banners
-// are. An accepted change is an info entry marked live, so that with --progress and a log file it also
-// reaches stderr; a warning keeps its level; an error is logged without the stack trace the logger
-// attaches at that level.
+// are, and by the logger's Audit route, which also reaches the console tee by the tee's own policy.
+// An accepted change is an info entry marked live, so that with --progress and a log file it reaches
+// stderr whatever the level; a warning keeps its level, and shows there when the level keeps warnings;
+// an error is logged without the stack trace the logger attaches at that level. The file holds each
+// entry once. (logControlSocket stays on Always, off the tee, so a cron run is silent.)
 type logSink struct{ log *logger.Logger }
 
 func (s logSink) Entry(level tuning.Level, msg string, kv ...any) {
-	out := s.log.Always()
+	out := s.log.Audit()
 	switch level {
 	case tuning.LevelInfo:
 		out.Infow(msg, append(kv, logger.Live)...)
