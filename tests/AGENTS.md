@@ -114,11 +114,17 @@ report it as `RED`.
    Run: <run_id from run.tsv>
    Duration: <seconds from step 4> s (ceiling 900 s)
    <each stage line from summary.txt, as printed>
+   Skips off the list: none | <each test name, with its reason as the log prints it>
    OVERALL: GREEN | RED | BLOCKED (<reason>)
    ```
 
    Each `summary.txt` line carries the stage's status and its counts, such as the integration
    stage's `PASS=n FAIL=n SKIP=n` (`tests/README.md` → *Test result counts*).
+
+   The skips behind that `SKIP=n` are the `--- SKIP` lines of `<dir>/integration.log`. Hold each
+   against `tests/README.md` → *Expected skips*, *Integration on the local estate*: a SKIP on that
+   list is expected and needs no mention; one that is not on it is a finding, named on the
+   `Skips off the list` line. The line does not change the verdict, which step 5's conditions give.
 
 Change nothing: no fix, skip, relaxed test, re-run, baseline edit, file edit or commit. A red
 gate is the finding; report it.
@@ -140,10 +146,17 @@ Use these only when a task asks for one layer; the gate runs them all in the rig
 `make e2e` is the whole E2E procedure (reset, seed, run). Run its individual steps only when a
 task says why.
 
+A layer's run is read the same way. `tests/README.md` → *Expected skips* lists, for each place a
+run happens (a Mac's `make check`, the local estate, the L1 to L5 containers, GitHub's Windows and
+Linux jobs, the matrix rows), the tests that skip there by design. A SKIP on that environment's list
+is expected; a SKIP of any other test, or of a listed test in an environment that does not list it,
+is a finding and is reported by name with its reason.
+
 The full environment matrix and the gate on every supported image run on GitHub, not here
 (`tests/README.md` → *The full matrix runs on GitHub*, which says when each runs). They start by
 themselves on the dev→main pull request, and the coordinating agent reads their summary tables on
-that PR. The coordinating agent, not the gate agent, pushes `verify/<sha7>` or `verify-gate/<sha7>`
+that PR, holding the skips they count against `tests/README.md` → *Expected skips* (*GitHub Linux*
+and *GitHub matrix rows*). The coordinating agent, not the gate agent, pushes `verify/<sha7>` or `verify-gate/<sha7>`
 only for an ad hoc run the operator asks for. The same section says when a gate runs at all; a gate
 agent is given a SHA only when a change's local checks call for a full gate
 (`tests/README.md` → *Which checks a change needs*) or the operator asks for one.
