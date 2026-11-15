@@ -386,9 +386,6 @@ func (v *view) text() []string {
 	}
 
 	label("pause", pauseText(r))
-	if e := st.Estimate; e != nil {
-		label("progress", fmt.Sprintf("about %d roots, %.0f%%, ETA %s", e.Roots, e.Percent, formatDuration(e.ETA)))
-	}
 
 	var items []string
 	for _, k := range v.store.ApplicableKeys() {
@@ -406,7 +403,79 @@ func (v *view) text() []string {
 			lines = append(lines, indent+group)
 		}
 	}
+
+	// The spec's example ends at the settings. What status-json has that it does not show follows,
+	// in this order: the gate, the changes accepted, the estimate, the per-table counts.
+	lines = append(lines, v.replicationLines(r)...)
+	label("changes", changesText(r.snap.Revision))
+	if e := st.Estimate; e != nil {
+		label("progress", fmt.Sprintf("about %d roots, %.0f%%, ETA %s", e.Roots, e.Percent, formatDuration(e.ETA)))
+	}
+	for i, t := range st.Tables {
+		text := fmt.Sprintf("%s copied %d, deleted %d", t.Name, t.Copied, t.Deleted)
+		if i == 0 {
+			label("tables", text)
+		} else {
+			lines = append(lines, indent+text)
+		}
+	}
 	return lines
+}
+
+// replicationIndent lines a server's line up under the text of the replication line, whose label is
+// one character longer than the others' column.
+const replicationIndent = "               "
+
+// replicationLines says whether the replication block is enabled and whether this run uses the
+// gate; for a run that does, the configured cache_ttl, when the last pass was and each server's last
+// verdict with when it was checked.
+func (v *view) replicationLines(r read) []string {
+	if !r.hasGate {
+		if !v.info.ReplicationEnabled {
+			return []string{"  replication: not enabled"}
+		}
+		return []string{"  replication: enabled, not used by this run"}
+	}
+	enabled := "not enabled"
+	if v.info.ReplicationEnabled {
+		enabled = "enabled"
+	}
+	last := "last pass never"
+	if !r.gate.LastPass.IsZero() {
+		last = fmt.Sprintf("last pass %s ago (%s)", formatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
+	}
+	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last)}
+	for _, s := range r.gate.Servers {
+		lines = append(lines, replicationIndent+verdictText(s, r.now))
+	}
+	return lines
+}
+
+// verdictText is one server's last verdict on one line, with its age and the time it was checked.
+func verdictText(s ServerVerdict, now time.Time) string {
+	if s.CheckedAt.IsZero() {
+		return s.Server + " not checked yet"
+	}
+	age, at := formatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
+	if s.Cause != "" {
+		return fmt.Sprintf("%s %s (%s), checked %s ago (%s)", s.Server, s.Cause, s.Detail, age, at)
+	}
+	lag := "lag unknown"
+	if s.Lag != nil {
+		lag = fmt.Sprintf("lag %ds", *s.Lag)
+	}
+	return fmt.Sprintf("%s healthy, %s, tolerance %ds, checked %s ago (%s)", s.Server, lag, s.Tolerance, age, at)
+}
+
+// changesText counts the runtime changes the run has accepted (the store's revision).
+func changesText(n uint64) string {
+	switch n {
+	case 0:
+		return "none"
+	case 1:
+		return "1 accepted runtime change"
+	}
+	return fmt.Sprintf("%d accepted runtime changes", n)
 }
 
 // pauseText says which inputs hold the run and whether it is actually waiting.
