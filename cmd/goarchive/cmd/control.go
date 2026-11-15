@@ -257,9 +257,10 @@ func checkEndpoint(path string, euid int) error {
 
 // classifyConnect maps the error of a failed connect to the client's failure (spec §4.11). A refused
 // connection or a missing path is "no run answers here" (5). Only the client's own passed deadline
-// is a timeout (6): an error that merely reports itself as one is not. Linux answers EAGAIN, at once,
-// for a live listener whose queue is full, and net.Error calls that a timeout though nothing waited:
-// it is busy, and an ordinary transport failure (9), as is a permission error and any other.
+// is a timeout (6): an error that merely reports itself as one is not. A live listener whose queue is
+// full answers at once, EAGAIN on Linux (which net.Error calls a timeout though nothing waited) and
+// WSAENOBUFS on Windows (isQueueFull): it is busy, and an ordinary transport failure (9), as is a
+// permission error and any other.
 func classifyConnect(path string, err error) *controlError {
 	switch {
 	case isMissing(err):
@@ -268,7 +269,7 @@ func classifyConnect(path string, err error) *controlError {
 		return &controlError{exitNoSocket, fmt.Errorf("the control socket at %s is stale: nothing listens on it, so the run that made it has ended (killed?); %s", path, noSocketMeaning)}
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
 		return &controlError{exitTimeout, fmt.Errorf("no connection to the control socket at %s was made within the client's connect deadline", path)}
-	case errors.Is(err, syscall.EAGAIN):
+	case isQueueFull(err):
 		return &controlError{exitTransport, fmt.Errorf("the control socket at %s is busy: its connection queue is full; try again", path)}
 	case errors.Is(err, fs.ErrPermission):
 		return &controlError{exitTransport, fmt.Errorf("permission denied on the control socket at %s: run goarchive control as the OS user that runs the job", path)}
