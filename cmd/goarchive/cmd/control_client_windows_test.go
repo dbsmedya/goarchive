@@ -5,6 +5,7 @@ package cmd
 import (
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestControlClassifyWindowsFullQueue(t *testing.T) {
 		return &net.OpError{Op: "dial", Net: "unix", Addr: &net.UnixAddr{Name: `C:\s`, Net: "unix"}, Err: os.NewSyscallError("connect", errno)}
 	}
 	got := classifyConnect(`C:\s`, dial(windows.WSAENOBUFS))
-	if got == nil || got.code != 9 || !strings.Contains(got.Error(), "busy") || !strings.Contains(got.Error(), `C:\s`) {
+	if got == nil || got.code != 9 || !strings.Contains(got.Error(), "busy") || !strings.Contains(got.Error(), strconv.Quote(`C:\s`)) {
 		t.Errorf("classifyConnect(WSAENOBUFS) = %v (code %d), want exit 9, the busy message, naming the path", got, codeOf(got))
 	}
 	got = classifyConnect(`C:\s`, dial(windows.WSAECONNREFUSED))

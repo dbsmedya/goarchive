@@ -506,8 +506,22 @@ changed while the run goes, and a change applies to every `DELETE` whose gate de
 made. A probe round judges every server by the tolerance it loaded when it began, and a pass is valid only
 for the settings it was judged under: a round that passes while the tolerance is lowered is discarded and
 judged again at once, so a delete is never let through on a verdict made under settings that have since been
-replaced. A hold that is waiting for its next check wakes at once when a gate setting changes, and goes on
-waiting for the time that is left when another setting does. A tolerance raised above its configured value goes
+replaced. The settings are read once more as the very last step of a pass, after the line that says the job
+is resuming has been written and after a cached pass has been looked up, so a change made while those were
+under way is not missed. What the log shows depends on when the change is found:
+
+- **A round that passes under settings replaced while it ran** is discarded without a line. A server that
+  looked recovered in it is not logged as recovered: that line waits for a round that stands. The call
+  judges again at once, and a server that still fails continues its hold from where it began.
+- **A failing round whose wait a gate setting cuts short** says so: `replication gate settings changed: the
+  fleet is judged again at once, not in 5s`, since the hold line before it had said `retrying in 5s`.
+- **A change that arrives while a pass's own entries are being written** finds the "recovered" and "job
+  resuming" lines already out. They stay, and one more line says that the pass above does not stand
+  (`replication gate settings changed while the pass was being written: …`). The call's hold, and so the
+  rules for a stop, go on from where the call began to hold; the per-server hold entries that those
+  "recovered" lines ended are gone, so a server that still fails at the new settings starts a new one.
+
+A tolerance raised above its configured value goes
 one step at a time ([the step rule](#the-tolerances-step-rule-and-the-warning)). `cache_ttl` is startup
 configuration only: over the socket it is an unknown key.
 
@@ -811,6 +825,12 @@ reset.
 | `replication.servers[].tolerance` | The tolerance the verdict was judged by |
 | `replication.servers[].checked_at` | When the server was probed; `null` until it is |
 | `changes` | How many runtime changes this run has accepted |
+
+`status` says the same as these fields, for a person: a summary line, then the content in labelled lines (the
+build and its protocol, the times, whether a stop was requested, the pause inputs and the sentinel file, the
+replication gate and its `cache_ttl` even when the run does not use it, the accepted changes, the roots
+skipped and recovered, the estimate and the per-table counts). The JSON is the contract; the text's layout
+may change, so a script reads `status-json`.
 
 The gate is synchronous: outside a probe, `status` shows each server's last verdict and its age, not a
 live value, and reading it never probes. `status` and `status-json` write no log entry and query nothing;

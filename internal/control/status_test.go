@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -317,9 +318,13 @@ func TestStatusText(t *testing.T) {
 		"  pause:     none",
 		"  settings:  batch_size 1000   batch_delete_size 100 (configured 500)   sleep_seconds 1   delete_sleep_seconds 0",
 		"             seconds_behind_source_within 10   check_interval 5",
+		"  version:   3.1.0 (protocol 1)",
+		"  time:      started 2026-11-15T12:00:00Z, now 2026-11-15T12:06:02Z",
+		"  stop:      not requested",
 		"  replication: enabled, used, cache_ttl 15s, last pass 5m00s ago (2026-11-15T12:01:02Z)",
-		"               replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s), checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s), lag 42s, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
 		"  changes:   1 accepted runtime change",
+		"  roots:     skipped 0, recovered 0",
 		"  tables:    orders copied 12000, deleted 11000",
 		"             order_details copied 52920, deleted 50500",
 	}, "\n")
@@ -344,7 +349,7 @@ func TestStatusTextReplication(t *testing.T) {
 	for _, want := range []string{
 		"  replication: enabled, used, cache_ttl 15s, last pass never",
 		"               replica2:3306 healthy, lag 0s, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
-		"               replica3:3306 unreachable (dial tcp: connection refused), checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica3:3306 unreachable (dial tcp: connection refused), lag unknown, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
 		"               replica4:3306 not checked yet",
 	} {
 		if !strings.Contains(text, want) {
@@ -489,4 +494,250 @@ func TestStatusEstimateWithoutAnETA(t *testing.T) {
 	if text := strings.Join(f.view.text(), "\n"); !strings.Contains(text, "  progress:  about 20000 roots, 0%, ETA unknown") {
 		t.Errorf("status text:\n%s\nwant the ETA said to be unknown", text)
 	}
+}
+
+// TestStatusTextCoversTheJSON (Codex batch 2 finding 4; spec §4.8, the same-content ruling): the text
+// says everything status-json says, in labelled lines, however the run is. Every top-level field of the
+// JSON has a rule here that names what its text must contain; a field with no rule fails the test, so a
+// field added to the JSON cannot be left out of the text unnoticed. The scenarios give the counters
+// nonzero skipped and recovered counts, and cover a running, a recovering, a paused and an ending run
+// (where the state word hides the stop request and the hold) and a run that does not use the gate.
+func TestStatusTextCoversTheJSON(t *testing.T) {
+	counted := func(f *statusFixture, ts TrackerStatus) {
+		ts.Batches, ts.Roots, ts.RootsSkipped, ts.RootsRecovered = 13, 12000, 4, 120
+		ts.RowsCopied, ts.RowsDeleted = 64920, 61500
+		ts.Tables = []TableCounts{{Name: "orders", Copied: 12000, Deleted: 11000}}
+		f.tracker.set(ts)
+	}
+	healthy := func(f *statusFixture) {
+		lag := int64(3)
+		f.gate.set(GateRecord{LastPass: statusNow.Add(-time.Minute), Servers: []ServerVerdict{
+			{Server: "replica1:3306", Healthy: true, Lag: &lag, Tolerance: 10, CheckedAt: statusNow.Add(-2 * time.Second)}}})
+	}
+	for _, sc := range []struct {
+		name  string
+		setup func(f *statusFixture)
+	}{
+		{"running", func(f *statusFixture) {
+			healthy(f)
+			counted(f, TrackerStatus{Phase: PhaseRunning, Step: "copy", Table: "orders",
+				Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute, ETAKnown: true}})
+		}},
+		{"recovery", func(f *statusFixture) {
+			healthy(f)
+			counted(f, TrackerStatus{Phase: PhaseRecovering, Step: "delete", Table: "orders"})
+		}},
+		{"paused, with a sentinel file and a change", func(f *statusFixture) {
+			healthy(f)
+			f.view.info.SentinelFile = "/var/run/goarchive/pause"
+			counted(f, TrackerStatus{Phase: PhaseRunning, WaitingSince: statusNow.Add(-4 * time.Minute), Sentinel: true})
+			if _, err := f.store.Pause(testPeer); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.Set(tuning.BatchDeleteSize, "100", testPeer); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"ending, held and stopped (the state word hides both)", func(f *statusFixture) {
+			counted(f, TrackerStatus{Phase: PhaseRunning, Step: "delete", Table: "orders"})
+			f.shutdown.set(true)
+			f.store.Terminal()
+		}},
+		{"held, with verdicts that are not about lag and were judged by another tolerance", func(f *statusFixture) {
+			counted(f, TrackerStatus{Phase: PhaseRunning, Step: "delete", Table: "orders"})
+			three, forty := int64(3), int64(40)
+			f.gate.set(GateRecord{
+				HoldingSince: statusNow.Add(-90 * time.Second), LastPass: statusNow.Add(-time.Hour),
+				Servers: []ServerVerdict{
+					// A stopped SQL thread: the detail says nothing of the lag (3) or the tolerance (17) it was judged by.
+					{Server: "replica2:3306", Cause: "unhealthy", Detail: "channel <default>: io=Yes sql=No", Lag: &three, Tolerance: 17, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica3:3306", Cause: "unreachable", Detail: "dial tcp: connection refused", Tolerance: 17, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica4:3306", Healthy: true, Lag: &forty, Tolerance: 60, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica5:3306"},
+				},
+			})
+		}},
+		{"a run that does not use the gate, replication enabled", func(f *statusFixture) {
+			f.view.gate = nil
+			counted(f, TrackerStatus{Phase: PhaseRunning})
+		}},
+		{"a run that does not use the gate, replication not enabled", func(f *statusFixture) {
+			f.view.gate = nil
+			f.view.info.ReplicationEnabled = false
+			counted(f, TrackerStatus{Phase: PhaseRunning})
+		}},
+	} {
+		t.Run(sc.name, func(t *testing.T) {
+			f := newStatusFixture(t, archiveApplies)
+			sc.setup(f)
+			j, text := f.json(t), strings.Join(f.view.text(), "\n")
+			for field, needles := range statusParityNeedles(t, f, j) {
+				for _, n := range needles {
+					if !textHas(text, n) {
+						t.Errorf("status-json's %q is not in the text: no %q in:\n%s", field, strings.ReplaceAll(n, "\x00", " ... "), text)
+					}
+				}
+			}
+		})
+	}
+}
+
+// statusParityNeedles maps every top-level field of a status-json object to the strings its text must
+// contain. A field without a rule is reported, so the rules cannot fall behind the JSON.
+func statusParityNeedles(t *testing.T, f *statusFixture, j map[string]any) map[string][]string {
+	t.Helper()
+	num := func(v any) int64 { return int64(v.(float64)) }
+	str := func(v any) string { return v.(string) }
+	at := func(v any) time.Time {
+		ts, err := time.Parse(time.RFC3339, str(v))
+		if err != nil {
+			t.Fatalf("%v is not a time: %v", v, err)
+		}
+		return ts
+	}
+	now := at(j["now"])
+	obj := func(k string) map[string]any { m, _ := j[k].(map[string]any); return m }
+
+	needles := map[string][]string{}
+	needles["protocol"] = []string{fmt.Sprintf("(protocol %d)", num(j["protocol"]))}
+	needles["version"] = []string{"  version:   " + str(j["version"])}
+	needles["job"] = []string{str(j["job"]) + " (" + str(j["job_type"]) + "): "}
+	needles["job_type"] = nil // with the job, in the summary
+	needles["config_file"] = []string{"config " + str(j["config_file"])}
+	needles["pid"] = []string{fmt.Sprintf("pid %d", num(j["pid"]))}
+	needles["socket"] = []string{"  socket:    " + str(j["socket"])}
+	needles["started_at"] = []string{"started " + str(j["started_at"])}
+	needles["now"] = []string{"now " + str(j["now"])}
+	needles["elapsed_seconds"] = []string{"elapsed " + FormatDuration(time.Duration(j["elapsed_seconds"].(float64)*float64(time.Second)))}
+	needles["state"] = []string{"): " + str(j["state"])}
+	if j["stop_requested"].(bool) {
+		needles["stop_requested"] = []string{"  stop:      requested"}
+	} else {
+		needles["stop_requested"] = []string{"  stop:      not requested"}
+	}
+
+	if a := obj("activity"); a == nil {
+		needles["activity"] = []string{"  activity:  none"}
+	} else if table, ok := a["table"].(string); ok {
+		needles["activity"] = []string{"  activity:  " + str(a["step"]) + " on " + table}
+	} else {
+		needles["activity"] = []string{"  activity:  " + str(a["step"])}
+	}
+
+	p := obj("pause")
+	req, _ := p["requested"].([]any)
+	for _, r := range req {
+		switch str(r) {
+		case "socket":
+			needles["pause"] = append(needles["pause"], "control socket")
+		case "sentinel":
+			needles["pause"] = append(needles["pause"], "sentinel file")
+		}
+	}
+	if w, ok := p["waiting_since"].(string); ok {
+		needles["pause"] = append(needles["pause"], "waiting for "+FormatDuration(now.Sub(at(w))))
+	}
+	if len(req) == 0 && p["waiting_since"] == nil {
+		needles["pause"] = append(needles["pause"], "  pause:     none")
+	}
+	if sf, ok := p["sentinel_file"].(string); ok {
+		needles["pause"] = append(needles["pause"], sf)
+	}
+
+	if h := obj("hold"); h == nil {
+		needles["hold"] = []string{"  hold:      none"}
+	} else {
+		since := at(h["since"])
+		if j["state"] == "held" {
+			needles["hold"] = append(needles["hold"], "held "+FormatDuration(now.Sub(since)))
+		} else {
+			needles["hold"] = append(needles["hold"], str(h["since"])) // the state word hides it
+		}
+		for _, s := range h["servers"].([]any) {
+			needles["hold"] = append(needles["hold"], str(s.(map[string]any)["server"]))
+		}
+	}
+
+	c := obj("counters")
+	needles["counters"] = []string{
+		fmt.Sprintf("batch %d, roots %d, copied %d, deleted %d", num(c["batches"]), num(c["roots"]), num(c["rows_copied"]), num(c["rows_deleted"])),
+		fmt.Sprintf("  roots:     skipped %d, recovered %d", num(c["roots_skipped"]), num(c["roots_recovered"])),
+	}
+	for name, v := range obj("tables") {
+		tc := v.(map[string]any)
+		needles["tables"] = append(needles["tables"], fmt.Sprintf("%s copied %d, deleted %d", name, num(tc["copied"]), num(tc["deleted"])))
+	}
+	if pr := obj("progress"); pr != nil {
+		needles["progress"] = []string{fmt.Sprintf("about %d roots, %.0f%%", num(pr["roots_estimate"]), pr["percent"].(float64))}
+	} else {
+		needles["progress"] = nil
+	}
+	for k := range obj("settings") {
+		item := k + " " + f.store.Load().Text(tuning.Key(k))
+		if configured := f.store.Start().Text(tuning.Key(k)); configured != f.store.Load().Text(tuning.Key(k)) {
+			item += " (configured " + configured + ")"
+		}
+		needles["settings"] = append(needles["settings"], item)
+	}
+
+	r := obj("replication")
+	word := "not enabled"
+	if r["enabled"].(bool) {
+		word = "enabled"
+	}
+	needles["replication"] = []string{"  replication: " + word, fmt.Sprintf("cache_ttl %ds", num(r["cache_ttl"]))}
+	if r["enabled"].(bool) && !r["used"].(bool) {
+		needles["replication"] = append(needles["replication"], "not used by this run")
+	}
+	if lp, ok := r["last_pass_at"].(string); ok {
+		needles["replication"] = append(needles["replication"], lp)
+	}
+	for _, v := range r["servers"].([]any) {
+		sv := v.(map[string]any)
+		name := str(sv["server"])
+		if sv["healthy"] == nil {
+			needles["replication"] = append(needles["replication"], name+" not checked yet")
+			continue
+		}
+		// One line says it all: the server, its verdict and the detail of a cause, the measured lag or
+		// that it is unknown, the tolerance it was judged by (not the current setting) and when.
+		lag := "lag unknown"
+		if sv["lag_seconds"] != nil {
+			lag = fmt.Sprintf("lag %ds", num(sv["lag_seconds"]))
+		}
+		parts := []string{name, lag, fmt.Sprintf("tolerance %ds", num(sv["tolerance"])), "checked ", str(sv["checked_at"])}
+		if cause := str(sv["cause"]); cause != "" {
+			parts = append(parts, " "+cause+" (", str(sv["detail"]))
+		} else {
+			parts = append(parts, name+" healthy")
+		}
+		needles["replication"] = append(needles["replication"], strings.Join(parts, "\x00"))
+	}
+	needles["changes"] = []string{changesText(uint64(num(j["changes"])))}
+
+	for field := range j {
+		if _, ok := needles[field]; !ok {
+			t.Errorf("status-json has the field %q and the parity test has no rule for it: put it in the text and add its rule", field)
+		}
+	}
+	return needles
+}
+
+// textHas reports whether text holds needle; a needle with NUL separators holds when one line of the
+// text contains every part, so that a verdict's fields must be on the verdict's own line.
+func textHas(text, needle string) bool {
+	parts := strings.Split(needle, "\x00")
+	if len(parts) == 1 {
+		return strings.Contains(text, needle)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		all := true
+		for _, p := range parts {
+			all = all && strings.Contains(line, p)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }

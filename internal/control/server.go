@@ -97,11 +97,11 @@ type InUseError struct {
 }
 
 func (e *InUseError) Error() string {
-	what := "another run holds the lock file " + e.Path
+	what := fmt.Sprintf("another run holds the lock file %q", e.Path)
 	if !e.Lock {
-		what = "another run answers on the control socket " + e.Path + ", whose lock file was removed or replaced"
+		what = fmt.Sprintf("another run answers on the control socket %q, whose lock file was removed or replaced", e.Path)
 	}
-	return fmt.Sprintf("the control socket is in use: %s; a run of the job %q already uses this socket directory (%s)", what, e.Job, e.Dir)
+	return fmt.Sprintf("the control socket is in use: %s; a run of the job %q already uses this socket directory (%q)", what, e.Job, e.Dir)
 }
 
 // Server is a run's control socket: the listener, the audit emitter and the identity check. It is

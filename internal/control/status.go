@@ -390,8 +390,15 @@ func (v *view) text() []string {
 	} else {
 		label("hold", "none")
 	}
+	if r.holding() && r.state() != "held" {
+		// A stop or the end outranks `held` in the state word, which would have said how long.
+		lines = append(lines, indent+"held since "+rfc3339(r.gate.HoldingSince))
+	}
 
 	label("pause", pauseText(r))
+	if v.info.SentinelFile != "" {
+		lines = append(lines, indent+"sentinel file "+v.info.SentinelFile)
+	}
 
 	var items []string
 	for _, k := range v.store.ApplicableKeys() {
@@ -411,9 +418,18 @@ func (v *view) text() []string {
 	}
 
 	// The spec's example ends at the settings. What status-json has that it does not show follows,
-	// in this order: the gate, the changes accepted, the estimate, the per-table counts.
+	// in this order: the build and the times, the stop request, the gate, the changes accepted, the
+	// roots skipped and recovered, the estimate, the per-table counts.
+	label("version", fmt.Sprintf("%s (protocol %d)", v.info.Version, protocolVersion))
+	label("time", fmt.Sprintf("started %s, now %s", rfc3339(v.info.StartedAt), rfc3339(r.now)))
+	stop := "not requested"
+	if r.stop {
+		stop = "requested"
+	}
+	label("stop", stop)
 	lines = append(lines, v.replicationLines(r)...)
 	label("changes", changesText(r.snap.Revision))
+	label("roots", fmt.Sprintf("skipped %d, recovered %d", st.RootsSkipped, st.RootsRecovered))
 	if e := st.Estimate; e != nil {
 		eta := "unknown"
 		if e.ETAKnown {
@@ -437,14 +453,14 @@ func (v *view) text() []string {
 const replicationIndent = "               "
 
 // replicationLines says whether the replication block is enabled and whether this run uses the
-// gate; for a run that does, the configured cache_ttl, when the last pass was and each server's last
-// verdict with when it was checked.
+// gate, with the configured cache_ttl either way; for a run that uses it, when the last pass was
+// and each server's last verdict with when it was checked.
 func (v *view) replicationLines(r read) []string {
 	if !r.hasGate {
 		if !v.info.ReplicationEnabled {
-			return []string{"  replication: not enabled"}
+			return []string{fmt.Sprintf("  replication: not enabled, cache_ttl %ds", v.info.CacheTTL)}
 		}
-		return []string{"  replication: enabled, not used by this run"}
+		return []string{fmt.Sprintf("  replication: enabled, not used by this run, cache_ttl %ds", v.info.CacheTTL)}
 	}
 	enabled := "not enabled"
 	if v.info.ReplicationEnabled {
@@ -461,20 +477,23 @@ func (v *view) replicationLines(r read) []string {
 	return lines
 }
 
-// verdictText is one server's last verdict on one line, with its age and the time it was checked.
+// verdictText is one server's last verdict on one line: the verdict, the measured lag (or that it is
+// unknown) and the tolerance it was judged by, which are not always in a cause's detail and can differ
+// from the current setting, and its age and the time it was checked.
 func verdictText(s ServerVerdict, now time.Time) string {
 	if s.CheckedAt.IsZero() {
 		return s.Server + " not checked yet"
 	}
 	age, at := FormatDuration(now.Sub(s.CheckedAt)), rfc3339(s.CheckedAt)
-	if s.Cause != "" {
-		return fmt.Sprintf("%s %s (%s), checked %s ago (%s)", s.Server, s.Cause, s.Detail, age, at)
-	}
 	lag := "lag unknown"
 	if s.Lag != nil {
 		lag = fmt.Sprintf("lag %ds", *s.Lag)
 	}
-	return fmt.Sprintf("%s healthy, %s, tolerance %ds, checked %s ago (%s)", s.Server, lag, s.Tolerance, age, at)
+	verdict := "healthy"
+	if s.Cause != "" {
+		verdict = fmt.Sprintf("%s (%s)", s.Cause, s.Detail)
+	}
+	return fmt.Sprintf("%s %s, %s, tolerance %ds, checked %s ago (%s)", s.Server, verdict, lag, s.Tolerance, age, at)
 }
 
 // changesText counts the runtime changes the run has accepted (the store's revision).

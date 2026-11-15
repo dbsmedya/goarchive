@@ -208,12 +208,23 @@ type holdInfo struct {
 // the round's gate revision. A pass is valid only for the gate revision it was
 // judged under: a cached pass of an older revision never hits, and a round that
 // passes under a revision replaced while it ran is discarded, recording and
-// returning nothing, and the next round runs at once. The call's hold state is
-// kept through a discard, so the stop rules above are unchanged by it. After a
-// failing round the wait for the interval ends at once when a gate setting
-// changed, and goes on for the time left when another setting did. Every
-// completed round, passing or failing, is reported to the store, which is what
-// lets a raise of the tolerance above its configured value take its next step.
+// returning nothing, and the next round runs at once. That discard is silent: the
+// servers that looked recovered in the round are not logged as recovered, and stay in
+// the call's hold map, so their hold goes on from where it began. The call's own hold
+// state, when it began to hold, is kept through any discard, so the stop rules above
+// are unchanged by it.
+//
+// The decision to return is the last act of a pass: the revision is read again after
+// the entries that say the servers recovered and the job resumes are written and the
+// gate's mutex is taken; nothing that can wait follows the read. A setting that changes
+// while those entries are written therefore outdates a pass whose entries already stand.
+// They are not retracted: one further line says that the pass does not stand, and the
+// call keeps holding from its own start, but the per-server hold records those entries
+// ended are gone, so a server that still fails starts a new one. After a failing round
+// the wait for the interval ends at once when a gate setting changed (and the log says
+// so), and goes on for the time left when another setting did. Every completed round,
+// passing or failing, is reported to the store, which is what lets a raise of the
+// tolerance above its configured value take its next step.
 func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
@@ -225,8 +236,11 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 
 	holds := make(map[string]holdInfo)
 	var firstHold time.Time
+	// passed is set by the decision to return, which clears the hold record itself: nothing
+	// that takes the mutex may follow that decision.
+	passed := false
 	defer func() {
-		if firstHold.IsZero() {
+		if passed || firstHold.IsZero() {
 			return
 		}
 		g.mu.Lock()
@@ -246,6 +260,11 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 		interval := config.CheckIntervalDuration(snap.CheckInterval)
 
 		allOK := true
+		// pending holds the recoveries of this round that cannot be told apart from a pass that
+		// will be discarded, until the round is known to stand; failed says a server of this round
+		// has failed, so the round is no pass and nothing is pending.
+		var pending []recovery
+		failed := false
 		for i, srv := range g.servers {
 			// Decided per probe: once any server has reported unhealthy, in
 			// this round or an earlier one, the call is a hold and a stop
@@ -260,6 +279,7 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
 			if cerr := ctx.Err(); cerr != nil {
+				g.flushRecoveries(holds, &pending)
 				return cerr
 			}
 			// Nor is a probe the stop aborted. Once the call holds, a stop
@@ -267,6 +287,7 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			// returned: a healthy result is not a pass to finish.
 			if holding {
 				if err := g.stopHold(ctx, stop, firstHold); err != nil {
+					g.flushRecoveries(holds, &pending)
 					return err
 				}
 			}
@@ -285,7 +306,20 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 				}
 			}
 
-			g.transition(holds, &firstHold, srv.id, ok, cause, detail, interval)
+			if ok {
+				if prev, held := holds[srv.id]; held {
+					rec := recovery{id: srv.id, since: prev.since, at: g.now()}
+					if failed {
+						g.logRecovered(holds, rec)
+					} else {
+						pending = append(pending, rec)
+					}
+				}
+			} else {
+				g.flushRecoveries(holds, &pending)
+				failed = true
+				g.transition(holds, &firstHold, srv.id, cause, detail, interval)
+			}
 			g.record(i, ok, cause, detail, lag, tolerance, firstHold)
 			if !ok {
 				allOK = false
@@ -300,26 +334,40 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 		if allOK {
 			if g.store.Load().GateRevision != snap.GateRevision {
 				// Passed under settings that have since been replaced: record
-				// nothing, return nothing, and judge the fleet again at once.
+				// nothing, log no recovery (pending is dropped, the hold map kept),
+				// return nothing, and judge the fleet again at once.
 				continue
 			}
-			g.mu.Lock()
-			g.lastPass, g.passRev = g.now(), snap.GateRevision
-			g.mu.Unlock()
-
+			g.flushRecoveries(holds, &pending)
 			if !firstHold.IsZero() {
 				g.logger.Infow(fmt.Sprintf("replication gate passed: all %d servers healthy; job resuming after %s held",
 					len(g.servers), g.now().Sub(firstHold).Round(time.Second)), logger.Live)
 			}
+			// The decision. The entry above can wait on the log, and the mutex on a reader: the
+			// revision is read once more after both, as the last thing before the call returns.
+			if g.finishPass(snap.GateRevision, firstHold) {
+				passed = true
 
-			return nil
+				return nil
+			}
+			// A setting changed while the entries above were written. They are out and stay; this
+			// line says that the pass they describe does not stand.
+			if !firstHold.IsZero() {
+				g.logger.Infow("replication gate settings changed while the pass was being written: the pass above does not stand, and the fleet is judged again at once", logger.Live)
+			}
+
+			continue
 		}
 
 		if err := g.stopHold(ctx, stop, firstHold); err != nil {
 			return err
 		}
-		if err := g.wait(ctx, stop, snap, interval); err != nil {
+		superseded, err := g.wait(ctx, stop, snap, interval)
+		if err != nil {
 			return err
+		}
+		if superseded {
+			g.logger.Infow(fmt.Sprintf("replication gate settings changed: the fleet is judged again at once, not in %s", interval), logger.Live)
 		}
 		if err := g.stopHold(ctx, stop, firstHold); err != nil {
 			return err
@@ -328,46 +376,70 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 }
 
 // cachedPass reports whether the last pass is a hit: judged under the current gate
-// revision and younger than cache_ttl.
+// revision and younger than cache_ttl. The revision is read last, with the cache state
+// already held under the mutex: a call that waited for the mutex is judged by the revision
+// of the moment it decides, not of the moment it began.
 func (g *Gate) cachedPass() bool {
-	rev := g.store.Load().GateRevision
-
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	return g.ttl > 0 && !g.lastPass.IsZero() && g.passRev == rev && g.now().Sub(g.lastPass) < g.ttl
+	if g.ttl <= 0 || g.lastPass.IsZero() || g.now().Sub(g.lastPass) >= g.ttl {
+		return false
+	}
+
+	return g.store.Load().GateRevision == g.passRev
+}
+
+// finishPass is the decision that lets a call return after a round that passed under gate
+// revision rev: under the mutex, the revision is read once more, and only if it is still rev
+// is the pass cached and the hold record cleared. It is the last thing a passing call does
+// that can wait; it reports whether the pass stands.
+func (g *Gate) finishPass(rev uint64, firstHold time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	at := g.now()
+	if g.store.Load().GateRevision != rev {
+		return false
+	}
+	g.lastPass, g.passRev = at, rev
+	if !firstHold.IsZero() && g.holdSince.Equal(firstHold) {
+		g.holdSince = time.Time{}
+	}
+
+	return true
 }
 
 // wait holds for the check interval after a failing round judged under snap. A change
 // of a gate setting (a different gate revision) ends it at once, since the round's
-// interval and judgement are obsolete; a change of any other setting only wakes the
-// wait, which then goes on for the time that is left. A stop returns nil with time
-// left, so the caller's check decides.
-func (g *Gate) wait(ctx context.Context, stop <-chan struct{}, snap *tuning.Snapshot, interval time.Duration) error {
+// interval and judgement are obsolete, and superseded says so; a change of any other
+// setting only wakes the wait, which then goes on for the time that is left. A stop
+// returns nil with time left, so the caller's check decides.
+func (g *Gate) wait(ctx context.Context, stop <-chan struct{}, snap *tuning.Snapshot, interval time.Duration) (superseded bool, err error) {
 	deadline := g.now().Add(interval)
 
 	for {
 		cur := g.store.Load()
 		if cur.GateRevision != snap.GateRevision {
-			return nil
+			return true, nil
 		}
 		left := deadline.Sub(g.now())
 		if left <= 0 {
-			return nil
+			return false, nil
 		}
 
 		wake := cur.Changed()
 		if err := g.sleep(ctx, stop, wake, left); err != nil {
-			return err
+			return false, err
 		}
 		if stopped(stop) {
-			return nil
+			return false, nil
 		}
 		select {
 		case <-wake:
 			// The snapshot was replaced: decide again from the new one.
 		default:
-			return nil
+			return false, nil
 		}
 	}
 }
@@ -420,32 +492,47 @@ func withStop(ctx context.Context, stop <-chan struct{}) (context.Context, conte
 	return probe, cancel
 }
 
-// transition advances one server's hold state and emits exactly one log line
-// per failing server per tick. Healthy servers that were already healthy say
-// nothing. No line is logged above Warn: zap attaches a stack trace at Error
-// level, and an unreachable replica must not produce a stack-trace storm.
+// recovery is a held server's return to health, found in the round being judged. It is
+// logged, and the server removed from the call's hold map, only once the round is known to
+// stand: a round that passes under a revision since replaced is discarded, and what it found
+// is not a recovery.
+type recovery struct {
+	id    string
+	since time.Time // when the hold began
+	at    time.Time // when the probe found the server healthy
+}
+
+// logRecovered says that a server recovered and ends its hold.
+func (g *Gate) logRecovered(holds map[string]holdInfo, r recovery) {
+	delete(holds, r.id)
+	g.logger.Infow(fmt.Sprintf("replication recovered: server %s healthy; held %s",
+		r.id, r.at.Sub(r.since).Round(time.Second)), logger.Live)
+}
+
+// flushRecoveries logs the recoveries a round held back, in the order the servers were
+// probed, and clears them. A round calls it when it stands: a server of it has failed, the
+// round passed under the current revision, or the call ends.
+func (g *Gate) flushRecoveries(holds map[string]holdInfo, pending *[]recovery) {
+	for _, r := range *pending {
+		g.logRecovered(holds, r)
+	}
+	*pending = nil
+}
+
+// transition advances one failing server's hold state and emits exactly one log line
+// per failing server per tick; a server's recovery is logRecovered's. No line is logged
+// above Warn: zap attaches a stack trace at Error level, and an unreachable replica must
+// not produce a stack-trace storm.
 func (g *Gate) transition(
 	holds map[string]holdInfo,
 	firstHold *time.Time,
 	id string,
-	ok bool,
 	cause holdCause,
 	detail string,
 	interval time.Duration,
 ) {
 	prev, holding := holds[id]
 	now := g.now()
-
-	if ok {
-		if !holding {
-			return
-		}
-		delete(holds, id)
-		g.logger.Infow(fmt.Sprintf("replication recovered: server %s healthy; held %s",
-			id, now.Sub(prev.since).Round(time.Second)), logger.Live)
-
-		return
-	}
 
 	if !holding {
 		holds[id] = holdInfo{cause: cause, since: now}

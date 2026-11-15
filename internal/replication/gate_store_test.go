@@ -3,8 +3,10 @@ package replication
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
+	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
@@ -586,5 +589,222 @@ func TestGateNewTakesTheStore(t *testing.T) {
 	}
 	if got := g.store.Start(); got.SecondsBehindSourceWithin != 10 || got.CheckInterval != 5 {
 		t.Errorf("a constant store starts at %+v, want the configured tolerance 10 and interval 5", got)
+	}
+}
+
+// observedLog is the gate's logger over a writer a test can act in: the writer records every line it is
+// given, whole, and calls on with the message, so a setter can be made to land during the output of one
+// particular entry. It is an observer, not a fault: nothing is dropped, delayed or changed.
+type observedLog struct {
+	mu    sync.Mutex
+	lines []map[string]any
+	on    func(msg string)
+}
+
+func (o *observedLog) Write(p []byte) (int, error) {
+	var m map[string]any
+	if err := json.Unmarshal(p, &m); err != nil {
+		return len(p), nil
+	}
+	o.mu.Lock()
+	o.lines = append(o.lines, m)
+	on := o.on
+	o.mu.Unlock()
+	if on != nil {
+		msg, _ := m["msg"].(string)
+		on(msg)
+	}
+
+	return len(p), nil
+}
+
+func (o *observedLog) infos() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return msgsAt(o.lines, "info")
+}
+
+func (o *observedLog) warns() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return msgsAt(o.lines, "warn")
+}
+
+// observeGate swaps h's gate logger for one over an observedLog.
+func observeGate(t *testing.T, h *gateHarness) *observedLog {
+	t.Helper()
+	obs := &observedLog{}
+	log, err := logger.New(&config.LoggingConfig{Level: "debug", Format: "json", Output: "stdout"}, logger.Options{Stdout: obs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.gate.logger = log
+
+	return obs
+}
+
+// TestGatePassRevalidatedAfterTheFinalLog (spec §4.5 D16, §4.6; Codex batch 2 finding 1): the gate's
+// last act before it lets a DELETE go is to look at the revision, after every wait the pass can contain.
+// The call holds at lag 70 under tolerance 60, then probes lag 40: a pass. While the entry that says so
+// is being written, the operator lowers the tolerance to 10. The call must not return on the old
+// tolerance: it judges the fleet again, holds at 10, and passes only when the replica is under it.
+func TestGatePassRevalidatedAfterTheFinalLog(t *testing.T) {
+	r := &fakeReader{responses: []readerResult{
+		okRes(lagSnapshot(70)), okRes(lagSnapshot(40)), okRes(lagSnapshot(40)), okRes(lagSnapshot(0)),
+	}}
+	h := newStoreHarness(t, time.Minute, 60, 5, r)
+	slept := recordSleeps(h)
+	obs := observeGate(t, h)
+	fired := false
+	obs.on = func(msg string) {
+		if !fired && strings.HasPrefix(msg, "replication gate passed:") {
+			fired = true
+			setGate(t, h.store, tuning.SecondsBehindSourceWithin, "10")
+		}
+	}
+
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
+		t.Fatalf("WaitForLag() = %v", err)
+	}
+	if !fired {
+		t.Fatal("the setter never ran: the final pass entry was not written")
+	}
+	if r.calls != 4 {
+		t.Errorf("reads = %d, want 4: hold at 70, a pass at 60 that a setter outdated, a hold at 10, a pass at 10", r.calls)
+	}
+	if !slices.Equal(*slept, []time.Duration{5 * time.Second, 5 * time.Second}) {
+		t.Errorf("waits = %v, want the two intervals after the two failing rounds", *slept)
+	}
+	rec := h.gate.Record()
+	if got := rec.Servers[0].Tolerance; got != 10 || !rec.Servers[0].Healthy {
+		t.Errorf("the verdict the call returned on: tolerance %d, healthy %v, want a pass judged at the lowered tolerance 10", got, rec.Servers[0].Healthy)
+	}
+	if countWith(obs.warns(), "lag=40s tolerance=10s") != 1 {
+		t.Errorf("warn lines = %#v, want one hold at tolerance 10", obs.warns())
+	}
+	if countWith(obs.infos(), "gate settings changed") != 1 {
+		t.Errorf("info lines = %#v, want one line saying that the settings changed while the pass was written, so the pass above does not stand", obs.infos())
+	}
+	// What the docs promise of this late case (README_OPERATIONS, What can change while it runs): the
+	// entries already written stand, and the per-server hold they ended is gone, so the repeat hold is a
+	// new entry, not a continuation of the first.
+	if n := countWith(obs.infos(), "replication recovered:"); n != 2 {
+		t.Errorf("info lines = %#v, want the recovery written before the setter and the one that follows the repeat hold", obs.infos())
+	}
+	if n := countWith(obs.infos(), "replication gate passed:"); n != 2 {
+		t.Errorf("info lines = %#v, want the pass written before the setter, which stands, and the final one", obs.infos())
+	}
+	if countWith(obs.warns(), "(held ") != 0 {
+		t.Errorf("warn lines = %#v, want the repeat hold as a new entry: the one the early recovery ended is gone", obs.warns())
+	}
+	// The pass that stands is cached under the revision it was judged by.
+	before := r.calls
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil || r.calls != before {
+		t.Errorf("a second call = %v after %d more reads, want a cache hit under the current revision", err, r.calls-before)
+	}
+}
+
+// waitBlockedOnGateMutex returns when some goroutine in WaitForLag is waiting for a mutex, by looking
+// at the goroutine stacks: the test may then act while a call is certainly inside the decision.
+func waitBlockedOnGateMutex(t *testing.T) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		n := runtime.Stack(buf, true)
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if strings.Contains(g, "(*Gate).WaitForLag") && strings.Contains(g, "sync.(*Mutex).Lock") {
+				return
+			}
+		}
+	}
+	t.Fatal("no call of WaitForLag is waiting for the gate's mutex")
+}
+
+// TestGateCacheHitRevalidatedAfterTheMutex (Codex batch 2 finding 1, the cache-hit path): a cached pass
+// is a hit only under the revision current when the decision is made, not when the call began. A call
+// waits for the gate's mutex; a tolerance setter is accepted meanwhile; when the mutex is free the call
+// must judge the fleet again at the new tolerance instead of returning on the pass of the old one.
+func TestGateCacheHitRevalidatedAfterTheMutex(t *testing.T) {
+	r := &fakeReader{responses: []readerResult{okRes(lagSnapshot(40)), okRes(lagSnapshot(40))}}
+	h := newStoreHarness(t, time.Minute, 60, 5, r)
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil || r.calls != 1 {
+		t.Fatalf("the first call = %v after %d reads, want a pass after one", err, r.calls)
+	}
+
+	stop := make(chan struct{})
+	h.gate.mu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- h.gate.WaitForLag(context.Background(), stop) }()
+	waitBlockedOnGateMutex(t)
+	setGate(t, h.store, tuning.SecondsBehindSourceWithin, "10")
+	h.gate.mu.Unlock()
+
+	// At 10 the replica (lag 40) holds, so a call that judges again keeps holding: a stop ends that
+	// hold. What matters is that the call probed at all. (A stop never cuts a pass short, so a call
+	// that took the old pass would have returned nil before this.)
+	close(stop)
+	if err := <-done; !errors.Is(err, ErrStopped) {
+		t.Errorf("the call returned %v, want it to have judged at tolerance 10 (a hold ended by a stop)", err)
+	}
+	if r.calls != 2 {
+		t.Errorf("reads = %d, want 2: the call probed again instead of taking the pass of the old tolerance", r.calls)
+	}
+}
+
+// TestGateDiscardedPassLogsNoRecovery (TEL1-M3): a pass that a replaced revision discards is not a
+// recovery. The server held at lag 70 under tolerance 60; a round at lag 40 passes while the tolerance
+// is lowered to 10, so it is discarded and the repeat round holds again. The log says "recovered" once,
+// when the server truly does, and the hold goes on from where it began.
+func TestGateDiscardedPassLogsNoRecovery(t *testing.T) {
+	var h *gateHarness
+	r := &fakeReader{responses: []readerResult{
+		okRes(lagSnapshot(70)),
+		{snapshot: lagSnapshot(40), before: func() { setGate(t, h.store, tuning.SecondsBehindSourceWithin, "10") }},
+		okRes(lagSnapshot(40)),
+		okRes(lagSnapshot(0)),
+	}}
+	h = newStoreHarness(t, time.Minute, 60, 5, r)
+	recordSleeps(h)
+
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
+		t.Fatalf("WaitForLag() = %v", err)
+	}
+	infos := msgsAt(h.lines(), "info")
+	if n := countWith(infos, "replication recovered:"); n != 1 {
+		t.Errorf("info lines = %#v, want one recovery: a discarded pass is not one", infos)
+	}
+	if countWith(infos, "held 10s") != 1 {
+		t.Errorf("info lines = %#v, want the recovery to say held 10s: the hold began in round 1 and was never over", infos)
+	}
+	if warns := msgsAt(h.lines(), "warn"); countWith(warns, "lag=40s tolerance=10s") != 1 || countWith(warns, "(held 5s)") != 1 {
+		t.Errorf("warn lines = %#v, want the repeat round's hold to continue the first (held 5s) rather than start another", warns)
+	}
+}
+
+// TestGateSkippedWaitSaysSo (TEL1-M4): a failing round says "retrying in 5s"; when a gate setting
+// changes and the next round runs at once, the log says that, so the line above is not left standing.
+func TestGateSkippedWaitSaysSo(t *testing.T) {
+	var h *gateHarness
+	r := &fakeReader{responses: []readerResult{
+		{snapshot: stoppedSnapshot(), before: func() { setGate(t, h.store, tuning.CheckInterval, "2") }},
+		okRes(healthySnapshot()),
+	}}
+	h = newStoreHarness(t, 0, 10, 5, r)
+	slept := recordSleeps(h)
+
+	if err := h.gate.WaitForLag(context.Background(), nil); err != nil {
+		t.Fatalf("WaitForLag() = %v", err)
+	}
+	if len(*slept) != 0 {
+		t.Errorf("waits = %v, want none: the changed interval ends the first round's wait before it starts", *slept)
+	}
+	infos := msgsAt(h.lines(), "info")
+	if countWith(infos, "gate settings changed") != 1 {
+		t.Errorf("info lines = %#v, want one line saying the settings changed and the fleet is judged again at once", infos)
+	}
+	if warns := msgsAt(h.lines(), "warn"); countWith(warns, "retrying in 5s") != 1 {
+		t.Errorf("warn lines = %#v, want the hold line the change outdated", warns)
 	}
 }
