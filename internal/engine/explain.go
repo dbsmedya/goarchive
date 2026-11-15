@@ -87,7 +87,7 @@ func Explain(ctx context.Context, cfg Config) (*Explanation, error) {
 	if err := src.QueryRowContext(ctx, rangeCountSQL(r.root, cfg.Spec.Where)).Scan(&ex.Count); err != nil {
 		return nil, fmt.Errorf("engine: dry-run count on %s: %w", r.root.Table, err)
 	}
-	roots, err := r.fetch(ctx, src, nil)
+	roots, err := r.fetch(ctx, src, nil, cfg.Processing.BatchSize)
 	if err != nil {
 		return nil, err
 	}

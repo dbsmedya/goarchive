@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/dbsmedya/goarchive/v3/internal/key"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // deleteTree deletes a batch's discovered rows from the source, children first (spec
@@ -31,7 +32,7 @@ func (r *run) deleteTree(ctx context.Context, t *tree) error {
 		c := newChunkCursor(t.keys[n.Table])
 		for !c.done() {
 			if issued {
-				if err := interruptibleSleep(ctx, nil, seconds(r.cfg.Processing.DeleteSleepSeconds)); err != nil {
+				if err := followSleep(ctx, nil, r.tune, func(s tuning.Settings) float64 { return s.DeleteSleepSeconds }); err != nil {
 					return err
 				}
 			}

@@ -14,6 +14,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 	"github.com/dbsmedya/goarchive/v3/internal/replication"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 	"github.com/dbsmedya/goarchive/v3/internal/types"
 )
 
@@ -34,6 +35,13 @@ type run struct {
 
 	report   *Report
 	progress *progressTracker // nil unless --progress is on
+
+	// tune is the settings store: cfg.Tuning, or a store that never changes. size is the
+	// batch_size the loop or a recovery page loaded for the batch or page in flight; every
+	// statement of that batch or page is chunked by it, so no function below the loop reads the
+	// store for it (spec fact 1).
+	tune *tuning.Store
+	size int
 }
 
 // caps are the statement caps preflight computed (spec §4.3), by table. The engine never
@@ -67,6 +75,12 @@ func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *trackin
 		keys: res.Keys, caps: capsOf(res), job: job,
 		report: &Report{Copied: map[string]int64{}, Deleted: map[string]int64{}, Conversions: map[string]map[uint16]uint64{},
 			Verified: map[string]int64{}},
+		tune: cfg.Tuning, size: cfg.Processing.BatchSize,
+	}
+	if r.tune == nil {
+		p := cfg.Processing
+		r.tune = tuning.Constant(tuning.Settings{BatchSize: p.BatchSize, BatchDeleteSize: p.BatchDeleteSize,
+			SleepSeconds: p.SleepSeconds, DeleteSleepSeconds: p.DeleteSleepSeconds})
 	}
 	if r.typ != jobspec.Purge {
 		r.report.Verification = cfg.Verification
@@ -102,7 +116,7 @@ func newRun(ctx context.Context, cfg Config, res *preflight.Result, job *trackin
 // the batch size, the source cap and the destination cap, so both servers see the same
 // chunks in the same order.
 func (r *run) byKeyChunk(table string) int {
-	n := min(r.cfg.Processing.BatchSize, r.caps.source[table])
+	n := min(r.pageSize(), r.caps.source[table])
 	if d, ok := r.caps.destination[table]; ok {
 		n = min(n, d)
 	}
@@ -110,11 +124,45 @@ func (r *run) byKeyChunk(table string) int {
 }
 
 func (r *run) discoveryChunk(table string) int {
-	return min(r.cfg.Processing.BatchSize, r.caps.discovery[table])
+	return min(r.pageSize(), r.caps.discovery[table])
 }
 
+// deleteChunk is how many keys the next DELETE on table carries: batch_delete_size as the store
+// holds it now, within the statement cap. It is read after the DELETE's sleep and gate decision
+// (deleteTree, step 4), so a size changed during either applies to this DELETE.
 func (r *run) deleteChunk(table string) int {
-	return min(r.cfg.Processing.BatchDeleteSize, r.caps.source[table])
+	n := r.cfg.Processing.BatchDeleteSize
+	if r.tune != nil {
+		n = r.tune.Load().BatchDeleteSize
+	}
+	return min(n, r.caps.source[table])
+}
+
+// pageSize is the batch_size of the batch or recovery page in flight: the value loadSize read
+// when it began, or the starting value before the first.
+func (r *run) pageSize() int {
+	if r.size > 0 {
+		return r.size
+	}
+	return r.cfg.Processing.BatchSize
+}
+
+// loadSize reads batch_size once, at the top of a batch or a recovery page, and keeps it for the
+// whole of it: the fetch limit, the end test and the chunk size of every read, discovery and
+// verification statement (spec fact 1). A change made during the batch applies to the next.
+func (r *run) loadSize() int {
+	if r.tune != nil {
+		r.size = r.tune.Load().BatchSize
+	}
+	return r.pageSize()
+}
+
+// pauseGate is the run's pause gate: the sentinel file and the store's socket pause.
+func (r *run) pauseGate() *sentinelGate {
+	g := newSentinelGate(r.cfg.Processing.SentinelFile, r.log)
+	g.tune = r.tune
+	g.progress = r.progress
+	return g
 }
 
 // execute recovers the job's logged work, then runs the loop.
@@ -180,8 +228,7 @@ func (r *run) trackProgress() {
 // loop runs batches from the start of the where range (spec §6.5): each fetch continues
 // after the last key of the previous batch, held in memory only.
 func (r *run) loop(ctx context.Context) error {
-	sentinel := newSentinelGate(r.cfg.Processing.SentinelFile, r.log)
-	sentinel.progress = r.progress
+	sentinel := r.pauseGate()
 	var last key.Key
 	for {
 		if stopRequested(r.cfg.Stop) {
@@ -195,7 +242,8 @@ func (r *run) loop(ctx context.Context) error {
 			r.report.Stopped = true
 			return nil
 		}
-		roots, err := r.fetch(ctx, r.cfg.Source, last)
+		size := r.loadSize()
+		roots, err := r.fetch(ctx, r.cfg.Source, last, size)
 		if err != nil {
 			return err
 		}
@@ -214,11 +262,11 @@ func (r *run) loop(ctx context.Context) error {
 		}
 		r.report.Batches++
 		r.trackProgress()
-		if len(roots) < r.cfg.Processing.BatchSize {
+		if len(roots) < size {
 			r.progress.markComplete()
 			return nil
 		}
-		if err := interruptibleSleep(ctx, r.cfg.Stop, seconds(r.cfg.Processing.SleepSeconds)); err != nil {
+		if err := followSleep(ctx, r.cfg.Stop, r.tune, func(s tuning.Settings) float64 { return s.SleepSeconds }); err != nil {
 			return err
 		}
 	}
@@ -226,12 +274,12 @@ func (r *run) loop(ctx context.Context) error {
 
 // fetch reads the next batch of root keys (spec §7.2) on q: the source pool for a run, the
 // connection Explain already holds for dry-run (Codex M6 B1).
-func (r *run) fetch(ctx context.Context, q reader, last key.Key) ([]key.Key, error) {
+func (r *run) fetch(ctx context.Context, q reader, last key.Key, size int) ([]key.Key, error) {
 	var args []any
 	if last != nil {
 		args = key.AfterArgs(last)
 	}
-	args = append(args, r.cfg.Processing.BatchSize)
+	args = append(args, size)
 	rows, err := q.QueryContext(ctx, fetchSQL(r.root, r.cfg.Spec.Where, last != nil), args...)
 	if err != nil {
 		return nil, fmt.Errorf("engine: root fetch on %s: %w", r.root.Table, err)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -128,11 +129,8 @@ func (c *Config) validateReplication() ValidationErrors {
 		})
 	}
 
-	if c.Replication.SecondsBehindSourceWithin < 0 {
-		errors = append(errors, ValidationError{
-			Field:   "replication.seconds_behind_source_within",
-			Message: "seconds_behind_source_within cannot be negative",
-		})
+	if err := ValidateSecondsBehindSourceWithin(c.Replication.SecondsBehindSourceWithin); err != nil {
+		errors = append(errors, ValidationError{Field: "replication.seconds_behind_source_within", Message: err.Error()})
 	}
 
 	if c.Replication.CacheTTL < 0 {
@@ -142,11 +140,10 @@ func (c *Config) validateReplication() ValidationErrors {
 		})
 	}
 
-	if c.Replication.Enabled && c.Replication.CheckInterval <= 0 {
-		errors = append(errors, ValidationError{
-			Field:   "replication.check_interval",
-			Message: "check_interval must be positive when replication is enabled",
-		})
+	if c.Replication.Enabled {
+		if err := ValidateCheckInterval(c.Replication.CheckInterval); err != nil {
+			errors = append(errors, ValidationError{Field: "replication.check_interval", Message: err.Error()})
+		}
 	}
 
 	seenAddr := make(map[string]bool, len(c.Replication.Servers))
@@ -230,18 +227,12 @@ func (c *Config) validateProcessing() ValidationErrors {
 func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingConfig) ValidationErrors {
 	var errors ValidationErrors
 
-	if processing.BatchSize <= 0 {
-		errors = append(errors, ValidationError{
-			Field:   prefix + ".batch_size",
-			Message: "batch_size must be positive",
-		})
+	if err := ValidateBatchSize(processing.BatchSize); err != nil {
+		errors = append(errors, ValidationError{Field: prefix + ".batch_size", Message: err.Error()})
 	}
 
-	if processing.BatchDeleteSize <= 0 {
-		errors = append(errors, ValidationError{
-			Field:   prefix + ".batch_delete_size",
-			Message: "batch_delete_size must be positive",
-		})
+	if err := ValidateBatchDeleteSize(processing.BatchDeleteSize); err != nil {
+		errors = append(errors, ValidationError{Field: prefix + ".batch_delete_size", Message: err.Error()})
 	}
 
 	if err := ValidateSleepSeconds(processing.SleepSeconds); err != nil {
@@ -261,6 +252,39 @@ func (c *Config) validateProcessingConfig(prefix string, processing *ProcessingC
 // bare key; the file wraps it as ValidationError{Field: prefix + ".key", Message: err.Error()},
 // and a setter reports the same text. A value out of range is refused, never clamped.
 
+// ValidateBatchSize judges a batch_size value: positive.
+func ValidateBatchSize(v int) error {
+	if v <= 0 {
+		return errors.New("batch_size must be positive")
+	}
+	return nil
+}
+
+// ValidateBatchDeleteSize judges a batch_delete_size value: positive.
+func ValidateBatchDeleteSize(v int) error {
+	if v <= 0 {
+		return errors.New("batch_delete_size must be positive")
+	}
+	return nil
+}
+
+// ValidateSecondsBehindSourceWithin judges a seconds_behind_source_within value: not negative.
+func ValidateSecondsBehindSourceWithin(v int) error {
+	if v < 0 {
+		return errors.New("seconds_behind_source_within cannot be negative")
+	}
+	return nil
+}
+
+// ValidateCheckInterval judges a check_interval value: positive. The file applies it only
+// when replication is enabled, which is the only time the setting exists; the message says so.
+func ValidateCheckInterval(v int) error {
+	if v <= 0 {
+		return errors.New("check_interval must be positive when replication is enabled")
+	}
+	return nil
+}
+
 // ValidateSleepSeconds judges a sleep_seconds value (SLP-1, D14): not negative, finite, and
 // small enough to be a time.Duration.
 func ValidateSleepSeconds(v float64) error { return validateSleep("sleep_seconds", v) }
@@ -273,6 +297,16 @@ func ValidateDeleteSleepSeconds(v float64) error { return validateSleep("delete_
 // below it to fit.
 const maxDurationNanoseconds = float64(1 << 63)
 
+// sleepNanoseconds is a configured sleep in nanoseconds, as a float64: the expression the run
+// converts by, in one place.
+func sleepNanoseconds(s float64) float64 { return s * float64(time.Second) }
+
+// SleepDuration converts a configured sleep to a duration. It is the one conversion: the run
+// sleeps by it and ValidateSleepSeconds judges by it, so that every sleep the validators accept
+// converts in range. A value they refuse (a negative, NaN, infinite or over-large one) has no
+// defined conversion; callers hold validated values.
+func SleepDuration(s float64) time.Duration { return time.Duration(sleepNanoseconds(s)) }
+
 // validateSleep refuses a negative sleep, a NaN or infinite one, and one whose value in
 // nanoseconds does not fit a duration. The last test is made on the converted value, with the
 // expression the engine converts a sleep by (s * float64(time.Second)), not on a constant in
@@ -284,7 +318,7 @@ func validateSleep(key string, v float64) error {
 		return fmt.Errorf("%s cannot be negative", key)
 	case math.IsNaN(v) || math.IsInf(v, 0):
 		return fmt.Errorf("%s must be a finite number", key)
-	case v*float64(time.Second) >= maxDurationNanoseconds:
+	case sleepNanoseconds(v) >= maxDurationNanoseconds:
 		return fmt.Errorf("%s is too large: a sleep must fit a duration (less than 9.2e9 seconds)", key)
 	}
 	return nil
