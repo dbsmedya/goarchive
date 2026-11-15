@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 )
 
@@ -48,8 +49,9 @@ func interruptibleSleep(ctx context.Context, stop <-chan struct{}, d time.Durati
 	}
 }
 
-// seconds converts a configured number of seconds.
-func seconds(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
+// seconds converts a configured number of seconds by the conversion the validators judge
+// by (config.SleepDuration), so what they accept converts in range.
+func seconds(s float64) time.Duration { return config.SleepDuration(s) }
 
 // sentinelPollInterval is how often the sentinel file is checked while paused.
 const sentinelPollInterval = time.Second
