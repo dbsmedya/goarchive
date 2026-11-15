@@ -131,8 +131,8 @@ never gated. Absent, monitoring is off.
 |--------|-------------|---------|
 | `enabled` | Turn replication gating on | `false` |
 | `seconds_behind_source_within` | Lag tolerance in seconds for the asynchronous servers; `0` demands exact sync. Not negative | `10` |
-| `group_applier_queue_within` | The transactions a `type: group` server may have waiting to be applied; `0` tolerates none. Not negative. **Required, with no default, when a server is `type: group`**, whether or not the block is enabled; without one it may be absent, and a value that is set is still validated | — |
-| `group_certifier_queue_within` | The same for the transactions waiting to be certified | — |
+| `group_applier_queue_within` | The transactions any member of a `type: group` server's view may have waiting to be applied; `0` tolerates none. Not negative. **Required, with no default, when a server is `type: group`**, whether or not the block is enabled; without one it may be absent, and a value that is set is still validated | — |
+| `group_certifier_queue_within` | The same for the transactions waiting to be certified. Neither bound is a runtime setting: over the control socket they are unknown keys | — |
 | `check_interval` | Seconds between re-checks while holding; positive **when enabled**, and at most `9223372036` (the interval must fit a duration) | `5` |
 | `cache_ttl` | Seconds a **passing** verdict stays fresh; `0` checks every time. Not negative | `15` |
 | `servers` | The servers to monitor, asynchronous replicas and Group Replication members; at least one **when enabled** | — |
@@ -158,10 +158,11 @@ run's start: its plugin must be active, with a group name, and the source's own 
 member. A member listed without a type is an asynchronous server with no channel to gate on, and holds the job
 ([Replication gating](README_OPERATIONS.md#replication-gating)).
 
-> [!NOTE]
-> The gate does not probe a `type: group` server yet. `validate` and `dry-run` accept and check the listing, and
-> a run with one listed is refused before it starts, with a message saying so, so that no group server goes
-> unjudged. List it when the release that probes it is installed.
+The gate judges a group server by what the group says of itself: the state of every member of its view and the size of
+the applier and certification queues, against the two bounds above, and not by a lag
+([Group Replication members](README_OPERATIONS.md#group-replication-members)). Its account needs `SELECT` on two
+`performance_schema` tables instead of `REPLICATION CLIENT`
+([Permissions](README_PERMISSIONS.md#monitored-replicas-optional)).
 
 ### Channel selection
 

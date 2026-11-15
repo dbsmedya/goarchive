@@ -488,9 +488,55 @@ than being skipped. By default **every channel counts**; `channels` narrows that
 A server listed without a type is an asynchronous replica and needs a replication channel. A Group Replication
 member has none of its own that counts, so listed that way it holds the job with `REPLICATION_CONFIGURED`, whose
 detail ends with the hint that a Group Replication member is listed with `type: group`. To watch a member, list it
-with [`type: group`](README_CONFIGURATION.md#servers) and the two group bounds. The gate does not probe such a
-server yet: a run with one listed is refused before it starts, and `validate` and `dry-run` check the listing
-([`REPLICATION_TYPE_CHECK`](README_VALIDATION.md#replication_type_check)).
+with [`type: group`](README_CONFIGURATION.md#servers) and the two group bounds. `validate`, `dry-run` and a run's
+start check the listing ([`REPLICATION_TYPE_CHECK`](README_VALIDATION.md#replication_type_check)).
+
+### Group Replication members
+
+A server listed with `type: group` is judged by what the group says of itself, and not by a lag. Its account makes
+two reads on that server, the group's view and the members' counters
+([the grants](README_PERMISSIONS.md#monitored-replicas-optional)), and the server is unhealthy, in this order of
+reporting, when:
+
+1. **its own row is not `ONLINE`** in its own view, or the view has no row of its own;
+2. **any member of its view is not `ONLINE`** (`UNREACHABLE`, `RECOVERING`, `OFFLINE`, `ERROR`);
+3. **an applier queue is above `group_applier_queue_within`**, in transactions, on any member of the view;
+4. **a certification queue is above `group_certifier_queue_within`**, on any member of the view.
+
+Only when none of these found anything are two more things checked, and either holds the job:
+
+- **Coverage:** every member of the view must have a row in the counters, with its member id and a view id. A member
+  without one is `GROUP_STATS_NOT_RUNNING`, because a queue of zero says nothing of it.
+- **The source rule:** when the source is an `ONLINE` member of a group, the view of the listed server must contain it.
+  A listed member of another group, or one cut off from the source, holds the job with `GROUP_SOURCE_NOT_IN_VIEW`.
+  A source that is no member is not judged by this rule. The run tells the gate which it is when its preflight returns,
+  and until then a group server holds the job with `GROUP_SOURCE_NOT_TOLD`: no group server is judged without it.
+
+Things to know:
+
+- **All rows of the listed server's view are judged**, not only its own, from the periodic copies it keeps of its peers'
+  counters, which can be about a second late. One listed member therefore already covers the whole present view.
+- **A member that is stopped** leaves its peers' views, so only its own entry holds the job for it: list every member
+  whose absence should hold the job. The group's configured size is not known to the gate.
+- **A queue equal to its bound passes**, and a bound of `0` tolerates no queue.
+- **There is no lag**: `lag_seconds` is `null` for a group server. Its verdict carries the largest applier queue and
+  the largest certification queue of its view at the last probe instead, and `null` for both before the first probe and
+  after a failed read. The tolerance of a round does not apply to it.
+- **A failed read** is classified as for a replica: `unreachable` for a connection that is gone, `unreadable` for
+  anything else, a missing `SELECT` on either table included, in which case the line names the table and the grant.
+  A server that is down when the run starts fails the connection phase, as every monitored server does; one that goes
+  down during the run holds the job as `unreachable`.
+- **The two bounds are configuration**, not settings: over the [control socket](#runtime-control) they are unknown keys,
+  and a change of the tolerance or the interval does not move them.
+
+A hold line has the shape of every other, with the finding as its detail:
+
+```
+replication hold: server gr2.internal:3306 unhealthy (GROUP_REPLICATION_APPLIER_QUEUE_WITHIN: Group member "…" reports an applier queue of 4210, above the bound 1000); job held, retrying in 5s
+```
+
+`status` says the same in the server's line, with the queues in place of the lag and the tolerance:
+`gr2.internal:3306 unhealthy (…), group, applier queue 4210, certifier queue 0, checked 3s ago (…)`.
 
 ### What you see while it holds
 
@@ -961,7 +1007,7 @@ number   = 1*digit [ "." 1*digit ]
 | `check_interval` | a whole number of seconds | archive and purge, with `replication.enabled` |
 
 `help` lists only the settings the run accepts, and a refused setting's getter is refused the same way.
-`cache_ttl` is not a setting: over the socket it is an unknown key. Left out on purpose: anything that
+`cache_ttl`, `group_applier_queue_within` and `group_certifier_queue_within` are not settings: over the socket they are unknown keys. Left out on purpose: anything that
 takes SQL, a host, a URL or a path (the sentinel file included); `verification`, `--force-triggers`,
 foreign-key checks, the preflight bypass; `replication.enabled`, the server list; an abort command.
 
@@ -1024,7 +1070,10 @@ reset.
 | `hold.servers[].healthy` | Its health at its last check |
 | `hold.servers[].cause` | `unreachable`, `unreadable` or `unhealthy` |
 | `hold.servers[].detail` | The reason as the hold's log line gives it |
-| `hold.servers[].lag_seconds` | The largest lag among the gated channels; `null` when a channel reports NULL or the read failed |
+| `hold.servers[].type` | `async` or `group` |
+| `hold.servers[].lag_seconds` | The largest lag among the gated channels; `null` when a channel reports NULL or the read failed, and always `null` for a group server |
+| `hold.servers[].applier_queue` | For a group server, the largest applier queue in its view at the last probe, in transactions; `null` when it was not probed or its read failed, and always `null` for an asynchronous server |
+| `hold.servers[].certifier_queue` | The same for the certification queue |
 | `hold.servers[].tolerance` | The tolerance it was judged by |
 | `hold.servers[].checked_at` | When it was last probed |
 | `counters.batches` | Batches completed |
@@ -1043,12 +1092,17 @@ reset.
 | `replication.enabled` | `replication.enabled` in the configuration |
 | `replication.used` | Whether this run uses the gate |
 | `replication.cache_ttl` | The configured `cache_ttl`, which is not a setting |
+| `replication.group_applier_queue_within` | The configured bound of a group server's applier queue, which is not a setting; `null` when no `type: group` server is listed |
+| `replication.group_certifier_queue_within` | The same for the certification queue |
 | `replication.last_pass_at` | When the gate last passed; `null` if it has not |
 | `replication.servers[].server` | Each server's last verdict: `host:port` |
 | `replication.servers[].healthy` | Healthy or not; `null` until it is first probed |
 | `replication.servers[].cause` | `unreachable`, `unreadable` or `unhealthy`; empty when healthy |
 | `replication.servers[].detail` | The rendered reason; empty when healthy |
-| `replication.servers[].lag_seconds` | The largest lag among the gated channels, or `null` |
+| `replication.servers[].type` | `async` or `group` |
+| `replication.servers[].lag_seconds` | The largest lag among the gated channels, or `null`; always `null` for a group server |
+| `replication.servers[].applier_queue` | For a group server, the largest applier queue in its view at the last probe, or `null` when it was not probed or its read failed; always `null` for an asynchronous server |
+| `replication.servers[].certifier_queue` | The same for the certification queue |
 | `replication.servers[].tolerance` | The tolerance the verdict was judged by |
 | `replication.servers[].checked_at` | When the server was probed; `null` until it is |
 | `changes` | How many runtime changes this run has accepted |

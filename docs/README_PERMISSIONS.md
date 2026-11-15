@@ -73,6 +73,19 @@ GRANT REPLICATION CLIENT ON *.* TO 'monitor'@'%';
 Only with `replication.enabled: true`. A server whose account lacks it holds the job rather than
 being skipped ([Replication gating](README_OPERATIONS.md#replication-gating)).
 
+A server listed with `type: group` needs two other grants **in place of** `REPLICATION CLIENT`, which it does not
+use, for the two reads its probe makes ([Group Replication members](README_OPERATIONS.md#group-replication-members)):
+
+```sql
+-- On EACH server listed with type: group, for that entry's user.
+GRANT SELECT ON performance_schema.replication_group_members TO 'monitor'@'%';
+GRANT SELECT ON performance_schema.replication_group_member_stats TO 'monitor'@'%';
+```
+
+An account that lacks either holds the job as `unreadable`, and the line names the table and the grant. Checking that a
+listed server is a group member needs no privilege
+([`REPLICATION_TYPE_CHECK`](README_VALIDATION.md#replication_type_check)).
+
 ### Tracking-table maintenance (a DBA account)
 
 Pruning, abandoning, retiring and dropping in the tracking schema
@@ -99,6 +112,7 @@ preflight.
 | **Tracking schema** (`job_schema`) | `CREATE`, `SELECT`, `INSERT`, `UPDATE` | ✅ | ✅ | ✅ | The registry, the per-job logs, the label |
 | **Source** and **destination** (optional, global) | `SESSION_VARIABLES_ADMIN` | ✅ | ✅ | ✅ | Only on a server whose global `max_error_count` is 0 ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
 | **Each monitored replica** (optional) | `REPLICATION CLIENT` | ✅ | ✅ | — | Replication gating |
+| **Each monitored group member** (a `type: group` server; optional) | `SELECT` on `performance_schema.replication_group_members` and on `performance_schema.replication_group_member_stats` | ✅ | ✅ | — | Replication gating on a group's applier and certification queues, in place of `REPLICATION CLIENT` |
 
 - **Destination `SELECT`.** Preflight proves `INSERT` only, and `validate` and `dry-run` never read
   copies. A run that verifies (`sha256` or `count`) reads them back, and archive recovery reads
