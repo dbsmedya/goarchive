@@ -405,7 +405,9 @@ func (r *run) inDestinationTx(ctx context.Context, c Commit, roots tracking.Stat
 	}
 	if err := f(tx); err != nil {
 		_ = tx.Rollback()
-		return err
+		// A statement refused with 3231 ends the transaction as a GroupWriteSetError; the transaction is
+		// rolled back above and never committed after a failed statement.
+		return r.endedBy(err, c, "log write", roots)
 	}
 	if err := r.commit(ctx, tx, atLogWritten); err != nil {
 		_ = tx.Rollback()
@@ -430,27 +432,65 @@ func (r *run) rootsStatus() tracking.Status {
 	return tracking.StatusCopied
 }
 
+// groupWriteSetErrno is MySQL error 3231: a statement took the transaction's write set over the limit Group
+// Replication sets (fact 25).
+const groupWriteSetErrno = 3231
+
+// groupSide is the side a transaction of commit c runs on, that side's limit and membership at the start, and
+// the setting that sizes the transaction with its value now: batch_delete_size for a delete chunk, batch_size
+// for the rest.
+func (r *run) groupSide(c Commit) (side string, limit preflight.SizeLimit, setting string, value int) {
+	if c == CommitDelete {
+		return "source", r.group.SourceSizeLimit(), "batch_delete_size", r.deleteSetting()
+	}
+	return "destination", r.group.DestinationSizeLimit(), "batch_size", r.pageSize()
+}
+
+// mysqlErrno reports whether err holds a MySQL error of number n, through any wrapper.
+func mysqlErrno(err error, n uint16) bool {
+	var me *mysql.MySQLError
+	return err != nil && errors.As(err, &me) && me.Number == n
+}
+
 // groupCommitError returns err as a *GroupCommitError when it is MySQL error 3100 at commit c and the
 // limit of the side that commit ran on was known at the start; otherwise nil, and the caller keeps
 // the error as it was (spec §4.4, fact 12). what leads the message; roots is what the batch's roots are
 // logged as after a failure of c.
 func (r *run) groupCommitError(err error, c Commit, what string, roots tracking.Status) *GroupCommitError {
-	var me *mysql.MySQLError
-	if err == nil || !errors.As(err, &me) || me.Number != groupErrno {
+	if !mysqlErrno(err, groupErrno) {
 		return nil
 	}
 	g := &GroupCommitError{Commit: c, What: what, Roots: roots, Err: err}
-	if c == CommitDelete {
-		g.Side, g.Limit = "source", r.group.SourceSizeLimit()
-		g.Setting, g.Value = "batch_delete_size", r.deleteSetting()
-	} else {
-		g.Side, g.Limit = "destination", r.group.DestinationSizeLimit()
-		g.Setting, g.Value = "batch_size", r.pageSize()
-	}
+	g.Side, g.Limit, g.Setting, g.Value = r.groupSide(c)
 	if !g.Limit.Known {
 		return nil
 	}
 	return g
+}
+
+// groupWriteSetError returns err as a *GroupWriteSetError when it holds MySQL error 3231, through any
+// wrapper, in a transaction of commit c whose side's limit was known at the start; otherwise nil
+// (spec §4.4, rev 5.2). A site calls it on the error its transaction ends with, so a statement added to that
+// transaction later is covered without a new wrap. The other errors of these transactions are other errors.
+func (r *run) groupWriteSetError(err error, c Commit, what string, roots tracking.Status) *GroupWriteSetError {
+	if !mysqlErrno(err, groupWriteSetErrno) {
+		return nil
+	}
+	g := &GroupWriteSetError{Commit: c, What: what, Roots: roots, Err: err}
+	g.Side, g.Limit, g.Setting, g.Value = r.groupSide(c)
+	if !g.Limit.Known {
+		return nil
+	}
+	return g
+}
+
+// endedBy is err, or the GroupWriteSetError it becomes: the end of a transaction's function, on the error
+// it ends with.
+func (r *run) endedBy(err error, c Commit, what string, roots tracking.Status) error {
+	if g := r.groupWriteSetError(err, c, what, roots); g != nil {
+		return g
+	}
+	return err
 }
 
 // commit is the guarded commit (spec §4 step 4): after the transaction's writes, the run

@@ -105,7 +105,11 @@ func (c *chunkCursor) take(size int) []key.Key {
 	return chunk
 }
 
-func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []key.Key) error {
+func (r *run) deleteOne(ctx context.Context, src connTx, table string, chunk []key.Key) (retErr error) {
+	// A statement of this transaction that Group Replication refused with 3231 ends it as a
+	// GroupWriteSetError, whatever wrapper the error carries; the commit's own 3100 is wrapped below. The
+	// transaction is rolled back by the deferred Rollback and never committed after a failed statement.
+	defer func() { retErr = r.endedBy(retErr, CommitDelete, "delete from "+table, r.rootsStatus()) }()
 	st := statement{op: opDelete, table: table, query: deleteSQL(r.keys[table], len(chunk)), args: key.Args(chunk)}
 	r.prepare(&st)
 	tx, err := src.BeginTx(ctx, nil)
