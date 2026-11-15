@@ -112,7 +112,7 @@ type sentinelGate struct {
 	statErrWarned bool
 
 	// progress shows the pause on the --progress line; nil when progress is off.
-	progress *progressTracker
+	progress *Progress
 
 	// Test seams, nil in production.
 	presentFn func(path string) bool
@@ -245,10 +245,12 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 	}
 	snap := g.load()
 	st := g.state(snap)
+	g.progress.sentinelSeen(st.sentinel)
 	if !st.held() || stopRequested(stop) {
 		return nil
 	}
 	g.logger.Warnw(g.pausedLine(st), logger.Live)
+	g.progress.at("wait", "")
 	g.progress.setPaused(g.reason(st))
 	defer g.progress.clearPaused()
 	for waited := 1; ; waited++ {
@@ -262,6 +264,7 @@ func (g *sentinelGate) wait(ctx context.Context, stop <-chan struct{}) error {
 		}
 		snap = g.load()
 		now := g.state(snap)
+		g.progress.sentinelSeen(now.sentinel)
 		if !now.held() {
 			g.logger.Infow(g.resumedLine(st), logger.Live)
 			return nil

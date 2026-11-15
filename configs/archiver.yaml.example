@@ -50,6 +50,19 @@ replication:
       # empty name, not an absence - so [""] selects the default channel only.
       channels: []
 
+# Runtime control (optional, off by default; only this file turns it on). A run with
+# control enabled listens on a private Unix socket while it works: ask it for its
+# state, pause or stop it, slow it down or bring it back (batch sizes, sleeps and the
+# replication tolerance, never above what is configured here). It can be set per job,
+# and the job's value wins. See docs/README_OPERATIONS.md, "Runtime control".
+#
+# The socket is <socket_dir>/<job>.sock. socket_dir is an absolute path; left out, it is
+# <home>/.goarchive/run, with <home> from the system's user database (never $HOME). A user
+# with no home there (the published image's user) must set socket_dir.
+#control:
+#  enabled: true
+#  socket_dir: /home/archiver/.goarchive/run
+
 # Jobs. Each job's job_type (archive, purge or copy-only) must match the command
 # that runs it: `goarchive archive --job archive_old_orders`.
 jobs:

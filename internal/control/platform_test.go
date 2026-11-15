@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/dbsmedya/goarchive/v3/internal/controlpath"
 )
 
 // TestLockFileExcludes: an exclusive, non-blocking lock on an open file excludes every other
@@ -206,3 +208,9 @@ func TestPeerUIDNotASocket(t *testing.T) {
 		t.Fatalf("peerUID of a pipe = %d, %d, nil", uid, pid)
 	}
 }
+
+// isSocket reports whether fi, the result of an Lstat, identifies a socket, by the function the server
+// judges the object at its socket path with. Lstat does not follow links, so a symbolic link to a
+// socket is not one. On Windows, Go maps an AF_UNIX reparse point to a socket (go1.26.8,
+// os/types_windows.go).
+func isSocket(fi os.FileInfo) bool { return controlpath.JudgeSocket(fi) == nil }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
@@ -79,6 +80,10 @@ func runValidate(c *cobra.Command, _ []string) error {
 	for i, name := range names {
 		spec := doc.Jobs[name]
 		_, _ = fmt.Fprintf(out, "[%d/%d] Job: %s (%s)\n", i+1, len(names), name, spec.Type)
+		if !printControlLine(out, doc, spec, name) {
+			failed = append(failed, name)
+			continue
+		}
 		verification, err := verificationFor(o.verification, doc, spec)
 		if err != nil {
 			return err
@@ -112,4 +117,17 @@ func runValidate(c *cobra.Command, _ []string) error {
 	}
 	_, _ = fmt.Fprintf(out, "All %d job(s) validated.\n", len(names))
 	return nil
+}
+
+// printControlLine prints a job's control socket under it in validate's report (spec §4.1): the path it
+// would use, or `off`. A job whose path cannot be formed (no default directory for this user, a path
+// over the limit) says why and fails, as a run would refuse to start it; it reports whether the job can.
+func printControlLine(w io.Writer, doc *jobspec.Document, spec *jobspec.Spec, name string) bool {
+	line, err := controlReport(doc, spec, name)
+	_, _ = fmt.Fprintf(w, "   %s\n", line)
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "   FAILED: a run of this job would refuse to start: its control socket path cannot be formed\n\n")
+		return false
+	}
+	return true
 }

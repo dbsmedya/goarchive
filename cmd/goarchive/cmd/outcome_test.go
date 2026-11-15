@@ -31,7 +31,7 @@ func lastEndRunEntry(t *testing.T, rep *engine.Report, err error, p any) map[str
 	}
 	log = log.WithJob("archive_docs")
 	log.Info("Batch 1: 2 roots of docs (archive)")
-	endRun(log, jobspec.Archive, rep, err, p, false)
+	endRun(log, jobspec.Archive, rep, err, p, false, "")
 	_ = log.Close()
 	data, rerr := os.ReadFile(path)
 	if rerr != nil {
@@ -112,7 +112,7 @@ func TestLogOutcomeRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endRun(log, jobspec.Archive, rep, errors.New("engine: boom"), nil, false)
+	endRun(log, jobspec.Archive, rep, errors.New("engine: boom"), nil, false, "")
 	_ = log.Close()
 	data, _ := os.ReadFile(path)
 	if errb.Len() != 0 || !strings.Contains(string(data), `"msg":"Run failed"`) || !strings.Contains(string(data), "engine: boom") {
@@ -125,7 +125,7 @@ func TestLogOutcomeRouting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		endRun(log, jobspec.Archive, rep, nil, nil, always)
+		endRun(log, jobspec.Archive, rep, nil, nil, always, "")
 		if got := strings.Contains(out.String(), `"msg":"Run completed"`); got != always {
 			t.Errorf("always=%v: stdout %q", always, out.String())
 		}

@@ -98,7 +98,9 @@ func TestMySQLValidateAllJobs(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "validation failed for 2 of 3 job(s): [archive_orders copy_orders]") {
 		t.Fatalf("validate = %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "Job: purge_orders (purge)\n   PASSED") {
+	// validate prints each job's control socket under it (TEL-1, spec §4.1), `off` here: the line sits between
+	// the job and its verdict.
+	if !strings.Contains(out, "Job: purge_orders (purge)\n   control socket: off\n   PASSED") {
 		t.Errorf("purge_orders not reported as passed:\n%s", out)
 	}
 }

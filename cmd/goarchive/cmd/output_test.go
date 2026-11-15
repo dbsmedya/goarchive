@@ -87,7 +87,7 @@ func TestPrintReport(t *testing.T) {
 		Verified:     map[string]int64{"orders": 12000, "order_details": 40920, "shipment": 12000},
 		Elapsed:      109412 * time.Millisecond}
 	var out strings.Builder
-	printReport(&out, "archive_old_orders", jobspec.Archive, order, rep, nil)
+	printReport(&out, "archive_old_orders", jobspec.Archive, order, rep, nil, "")
 	want := "Job archive_old_orders (archive): completed in 109.412s\n" +
 		"  roots: 12000 in 12 batches\n" +
 		"\n" +
@@ -122,7 +122,7 @@ func TestPrintReport(t *testing.T) {
 			nil, []string{"  skipped: 4 roots this job had already copied (resume)\n", "  table   copied\n"}, []string{"deleted", "verified"}},
 	} {
 		out.Reset()
-		printReport(&out, "j", tc.typ, []string{"orders"}, tc.rep, tc.err)
+		printReport(&out, "j", tc.typ, []string{"orders"}, tc.rep, tc.err, "")
 		got := out.String()
 		for _, w := range tc.want {
 			if !strings.Contains(got, w) {
@@ -296,6 +296,7 @@ var dryRunGolden = strings.Join([]string{
 	"  replication lag gate: on, hold above 10s, check every 5s, cache 15s",
 	"    replica1:3306  channels: <default>",
 	"    replica2:3306  channels: <default>",
+	"  control socket: off",
 	"",
 	"Statement caps (key tuples per statement):",
 	"  source       by key     orders (id): 16000",

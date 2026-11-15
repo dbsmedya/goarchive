@@ -33,8 +33,8 @@ func TestMaxLen(t *testing.T) {
 	if want == 0 {
 		t.Skipf("no limit is recorded for %s", runtime.GOOS)
 	}
-	if got := MaxLen(); got != want {
-		t.Fatalf("MaxLen() = %d, want %d on %s", got, want, runtime.GOOS)
+	if got := maxLen; got != want {
+		t.Fatalf("maxLen = %d, want %d on %s", got, want, runtime.GOOS)
 	}
 }
 
@@ -43,7 +43,7 @@ func TestMaxLen(t *testing.T) {
 // non-ASCII bytes in the directory; and the job-name budget is
 // limit - len(socket_dir) - 1 - len(".sock").
 func TestPathLength(t *testing.T) {
-	limit := MaxLen()
+	limit := maxLen
 	dir := shortDir(t)
 	budget := limit - len(dir) - 1 - len(".sock")
 	if budget < 2 {
@@ -96,7 +96,7 @@ func TestPathLength(t *testing.T) {
 
 // TestCheckLengthCountsBytes: the limit counts bytes, not characters.
 func TestCheckLengthCountsBytes(t *testing.T) {
-	limit := MaxLen()
+	limit := maxLen
 	// A path of limit bytes made of two-byte characters: half as many characters as bytes.
 	ok := string(filepath.Separator) + strings.Repeat("é", (limit-1)/2)
 	if len(ok) > limit {

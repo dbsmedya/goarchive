@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
@@ -80,11 +81,14 @@ func runCommand(c *cobra.Command, typ jobspec.Type, o *runOptions) error {
 	return err
 }
 
-// runJob runs one job of type typ on the engine (spec §7.1): load and check the job, then
-// connect, then engine.Run. The first signal stops at the next batch boundary, a second one
-// cancels the run (database.SetupGracefulShutdown). From the job's logger on, every return,
-// and a panic, logs how the run ended (endRun); closing reports that it did.
+// runJob runs one job of type typ on the engine (spec §7.1): load and check the job, bring up its
+// control socket if it has one, then connect, then engine.Run. The first signal, or a `stop` over the
+// socket, stops at the next batch boundary; a second signal cancels the run
+// (database.SetupGracefulShutdown). From the job's logger on, every return, and a panic, logs how the
+// run ended (endRun); closing reports that it did. The socket ends in the order the design fixes
+// (spec §4.2 End): the terminal transition and the audit drain before any final output, the close after.
 func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Report, closing bool, err error) {
+	started := time.Now()
 	doc, spec, err := loadJob(o.job, typ)
 	if err != nil {
 		return nil, false, err
@@ -105,9 +109,14 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	// With --progress on a JSON console log, the start, progress and closing entries stand in
 	// for the lines the flag asks for, so they are written past the level filter (spec §3.2 C).
 	entries := progress > 0 && log.ConsoleJSON()
+	var ctl *controlRun
 	defer func() {
 		p := recover()
-		endRun(log, typ, rep, err, p, entries)
+		changes := runtimeChanges(ctl.end())
+		endRun(log, typ, rep, err, p, entries, changes)
+		if cerr := ctl.close(); cerr != nil {
+			log.Warnf("Control socket: %v", cerr)
+		}
 		closing = true
 		if p != nil {
 			// Re-raised from the deferred call, above the panicking frames: the traceback
@@ -138,12 +147,27 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		}
 	}
 
-	ctx, stop := database.SetupGracefulShutdown(
+	shutdown := database.SetupGracefulShutdown(
 		func(os.Signal) {
 			log.Warn("Stop requested: the current batch finishes, then the run stops. Signal again to cancel at once.")
 		},
 		func(os.Signal) { log.Warn("Cancelling the run now; the next run recovers what the log holds.") },
 	)
+	ctx, stop := shutdown.Context(), shutdown.Stop()
+
+	// The settings store every run reads, and the tracker every run feeds: the control socket's status
+	// reads the tracker, and its commands write the store. The socket binds before the run connects, so
+	// that status answers during preflight and startup, and a socket in use fails the run here, exit 4.
+	store := newRunStore(doc, spec, shutdown.RequestFirst)
+	tracker := engine.NewProgress(started)
+	ctl, err = startControl(controlParams{
+		doc: doc, spec: spec, name: o.job, typ: typ, store: store, tracker: tracker,
+		shutdown: shutdown, log: log, stderr: stderr, started: started,
+	})
+	if err != nil {
+		failed(nil)
+		return nil, false, err
+	}
 	mgr, err := connect(ctx, doc)
 	if err != nil {
 		failed(nil)
@@ -152,13 +176,12 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	defer func() { _ = mgr.Close() }()
 	var lag engine.LagGate
 	if doc.Shared.Replication.Enabled {
-		// A nil store is one that never changes, at the configured values; the command
-		// hands the gate the run's settings store when the control socket is wired.
-		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log, nil)
+		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log, store)
 		if gerr != nil {
 			failed(nil)
 			return nil, false, gerr
 		}
+		ctl.setGate(g)
 		lag = g
 	}
 	rep, err = engine.Run(ctx, engine.Config{
@@ -170,12 +193,16 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
 		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
 		Lag: lag, Stop: stop, Logger: log,
+		Tuning: store, Tracker: tracker,
 		Banner:   func(b string) { emitBanners(log, stderr, []string{b}) },
 		Progress: progress, Out: out, ProgressLog: entries,
 	})
+	// The terminal transition and the audit drain come before any final output, so the summary the
+	// block and the closing entry carry is the one the audit entries above them add up to.
+	changes := runtimeChanges(ctl.end())
 	switch {
 	case progress > 0 && !entries && rep != nil:
-		printReport(out, o.job, typ, copyOrder(spec), rep, err)
+		printReport(out, o.job, typ, copyOrder(spec), rep, err, changes)
 	case err != nil:
 		failed(rep)
 	}

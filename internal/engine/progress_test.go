@@ -94,8 +94,8 @@ func TestFormatProgressLine(t *testing.T) {
 }
 
 func TestProgressTracker(t *testing.T) {
-	var none *progressTracker
-	none.update(1, 2, 3)
+	var none *Progress
+	setTotals(none, 1, 2, 3)
 	none.markComplete()
 	none.setPaused("x")
 	none.clearPaused()
@@ -103,9 +103,9 @@ func TestProgressTracker(t *testing.T) {
 		t.Error("a nil tracker has a snapshot")
 	}
 
-	tr := newProgressTracker(1000, time.Now())
+	tr := newTestProgress(1000)
 	tr.nowFn = func() time.Time { return tr.startedAt.Add(30 * time.Second) }
-	tr.update(150, 2000, 1400)
+	setTotals(tr, 150, 2000, 1400)
 	if s := tr.snapshot(); s.total != 1000 || s.done != 150 || s.copied != 2000 || s.deleted != 1400 || s.elapsed != 30*time.Second || s.completed {
 		t.Errorf("snapshot = %+v", s)
 	}
@@ -121,8 +121,8 @@ func TestProgressTracker(t *testing.T) {
 
 	// A naturally completed run's total is its done count (PRC-1, spec rev 3 §3.4): the closing
 	// line must not read 2567/~15420 at 100%. A stop keeps the estimate (it never marks complete).
-	over := newProgressTracker(15420, time.Now())
-	over.update(2567, 0, 0)
+	over := newTestProgress(15420)
+	setTotals(over, 2567, 0, 0)
 	if s := over.snapshot(); s.total != 15420 || s.etaString() == "unknown" {
 		t.Errorf("running snapshot = %+v, want the estimate 15420", s)
 	}
@@ -134,14 +134,14 @@ func TestProgressTracker(t *testing.T) {
 }
 
 func TestProgressReporter(t *testing.T) {
-	tr := newProgressTracker(100, time.Now())
+	tr := newTestProgress(100)
 	tr.nowFn = func() time.Time { return tr.startedAt.Add(10 * time.Second) }
 	var out strings.Builder
 	r := newProgressReporter(tr, time.Second, jobspec.Archive, &out)
 	ticks := make(chan time.Time)
 	r.tickCh = ticks
 	r.start()
-	tr.update(10, 40, 0)
+	setTotals(tr, 10, 40, 0)
 	ticks <- time.Time{}
 	ticks <- time.Time{}
 	r.stop()
@@ -152,7 +152,7 @@ func TestProgressReporter(t *testing.T) {
 	}
 
 	var silent strings.Builder
-	newProgressReporter(newProgressTracker(1, time.Now()), time.Second, jobspec.Archive, &silent).stop()
+	newProgressReporter(newTestProgress(1), time.Second, jobspec.Archive, &silent).stop()
 	if silent.Len() != 0 {
 		t.Errorf("a reporter stopped before it started printed %q", silent.String())
 	}
@@ -194,9 +194,11 @@ func TestFormatProgressLineAligned(t *testing.T) {
 // first batch, so a slow startup and recovery do not slow the estimate.
 func TestProgressClock(t *testing.T) {
 	began := time.Unix(1000, 0)
-	tr := &progressTracker{totalRoots: 100, startedAt: began, loopAt: began.Add(20 * time.Second)}
+	tr := NewProgress(began)
+	tr.nowFn = func() time.Time { return began.Add(20 * time.Second) }
+	tr.setEstimate(100) // the first batch begins 20 s after Run did
 	tr.nowFn = func() time.Time { return began.Add(30 * time.Second) }
-	tr.update(50, 0, 0)
+	setTotals(tr, 50, 0, 0)
 	s := tr.snapshot()
 	if s.elapsed != 30*time.Second {
 		t.Errorf("elapsed = %v, want 30s (from Run's start, after a 20s startup)", s.elapsed)
@@ -214,13 +216,13 @@ func TestProgressReporterEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr := newProgressTracker(100, time.Now())
+	tr := newTestProgress(100)
 	r := newProgressReporter(tr, time.Second, jobspec.Purge, nil)
 	r.log = log
 	ticks := make(chan time.Time)
 	r.tickCh = ticks
 	r.start()
-	tr.update(10, 0, 40)
+	setTotals(tr, 10, 0, 40)
 	ticks <- time.Time{}
 	r.stop()
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -235,4 +237,19 @@ func TestProgressReporterEntries(t *testing.T) {
 		e["remaining"] != 90.0 || e["copied_rows"] != nil || e["elapsed_seconds"] == nil || e["eta"] == nil {
 		t.Errorf("progress entry = %v", e)
 	}
+}
+
+// newTestProgress is a tracker with an estimate of total roots, as a --progress run's has.
+func newTestProgress(total int64) *Progress {
+	p := NewProgress(time.Now())
+	p.setEstimate(total)
+	return p
+}
+
+// setTotals feeds a fresh tracker the totals a batch boundary once reported in one call, through the
+// hooks the engine feeds it by.
+func setTotals(p *Progress, roots, copied, deleted int64) {
+	p.addRoots(roots)
+	p.copied("t", copied)
+	p.deleted("t", deleted)
 }

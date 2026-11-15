@@ -65,6 +65,7 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	accepted := map[string]map[uint16]uint64{}
 	for _, n := range r.tree.CopyOrder() {
 		for _, chunk := range key.Chunks(t.keys[n.Table], r.byKeyChunk(n.Table)) {
+			r.progress.at("copy", n.Table)
 			rows, err := r.read(ctx, src, n.Table, chunk)
 			if err != nil {
 				return err
@@ -79,6 +80,7 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	if err != nil {
 		return err
 	}
+	r.progress.at("log", "")
 	if err := r.job.Insert(ctx, tx, st, t.keys[r.root.Table]); err != nil {
 		return r.logInsertError(err)
 	}
@@ -87,6 +89,13 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 	}
 	for table, n := range copied {
 		r.report.Copied[table] += n
+	}
+	// The tracker counts what committed, table by table in copy order, so the order the tables first
+	// appear in is the same every run.
+	for _, n := range r.tree.CopyOrder() {
+		if rows, ok := copied[n.Table]; ok {
+			r.progress.copied(n.Table, rows)
+		}
 	}
 	for table, n := range verified {
 		r.report.Verified[table] += n

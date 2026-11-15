@@ -169,7 +169,7 @@ func TestStatusJSON(t *testing.T) {
 		Phase: PhaseRunning, Step: "delete", Table: "order_details",
 		Batches: 13, Roots: 12000, RootsSkipped: 2, RootsRecovered: 7, RowsCopied: 64920, RowsDeleted: 61500,
 		Tables:   []TableCounts{{Name: "orders", Copied: 12000, Deleted: 11000}},
-		Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute},
+		Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute, ETAKnown: true},
 	})
 	j := f.json(t)
 
@@ -370,7 +370,7 @@ func TestStatusTextReplication(t *testing.T) {
 func TestStatusTextTail(t *testing.T) {
 	f := newStatusFixture(t, noGateApplies)
 	f.view.gate = nil
-	f.tracker.set(TrackerStatus{Phase: PhaseRunning, Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute},
+	f.tracker.set(TrackerStatus{Phase: PhaseRunning, Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute, ETAKnown: true},
 		Tables: []TableCounts{{Name: "orders", Copied: 1, Deleted: 2}}})
 	text := strings.Join(f.view.text(), "\n")
 	last := -1
@@ -411,7 +411,7 @@ func TestStatusTextOtherStates(t *testing.T) {
 	f.view.gate = nil
 	f.tracker.set(TrackerStatus{
 		Phase: PhaseRunning, WaitingSince: statusNow.Add(-4 * time.Minute), Sentinel: true,
-		Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute},
+		Estimate: &Estimate{Roots: 20000, Percent: 60, ETA: 4 * time.Minute, ETAKnown: true},
 	})
 	if _, err := f.store.Pause(testPeer); err != nil {
 		t.Fatal(err)
@@ -467,8 +467,26 @@ func TestFormatDuration(t *testing.T) {
 		{time.Minute, "1m00s"}, {2*time.Minute + 10*time.Second, "2m10s"}, {6*time.Minute + 2*time.Second, "6m02s"},
 		{time.Hour, "1h00m00s"}, {3*time.Hour + 4*time.Minute + 5*time.Second, "3h04m05s"}, {-time.Second, "0s"},
 	} {
-		if got := formatDuration(tc.d); got != tc.want {
-			t.Errorf("formatDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		if got := FormatDuration(tc.d); got != tc.want {
+			t.Errorf("FormatDuration(%v) = %q, want %q", tc.d, got, tc.want)
 		}
+	}
+}
+
+// TestStatusEstimateWithoutAnETA: an estimate whose ETA cannot be told yet (no root done, or past the
+// estimate) says so, not 0s: status-json has `eta` null and the text says the ETA is unknown.
+func TestStatusEstimateWithoutAnETA(t *testing.T) {
+	f := newStatusFixture(t, noGateApplies)
+	f.view.gate = nil
+	f.tracker.set(TrackerStatus{Phase: PhaseRunning, Estimate: &Estimate{Roots: 20000, Percent: 0}})
+	progress := f.json(t)["progress"].(map[string]any)
+	if progress["roots_estimate"] != 20000.0 || progress["percent"] != 0.0 {
+		t.Errorf("progress = %v", progress)
+	}
+	if v, has := progress["eta"]; !has || v != nil {
+		t.Errorf("eta = %v (present %v), want null", v, has)
+	}
+	if text := strings.Join(f.view.text(), "\n"); !strings.Contains(text, "  progress:  about 20000 roots, 0%, ETA unknown") {
+		t.Errorf("status text:\n%s\nwant the ETA said to be unknown", text)
 	}
 }

@@ -80,6 +80,10 @@ type Config struct {
 	Logger *logger.Logger
 	// Banner is preflight's: it emits a warning with a run banner's visibility (JSN-1).
 	Banner func(string)
+	// Tracker is the run's progress, which the control socket's status reads (TEL-1): the phase, the
+	// activity, the counters of committed work and the pause. The command builds it before the socket
+	// binds and every run has one; nil means the run keeps its own, which nothing else reads.
+	Tracker *Progress
 	// Progress is --progress's interval; zero disables it (R50). Out receives the progress
 	// lines and defaults to os.Stdout.
 	Progress time.Duration

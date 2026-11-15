@@ -488,6 +488,7 @@ skip is the intended result there. Each is a unit test and needs no database.
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
+| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
 
 The container runs use the Go release of `go.mod`'s toolchain line, with a writable `GOCACHE` and
 `GOPATH` under `/tmp`:
@@ -507,12 +508,16 @@ docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/go
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   go test ./internal/control/ -run 'TestPeerUID|TestSameUserOnlyOtherUID' -count=1 -v
 
-# L5: an effective uid with no user-database entry, USER and HOME set. Build the test binary
-# first, then run it as that user, so that the go tool itself touches nothing under that HOME
+# L5: an effective uid with no user-database entry, USER and HOME set. Build the test binaries
+# first, then run them as that user, so that the go tool itself touches nothing under that HOME
 GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \
   go test -c -o /tmp/l5/controlpath.test ./internal/controlpath/
+GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \
+  go test -c -o /tmp/l5/cmd.test ./cmd/goarchive/cmd/
 docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/controlpath.test \
   golang:1.26.8 -test.run 'TestHomeIgnoresEnvironment|TestHomeOfUnknownUID' -test.v
+docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/cmd.test \
+  golang:1.26.8 -test.run 'TestNoEntryNoDefault' -test.v
 ```
 
 On macOS a connection from another uid is never made: `JudgeDir`'s owner rule is tested on a
@@ -591,6 +596,27 @@ the transaction rolls back. Tests that touch locks follow three rules:
 
 The environment-matrix row `wait_timeout_10` also proves the lock sessions keep their 300
 seconds under a 10-second global (`TestMySQLWaitTimeout`, side A).
+
+#### Runtime control
+
+The control socket's integration tests come in two layers. In `internal/engine` they drive the
+settings store directly, at the engine's named points (`TestMySQLControl*`: sizes read once per batch
+and per recovery page, the ceilings, a stop at a point, and the tolerance against a replica whose
+`SOURCE_DELAY` gives it a real lag: lowered, restored, changed during the inter-delete sleep and in
+recovery, and raised one step at a time). In `cmd/goarchive/cmd` (`control_integration_test.go`) they run
+the command and talk to its socket, which is the only seam the command has, so each test times the run by
+the socket itself: `pause`, then a wait for the state `paused` in `status-json`, or a wait for a step. They
+cover the pause and resume, a stop at the boundary, in the final short batch and met by an error, the
+closing entry's runtime-changes line after its audit entries, refusals in the log, a copy-only run's
+inapplicable settings, a socket in use (exit 4), the cron-style run silent with control enabled, and, with
+the applier stopped or the replica delayed, the status during a hold, a stop during a hold and the rerun's
+recovery, and the tolerance raised over the socket with its warnings. The replica tests stop the applier or
+set `SOURCE_DELAY` on db3 and put both back when they end.
+
+`TestProtocolContractMatchesDoc` (`tests/harness`) compares the protocol contract in
+`docs/README_OPERATIONS.md` (the actions, the settings, the reason words and the `status-json` fields) with
+the server's own tables, read from its source, so a protocol change that does not update the doc fails
+`make check`.
 
 ### Environment matrix
 
