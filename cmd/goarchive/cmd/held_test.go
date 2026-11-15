@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -32,9 +33,11 @@ func TestHeldStatementTimeout(t *testing.T) {
 	me := err3781()
 	for name, err := range map[string]error{
 		"a preflight statement": fmt.Errorf("read the source's Group Replication state: %w", me),
-		"a recovery statement":  fmt.Errorf("engine: recovery: engine: delete from order_items: %w", me),
-		"a batch statement":     fmt.Errorf("engine: batch 3: engine: insert into order_items: %w", me),
-		"the error itself":      me,
+		// the library's own error type, as a held fact read returns it: its Unwrap keeps the number in the chain
+		"a library fact read":  fmt.Errorf("read the source's Group Replication state: %w", &dbsrepl.OpError{Op: "group_replication", Err: me}),
+		"a recovery statement": fmt.Errorf("engine: recovery: engine: delete from order_items: %w", me),
+		"a batch statement":    fmt.Errorf("engine: batch 3: engine: insert into order_items: %w", me),
+		"the error itself":     me,
 	} {
 		if got := heldStatementTimeout(err); got != heldStop {
 			t.Errorf("%s: heldStatementTimeout = %q, want the named stop", name, got)
