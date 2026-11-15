@@ -162,7 +162,7 @@ func TestNotASocket(t *testing.T) {
 			tc.make(t, f.path())
 			_, err := Start(o)
 			var inUse *InUseError
-			if err == nil || errors.As(err, &inUse) || !strings.Contains(err.Error(), f.path()) {
+			if err == nil || errors.As(err, &inUse) || !strings.Contains(err.Error(), strconv.Quote(f.path())) {
 				t.Fatalf("Start() = %v, want a refusal that names the path and is not an in-use error", err)
 			}
 			tc.keep(t, f.path())
@@ -190,7 +190,7 @@ func TestLiveLock(t *testing.T) {
 	if !errors.As(err, &inUse) {
 		t.Fatalf("Start() = %v, want an InUseError", err)
 	}
-	if !inUse.Lock || !strings.Contains(err.Error(), a.lockPath()) || !strings.Contains(err.Error(), "already uses") {
+	if !inUse.Lock || !strings.Contains(err.Error(), strconv.Quote(a.lockPath())) || !strings.Contains(err.Error(), "already uses") {
 		t.Errorf("error = %q, want it to name the lock file and say that a run of this job already uses this directory", err)
 	}
 	if got := a.ask("help"); !strings.HasPrefix(got, "OK\nprotocol 1") {
@@ -216,7 +216,7 @@ func TestLockNameRemoved(t *testing.T) {
 	if !errors.As(err, &inUse) {
 		t.Fatalf("Start() = %v, want an InUseError", err)
 	}
-	if inUse.Lock || !strings.Contains(err.Error(), a.path()) || !strings.Contains(err.Error(), "lock file was removed or replaced") {
+	if inUse.Lock || !strings.Contains(err.Error(), strconv.Quote(a.path())) || !strings.Contains(err.Error(), "lock file was removed or replaced") {
 		t.Errorf("error = %q, want it to name the socket and say its lock file was removed or replaced", err)
 	}
 	if !sameFile(before, captured(t, a.path())) {
@@ -268,7 +268,7 @@ func TestStartLeavesAnUndecidedSocket(t *testing.T) {
 	before := captured(t, path)
 	_, err := Start(o)
 	var inUse *InUseError
-	if err == nil || errors.As(err, &inUse) || !strings.Contains(err.Error(), path) {
+	if err == nil || errors.As(err, &inUse) || !strings.Contains(err.Error(), strconv.Quote(path)) {
 		t.Fatalf("Start() = %v, want a refusal that names the socket and is not an InUseError", err)
 	}
 	if !sameFile(before, captured(t, path)) {
@@ -306,7 +306,7 @@ func TestDefaultDirectoryCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.Dir = filepath.Join(other, ".goarchive", "run")
-	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), o.Dir) {
+	if _, err := Start(o); err == nil || !strings.Contains(err.Error(), strconv.Quote(o.Dir)) {
 		t.Errorf("Start() over a 0755 run directory = %v, want a refusal naming it", err)
 	}
 	if fi, err := os.Lstat(o.Dir); err != nil || fi.Mode().Perm() != 0o755 {
@@ -377,7 +377,7 @@ func TestDirectoryRules(t *testing.T) {
 
 	t.Run("parent absent", func(t *testing.T) {
 		dir := filepath.Join(base, "absent-parent", "run")
-		if _, err := start(dir); err == nil || !strings.Contains(err.Error(), filepath.Join(base, "absent-parent")) {
+		if _, err := start(dir); err == nil || !strings.Contains(err.Error(), strconv.Quote(filepath.Join(base, "absent-parent"))) {
 			t.Errorf("Start() = %v, want a refusal naming the missing parent", err)
 		}
 		if _, err := os.Lstat(filepath.Join(base, "absent-parent")); !os.IsNotExist(err) {
@@ -393,7 +393,7 @@ func TestDirectoryRules(t *testing.T) {
 		if err := os.Chmod(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := start(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		if _, err := start(dir); err == nil || !strings.Contains(err.Error(), strconv.Quote(dir)) {
 			t.Errorf("Start() = %v, want a refusal naming the directory", err)
 		}
 		if fi, _ := os.Lstat(dir); fi.Mode().Perm() != 0o755 {
@@ -410,7 +410,7 @@ func TestDirectoryRules(t *testing.T) {
 		if err := os.Symlink(real, link); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := start(link); err == nil || !strings.Contains(err.Error(), link) {
+		if _, err := start(link); err == nil || !strings.Contains(err.Error(), strconv.Quote(link)) {
 			t.Errorf("Start() = %v, want a refusal naming the link", err)
 		}
 		if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -423,7 +423,7 @@ func TestDirectoryRules(t *testing.T) {
 		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := start(file); err == nil || !strings.Contains(err.Error(), file) {
+		if _, err := start(file); err == nil || !strings.Contains(err.Error(), strconv.Quote(file)) {
 			t.Errorf("Start() = %v, want a refusal naming the file", err)
 		}
 		if b, _ := os.ReadFile(file); string(b) != "x" {

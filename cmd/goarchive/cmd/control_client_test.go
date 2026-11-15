@@ -501,7 +501,7 @@ func TestControlDialDeadlinePassed(t *testing.T) {
 	withLimits(t, controlLimits{dial: -time.Second, exchange: 10 * time.Second, maxReply: 1 << 20})
 	l := newListener(t, replying("OK\nnever\n"))
 	code, out, errs := runMain(t, "control", l.Path, "status")
-	failing(t, "an expired dial deadline", code, out, errs, 6, l.Path)
+	failing(t, "an expired dial deadline", code, out, errs, 6, strconv.Quote(l.Path))
 	if n := l.connections(); n != 0 {
 		t.Errorf("%d connection(s) made after the dial deadline, want none", n)
 	}
@@ -627,7 +627,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		l := newListener(t, replying("OK\nnever\n"))
 		err := checkEndpoint(l.Path, os.Geteuid()+1)
 		var ce *controlError
-		if !errors.As(err, &ce) || ce.code != 8 || !strings.Contains(err.Error(), "owned by uid") || !strings.Contains(err.Error(), l.Path) {
+		if !errors.As(err, &ce) || ce.code != 8 || !strings.Contains(err.Error(), "owned by uid") || !strings.Contains(err.Error(), strconv.Quote(l.Path)) {
 			t.Errorf("checkEndpoint with another uid = %v, want exit 8 naming the owner and the path", err)
 		}
 		if checkEndpoint(l.Path, os.Geteuid()) != nil {
