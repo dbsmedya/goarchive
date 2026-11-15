@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -54,9 +55,26 @@ func newShutdown(onFirst, onSecond func(os.Signal), sigs <-chan os.Signal) (*Shu
 	s := &Shutdown{ctx: ctx, stop: make(chan struct{}), first: make(chan struct{}, 1)}
 
 	return s, func() {
-		// Phase 1: cooperative stop — close stop, keep the work context alive.
+		// Phase 1: cooperative stop — close stop, keep the work context alive. Whoever reserves
+		// the phase first owns it: a request from code reserves it when RequestFirst accepts the
+		// request, a signal when the dispatcher takes it. A signal that finds the phase reserved
+		// came after an accepted stop, so it is the second phase, and the accepted request is the
+		// first however the two were ordered in the select.
 		select {
 		case sig := <-sigs:
+			if !s.reserved.CompareAndSwap(false, true) {
+				<-s.first // sent right after the reservation, and never blocks: the channel has room
+				if onFirst != nil {
+					onFirst(codeRequest{})
+				}
+				close(s.stop)
+				if onSecond != nil {
+					onSecond(sig)
+				}
+				cancel()
+
+				return
+			}
 			if onFirst != nil {
 				onFirst(sig)
 			}
@@ -84,9 +102,12 @@ func newShutdown(onFirst, onSecond func(os.Signal), sigs <-chan os.Signal) (*Shu
 
 // Shutdown is the two-phase shutdown of a run.
 type Shutdown struct {
-	ctx   context.Context
-	stop  chan struct{}
-	first chan struct{}
+	ctx  context.Context
+	stop chan struct{}
+	// first carries one accepted request from code to the dispatcher; reserved says the first phase
+	// has an owner, a request from code or a signal, and is set once, by whoever gets there first.
+	first    chan struct{}
+	reserved atomic.Bool
 }
 
 // Context is the work context: it stays alive through the first phase and is cancelled by the second.
@@ -105,12 +126,13 @@ func (s *Shutdown) StopRequested() bool {
 	}
 }
 
-// RequestFirst asks for the first phase from code, as a signal does. It never blocks, and a request
-// after the phase is taken, or one already pending, does nothing.
+// RequestFirst asks for the first phase from code, as a signal does. It never blocks. It reserves the
+// phase before it returns, so a request it accepts is the first phase and a signal that comes after it,
+// dispatched before or after, is the second; a request after the phase is taken, by a signal or by an
+// earlier request, does nothing. The callback and its log line stay with the signal goroutine.
 func (s *Shutdown) RequestFirst() {
-	select {
-	case s.first <- struct{}{}:
-	default:
+	if s.reserved.CompareAndSwap(false, true) {
+		s.first <- struct{}{} // room for the one request that can ever reserve
 	}
 }
 
