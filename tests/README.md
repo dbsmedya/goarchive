@@ -504,11 +504,13 @@ pinned linter cannot read a newer Go's export data when it cross-lints.
 export GOTOOLCHAIN=go1.26.8
 GOBIN=/tmp/ga-bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4  # the Makefile's pin
 GOOS=linux   /tmp/ga-bin/golangci-lint run ./...                  # what CI's Check job runs
-GOOS=windows /tmp/ga-bin/golangci-lint run ./internal/... ./cmd/...
+GOOS=windows /tmp/ga-bin/golangci-lint run ./...
 ```
 
-`GOOS=windows … ./...` does not typecheck: `tests/harness` and `internal/database/signal_test.go` use
-`syscall.Kill`, which Windows lacks, and no Windows job compiles them.
+All three targets report 0 issues. A test file that can only run on Unix says so with `//go:build
+!windows` and a one-line reason (`internal/database/signal_test.go` and the gate tests in
+`tests/harness`, which signal a process group with `syscall.Kill`), so that the tree typechecks for
+Windows.
 
 The container runs use the Go release of `go.mod`'s toolchain line, with a writable `GOCACHE` and
 `GOPATH` under `/tmp`:
