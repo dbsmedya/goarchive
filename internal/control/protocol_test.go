@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // TestParserIgnoresTail (spec §7, Codex r5): with both lines supplied in one buffer, the first
@@ -112,7 +114,7 @@ func TestFraming(t *testing.T) {
 		{"ok, empty body", okReply(), "OK\n"},
 		{"ok, a body", okReply("protocol 1", "help  list"), "OK\nprotocol 1\nhelp  list\n"},
 		{"error", errReply(reasonMalformed, "bad"), "ERR malformed bad\n"},
-		{"error, a message with line breaks", errReply(reasonInvalid, "a\nb\r\nc"), "ERR invalid a b  c\n"},
+		{"error, a message with line breaks", errReply(tuning.ReasonInvalid, "a\nb\r\nc"), "ERR invalid a b  c\n"},
 	} {
 		if got := string(tc.reply.wire()); got != tc.want {
 			t.Errorf("%s: wire = %q, want %q", tc.name, got, tc.want)
