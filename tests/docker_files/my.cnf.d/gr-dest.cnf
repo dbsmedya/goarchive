@@ -1,0 +1,36 @@
+[mysqld]
+# The group estate's destination (gr-dest): db2.cnf's settings, with server id 4 (gr1 to gr3 are 1 to 3 and
+# the replica is 5: every server of one estate has its own) and its own names. Keep it in step with db2.cnf.
+local_infile              = ON
+server_id		    = 4
+report_host		    = gr-dest.local
+
+# Issue #16: the destination deliberately runs in a NON-UTC zone so every integration run crosses a
+# time-zone boundary (see db2.cnf).
+default-time-zone           = '+03:00'
+
+skip-name-resolve           = ON
+
+log-bin                     = gr_dest_binlog
+log-bin-index               = gr_dest_binlog.index
+binlog-checksum             = NONE
+binlog-row-image            = FULL
+log_replica_updates         = 1
+
+enforce-gtid-consistency    = TRUE
+gtid-mode                   = ON
+relay-log                   = gr_dest_relaylog
+
+# Memory sizing, as in db2.cnf: 768M pool inside a 2g mem_limit.
+innodb_dedicated_server     = OFF
+innodb_buffer_pool_size     = 768M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity    = 256M
+innodb_log_buffer_size      = 16M
+# loose-: Oracle's images are built without NUMA and reject the bare option (as in envmatrix/cnf).
+loose-innodb_numa_interleave = OFF
+
+# The destination peaked at 152 connections (see db2.cnf).
+max_connections             = 500
+
+plugin-load-add		    = mysql_clone.so

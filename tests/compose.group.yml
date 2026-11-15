@@ -1,0 +1,147 @@
+# The group estate: a Group Replication topology in the three estate roles (tests/README.md → The group
+# estate). gr1 is the group's primary and the source, gr2 and gr3 are the other members, gr-dest is a plain
+# destination with db2's settings, and gr-replica is an asynchronous replica of gr1 (attached after seeding,
+# as db3 is, by tests/scripts/setup-replication.sh). It starts from dbsgomysql's own topology
+# (tests/envmatrix/group/compose_group_replication.yaml, which stays the unchanged library copy) and adds the
+# destination, the replica, the servers' settings, memory limits and the estate's ports.
+#
+# It has a project name of its own (the `name:` below), never the plain estate's (the directory, `tests`),
+# so `down` and `down -v` on one estate cannot reach the other's containers or volumes. tests/scripts/
+# estate.sh starts it, refuses to while the plain estate is up, and passes this file's env file:
+#
+#   make test-up TOPOLOGY=group        TOPOLOGY=group make test-down | test-status | test-reset
+#
+# The image is one per series, GA_ESTATE_IMAGE (the plain estate's variable too): mysql:8.0, mysql:8.4,
+# mysql:9.7, or percona/percona-server of the same series. The default is mysql:8.4.
+#
+# Ports, host side, are the .env.group variables the suites read: TEST_SOURCE_PORT (gr1), TEST_GROUP_MEMBER2_PORT,
+# TEST_GROUP_MEMBER3_PORT, TEST_DEST_PORT and TEST_REPLICA_PORT. Their defaults, 3410 to 3414, are clear of the
+# plain estate (3305, 3307, 3308) and of the environment matrix's block (3375 to 3396).
+#
+# gr-bootstrap forms the cluster with the MySQL Shell AdminAPI and idles; `up --wait` returns when gr1 to gr3
+# each report themselves ONLINE (their health check) and gr-dest and gr-replica answer. After a `down` that
+# kept the volumes the bootstrap reboots the cluster from the complete outage, so `up` brings it back. The
+# topology is disposable: after any failure, `make test-reset TOPOLOGY=group`.
+#
+# InnoDB Cluster is Group Replication managed by the AdminAPI: the facts read the same tables either way.
+# AdminAPI adds the mysql_innodb_cluster_metadata schema and mysql_innodb_cluster_* accounts to every member;
+# no test may assume their absence.
+
+name: ga-group
+
+x-env: &env
+  MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set it in tests/.env.group}
+
+# A member is healthy when its own row of the group's view says ONLINE.
+x-member: &member
+  image: ${GA_ESTATE_IMAGE:-mysql:8.4}
+  cap_add:
+    - SYS_NICE
+  environment: *env
+  healthcheck:
+    test: ["CMD-SHELL", "mysql -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" -N -B -e \"SELECT MEMBER_STATE FROM performance_schema.replication_group_members WHERE MEMBER_ID = @@server_uuid\" 2>/dev/null | grep -qx ONLINE"]
+    interval: 5s
+    timeout: 5s
+    retries: 60
+    start_period: 30s
+
+x-standalone: &standalone
+  image: ${GA_ESTATE_IMAGE:-mysql:8.4}
+  cap_add:
+    - SYS_NICE
+  environment: *env
+  healthcheck:
+    test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
+    interval: 5s
+    timeout: 5s
+    retries: 24
+
+services:
+  gr1:
+    <<: *member
+    container_name: gr1
+    hostname: gr1
+    command: >-
+      --server-id=1 --report-host=gr1
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports:
+      - "${TEST_SOURCE_PORT:-3410}:3306"
+    volumes:
+      - gr1_data:/var/lib/mysql
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/my.cnf.d/docker.cnf
+      # Oracle's image reads only /etc/mysql/conf.d (release-verify, beta.1 PR 4).
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/mysql/conf.d/docker.cnf
+    mem_limit: 2g
+
+  gr2:
+    <<: *member
+    container_name: gr2
+    hostname: gr2
+    command: >-
+      --server-id=2 --report-host=gr2
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports:
+      - "${TEST_GROUP_MEMBER2_PORT:-3411}:3306"
+    volumes:
+      - gr2_data:/var/lib/mysql
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/my.cnf.d/docker.cnf
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/mysql/conf.d/docker.cnf
+    mem_limit: 1g
+
+  gr3:
+    <<: *member
+    container_name: gr3
+    hostname: gr3
+    command: >-
+      --server-id=3 --report-host=gr3
+      --gtid-mode=ON --enforce-gtid-consistency=ON
+    ports:
+      - "${TEST_GROUP_MEMBER3_PORT:-3412}:3306"
+    volumes:
+      - gr3_data:/var/lib/mysql
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/my.cnf.d/docker.cnf
+      - ./docker_files/my.cnf.d/gr-member.cnf:/etc/mysql/conf.d/docker.cnf
+    mem_limit: 1g
+
+  # The destination: db2's settings (+03:00 and the rest), server id 4.
+  gr-dest:
+    <<: *standalone
+    container_name: gr-dest
+    hostname: gr-dest.local
+    ports:
+      - "${TEST_DEST_PORT:-3413}:3306"
+    volumes:
+      - gr_dest_data:/var/lib/mysql
+      - ./docker_files/my.cnf.d/gr-dest.cnf:/etc/my.cnf.d/docker.cnf
+      - ./docker_files/my.cnf.d/gr-dest.cnf:/etc/mysql/conf.d/docker.cnf
+    mem_limit: 2g
+
+  # An asynchronous replica of gr1, server id 5, attached after seeding.
+  gr-replica:
+    <<: *standalone
+    container_name: gr-replica
+    hostname: gr-replica.local
+    ports:
+      - "${TEST_REPLICA_PORT:-3414}:3306"
+    volumes:
+      - gr_replica_data:/var/lib/mysql
+      - ./docker_files/my.cnf.d/gr-replica.cnf:/etc/my.cnf.d/docker.cnf
+      - ./docker_files/my.cnf.d/gr-replica.cnf:/etc/mysql/conf.d/docker.cnf
+    mem_limit: 1g
+
+  gr-bootstrap:
+    image: ${GA_ESTATE_IMAGE:-mysql:8.4}
+    container_name: gr-bootstrap
+    depends_on: [gr1, gr2, gr3]
+    entrypoint: ["sh", "/gr-bootstrap.sh"]
+    environment: *env
+    volumes:
+      - ./docker_files/gr-bootstrap.sh:/gr-bootstrap.sh:ro
+    restart: "no"
+
+volumes:
+  gr1_data:
+  gr2_data:
+  gr3_data:
+  gr_dest_data:
+  gr_replica_data:

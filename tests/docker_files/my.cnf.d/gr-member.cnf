@@ -1,0 +1,22 @@
+[mysqld]
+# The group estate's members (tests/compose.group.yml): gr1, the source, and gr2 and gr3. The server id and
+# report_host are on each member's command line, with GTIDs, as in dbsgomysql's own topology. Nothing about
+# Group Replication is set here: the AdminAPI's bootstrap (gr-bootstrap.sh) sets what a member needs, and the
+# measurements read each series' own defaults, which a setting here would hide.
+local_infile                 = ON
+binlog-row-image             = FULL
+
+# Memory sizing, as in db1.cnf: innodb_dedicated_server stays OFF so an unbounded container does not size
+# itself for the whole Docker VM. 512M pool inside the largest member's 2g limit (gr2 and gr3 have 1g).
+innodb_dedicated_server      = OFF
+innodb_buffer_pool_size      = 512M
+innodb_buffer_pool_instances = 2
+innodb_redo_log_capacity     = 256M
+innodb_log_buffer_size       = 16M
+# loose-: Oracle's images are built without NUMA and reject the bare option (as in envmatrix/cnf).
+loose-innodb_numa_interleave = OFF
+
+# The integration suite opens a pool per DatabaseManager and peaked at 89 concurrent connections on the
+# source against the default limit of 151 (see db1.cnf). The same ceiling as the plain estate, so it is not
+# the thing under test.
+max_connections              = 500

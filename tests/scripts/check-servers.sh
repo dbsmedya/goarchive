@@ -11,17 +11,19 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TESTS_DIR="$(dirname "$SCRIPT_DIR")"
+# The estate's topology (TOPOLOGY, default plain) names the env file: .env or .env.group.
+. "$SCRIPT_DIR/topology.sh"
 
-# Source .env file if it exists
-if [ -f "$TESTS_DIR/.env" ]; then
+# Source the env file if it exists
+if [ -f "$TESTS_DIR/$ESTATE_ENV" ]; then
     set -a
-    source "$TESTS_DIR/.env"
+    source "$TESTS_DIR/$ESTATE_ENV"
     set +a
 else
-    echo "ERROR: .env file not found at $TESTS_DIR/.env"
-    echo "Please copy dot.env to .env and configure it:"
-    echo "  cp $TESTS_DIR/dot.env $TESTS_DIR/.env"
-    echo "  nano $TESTS_DIR/.env"
+    echo "ERROR: $ESTATE_ENV file not found at $TESTS_DIR/$ESTATE_ENV"
+    echo "Please copy $ESTATE_ENV_EXAMPLE to $ESTATE_ENV and configure it:"
+    echo "  cp $TESTS_DIR/$ESTATE_ENV_EXAMPLE $TESTS_DIR/$ESTATE_ENV"
+    echo "  nano $TESTS_DIR/$ESTATE_ENV"
     exit 1
 fi
 

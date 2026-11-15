@@ -24,3 +24,6 @@ bin/
 *.test
 *.out
 vendor/
+
+# The group estate's settings (tests/dot.env.group is the tracked example)
+.env.group

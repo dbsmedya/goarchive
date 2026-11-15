@@ -51,23 +51,28 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Source .env. On a fresh clone it does not exist -- tests/.env is gitignored --
+# The estate's topology (TOPOLOGY, default plain) names the env file: .env, or .env.group for the group
+# estate (tests/README.md -> The group estate). TOPOLOGY stays exported for the scripts this one calls.
+. "$SCRIPT_DIR/topology.sh"
+export TOPOLOGY
+
+# Source the env file. On a fresh clone it does not exist -- it is gitignored --
 # so create it from the tracked template rather than making that a manual step.
-# tests/dot.env ships with working local defaults; nothing has to be edited.
-if [ ! -f "$TESTS_DIR/.env" ]; then
-    if [ ! -f "$TESTS_DIR/dot.env" ]; then
-        echo "ERROR: neither $TESTS_DIR/.env nor the template $TESTS_DIR/dot.env exists."
+# The template ships with working local defaults; nothing has to be edited.
+if [ ! -f "$TESTS_DIR/$ESTATE_ENV" ]; then
+    if [ ! -f "$TESTS_DIR/$ESTATE_ENV_EXAMPLE" ]; then
+        echo "ERROR: neither $TESTS_DIR/$ESTATE_ENV nor the template $TESTS_DIR/$ESTATE_ENV_EXAMPLE exists."
         echo "The template is tracked in git; a clone should have it."
         exit 1
     fi
-    echo "NOTE: $TESTS_DIR/.env did not exist. Creating it from dot.env."
+    echo "NOTE: $TESTS_DIR/$ESTATE_ENV did not exist. Creating it from $ESTATE_ENV_EXAMPLE."
     echo "      These are local test-container credentials. Edit the file if"
     echo "      your setup differs; the defaults work with 'make test-up'."
-    cp "$TESTS_DIR/dot.env" "$TESTS_DIR/.env"
+    cp "$TESTS_DIR/$ESTATE_ENV_EXAMPLE" "$TESTS_DIR/$ESTATE_ENV"
 fi
 
 set -a
-source "$TESTS_DIR/.env"
+source "$TESTS_DIR/$ESTATE_ENV"
 set +a
 
 # Default SAKILA_DIR to the repo-relative path so mysqlsh scripts find the

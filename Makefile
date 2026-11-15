@@ -194,26 +194,34 @@ test-integration:
 env-matrix:
 	tests/envmatrix/run-matrix.sh $(ROWS)
 
+# The test estate has two topologies: plain (db1 to db3, the default) and group (a Group Replication
+# primary, two more members, a plain destination and an asynchronous replica; tests/README.md -> The group
+# estate). TOPOLOGY=group selects the second for the four targets below, for the E2E harness's setup and
+# for the runners. tests/scripts/estate.sh does the work, and refuses to bring one estate up while the
+# other is running.
+TOPOLOGY ?= plain
+export TOPOLOGY
+
 # Start test databases (Docker)
 .PHONY: test-up
 test-up:
-	@echo "Starting test databases with Docker..."
-	cd tests && docker compose up -d
+	@echo "Starting test databases with Docker ($(TOPOLOGY) estate)..."
+	@bash tests/scripts/estate.sh up
 	@echo ""
 	@echo "Test databases starting up. Wait a few seconds for them to be ready."
 	@echo "Run 'make test-integration' to run the integration tests."
 
-# Stop test databases
+# Stop test databases (their data volumes are kept)
 .PHONY: test-down
 test-down:
-	@echo "Stopping test databases..."
-	cd tests && docker compose down
+	@echo "Stopping test databases ($(TOPOLOGY) estate)..."
+	@bash tests/scripts/estate.sh down
 
 # Show test database status
 .PHONY: test-status
 test-status:
-	@echo "Test database status:"
-	@cd tests && docker compose ps
+	@echo "Test database status ($(TOPOLOGY) estate):"
+	@bash tests/scripts/estate.sh status
 
 # Destroy and rebuild the test databases from scratch. Use when a killed test run
 # has left orphaned state that `test-down` cannot clear — `test-down` stops the
@@ -225,9 +233,8 @@ test-status:
 .PHONY: test-reset
 test-reset:
 	@rm -f tests/.e2e-ready
-	@echo "Destroying test database state..."
-	cd tests && docker compose down -v
-	cd tests && docker compose up -d
+	@echo "Destroying test database state ($(TOPOLOGY) estate)..."
+	@bash tests/scripts/estate.sh reset
 	@echo "Containers restarted with empty data directories."
 	@echo "Run 'bash tests/scripts/run-tests.sh --setup' to reload Sakila."
 
@@ -235,6 +242,9 @@ test-reset:
 # Slow by design: it destroys the estate, rebuilds it, then runs.
 .PHONY: e2e
 e2e:
+	@if [ "$(TOPOLOGY)" != plain ]; then \
+		echo "e2e: the E2E configs (tests/configs) name the plain estate's ports; the $(TOPOLOGY) estate has no E2E yet (GRG-1)"; exit 2; \
+	fi
 	@$(MAKE) test-reset
 	@$(MAKE) e2e-setup
 	@$(MAKE) e2e-tests-must-run-after-setup
@@ -309,6 +319,7 @@ help:
 	@echo "  make test-down          - Stop test databases"
 	@echo "  make test-status        - Show test database status"
 	@echo "  make test-reset         - Destroy and rebuild test DBs (clears orphaned state)"
+	@echo "                            (these four take TOPOLOGY=group: the Group Replication estate, tests/README.md)"
 	@echo "  make e2e                - Full E2E: test-reset, e2e-setup, then the tests. USE THIS"
 	@echo "  make e2e-setup          - Step 2 only: bootstrap docker + Sakila and seed the estate"
 	@echo "  make e2e-tests-must-run-after-setup - Step 3 only: the tests (refuses unless seeded)"

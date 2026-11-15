@@ -1,0 +1,32 @@
+[mysqld]
+# The group estate's replica (gr-replica): an asynchronous replica of gr1, db3.cnf's settings with server id 5.
+# It must not share a server id with a member: a replica skips events whose server id is its own, and the
+# group's transactions carry their members' ids.
+local_infile              = ON
+server_id		    = 5
+report_host		    = gr-replica.local
+
+skip-name-resolve           = ON
+
+log-bin                     = gr_replica_binlog
+log-bin-index               = gr_replica_binlog.index
+binlog-checksum             = NONE
+binlog-row-image            = FULL
+log_replica_updates         = 1
+
+enforce-gtid-consistency    = TRUE
+gtid-mode                   = ON
+relay-log                   = gr_replica_relaylog
+
+# Memory sizing, as in db3.cnf: 256M pool inside a 1g mem_limit.
+innodb_dedicated_server     = OFF
+innodb_buffer_pool_size     = 256M
+innodb_buffer_pool_instances = 1
+innodb_redo_log_capacity    = 128M
+innodb_log_buffer_size      = 16M
+# loose-: Oracle's images are built without NUMA and reject the bare option (as in envmatrix/cnf).
+loose-innodb_numa_interleave = OFF
+
+max_connections             = 250
+
+plugin-load-add		    = mysql_clone.so

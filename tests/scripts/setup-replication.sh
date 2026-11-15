@@ -63,8 +63,9 @@ QUERY="$SCRIPT_DIR/mysql-query.sh"
 SOURCE_PORT="${TEST_SOURCE_PORT:-3305}"
 REPLICA_PORT="${TEST_REPLICA_PORT:-3308}"
 
-# Fixed by tests/compose.yml: the address db3 uses to reach db1.
-SOURCE_HOST_INTERNAL="db1"
+# Fixed by tests/compose.yml: the address db3 uses to reach db1. The group estate (tests/compose.group.yml)
+# names its source gr1, and its env file says so with REPL_SOURCE_HOST; the plain estate leaves it unset.
+SOURCE_HOST_INTERNAL="${REPL_SOURCE_HOST:-db1}"
 SOURCE_PORT_INTERNAL="3306"
 
 ATTACH_TIMEOUT_SECONDS=30
