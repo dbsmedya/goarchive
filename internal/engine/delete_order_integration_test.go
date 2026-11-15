@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,36 +19,35 @@ import (
 // gate came first and the sleep after it, so a gate that passed a second before the DELETE
 // judged the replicas by a moment that was no longer current.
 
-// timeline records the gate's waits and the DELETE statements of a run, each with the time it
-// happened, from one clock. It stands in for Config.Lag (a recording wrapper: it passes every
-// wait at once) and observes statements through Config.fault without changing them. Both are
-// test code, not faults.
-type timeline struct {
-	mu     sync.Mutex
-	events []timelineEvent
-}
+// gateCalls is a Config.Lag that passes every wait at once and counts the waits: the run's real
+// gate call is made, and nothing is bypassed or delayed. The order is proved from the boundaries
+// the run reports through Config.at (tracer, checkDeleteOrder), not from this stub's timing.
+type gateCalls struct{ n atomic.Int64 }
 
-type timelineEvent struct {
-	kind  string // "gate" or "delete"
-	table string // the DELETE's table
-	at    time.Time
-}
-
-func (tl *timeline) add(kind, table string) {
-	tl.mu.Lock()
-	defer tl.mu.Unlock()
-	tl.events = append(tl.events, timelineEvent{kind, table, time.Now()})
-}
-
-func (tl *timeline) WaitForLag(context.Context, <-chan struct{}) error {
-	tl.add("gate", "")
+func (g *gateCalls) WaitForLag(context.Context, <-chan struct{}) error {
+	g.n.Add(1)
 	return nil
 }
 
-func (tl *timeline) observe(st *statement) {
-	if st.op == opDelete {
-		tl.add("delete", st.table)
+// deleteTables records the table of each DELETE through Config.fault, which it does not change.
+type deleteTables struct {
+	mu     sync.Mutex
+	tables []string
+}
+
+func (d *deleteTables) observe(st *statement) {
+	if st.op != opDelete {
+		return
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.tables = append(d.tables, st.table)
+}
+
+func (d *deleteTables) seen() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.tables)
 }
 
 // d16Tables creates the order tables where the job type needs them.
@@ -61,23 +61,27 @@ func d16Tables(t *testing.T, e env, typ jobspec.Type) {
 	e.both(t, orderTables(cs)...)
 }
 
-// TestMySQLDeleteSleepThenGate (spec §7): between two DELETEs of a batch the sleep runs, and
-// then the gate is asked, and then the statement is issued; the first DELETE of a batch has no
-// sleep before it. Three old orders in batches of two roots and chunks of two keys make eight
-// DELETEs: batch 1 has five (two chunks of notes, two of lines, one of orders), batch 2 three.
-// The same order holds in recovery, which shares the path, and for purge, whose pre-log gate
-// stays. The run's rows and counts equal those of the same job before the change.
+// TestMySQLDeleteSleepThenGate (spec §7, review R1 finding 2): in every deleteTree call the first
+// DELETE has no sleep before it, and each later DELETE is sleep, then gate, then source session,
+// then the chunk and the statement, in that order. The order is read from the boundaries the run
+// reports through Config.at, with the real sleep, real gate call and real database; it is not a
+// bound on how long a session takes. Each sleep must also last its configured 0.3 s (the pacing
+// floor). Three old orders in batches of two roots and chunks of two keys make eight DELETEs:
+// batch 1 has five (two chunks of notes, two of lines, one of orders), batch 2 three. The same
+// order holds in recovery, which shares the path, and for purge, whose pre-log gate is a call of
+// its own that stays. The run's rows and counts equal those of the same job before the change.
 func TestMySQLDeleteSleepThenGate(t *testing.T) {
 	const sleep = 300 * time.Millisecond
 	for _, tc := range []struct {
-		name  string
-		typ   jobspec.Type
-		crash point // "" for none; else a first run is killed here, leaving batch 1 for recovery
+		name   string
+		typ    jobspec.Type
+		crash  point // "" for none; else a first run is killed here, leaving batch 1 for recovery
+		preLog int   // gate calls of purge's own, before it logs a batch's roots
 	}{
-		{"archive", jobspec.Archive, ""},
-		{"purge", jobspec.Purge, ""},
-		{"archive recovery", jobspec.Archive, atCommitted},
-		{"purge recovery", jobspec.Purge, atLogged},
+		{"archive", jobspec.Archive, "", 0},
+		{"purge", jobspec.Purge, "", 2},
+		{"archive recovery", jobspec.Archive, atCommitted, 0},
+		{"purge recovery", jobspec.Purge, atLogged, 1}, // recovery replays batch 1 without it; batch 2 logs behind one
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, "d16order")
@@ -86,10 +90,11 @@ func TestMySQLDeleteSleepThenGate(t *testing.T) {
 			if tc.crash != "" {
 				e.killAt(t, tc.typ, orderJob, tc.crash, 1)
 			}
-			tl := &timeline{}
+			var tr tracer
+			gates, tabs := &gateCalls{}, &deleteTables{}
 			cfg := e.config(t, job(t, tc.typ, orderJob))
 			cfg.Processing.DeleteSleepSeconds = sleep.Seconds()
-			cfg.Lag, cfg.fault = tl, tl.observe
+			cfg.Lag, cfg.fault, cfg.at = gates, tabs.observe, tr.at
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			rep, err := e.runContext(t, ctx, cfg)
@@ -115,59 +120,41 @@ func TestMySQLDeleteSleepThenGate(t *testing.T) {
 				t.Errorf("log = %s, want 3 completed", got)
 			}
 
-			// The order of the DELETEs: children first, in chunks of two, batch 1 then batch 2.
-			var deletes []int // indices into events
-			tl.mu.Lock()
-			events := slices.Clone(tl.events)
-			tl.mu.Unlock()
-			var tables []string
-			for i, ev := range events {
-				if ev.kind == "delete" {
-					deletes = append(deletes, i)
-					tables = append(tables, ev.table)
-				}
-			}
+			// The DELETEs: children first, in chunks of two, batch 1 then batch 2.
 			wantTables := []string{"line_notes", "line_notes", "order_lines", "order_lines", "orders", "line_notes", "order_lines", "orders"}
-			if !slices.Equal(tables, wantTables) {
-				t.Fatalf("DELETEs on %v, want %v", tables, wantTables)
+			if got := tabs.seen(); !slices.Equal(got, wantTables) {
+				t.Fatalf("DELETEs on %v, want %v", got, wantTables)
 			}
 
-			// A DELETE's gate is the last wait before it.
-			gateOf := func(del int) timelineEvent {
-				for i := deletes[del] - 1; i >= 0; i-- {
-					if events[i].kind == "gate" {
-						return events[i]
-					}
-				}
-				t.Fatalf("no gate wait before DELETE %d", del+1)
-				return timelineEvent{}
+			// The order of the boundaries, and the shape of the trace: two deleteTree calls (a batch or
+			// a recovery page each), eight DELETEs, six of them behind a sleep, and one gate call for
+			// each DELETE besides purge's own before it logs.
+			trace := tr.trace()
+			if err := checkDeleteOrder(trace, sleep); err != nil {
+				t.Fatalf("the delete path's order: %v", err)
 			}
-			firstOfBatch := map[int]bool{0: true, 5: true}
-			for k := range deletes {
-				gate, del := gateOf(k), events[deletes[k]]
-				if gap := del.at.Sub(gate.at); gap >= sleep {
-					t.Errorf("DELETE %d (%s) came %v after its gate wait: the sleep was between them, and the gate decision must be the last step before the statement",
-						k+1, del.table, gap)
+			counts := map[point]int{}
+			for _, ev := range trace {
+				counts[ev.point]++
+			}
+			for p, want := range map[point]int{atDeleteTree: 2, atDeleted: 8, atDeleteIssue: 8, atDeleteSession: 8, atDeleteGate: 8, atDeleteGated: 8, atDeleteSleep: 6, atDeleteSlept: 6} {
+				if counts[p] != want {
+					t.Errorf("%d %s boundaries, want %d", counts[p], p, want)
 				}
-				if firstOfBatch[k] {
-					continue // no DELETE was issued before it in its batch, so no sleep precedes it
-				}
-				prev := events[deletes[k-1]]
-				if gap := gate.at.Sub(prev.at); gap < sleep {
-					t.Errorf("DELETE %d (%s): the gate was asked %v after DELETE %d, before the %v sleep had passed: the sleep comes first",
-						k+1, del.table, gap, k, sleep)
-				}
+			}
+			if got, want := gates.n.Load(), int64(8+tc.preLog); got != want {
+				t.Errorf("%d gate calls, want %d: one for each DELETE and %d of purge's own", got, want, tc.preLog)
 			}
 		})
 	}
 }
 
-// TestMySQLDeleteSleepStop (spec §7): a first stop during the inter-delete sleep. The sleep is
-// not ended by it (the batch in flight always finishes, spec fact 8), and then the gate is asked.
-// With healthy replicas the gate passes, the batch finishes and the run ends stopped at the
-// boundary: a pin, true before the change too. With the replica's applier stopped during the
-// sleep, the gate sees it when the sleep ends and the hold ends at once through LAG-1's rule,
-// before the next DELETE; the next run's recovery finishes the batch.
+// TestMySQLDeleteSleepStop (spec §7): a first stop during the inter-delete sleep. The stop does not
+// shorten the sleep (spec fact 8), and then the gate is asked. With healthy replicas the gate passes
+// and the batch finishes; the run then ends stopped at the batch boundary: a pin, true before the
+// change too. With the replica's applier stopped during the sleep, the gate sees it when the sleep
+// ends, and the stop already requested ends the hold at once through LAG-1's rule, before the next
+// DELETE, leaving the batch unfinished; the next run's recovery finishes it.
 func TestMySQLDeleteSleepStop(t *testing.T) {
 	const sleep = time.Second
 	oldOrders := "SELECT COUNT(*) FROM orders WHERE placed < '2020-01-01'"

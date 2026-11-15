@@ -18,8 +18,3 @@ var errNoPeerCredentials = errors.New("no peer credentials are available for thi
 // follow links, so a symbolic link to a socket is not one. On Windows, Go maps an AF_UNIX
 // reparse point to a socket (go1.26.8, os/types_windows.go).
 func isSocket(fi os.FileInfo) bool { return fi.Mode().Type() == os.ModeSocket }
-
-// sameFile reports whether a and b, Lstat results, are one file: the same device and inode,
-// or the same volume and file index on Windows. It is how the run recognises its own
-// directory, lock and socket (spec §4.2 Identities); a name proves nothing.
-func sameFile(a, b os.FileInfo) bool { return os.SameFile(a, b) }
