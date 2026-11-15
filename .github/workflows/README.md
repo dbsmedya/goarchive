@@ -18,7 +18,10 @@ ships a Windows binary, where a log file's mode sets only the read-only attribut
 step, **Logger and control tests**, also runs the control socket's platform tests
 (`internal/control`, `internal/controlpath`): the file lock, socket identity, the path limit, the
 home lookup and how a connect and a close behave on Windows. It runs with `-v`, so that what the
-probes saw is in the job's log.
+probes saw is in the job's log. A second step, **Control client tests**, runs the `goarchive control`
+client's tests (`go test ./cmd/goarchive/cmd/ -run TestControl`): its exchange and exit codes against a
+real server and test listeners. It is a step of its own because a PowerShell step's exit code is that of
+its last command, so a second `go test` in the first step could hide a failure of the first.
 
 Database tests do not run in CI. The full gate is `make gate`, described in `tests/README.md`.
 
@@ -69,7 +72,9 @@ The gate on every supported image (`tests/README.md` → *The full matrix runs o
 - **Integration and E2E:** the gate on an estate built from each of `mysql` 8.0.40, 8.4.11 and
   9.7.1 and `percona/percona-server` 8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned (`GA_ESTATE_IMAGE`),
   as two jobs per image, all twelve at once (RVG-3): `run-gate.sh --part integration` (estate,
-  static checks, unit, integration) and `--part e2e` (estate, `e2e`, `e2e-examples`).
+  static checks, unit, integration) and `--part e2e` (estate, `e2e`, `e2e-examples`). The e2e job
+  installs `netcat-openbsd` and `socat` first: E2E 20 sends the control socket's documented lines
+  with `nc -U` and `socat`, and fails when a tool is missing.
 - **Summary:** one table of both parts of every gate (`tests/envmatrix/gh-summary.sh`), on the
   run page and as the `summary-gate` artifact. It is red when any job did not succeed, when any
   image lacks a part or a part is not certified (one run record for the target SHA, on a clean

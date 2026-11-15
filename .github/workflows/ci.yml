@@ -60,7 +60,14 @@ jobs:
       # A release ships a Windows binary, where a log file's mode sets only the read-only
       # attribute (GH #5: log files are created owner-only). The logger's tests run there too.
       # So do the control socket's platform tests (TEL-1): the lock, the stale-socket and
-      # identity checks, the path limit, and the probes whose Windows answers are still to be
-      # measured; -v puts what the probes saw in the log.
+      # identity checks, the path limit, and the probes of how Windows answers a connect and a
+      # close, which pin what the first Windows run measured; -v puts what the probes saw in the
+      # log. The client's tests (TEL-1 C7) run in the step after this one.
       - name: Logger and control tests
         run: go test ./internal/logger/ ./internal/control/... ./internal/controlpath/ -count=1 -v
+
+      # The control client's exchange and exit codes against a real server and test listeners, and
+      # the command's own TestControl tests. A separate step: a PowerShell step's exit code is its
+      # last command's, so a second go test in the step above could hide a failure of the first.
+      - name: Control client tests
+        run: go test ./cmd/goarchive/cmd/ -run TestControl -count=1 -v

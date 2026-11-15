@@ -135,6 +135,10 @@ jobs:
           curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
           sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
           mysqlsh --version
+      # E2E 20 sends the control socket's documented lines with nc -U and socat, as a script without
+      # the binary would, and fails (not skips) when a tool is missing.
+      - name: Install the control socket test tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq netcat-openbsd socat
       - name: Gate, part e2e
         env:
           GA_ESTATE_IMAGE: ${{ matrix.image }}
