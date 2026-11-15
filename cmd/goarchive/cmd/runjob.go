@@ -152,7 +152,9 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 	defer func() { _ = mgr.Close() }()
 	var lag engine.LagGate
 	if doc.Shared.Replication.Enabled {
-		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log)
+		// A nil store is one that never changes, at the configured values; the command
+		// hands the gate the run's settings store when the control socket is wired.
+		g, gerr := replication.New(doc.Shared.Replication, mgr.Replicas, log, nil)
 		if gerr != nil {
 			failed(nil)
 			return nil, false, gerr

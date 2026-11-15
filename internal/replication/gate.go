@@ -13,6 +13,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // ErrStopped reports that a stop request ended a hold (LAG-1). A call returns
@@ -42,22 +43,37 @@ type server struct {
 // Gate holds a job while any monitored replica fails replication policy. It
 // implements the archiver's lag-waiter seam.
 //
-// A Gate is safe for concurrent callers: mu guards the cached pass, and the
-// hold-loop state machine is scoped to a single WaitForLag call.
+// The lag tolerance and the check interval are read from the settings store,
+// once per probe round (TEL-1, spec §4.6); cache_ttl is startup configuration. A
+// cached pass and every round carry the gate revision they were judged under.
+//
+// A Gate is safe for concurrent callers: mu guards the cached pass and the
+// verdict record, and the hold-loop state machine is scoped to a single
+// WaitForLag call. The gate never takes the store's writer lock: it only loads
+// the current snapshot and reports completed rounds, which are atomic.
 type Gate struct {
-	enabled   bool
-	servers   []server
-	tolerance int64
-	interval  time.Duration
-	ttl       time.Duration
+	enabled bool
+	servers []server
+	store   *tuning.Store
+	ttl     time.Duration
 
 	mu       sync.Mutex
 	lastPass time.Time
+	// passRev is the gate revision lastPass was judged under: a call takes a cache
+	// hit only under the current gate revision.
+	passRev uint64
+	// verdicts is the last verdict of each server, index-paired with servers; it
+	// is allocated at the first probe, and a server not yet probed has a zero
+	// CheckedAt. holdSince is when the current call began holding.
+	verdicts  []ServerVerdict
+	holdSince time.Time
 
 	// now and sleep are seams: injected in tests so TTL expiry, tick cadence
-	// and held durations need no wall clock.
+	// and held durations need no wall clock. sleep waits for the duration, for
+	// the context, for stop, or for wake (the signal of the settings snapshot
+	// the wait was computed from), whichever comes first.
 	now   func() time.Time
-	sleep func(context.Context, <-chan struct{}, time.Duration) error
+	sleep func(ctx context.Context, stop, wake <-chan struct{}, d time.Duration) error
 
 	logger *logger.Logger
 }
@@ -69,7 +85,12 @@ type Gate struct {
 // The tolerance, interval and TTL are taken exactly as configured: omission is
 // DefaultConfig's job and rejection is validation's, so nothing here clamps or
 // defaults a value the operator set.
-func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger) (*Gate, error) {
+//
+// store is the settings store the gate reads its tolerance and interval from;
+// nil is a store that never changes, at the configured values. A store that
+// starts at other values than the configuration is refused: the configured
+// tolerance is what the step rule measures a raise by.
+func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger, store *tuning.Store) (*Gate, error) {
 	if log == nil {
 		log = logger.NewDefault()
 	}
@@ -85,6 +106,17 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger) (*Gate
 			len(cfg.Servers), len(dbs))
 	}
 
+	if store == nil {
+		store = tuning.Constant(tuning.Settings{
+			SecondsBehindSourceWithin: cfg.SecondsBehindSourceWithin,
+			CheckInterval:             cfg.CheckInterval,
+		})
+	}
+	if st := store.Start(); st.SecondsBehindSourceWithin != cfg.SecondsBehindSourceWithin || st.CheckInterval != cfg.CheckInterval {
+		return nil, fmt.Errorf("replication: the settings store starts at tolerance %ds and interval %ds, but the configuration says %ds and %ds",
+			st.SecondsBehindSourceWithin, st.CheckInterval, cfg.SecondsBehindSourceWithin, cfg.CheckInterval)
+	}
+
 	servers := make([]server, 0, len(cfg.Servers))
 	for i := range cfg.Servers {
 		if dbs[i] == nil {
@@ -98,24 +130,23 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger) (*Gate
 	}
 
 	g := &Gate{
-		enabled:   true,
-		servers:   servers,
-		tolerance: int64(cfg.SecondsBehindSourceWithin),
-		interval:  time.Duration(cfg.CheckInterval) * time.Second,
-		ttl:       time.Duration(cfg.CacheTTL) * time.Second,
-		now:       time.Now,
-		sleep:     sleepUntil,
-		logger:    log,
+		enabled: true,
+		servers: servers,
+		store:   store,
+		ttl:     time.Duration(cfg.CacheTTL) * time.Second,
+		now:     time.Now,
+		sleep:   sleepUntil,
+		logger:  log,
 	}
 	g.logStartup()
 
 	return g, nil
 }
 
-// sleepUntil waits for d, for the context or for stop, whichever comes first. A
-// stop returns nil, so the caller's check decides. It is the production seam;
-// tests inject a deterministic replacement.
-func sleepUntil(ctx context.Context, stop <-chan struct{}, d time.Duration) error {
+// sleepUntil waits for d, for the context, for stop or for wake, whichever comes
+// first. A stop or a wake returns nil, so the caller's check decides. It is the
+// production seam; tests inject a deterministic replacement.
+func sleepUntil(ctx context.Context, stop, wake <-chan struct{}, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 
@@ -123,6 +154,8 @@ func sleepUntil(ctx context.Context, stop <-chan struct{}, d time.Duration) erro
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-stop:
+		return nil
+	case <-wake:
 		return nil
 	case <-timer.C:
 		return nil
@@ -132,8 +165,9 @@ func sleepUntil(ctx context.Context, stop <-chan struct{}, d time.Duration) erro
 // logStartup records the fleet the gate will watch. Its inputs are host:port
 // identities and channel names only, so no credential can appear.
 func (g *Gate) logStartup() {
+	st := g.store.Load()
 	g.logger.Infof("Replication monitoring ENABLED: %d server(s), tolerance %ds, interval %s, cache TTL %s",
-		len(g.servers), g.tolerance, g.interval, g.ttl)
+		len(g.servers), st.SecondsBehindSourceWithin, config.CheckIntervalDuration(st.CheckInterval), g.ttl)
 
 	for _, srv := range g.servers {
 		g.logger.Infof("  server %s channels: %s", srv.id, renderChannelList(srv.channels))
@@ -168,28 +202,51 @@ type holdInfo struct {
 // during a later probe, which runs on a context the stop cancels, since a probe
 // of a replica whose host is down blocks for the connect timeout, and whatever
 // that probe returns. A cancelled ctx outranks a stop that came with it.
+//
+// Runtime settings (TEL-1, spec §4.6). Each round loads one snapshot of the
+// store and judges every server of the round by its tolerance; its revision is
+// the round's gate revision. A pass is valid only for the gate revision it was
+// judged under: a cached pass of an older revision never hits, and a round that
+// passes under a revision replaced while it ran is discarded, recording and
+// returning nothing, and the next round runs at once. The call's hold state is
+// kept through a discard, so the stop rules above are unchanged by it. After a
+// failing round the wait for the interval ends at once when a gate setting
+// changed, and goes on for the time left when another setting did. Every
+// completed round, passing or failing, is reported to the store, which is what
+// lets a raise of the tolerance above its configured value take its next step.
 func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 	if !g.enabled {
 		return nil
 	}
 
-	g.mu.Lock()
-	fresh := g.ttl > 0 && !g.lastPass.IsZero() && g.now().Sub(g.lastPass) < g.ttl
-	g.mu.Unlock()
-	if fresh {
+	if g.cachedPass() {
 		return nil
 	}
 
 	holds := make(map[string]holdInfo)
 	var firstHold time.Time
+	defer func() {
+		if firstHold.IsZero() {
+			return
+		}
+		g.mu.Lock()
+		if g.holdSince.Equal(firstHold) {
+			g.holdSince = time.Time{}
+		}
+		g.mu.Unlock()
+	}()
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
+		snap := g.store.Load()
+		tolerance := int64(snap.SecondsBehindSourceWithin)
+		interval := config.CheckIntervalDuration(snap.CheckInterval)
+
 		allOK := true
-		for _, srv := range g.servers {
+		for i, srv := range g.servers {
 			// Decided per probe: once any server has reported unhealthy, in
 			// this round or an earlier one, the call is a hold and a stop
 			// also aborts the probe.
@@ -198,7 +255,7 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			if holding {
 				probe, release = withStop(ctx, stop)
 			}
-			snapshot, err := srv.reader.ReplicaStatus(probe)
+			status, err := srv.reader.ReplicaStatus(probe)
 			release()
 			// Before classifying or logging: a query aborted by shutdown is
 			// not evidence that the server is unreachable.
@@ -216,25 +273,38 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 
 			var cause holdCause
 			var detail string
+			var lag *int64
 			ok := true
 			switch {
 			case err != nil:
 				ok, cause, detail = false, classify(err), sanitizeLine(err.Error())
 			default:
-				if ps := evaluate(snapshot, srv.channels, g.tolerance); len(ps) > 0 {
-					ok, cause, detail = false, causeUnhealthy, renderProblems(ps, g.tolerance)
+				lag = lagOf(status, srv.channels)
+				if ps := evaluate(status, srv.channels, tolerance); len(ps) > 0 {
+					ok, cause, detail = false, causeUnhealthy, renderProblems(ps, tolerance)
 				}
 			}
 
-			g.transition(holds, &firstHold, srv.id, ok, cause, detail)
+			g.transition(holds, &firstHold, srv.id, ok, cause, detail, interval)
+			g.record(i, ok, cause, detail, lag, tolerance, firstHold)
 			if !ok {
 				allOK = false
 			}
 		}
 
+		// The round is complete, whatever it found: an unhealthy or unreadable
+		// round counts, and bypasses nothing, since those causes hold the job at
+		// any tolerance.
+		g.store.RoundCompleted(snap.GateRevision)
+
 		if allOK {
+			if g.store.Load().GateRevision != snap.GateRevision {
+				// Passed under settings that have since been replaced: record
+				// nothing, return nothing, and judge the fleet again at once.
+				continue
+			}
 			g.mu.Lock()
-			g.lastPass = g.now()
+			g.lastPass, g.passRev = g.now(), snap.GateRevision
 			g.mu.Unlock()
 
 			if !firstHold.IsZero() {
@@ -248,11 +318,56 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 		if err := g.stopHold(ctx, stop, firstHold); err != nil {
 			return err
 		}
-		if err := g.sleep(ctx, stop, g.interval); err != nil {
+		if err := g.wait(ctx, stop, snap, interval); err != nil {
 			return err
 		}
 		if err := g.stopHold(ctx, stop, firstHold); err != nil {
 			return err
+		}
+	}
+}
+
+// cachedPass reports whether the last pass is a hit: judged under the current gate
+// revision and younger than cache_ttl.
+func (g *Gate) cachedPass() bool {
+	rev := g.store.Load().GateRevision
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return g.ttl > 0 && !g.lastPass.IsZero() && g.passRev == rev && g.now().Sub(g.lastPass) < g.ttl
+}
+
+// wait holds for the check interval after a failing round judged under snap. A change
+// of a gate setting (a different gate revision) ends it at once, since the round's
+// interval and judgement are obsolete; a change of any other setting only wakes the
+// wait, which then goes on for the time that is left. A stop returns nil with time
+// left, so the caller's check decides.
+func (g *Gate) wait(ctx context.Context, stop <-chan struct{}, snap *tuning.Snapshot, interval time.Duration) error {
+	deadline := g.now().Add(interval)
+
+	for {
+		cur := g.store.Load()
+		if cur.GateRevision != snap.GateRevision {
+			return nil
+		}
+		left := deadline.Sub(g.now())
+		if left <= 0 {
+			return nil
+		}
+
+		wake := cur.Changed()
+		if err := g.sleep(ctx, stop, wake, left); err != nil {
+			return err
+		}
+		if stopped(stop) {
+			return nil
+		}
+		select {
+		case <-wake:
+			// The snapshot was replaced: decide again from the new one.
+		default:
+			return nil
 		}
 	}
 }
@@ -316,6 +431,7 @@ func (g *Gate) transition(
 	ok bool,
 	cause holdCause,
 	detail string,
+	interval time.Duration,
 ) {
 	prev, holding := holds[id]
 	now := g.now()
@@ -337,7 +453,7 @@ func (g *Gate) transition(
 			*firstHold = now
 		}
 		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s",
-			id, cause, detail, g.interval), logger.Live)
+			id, cause, detail, interval), logger.Live)
 
 		return
 	}
@@ -345,7 +461,7 @@ func (g *Gate) transition(
 	held := now.Sub(prev.since).Round(time.Second)
 	if prev.cause == cause {
 		g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (held %s)",
-			id, cause, detail, g.interval, held), logger.Live)
+			id, cause, detail, interval, held), logger.Live)
 
 		return
 	}
@@ -354,7 +470,7 @@ func (g *Gate) transition(
 	// continuously, and the duration must not restart.
 	holds[id] = holdInfo{cause: cause, since: prev.since}
 	g.logger.Warnw(fmt.Sprintf("replication hold: server %s %s (%s); job held, retrying in %s (was: %s; held %s)",
-		id, cause, detail, g.interval, prev.cause, held), logger.Live)
+		id, cause, detail, interval, prev.cause, held), logger.Live)
 }
 
 // renderChannelList spells a server's channel selection, where an empty
@@ -370,4 +486,81 @@ func renderChannelList(channels []string) string {
 	}
 
 	return strings.Join(names, ", ")
+}
+
+// ServerVerdict is the gate's last verdict on one server: what its latest probe found,
+// by the tolerance of the round that made it. A server not yet probed has a zero
+// CheckedAt.
+type ServerVerdict struct {
+	// Server is the config's host:port.
+	Server string
+	// Healthy is false for any of the three causes.
+	Healthy bool
+	// Cause is "unreachable", "unreadable" or "unhealthy", and empty for a healthy server.
+	Cause string
+	// Detail is the rendered line the hold log shows for the cause, and empty for a
+	// healthy server.
+	Detail string
+	// Lag is the largest Seconds_Behind_Source among the gated channels, in seconds;
+	// nil when a gated channel reports NULL or the read failed.
+	Lag *int64
+	// Tolerance is the tolerance the verdict was judged by, in seconds.
+	Tolerance int64
+	// CheckedAt is the time of the probe.
+	CheckedAt time.Time
+}
+
+// Record is the gate's last-verdict record (spec §4.6): one verdict per server, in
+// configuration order, since when the current call has been holding (zero when none
+// is), and the time of the last recorded pass (zero when none was). It is a snapshot
+// of what the probes found, and its age is its CheckedAt: outside a probe, status
+// shows the last verdict, not a live value.
+type Record struct {
+	Servers      []ServerVerdict
+	HoldingSince time.Time
+	LastPass     time.Time
+}
+
+// Record returns a copy of the gate's record. It makes no probe and takes no lock but
+// the gate's own, so a status read never waits for a replica.
+func (g *Gate) Record() Record {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	rec := Record{HoldingSince: g.holdSince, LastPass: g.lastPass}
+	for i, srv := range g.servers {
+		v := ServerVerdict{Server: srv.id}
+		if i < len(g.verdicts) {
+			v = g.verdicts[i]
+			if v.Lag != nil {
+				lag := *v.Lag
+				v.Lag = &lag
+			}
+		}
+		rec.Servers = append(rec.Servers, v)
+	}
+
+	return rec
+}
+
+// record writes server i's verdict, and since when the call holds, under the mutex.
+func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag *int64, tolerance int64, holdSince time.Time) {
+	v := ServerVerdict{Server: g.servers[i].id, Healthy: ok, Lag: lag, Tolerance: tolerance, CheckedAt: g.now()}
+	if !ok {
+		v.Cause, v.Detail = cause.String(), detail
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.verdicts == nil {
+		g.verdicts = make([]ServerVerdict, len(g.servers))
+		for j := range g.servers {
+			g.verdicts[j].Server = g.servers[j].id
+		}
+	}
+	g.verdicts[i] = v
+	if !holdSince.IsZero() && g.holdSince.IsZero() {
+		g.holdSince = holdSince
+	}
 }
