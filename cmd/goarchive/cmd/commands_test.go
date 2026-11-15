@@ -34,7 +34,12 @@ func execute(t *testing.T, args ...string) (string, error) {
 
 func resetFlags(c *cobra.Command) {
 	reset := func(f *pflag.Flag) {
-		_ = f.Value.Set(f.DefValue)
+		// A repeatable flag keeps what it collected: Set(DefValue) would append "[]" to it.
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			_ = sv.Replace(nil)
+		} else {
+			_ = f.Value.Set(f.DefValue)
+		}
 		f.Changed = false
 	}
 	c.PersistentFlags().VisitAll(reset)
