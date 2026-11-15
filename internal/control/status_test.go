@@ -322,7 +322,7 @@ func TestStatusText(t *testing.T) {
 		"  time:      started 2026-11-15T12:00:00Z, now 2026-11-15T12:06:02Z",
 		"  stop:      not requested",
 		"  replication: enabled, used, cache_ttl 15s, last pass 5m00s ago (2026-11-15T12:01:02Z)",
-		"               replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s), checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica1.internal:3306 unhealthy (channel <default>: lag=42s tolerance=10s), lag 42s, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
 		"  changes:   1 accepted runtime change",
 		"  roots:     skipped 0, recovered 0",
 		"  tables:    orders copied 12000, deleted 11000",
@@ -349,7 +349,7 @@ func TestStatusTextReplication(t *testing.T) {
 	for _, want := range []string{
 		"  replication: enabled, used, cache_ttl 15s, last pass never",
 		"               replica2:3306 healthy, lag 0s, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
-		"               replica3:3306 unreachable (dial tcp: connection refused), checked 3s ago (2026-11-15T12:05:59Z)",
+		"               replica3:3306 unreachable (dial tcp: connection refused), lag unknown, tolerance 10s, checked 3s ago (2026-11-15T12:05:59Z)",
 		"               replica4:3306 not checked yet",
 	} {
 		if !strings.Contains(text, want) {
@@ -543,6 +543,20 @@ func TestStatusTextCoversTheJSON(t *testing.T) {
 			f.shutdown.set(true)
 			f.store.Terminal()
 		}},
+		{"held, with verdicts that are not about lag and were judged by another tolerance", func(f *statusFixture) {
+			counted(f, TrackerStatus{Phase: PhaseRunning, Step: "delete", Table: "orders"})
+			three, forty := int64(3), int64(40)
+			f.gate.set(GateRecord{
+				HoldingSince: statusNow.Add(-90 * time.Second), LastPass: statusNow.Add(-time.Hour),
+				Servers: []ServerVerdict{
+					// A stopped SQL thread: the detail says nothing of the lag (3) or the tolerance (17) it was judged by.
+					{Server: "replica2:3306", Cause: "unhealthy", Detail: "channel <default>: io=Yes sql=No", Lag: &three, Tolerance: 17, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica3:3306", Cause: "unreachable", Detail: "dial tcp: connection refused", Tolerance: 17, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica4:3306", Healthy: true, Lag: &forty, Tolerance: 60, CheckedAt: statusNow.Add(-4 * time.Second)},
+					{Server: "replica5:3306"},
+				},
+			})
+		}},
 		{"a run that does not use the gate, replication enabled", func(f *statusFixture) {
 			f.view.gate = nil
 			counted(f, TrackerStatus{Phase: PhaseRunning})
@@ -559,8 +573,8 @@ func TestStatusTextCoversTheJSON(t *testing.T) {
 			j, text := f.json(t), strings.Join(f.view.text(), "\n")
 			for field, needles := range statusParityNeedles(t, f, j) {
 				for _, n := range needles {
-					if !strings.Contains(text, n) {
-						t.Errorf("status-json's %q is not in the text: no %q in:\n%s", field, n, text)
+					if !textHas(text, n) {
+						t.Errorf("status-json's %q is not in the text: no %q in:\n%s", field, strings.ReplaceAll(n, "\x00", " ... "), text)
 					}
 				}
 			}
@@ -678,8 +692,26 @@ func statusParityNeedles(t *testing.T, f *statusFixture, j map[string]any) map[s
 	if lp, ok := r["last_pass_at"].(string); ok {
 		needles["replication"] = append(needles["replication"], lp)
 	}
-	for _, s := range r["servers"].([]any) {
-		needles["replication"] = append(needles["replication"], str(s.(map[string]any)["server"]))
+	for _, v := range r["servers"].([]any) {
+		sv := v.(map[string]any)
+		name := str(sv["server"])
+		if sv["healthy"] == nil {
+			needles["replication"] = append(needles["replication"], name+" not checked yet")
+			continue
+		}
+		// One line says it all: the server, its verdict and the detail of a cause, the measured lag or
+		// that it is unknown, the tolerance it was judged by (not the current setting) and when.
+		lag := "lag unknown"
+		if sv["lag_seconds"] != nil {
+			lag = fmt.Sprintf("lag %ds", num(sv["lag_seconds"]))
+		}
+		parts := []string{name, lag, fmt.Sprintf("tolerance %ds", num(sv["tolerance"])), "checked ", str(sv["checked_at"])}
+		if cause := str(sv["cause"]); cause != "" {
+			parts = append(parts, " "+cause+" (", str(sv["detail"]))
+		} else {
+			parts = append(parts, name+" healthy")
+		}
+		needles["replication"] = append(needles["replication"], strings.Join(parts, "\x00"))
 	}
 	needles["changes"] = []string{changesText(uint64(num(j["changes"])))}
 
@@ -689,4 +721,23 @@ func statusParityNeedles(t *testing.T, f *statusFixture, j map[string]any) map[s
 		}
 	}
 	return needles
+}
+
+// textHas reports whether text holds needle; a needle with NUL separators holds when one line of the
+// text contains every part, so that a verdict's fields must be on the verdict's own line.
+func textHas(text, needle string) bool {
+	parts := strings.Split(needle, "\x00")
+	if len(parts) == 1 {
+		return strings.Contains(text, needle)
+	}
+	for _, line := range strings.Split(text, "\n") {
+		all := true
+		for _, p := range parts {
+			all = all && strings.Contains(line, p)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
