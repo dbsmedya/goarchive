@@ -17,8 +17,8 @@ import (
 // on (spec §4.2 Start step 4, §4.3, §4.9; §9 items 7 and 9). They are **pins**: they observe
 // the platform and pass before and after any goarchive code. A platform that answers
 // differently fails here on purpose, and the evidence files (c1-item7.md, c1-item9.md) say
-// what each answer means for the design. Windows has not been measured yet: its tests log
-// what they see and assert only what cannot differ.
+// what each answer means for the design. Windows was measured in the Windows CI job (run
+// 43669762242, c-windows-1.md): its cases pin what was seen, and log it besides.
 
 // atOnce is how long a connect may take and still be "at once". Every connect measured on
 // Linux and macOS ends in microseconds.
@@ -47,6 +47,8 @@ func TestConnectToStaleSocketIsRefusedAtOnce(t *testing.T) {
 		if !errors.Is(err, syscall.ECONNREFUSED) {
 			t.Fatalf("got %v, want connection refused", err)
 		}
+	case "windows":
+		pinWindowsStale(t, err)
 	}
 }
 
@@ -118,6 +120,8 @@ func TestSaturatedListenerConnect(t *testing.T) {
 			if !errors.Is(err, syscall.ECONNREFUSED) {
 				t.Fatalf("got %v, want connection refused", err)
 			}
+		case "windows":
+			pinWindowsSaturated(t, err)
 		}
 		return
 	}
@@ -177,5 +181,7 @@ func TestCloseWithInputUnread(t *testing.T) {
 		if err != nil {
 			t.Fatalf("got %v, want a clean end of stream", err)
 		}
+	case "windows":
+		pinWindowsReset(t, err)
 	}
 }

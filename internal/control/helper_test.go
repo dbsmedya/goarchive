@@ -14,6 +14,20 @@ import (
 	"time"
 )
 
+// heldFilesRemovable is false on Windows, which will not remove a lock file that the run holds open
+// ("The process cannot access the file because it is being used by another process") and will not
+// rename a directory that has open handles ("Access is denied"). Measured in the Windows CI job (run
+// 43669762242). A case that needs the run's lock name or directory to be taken from under it cannot
+// arise there; a test whose point needs it skips, and one with a part that does not keeps that part.
+const heldFilesRemovable = runtime.GOOS != "windows"
+
+func skipUnlessHeldFilesRemovable(t *testing.T) {
+	t.Helper()
+	if !heldFilesRemovable {
+		t.Skip("Windows will not remove a lock file or rename a directory that the run holds open: this case cannot arise there")
+	}
+}
+
 // The platform primitives are about other processes: a lock held elsewhere, a peer of
 // another uid, a dialer in another process. Those tests start the test binary again as a
 // helper (the pattern os/exec's own tests use). The helper is test code, not a fault.

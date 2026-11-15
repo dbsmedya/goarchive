@@ -1,3 +1,7 @@
+//go:build !windows
+
+// Unix only: these tests send the process real signals with syscall.Kill, which Windows lacks.
+
 package database
 
 import (

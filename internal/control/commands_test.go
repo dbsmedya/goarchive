@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -358,13 +359,14 @@ func TestPauseResumeReplies(t *testing.T) {
 	wantOK(t, c.do("pause"))
 	r = c.do("resume")
 	wantOK(t, r)
-	want := `socket pause cleared; still paused: sentinel file "` + sentinel + `" is present`
+	// The reply names the file quoted (%q), as every message here does; on Windows that doubles the backslashes.
+	want := "socket pause cleared; still paused: sentinel file " + strconv.Quote(sentinel) + " is present"
 	if len(r.body) != 1 || r.body[0] != want {
 		t.Errorf("resume under a sentinel: %q, want %q", r.body, want)
 	}
 	// With no socket pause either, the reply still tells that the file holds the run.
 	r = c.do("resume")
-	if !strings.Contains(strings.Join(r.body, " "), "no socket pause") || !strings.Contains(strings.Join(r.body, " "), sentinel) {
+	if !strings.Contains(strings.Join(r.body, " "), "no socket pause") || !strings.Contains(strings.Join(r.body, " "), strconv.Quote(sentinel)) {
 		t.Errorf("resume with only the sentinel: %q, want both facts", r.body)
 	}
 }
