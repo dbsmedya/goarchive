@@ -72,6 +72,9 @@ type Store struct {
 	// step rule reads it under that lock.
 	round atomic.Uint64
 
+	// ended is set by the terminal transition, under the writer lock, and read without it.
+	ended atomic.Bool
+
 	// mu is the writer lock: every mutation and the terminal transition take it.
 	mu        sync.Mutex
 	terminal  bool
@@ -113,6 +116,10 @@ func New(o Options) *Store {
 func Constant(start Settings) *Store {
 	return New(Options{Start: start, Applies: Applicability{Delete: true, Gate: true}, AuditSlots: 1})
 }
+
+// Ended reports whether the terminal transition has happened: from then on no change is accepted
+// and status answers `ending`. It takes no lock.
+func (s *Store) Ended() bool { return s.ended.Load() }
 
 // Load returns the current snapshot.
 func (s *Store) Load() *Snapshot { return s.cur.Load() }
@@ -412,6 +419,7 @@ func (s *Store) Terminal() Summary {
 	defer s.mu.Unlock()
 	if !s.terminal {
 		s.terminal = true
+		s.ended.Store(true)
 		cur := s.cur.Load()
 		if cur.Paused {
 			s.pausedFor += s.now().Sub(cur.PausedSince)
