@@ -488,6 +488,7 @@ skip is the intended result there. Each is a unit test and needs no database.
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
+| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
 
 The container runs use the Go release of `go.mod`'s toolchain line, with a writable `GOCACHE` and
 `GOPATH` under `/tmp`:
@@ -507,12 +508,16 @@ docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/go
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
   go test ./internal/control/ -run 'TestPeerUID|TestSameUserOnlyOtherUID' -count=1 -v
 
-# L5: an effective uid with no user-database entry, USER and HOME set. Build the test binary
-# first, then run it as that user, so that the go tool itself touches nothing under that HOME
+# L5: an effective uid with no user-database entry, USER and HOME set. Build the test binaries
+# first, then run them as that user, so that the go tool itself touches nothing under that HOME
 GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \
   go test -c -o /tmp/l5/controlpath.test ./internal/controlpath/
+GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" CGO_ENABLED=0 \
+  go test -c -o /tmp/l5/cmd.test ./cmd/goarchive/cmd/
 docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/controlpath.test \
   golang:1.26.8 -test.run 'TestHomeIgnoresEnvironment|TestHomeOfUnknownUID' -test.v
+docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/t:ro --entrypoint /t/cmd.test \
+  golang:1.26.8 -test.run 'TestNoEntryNoDefault' -test.v
 ```
 
 On macOS a connection from another uid is never made: `JudgeDir`'s owner rule is tested on a
