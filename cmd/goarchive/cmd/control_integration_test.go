@@ -408,7 +408,8 @@ func TestMySQLControlSocketInUse(t *testing.T) {
 		t.Fatalf("the holder: %v, %v", holder, err)
 	}
 	out, errOut, code := mainStreams(t, "archive", "-c", f.config, "--job", "archive_orders")
-	if code != 4 || out != "" || !strings.Contains(errOut, "Error: the control socket is in use") ||
+	// The fixture logs JSON on stderr, so the failure is the closing entry itself (console-output spec §3.4a).
+	if code != 4 || out != "" || !strings.Contains(errOut, `"msg":"Run failed"`) || !strings.Contains(errOut, "the control socket is in use") ||
 		!strings.Contains(errOut, filepath.Join(dir, "archive_orders.lock")) || !strings.Contains(errOut, "already uses this socket directory") {
 		t.Errorf("code %d, stdout %q, stderr %q: want 4 and the lock file named", code, out, errOut)
 	}
@@ -441,8 +442,9 @@ func TestMySQLOutputStandardWithControl(t *testing.T) {
 			if n := strings.Count(log, `"msg":"Control socket: `+sock+`"`); n != 1 {
 				t.Errorf("the log has the socket's path %d times, want once:\n%s", n, log)
 			}
-			if !strings.Contains(log, `"msg":"Run completed"`) {
-				t.Errorf("the log lacks the closing entry:\n%s", log)
+			// Under level error only a failure is written (the closing entry of a successful run is info).
+			if closing := strings.Contains(log, `"msg":"Run completed"`); closing != (level == "info") {
+				t.Errorf("level %s: the log has the closing entry = %v, want %v:\n%s", level, closing, level == "info", log)
 			}
 		})
 	}

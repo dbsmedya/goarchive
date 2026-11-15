@@ -592,6 +592,27 @@ the transaction rolls back. Tests that touch locks follow three rules:
 The environment-matrix row `wait_timeout_10` also proves the lock sessions keep their 300
 seconds under a 10-second global (`TestMySQLWaitTimeout`, side A).
 
+#### Runtime control
+
+The control socket's integration tests come in two layers. In `internal/engine` they drive the
+settings store directly, at the engine's named points (`TestMySQLControl*`: sizes read once per batch
+and per recovery page, the ceilings, a stop at a point, and the tolerance against a replica whose
+`SOURCE_DELAY` gives it a real lag: lowered, restored, changed during the inter-delete sleep and in
+recovery, and raised one step at a time). In `cmd/goarchive/cmd` (`control_integration_test.go`) they run
+the command and talk to its socket, which is the only seam the command has, so each test times the run by
+the socket itself: `pause`, then a wait for the state `paused` in `status-json`, or a wait for a step. They
+cover the pause and resume, a stop at the boundary, in the final short batch and met by an error, the
+closing entry's runtime-changes line after its audit entries, refusals in the log, a copy-only run's
+inapplicable settings, a socket in use (exit 4), the cron-style run silent with control enabled, and, with
+the applier stopped or the replica delayed, the status during a hold, a stop during a hold and the rerun's
+recovery, and the tolerance raised over the socket with its warnings. The replica tests stop the applier or
+set `SOURCE_DELAY` on db3 and put both back when they end.
+
+`TestProtocolContractMatchesDoc` (`tests/harness`) compares the protocol contract in
+`docs/README_OPERATIONS.md` (the actions, the settings, the reason words and the `status-json` fields) with
+the server's own tables, read from its source, so a protocol change that does not update the doc fails
+`make check`.
+
 ### Environment matrix
 
 The environment matrix runs the integration suites again under **one changed MySQL
