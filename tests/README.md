@@ -482,6 +482,9 @@ skip is the intended result there. Each is a unit test and needs no database.
 | Test | It needs | Where it runs |
 |---|---|---|
 | `TestPeerUIDOtherUser` | a test process running as uid 0: it starts the server half as uid 12345 and connects as root | a root container (L1, L4 below). It skips on a developer's Mac and in CI, whose process is not root |
+| `TestSameUserOnlyOtherUID` | a test process running as uid 0: it starts the control server as root, opens its directory and socket to others (the test's own change to its own temporary files; the directory rules keep others out otherwise) and connects as uid 12345 | a root container (L1, L4 below). It skips on a developer's Mac and in CI. `TestJudgePeer` is the rule's every case on any host |
+| `TestStartLeavesAnUndecidedSocket` | a non-root uid: a socket with no permission bits refuses a connect with `EACCES` only to a user other than root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
+| `TestStartLeavesAFullQueueSocket` | Linux: a live listener whose queue is full answers `EAGAIN` at once. On macOS the same listener answers `ECONNREFUSED`, the answer for no listener, which the design accepts (spec §4.2), so there is no test there | Linux: L1, L3 and CI's Ubuntu runner |
 | `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
@@ -500,9 +503,9 @@ docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/go
   bash -c 'useradd -m tester && mkdir /tmp/gocache-t /tmp/gopath-t && chown tester /tmp/gocache-t /tmp/gopath-t &&
            su tester -c "cd /src && GOCACHE=/tmp/gocache-t GOPATH=/tmp/gopath-t go test ./internal/control/... ./internal/controlpath/ -count=1 -v"'
 
-# L4: uid 0 against a server of another uid (the run of L1 includes it)
+# L4: a connection between uid 0 and another uid, in both directions (the run of L1 includes it)
 docker run --rm -v "$PWD":/src -w /src -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath golang:1.26.8 \
-  go test ./internal/control/ -run TestPeerUID -count=1 -v
+  go test ./internal/control/ -run 'TestPeerUID|TestSameUserOnlyOtherUID' -count=1 -v
 
 # L5: an effective uid with no user-database entry, USER and HOME set. Build the test binary
 # first, then run it as that user, so that the go tool itself touches nothing under that HOME
@@ -514,8 +517,8 @@ docker run --rm --user 12345:12345 -e USER=ghost -e HOME=/tmp/ghost -v /tmp/l5:/
 
 On macOS a connection from another uid is never made: `JudgeDir`'s owner rule is tested on a
 directory of this user judged against another uid, and the real other-uid connection is the root
-container's (L1, L4). CI's Check job runs neither container step, so `TestPeerUIDOtherUser` skips
-there.
+container's (L1, L4). CI's Check job runs neither container step, so `TestPeerUIDOtherUser` and
+`TestSameUserOnlyOtherUID` skip there.
 
 ### Coverage on demand
 

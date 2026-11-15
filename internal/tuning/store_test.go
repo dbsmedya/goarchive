@@ -949,3 +949,24 @@ func TestKeys(t *testing.T) {
 		t.Error("batch_size did not parse")
 	}
 }
+
+// TestEnded: the store says whether the terminal transition has happened, so that status can
+// answer `ending` from one truth, without the writer lock (TEL-1 C5, spec §4.8).
+func TestEnded(t *testing.T) {
+	s := newStore()
+	if s.Ended() {
+		t.Fatal("a new store is ended")
+	}
+	mustSet(t, s, BatchSize, "500")
+	if s.Ended() {
+		t.Error("a setter ended the store")
+	}
+	s.Terminal()
+	if !s.Ended() {
+		t.Error("the store is not ended after its terminal transition")
+	}
+	s.Terminal()
+	if !s.Ended() {
+		t.Error("a second terminal transition un-ended the store")
+	}
+}
