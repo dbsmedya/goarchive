@@ -177,20 +177,41 @@ const heldStatementTimeoutText = "the server held a statement of this run while 
 	"and the session's wait_timeout passed first (MySQL error 3781). The statement did not run. " +
 	"Run again when the primary is writable; the next run recovers what the log holds."
 
-// heldStatementTimeout returns heldStatementTimeoutText when MySQL error 3781 is in err's chain, and
-// "" otherwise (a cancelled context, another error number or a text that merely says 3781). It looks
-// at the error number only, whichever statement returned it: a preflight read, a recovery statement
-// or a batch statement. It is applied where a failure is printed, before an aggregate drops the
-// chain (validate's line for a job, the run's closing entry, the command's diagnostic).
+// heldBeforeTimeoutText is spec §4.7's message for a statement MySQL ended with error 3797 (rev 5.3): the same
+// hold, when the session's group_replication_consistency is BEFORE or BEFORE_AND_AFTER. It is not the 3781
+// message because 3797 is not only a failover's error: a BEFORE read on a secondary whose applier is behind ends
+// with it too. So the text says what the server waited for, names both cases, does not say which it was, and says
+// that the value is the server's or the account's, since goarchive never sets it. That the statement did not run
+// is the mechanism's: the wait comes before the statement executes.
+const heldBeforeTimeoutText = "the server made a statement of this run wait until this member had applied the group's earlier transactions, " +
+	"and the wait ended first (MySQL error 3797). The statement did not run. " +
+	"Sessions whose group_replication_consistency is BEFORE or BEFORE_AND_AFTER wait this way, on a newly elected primary " +
+	"that is applying its backlog and on a secondary whose applier is behind, for at most the session's wait_timeout. " +
+	"GoArchive does not set either value: it is the server's or the account's setting. " +
+	"Run again when the member has caught up; the next run recovers what the log holds."
+
+// heldStatementTimeout returns the named stop of the MySQL error that ends a statement a Group Replication
+// fence held: heldStatementTimeoutText for error 3781 and heldBeforeTimeoutText for error 3797, found in
+// err's chain by the error's number alone. It returns "" otherwise (a cancelled context, another error number
+// or a text that merely says one of them). Whichever statement returned the error counts: a preflight read, a
+// recovery statement, a batch statement or the start of a transaction. It is applied where a failure is
+// printed, before an aggregate drops the chain (validate's line for a job, the run's closing entry, the
+// command's diagnostic).
 func heldStatementTimeout(err error) string {
 	var me *mysql.MySQLError
-	if errors.As(err, &me) && me.Number == 3781 {
+	if !errors.As(err, &me) {
+		return ""
+	}
+	switch me.Number {
+	case 3781:
 		return heldStatementTimeoutText
+	case 3797:
+		return heldBeforeTimeoutText
 	}
 	return ""
 }
 
-// failureText is how a failed run's or job's error is printed: the named stop for error 3781, the
+// failureText is how a failed run's or job's error is printed: the named stop for error 3781 or 3797, the
 // error's own text for everything else. The exit code is the caller's and does not change.
 func failureText(err error) string {
 	if text := heldStatementTimeout(err); text != "" {
