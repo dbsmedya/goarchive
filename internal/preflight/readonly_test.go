@@ -23,7 +23,7 @@ func sourceMessage(vars string) string {
 
 func destinationMessage(vars string) string {
 	return "the destination is read-only (" + vars + "). Every job writes to the destination: its data, or its tracking tables, so it is refused " +
-		"before anything is read from it. " + sourceGeneral
+		"before anything else is asked of it. " + sourceGeneral
 }
 
 // TestSourceReadOnlyRefusesAnArchiveAndAPurge: either variable refuses the job before anything else is read,
