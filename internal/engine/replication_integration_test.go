@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,5 +219,34 @@ func TestMySQLLiveReplicationGate(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// TestMySQLReplicationConfiguredDetailEndsWithTheGroupHint (GR C5, spec §4.3): a server with no asynchronous
+// channel, listed as an asynchronous replica, is held with REPLICATION_CONFIGURED, whose detail ends with the hint
+// that a Group Replication member is listed with `type: group`. The hint is unconditional, so the same text is
+// read on a plain server (the plain estate's source) and on a member (the group estate's): TEST_SOURCE is each.
+func TestMySQLReplicationConfiguredDetailEndsWithTheGroupHint(t *testing.T) {
+	server := openServer(t, "TEST_SOURCE", "", nil)
+	port, _ := strconv.Atoi(os.Getenv("TEST_SOURCE_PORT"))
+	g, err := replication.New(config.ReplicationConfig{
+		Enabled: true, SecondsBehindSourceWithin: 10, CheckInterval: 1, CacheTTL: 0,
+		Servers: []config.ReplicationServerConfig{{Host: os.Getenv("TEST_SOURCE_HOST"), Port: port, Type: "async"}},
+	}, []*sql.DB{server}, gateLogger(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := g.WaitForLag(ctx, nil); err == nil {
+		t.Fatal("WaitForLag() = nil, want the gate to hold on a server with no asynchronous channel until the context ends")
+	}
+	rec := g.Record()
+	if len(rec.Servers) != 1 || rec.Servers[0].Healthy {
+		t.Fatalf("record = %+v, want one unhealthy server", rec)
+	}
+	const hint = "a Group Replication member is listed with `type: group`"
+	if d := rec.Servers[0].Detail; !strings.Contains(d, "REPLICATION_CONFIGURED") || !strings.HasSuffix(d, hint) {
+		t.Errorf("the verdict's detail = %q, want REPLICATION_CONFIGURED ending %q", d, hint)
 	}
 }

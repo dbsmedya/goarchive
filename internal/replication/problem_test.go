@@ -293,3 +293,41 @@ func TestProblemRenderDefaultBranch(t *testing.T) {
 		t.Errorf("rendered %q, want a single physical line", got)
 	}
 }
+
+// GR C5 (spec §4.1, §4.3): whenever REPLICATION_CONFIGURED fires, its detail ends with a hint to list a Group
+// Replication member with `type: group`. The hint is unconditional: an asynchronous server is probed with
+// ReplicaStatus alone, so the gate has no fact on whether the server is a member, and no read is added for it.
+const groupHint = "a Group Replication member is listed with `type: group`"
+
+func TestReplicationConfiguredDetailEndsWithTheGroupHint(t *testing.T) {
+	p := fromFinding(dbsrepl.CheckReplicationConfigured(nil)[0])
+	got := renderProblem(p, 10)
+	if !strings.HasSuffix(got, groupHint) {
+		t.Errorf("REPLICATION_CONFIGURED renders as %q, want it to end %q", got, groupHint)
+	}
+	if !strings.HasPrefix(got, dbsrepl.IDReplicationConfigured+": ") || !strings.Contains(got, "no asynchronous replication channels") {
+		t.Errorf("REPLICATION_CONFIGURED renders as %q, want the library's own text kept before the hint", got)
+	}
+	if strings.ContainsAny(got, "\n\r") {
+		t.Errorf("rendered %q, want a single physical line", got)
+	}
+
+	// among other problems the hint stays with its own finding
+	line := renderProblems([]problem{newChannelNotFound("ch1", nil), p}, 10)
+	if n := strings.Count(line, groupHint); n != 1 || !strings.HasSuffix(line, groupHint) {
+		t.Errorf("renderProblems = %q, want the hint once, at the end of REPLICATION_CONFIGURED's part", line)
+	}
+}
+
+// TestOtherProblemsCarryNoGroupHint: the hint belongs to REPLICATION_CONFIGURED only.
+func TestOtherProblemsCarryNoGroupHint(t *testing.T) {
+	for name, p := range map[string]problem{
+		"a channel that is not there": newChannelNotFound("ch1", []string{""}),
+		"a stopped channel":           {check: dbsrepl.IDReplicationChannelsRunning, facts: dbsrepl.ChannelStatus{ChannelName: "", IORunning: "No", SQLRunning: "No"}},
+		"lag":                         {check: dbsrepl.IDSecondsBehindSourceWithin, facts: dbsrepl.ChannelStatus{ChannelName: ""}},
+	} {
+		if got := renderProblem(p, 10); strings.Contains(got, "type: group") {
+			t.Errorf("%s renders as %q, want no group hint", name, got)
+		}
+	}
+}
