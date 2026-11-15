@@ -119,3 +119,102 @@ func (f *fakeShutdown) set(v bool) {
 	defer f.mu.Unlock()
 	f.stopped = v
 }
+
+// sinkEntry is one entry the emitter wrote.
+type sinkEntry struct {
+	level tuning.Level
+	msg   string
+	kv    map[string]any
+}
+
+// recSink is the Sink a test gives the emitter: it records what was written and, when told, holds
+// its writer shut, so that a test can see what the rest of the server does while the log is not
+// keeping up. It is test code: an observer with a gate.
+type recSink struct {
+	mu      sync.Mutex
+	entries []sinkEntry
+	hold    chan struct{}
+	reached chan struct{}
+	closed  bool
+	late    int
+}
+
+func newRecSink() *recSink { return &recSink{reached: make(chan struct{}, 1024)} }
+
+// block makes the next writes wait for release.
+func (s *recSink) block() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hold = make(chan struct{})
+}
+
+func (s *recSink) release() {
+	s.mu.Lock()
+	h := s.hold
+	s.hold = nil
+	s.mu.Unlock()
+	if h != nil {
+		close(h)
+	}
+}
+
+// closeLog marks the log as closed: a write after it is counted as late.
+func (s *recSink) closeLog() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+func (s *recSink) Entry(level tuning.Level, msg string, kv ...any) {
+	s.mu.Lock()
+	h := s.hold
+	s.mu.Unlock()
+	if h != nil {
+		s.reached <- struct{}{}
+		<-h
+	}
+	fields := map[string]any{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		if k, ok := kv[i].(string); ok {
+			fields[k] = kv[i+1]
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.late++
+	}
+	s.entries = append(s.entries, sinkEntry{level, msg, fields})
+}
+
+func (s *recSink) snapshot() []sinkEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sinkEntry(nil), s.entries...)
+}
+
+func (s *recSink) messages() []string {
+	var out []string
+	for _, e := range s.snapshot() {
+		out = append(out, e.msg)
+	}
+	return out
+}
+
+// recBanner is the Banner a test gives the emitter.
+type recBanner struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (b *recBanner) banner(line string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = append(b.lines, line)
+}
+
+func (b *recBanner) got() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.lines...)
+}
