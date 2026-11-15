@@ -20,6 +20,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // newTestLogger returns a real file-backed JSON logger plus a reader that
@@ -109,7 +110,7 @@ func openIdleDB(t *testing.T) *sql.DB {
 func TestGateNewDisabled(t *testing.T) {
 	log, lines := newTestLogger(t)
 
-	g, err := New(config.ReplicationConfig{Enabled: false}, nil, log)
+	g, err := New(config.ReplicationConfig{Enabled: false}, nil, log, nil)
 	if err != nil {
 		t.Fatalf("New returned %v, want nil", err)
 	}
@@ -143,7 +144,7 @@ func TestGateNewCountMismatch(t *testing.T) {
 		},
 	}
 
-	g, err := New(cfg, []*sql.DB{openIdleDB(t)}, log)
+	g, err := New(cfg, []*sql.DB{openIdleDB(t)}, log, nil)
 	if err == nil {
 		t.Fatal("New returned nil error, want a construction error")
 	}
@@ -167,7 +168,7 @@ func TestGateNewNilHandle(t *testing.T) {
 		},
 	}
 
-	g, err := New(cfg, []*sql.DB{openIdleDB(t), nil}, log)
+	g, err := New(cfg, []*sql.DB{openIdleDB(t), nil}, log, nil)
 	if err == nil {
 		t.Fatal("New returned nil error, want a construction error")
 	}
@@ -180,7 +181,7 @@ func TestGateNewNilHandle(t *testing.T) {
 }
 
 func TestGateNewNilLoggerTolerated(t *testing.T) {
-	g, err := New(config.ReplicationConfig{Enabled: false}, nil, nil)
+	g, err := New(config.ReplicationConfig{Enabled: false}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New returned %v, want nil", err)
 	}
@@ -203,7 +204,7 @@ func TestGateNewStartupSummary(t *testing.T) {
 		},
 	}
 
-	g, err := New(cfg, []*sql.DB{openIdleDB(t), openIdleDB(t)}, log)
+	g, err := New(cfg, []*sql.DB{openIdleDB(t), openIdleDB(t)}, log, nil)
 	if err != nil {
 		t.Fatalf("New returned %v, want nil", err)
 	}
@@ -211,11 +212,8 @@ func TestGateNewStartupSummary(t *testing.T) {
 	if !g.enabled {
 		t.Error("gate.enabled = false, want true")
 	}
-	if g.tolerance != 10 {
-		t.Errorf("gate.tolerance = %d, want 10", g.tolerance)
-	}
-	if g.interval != 5*time.Second {
-		t.Errorf("gate.interval = %s, want 5s", g.interval)
+	if got := g.store.Load(); got.SecondsBehindSourceWithin != 10 || got.CheckInterval != 5 {
+		t.Errorf("gate store = tolerance %d, interval %d, want the configured 10 and 5", got.SecondsBehindSourceWithin, got.CheckInterval)
 	}
 	if g.ttl != 15*time.Second {
 		t.Errorf("gate.ttl = %s, want 15s", g.ttl)
@@ -332,6 +330,7 @@ func (c *fakeClock) now() time.Time { return c.t }
 
 type gateHarness struct {
 	gate       *Gate
+	store      *tuning.Store
 	clock      *fakeClock
 	sleepCalls int
 	lines      func() []map[string]any
@@ -343,10 +342,25 @@ type gateHarness struct {
 func newGateHarness(t *testing.T, ttl time.Duration, readers ...*fakeReader) *gateHarness {
 	t.Helper()
 
+	return newStoreHarness(t, ttl, 10, 5, readers...)
+}
+
+// newStoreHarness is newGateHarness with the configured tolerance and interval
+// (seconds) the gate's store starts at; the gate reads both from the store.
+func newStoreHarness(t *testing.T, ttl time.Duration, tolerance, interval int, readers ...*fakeReader) *gateHarness {
+	t.Helper()
+
 	log, lines := newTestLogger(t)
 	h := &gateHarness{
 		clock: &fakeClock{t: time.Date(2026, 8, 19, 12, 0, 0, 0, time.UTC)},
 		lines: lines,
+		store: tuning.New(tuning.Options{
+			Start: tuning.Settings{
+				BatchSize: 1000, BatchDeleteSize: 500, SleepSeconds: 1,
+				SecondsBehindSourceWithin: tolerance, CheckInterval: interval,
+			},
+			Applies: tuning.Applicability{Delete: true, Gate: true},
+		}),
 	}
 
 	servers := make([]server, 0, len(readers))
@@ -355,14 +369,13 @@ func newGateHarness(t *testing.T, ttl time.Duration, readers ...*fakeReader) *ga
 	}
 
 	h.gate = &Gate{
-		enabled:   true,
-		servers:   servers,
-		tolerance: 10,
-		interval:  5 * time.Second,
-		ttl:       ttl,
-		now:       h.clock.now,
-		sleep:     h.advance,
-		logger:    log,
+		enabled: true,
+		servers: servers,
+		store:   h.store,
+		ttl:     ttl,
+		now:     h.clock.now,
+		sleep:   h.advance,
+		logger:  log,
 	}
 
 	// Case 11, enforced for every harness-based scenario: zap attaches a stack
@@ -378,7 +391,7 @@ func newGateHarness(t *testing.T, ttl time.Duration, readers ...*fakeReader) *ga
 
 // advance is the default injected sleep: it advances the fake clock, counts
 // the call, and reports whether the context died. Nothing blocks.
-func (h *gateHarness) advance(ctx context.Context, _ <-chan struct{}, d time.Duration) error {
+func (h *gateHarness) advance(ctx context.Context, _ <-chan struct{}, _ <-chan struct{}, d time.Duration) error {
 	h.sleepCalls++
 	h.clock.t = h.clock.t.Add(d)
 
@@ -412,7 +425,7 @@ func countWith(msgs []string, sub string) int {
 func TestGateWaitDisabled(t *testing.T) {
 	log, lines := newTestLogger(t)
 
-	g, err := New(config.ReplicationConfig{Enabled: false}, nil, log)
+	g, err := New(config.ReplicationConfig{Enabled: false}, nil, log, nil)
 	if err != nil {
 		t.Fatalf("New returned %v, want nil", err)
 	}
@@ -765,7 +778,7 @@ func TestGateWaitCancelDuringSleep(t *testing.T) {
 
 	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot())}}
 	h := newGateHarness(t, 15*time.Second, reader)
-	h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
+	h.gate.sleep = func(context.Context, <-chan struct{}, <-chan struct{}, time.Duration) error {
 		h.sleepCalls++
 		cancel()
 
@@ -914,7 +927,7 @@ func TestGateStopDuringSleep(t *testing.T) {
 	// on its assertions.
 	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
 	h := newGateHarness(t, 0, reader)
-	h.gate.sleep = func(_ context.Context, _ <-chan struct{}, d time.Duration) error {
+	h.gate.sleep = func(_ context.Context, _ <-chan struct{}, _ <-chan struct{}, d time.Duration) error {
 		h.sleepCalls++
 		h.tick(d)
 		close(stop)
@@ -945,7 +958,7 @@ func TestGateCancelledDuringSleepWithStop(t *testing.T) {
 	stop := make(chan struct{})
 	reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
 	h := newGateHarness(t, 0, reader)
-	h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
+	h.gate.sleep = func(context.Context, <-chan struct{}, <-chan struct{}, time.Duration) error {
 		h.sleepCalls++
 		close(stop)
 		cancel()
@@ -971,11 +984,11 @@ func TestGateCancelledDuringProductionSleepWithStop(t *testing.T) {
 		stop := make(chan struct{})
 		reader := &fakeReader{responses: []readerResult{okRes(stoppedSnapshot()), okRes(healthySnapshot())}}
 		h := newGateHarness(t, 0, reader)
-		h.gate.sleep = func(ctx context.Context, stop2 <-chan struct{}, d time.Duration) error {
+		h.gate.sleep = func(ctx context.Context, stop2 <-chan struct{}, wake <-chan struct{}, d time.Duration) error {
 			close(stop)
 			cancel()
 
-			return sleepUntil(ctx, stop2, d)
+			return sleepUntil(ctx, stop2, wake, d)
 		}
 
 		err := h.gate.WaitForLag(ctx, stop)
@@ -1166,7 +1179,7 @@ func TestGateInvalidStatusCancellation(t *testing.T) {
 			defer cancel()
 			reader := &fakeReader{responses: []readerResult{tc.bad}}
 			h := newGateHarness(t, 0, reader)
-			h.gate.sleep = func(context.Context, <-chan struct{}, time.Duration) error {
+			h.gate.sleep = func(context.Context, <-chan struct{}, <-chan struct{}, time.Duration) error {
 				h.sleepCalls++
 				cancel()
 				return context.Canceled
