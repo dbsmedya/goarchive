@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
@@ -121,7 +124,7 @@ func newlyElectedPrimary(t *testing.T) {
 			t.Errorf("the switch to gr2 did not complete after the lock was released")
 		}
 		if strings.Contains(view(), "gr2 PRIMARY") { // a UDF takes a constant, never a placeholder
-			if _, err := gr2.ExecContext(ctx, "SELECT group_replication_set_as_primary('"+uuid1+"')"); err != nil {
+			if err := setPrimary(t, gr2, uuid1); err != nil {
 				t.Errorf("switch the primary back to gr1: %v", err)
 			}
 		}
@@ -142,8 +145,7 @@ func newlyElectedPrimary(t *testing.T) {
 
 	mustExec(t, gr1, "UPDATE `"+blocker+"`.blocker SET v = v + 1 WHERE id = 1")
 	go func() {
-		_, err := gr1.ExecContext(ctx, "SELECT group_replication_set_as_primary('"+uuid2+"')")
-		switched <- err
+		switched <- setPrimary(t, gr1, uuid2)
 	}()
 	until := func(what string, cond func() bool) {
 		for deadline := time.Now().Add(60 * time.Second); !cond(); time.Sleep(100 * time.Millisecond) {
@@ -226,4 +228,22 @@ func TestMySQLStoppingAHeldRunAfterTheSocketsStop(t *testing.T) {
 	if code := r.finish(); code != 1 {
 		t.Errorf("exit %d after one signal, want 1:\n%s", code, r.errb.String())
 	}
+}
+
+// setPrimary asks the group to switch its primary to the member with uuid (a UDF takes a constant, never a
+// placeholder). The group may still be finishing the previous switch when the next call arrives, even after
+// its view looks settled; MySQL then refuses with error 3910 ("There is already a configuration action being
+// executed. Wait for it to finish."), which is transient, so the call is repeated for up to a minute.
+func setPrimary(t *testing.T, db *sql.DB, uuid string) error {
+	t.Helper()
+	var err error
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
+		_, err = db.ExecContext(context.Background(), "SELECT group_replication_set_as_primary('"+uuid+"')")
+		var me *mysql.MySQLError
+		if !errors.As(err, &me) || me.Number != 3910 {
+			return err
+		}
+		t.Logf("a configuration action is still being executed; the switch to %s is repeated", uuid)
+	}
+	return err
 }

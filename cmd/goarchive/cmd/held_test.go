@@ -96,9 +96,10 @@ func TestTheClosingLogEntryShowsTheNamedStop(t *testing.T) {
 // TestTheDiagnosticShowsTheNamedStop: the command's diagnostic on stderr is the named stop, once, and the exit
 // code is 1 as for any failed run.
 func TestTheDiagnosticShowsTheNamedStop(t *testing.T) {
-	saved := started
-	started = true
-	t.Cleanup(func() { started = saved })
+	// finish prints to stderr only when no JSON diagnostic is set, which a test that ran Main leaves behind
+	savedStarted, savedJSON := started, diagJSON
+	started, diagJSON = true, nil
+	t.Cleanup(func() { started, diagJSON = savedStarted, savedJSON })
 	var stderr bytes.Buffer
 	if code := finish(fmt.Errorf("engine: batch 4: %w", err3781()), &stderr); code != exitFailed {
 		t.Errorf("exit code = %d, want %d", code, exitFailed)
