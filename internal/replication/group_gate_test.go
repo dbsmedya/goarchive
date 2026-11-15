@@ -32,6 +32,31 @@ type groupResult struct {
 	before       func()
 	blockMembers bool
 	blockStats   bool
+	// gateMembers and gateStats hold one read at a barrier: the read hands over the context it received, then waits
+	// to be released, so a test can act while it is under way and look at what the context does.
+	gateMembers, gateStats *readGate
+}
+
+// readGate is a barrier for one read: began receives the read's context when the read starts, and the read returns when
+// release is closed, or when its context ends first.
+type readGate struct {
+	began   chan context.Context
+	release chan struct{}
+}
+
+func newReadGate() *readGate {
+	return &readGate{began: make(chan context.Context, 1), release: make(chan struct{})}
+}
+
+// hold is the barrier: it reports whether the read was cut by its context.
+func (g *readGate) hold(ctx context.Context) (cut bool) {
+	g.began <- ctx
+	select {
+	case <-g.release:
+		return false
+	case <-ctx.Done():
+		return true
+	}
 }
 
 func okGroup() groupResult {
@@ -46,6 +71,8 @@ type fakeGroupReader struct {
 	probes    int
 	reads     []string
 	cut       int
+	// errAtReturn is the state of each read's context when the read returned: nil for a context still alive.
+	errAtReturn []error
 }
 
 func (r *fakeGroupReader) current() groupResult {
@@ -69,6 +96,12 @@ func (r *fakeGroupReader) GroupMembers(ctx context.Context) ([]dbsrepl.GroupMemb
 
 		return nil, ctx.Err()
 	}
+	if g := res.gateMembers; g != nil && g.hold(ctx) {
+		r.cut++
+
+		return nil, ctx.Err()
+	}
+	r.errAtReturn = append(r.errAtReturn, ctx.Err())
 
 	return res.members, res.membersErr
 }
@@ -82,6 +115,12 @@ func (r *fakeGroupReader) GroupMemberStats(ctx context.Context) ([]dbsrepl.Group
 
 		return nil, ctx.Err()
 	}
+	if g := res.gateStats; g != nil && g.hold(ctx) {
+		r.cut++
+
+		return nil, ctx.Err()
+	}
+	r.errAtReturn = append(r.errAtReturn, ctx.Err())
 
 	return res.stats, res.statsErr
 }
@@ -476,19 +515,78 @@ func TestMixedFleetCacheHitRevalidatedAfterTheMutex(t *testing.T) {
 
 // LAG-1's three stop rules with a group server as the one that fails (spec §4.3, §8).
 
-// A stop never cuts the first probe: both reads of the first probe of a call run on the run's context.
+// A stop never cuts the first probe: both reads of the first probe of a call run on the run's context (LAG-1). The test
+// closes the stop while one read is under way, holds that read at a barrier, and looks at the context it was given: it must
+// not be cancelled by the stop, which would show within the time a cancellation takes. The other read, which starts after
+// the stop in the first case and before it in the second, must also run on a live context, and the probe's pass must stand.
+// The barrier is released by the test and by nothing else, so the order of events does not depend on timing; the wait for a
+// cancellation that does not come is the only wait. A product that gave a read a stop-cancelled context would fail it: the
+// read would be cut at its barrier, or return on a dead context.
 func TestAStopNeverCutsAGroupServersFirstProbe(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hold func(res *groupResult, g *readGate)
+	}{
+		{"a stop during the view read", func(res *groupResult, g *readGate) { res.gateMembers = g }},
+		{"a stop during the stats read", func(res *groupResult, g *readGate) { res.gateStats = g }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stop := make(chan struct{})
+			gate := newReadGate()
+			res := okGroup()
+			tc.hold(&res, gate)
+			r := &fakeGroupReader{responses: []groupResult{res}}
+			h := newFleetHarness(t, 0, 10, 5, groupOnly(r))
+
+			done := make(chan error, 1)
+			go func() { done <- h.gate.WaitForLag(context.Background(), stop) }()
+			var readCtx context.Context
+			select {
+			case readCtx = <-gate.began:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the held read never began")
+			}
+
+			close(stop) // the stop arrives while the read is under way
+			for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+				if err := readCtx.Err(); err != nil {
+					t.Fatalf("the first probe's read was given a context that the stop cancelled (%v): a stop never cuts the first probe", err)
+				}
+			}
+			close(gate.release)
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("WaitForLag = %v, want a pass: a stop never cuts a pass short", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("WaitForLag did not return after the held read was released")
+			}
+			if r.cut != 0 || !slices.Equal(r.reads, []string{"members", "stats"}) {
+				t.Errorf("reads = %v, cut %d, want both reads and none cut by the stop", r.reads, r.cut)
+			}
+			if len(r.errAtReturn) != 2 || r.errAtReturn[0] != nil || r.errAtReturn[1] != nil {
+				t.Errorf("the contexts' state when each read returned = %v, want both alive", r.errAtReturn)
+			}
+		})
+	}
+}
+
+// TestTheFirstProbeTestWouldSeeACancelledContext is its positive control, with production code only: a context the gate gives a
+// held probe, the one a stop cancels (withStop), is seen as cancelled within the wait that TestAStopNeverCutsAGroupServersFirstProbe
+// allows a cancellation, so the absence of a cancellation in that test is something it could have seen.
+func TestTheFirstProbeTestWouldSeeACancelledContext(t *testing.T) {
 	stop := make(chan struct{})
-	res := okGroup()
-	res.before = func() { close(stop) }
-	r := &fakeGroupReader{responses: []groupResult{res}}
-	h := newFleetHarness(t, 0, 10, 5, groupOnly(r))
-	if err := h.gate.WaitForLag(context.Background(), stop); err != nil {
-		t.Fatalf("WaitForLag = %v, want a pass: a stop never cuts a pass short", err)
+	ctx, release := withStop(context.Background(), stop)
+	defer release()
+	close(stop)
+	for deadline := time.Now().Add(200 * time.Millisecond); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if ctx.Err() != nil {
+			return
+		}
 	}
-	if r.cut != 0 || len(r.reads) != 2 {
-		t.Errorf("reads = %v, cut %d, want both reads and none cut by the stop", r.reads, r.cut)
-	}
+	t.Fatal("a context made by withStop was not cancelled within 200 ms of the stop: the first-probe test's wait cannot see a cancellation")
 }
 
 // A stop ends a hold during the wait, without another probe.
