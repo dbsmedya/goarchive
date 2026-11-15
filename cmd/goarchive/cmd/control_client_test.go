@@ -135,7 +135,7 @@ func (tl *testListener) readRequest(c net.Conn) {
 // drainExtra records what the connection sends after its first line, for a short grace.
 func (tl *testListener) drainExtra(c net.Conn) {
 	_ = c.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	rest, _ := readAll(c)
+	rest, _ := readConn(c)
 	if len(rest) > 0 {
 		tl.mu.Lock()
 		tl.extra = append(tl.extra, string(rest))
@@ -143,7 +143,7 @@ func (tl *testListener) drainExtra(c net.Conn) {
 	}
 }
 
-func readAll(c net.Conn) ([]byte, error) {
+func readConn(c net.Conn) ([]byte, error) {
 	var out []byte
 	buf := make([]byte, 512)
 	for {
@@ -167,7 +167,7 @@ func replying(reply string) func(*testListener, net.Conn) {
 
 // silent accepts and says nothing, keeping the connection open until the test ends.
 func silent(tl *testListener, c net.Conn) {
-	_, _ = readAll(c)
+	_, _ = readConn(c)
 }
 
 // closing accepts and closes at once without reading: with the request unread, Linux resets the
