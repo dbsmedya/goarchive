@@ -22,10 +22,12 @@ import (
 // point; the parent kills it with SIGKILL, so nothing of the child's cleanup runs, and then
 // runs the job again in-process. The run's locks die with the child's sessions.
 
-// TestEngineHelperProcess is the child. It runs only under GA_ENGINE_HELPER.
+// TestEngineHelperProcess is the child. It runs only under GA_ENGINE_HELPER, and returns at once
+// otherwise. It does not skip: a skip would show as SKIP in every run of the package, among the
+// skips that mean a host cannot run a test (TEL1-M1, as TestHelperProcess).
 func TestEngineHelperProcess(t *testing.T) {
 	if os.Getenv("GA_ENGINE_HELPER") == "" {
-		t.Skip("helper process")
+		return
 	}
 	// The child exits with its parent: a parent that dies without killing it (a go test
 	// -timeout panic) would leave it parked below with its lock sessions alive and kept
