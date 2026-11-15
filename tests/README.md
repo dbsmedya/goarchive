@@ -485,25 +485,17 @@ limit, the home lookup, and how a connect and a close behave.
 
 #### The control socket's platform tests
 
-These two packages hold the facts the control socket relies on, so some tests need a host that a
-plain `go test` does not give. A test that cannot run on its host **skips with its reason**, and the
-skip is the intended result there. Each is a unit test and needs no database.
+These two packages hold the facts the control socket relies on, so some tests need a host that a plain
+`go test` does not give. A test that cannot run on its host skips with its reason; those are in
+[Expected skips](#expected-skips), with where each of them runs. The tests below do not skip: each is
+built for one platform, or takes the host as it is. Each is a unit test and needs no database.
 
 | Test | It needs | Where it runs |
 |---|---|---|
-| `TestPeerUIDOtherUser` | a test process running as uid 0: it starts the server half as uid 12345 and connects as root | a root container (L1, L4 below). It skips on a developer's Mac and in CI, whose process is not root |
-| `TestSameUserOnlyOtherUID` | a test process running as uid 0: it starts the control server as root, opens its directory and socket to others (the test's own change to its own temporary files; the directory rules keep others out otherwise) and connects as uid 12345 | a root container (L1, L4 below). It skips on a developer's Mac and in CI. `TestJudgePeer` is the rule's every case on any host |
-| `TestStartLeavesAnUndecidedSocket` | a non-root uid: a socket with no permission bits refuses a connect with `EACCES` only to a user other than root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
 | `TestStartLeavesAFullQueueSocket` | Linux: a live listener whose queue is full answers `EAGAIN` at once. On macOS the same listener answers `ECONNREFUSED`, the answer for no listener, which the design accepts (spec §4.2), so there is no test there | Linux: L1, L3 and CI's Ubuntu runner |
-| `TestConnectPermissionError` | a non-root uid: file modes do not refuse root | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
-| `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | a platform that lets a lock file the run holds open be removed, and a directory with open handles be renamed | Linux and macOS. They skip on Windows, which refuses both (`being used by another process`, `Access is denied`), so those cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows |
 | `TestControlFullQueueIsExit9AtOnce` (`cmd/goarchive/cmd`) | a listener whose queue is full, which fails a connect at once: `EAGAIN` on Linux, `WSAENOBUFS` on Windows | Linux (L1 to L3) and the Windows job. There is no test on macOS, where a full queue is refused |
 | `TestControlResetBeforeTheReply` | Linux: closing a connection with the request unread resets it | Linux only: macOS ends the stream cleanly, which the client reads as an empty reply |
-| `TestControlExitCodes/9_for_a_permission_error_on_connect` | a non-root uid, so that a socket with no permission bits refuses it | a Mac, a non-root container (L3) and CI. It skips as root and on Windows |
-| `TestControlEndpointChecks/the_directory_belongs_to_another_user` | root, to give a directory to another uid | a root container (L1). It skips elsewhere; the owner rule itself is also checked, for every user, against the shared judging function |
-| `TestShellClientsReturnWhenTheServerCloses` | `nc` (the OpenBSD one) and `socat` on the `PATH` | a Mac with `socat` installed, L1 (the tools are installed there by `apt-get`) and CI's Ubuntu runner. Each skips on a host without its tool, and on Windows |
 | `TestHomeIgnoresEnvironment` | the effective user's database entry, whichever it is | everywhere; run as a uid with no entry and `USER` and `HOME` set (L5), it checks the no-default refusal |
-| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | a uid with no user-database entry, with `USER` and `HOME` set | L5 only: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing. It skips where the user has an entry |
 
 The transport tests (`transport_test.go`) pin what each platform does to a connect and a close; on
 Windows a refused connection is `WSAECONNREFUSED` (recognised by `isRefused`), a full queue is
@@ -727,8 +719,11 @@ git push origin --delete verify-gate/<sha7>
   other workflow's jobs. A Gate verify image counts as a gate only when both its parts carry that
   evidence, each naming its own part; an image with one part fails the run. Every job's evidence
   directory is an artifact.
-  A gate's integration count is one pass short of the local baseline, with one more skip:
-  `TestSetupGracefulShutdown_TwoPhase` skips itself where `CI=true`, which GitHub sets.
+  A gate's integration count is three passes short of a local one on a machine that has `socat`, with
+  three more skips: `TestSetupGracefulShutdown_TwoPhase` and `TestStopPhases` skip themselves where
+  `CI=true`, which GitHub sets, and the `socat` subtest of `TestShellClientsReturnWhenTheServerCloses`
+  skips because the integration job installs no `socat` ([Expected skips](#expected-skips),
+  *GitHub Linux*).
 - **When, and who:**
 
   | Run | When | Started by |
@@ -910,6 +905,142 @@ so `-v` is always on internally; the full log prints only with `--verbose` or on
 Skips are reported by name rather than swallowed. `MIN_PASS=<n>` requires at least n passing
 tests, inclusive. It defaults to 1, which only catches a run that did nothing. The measured
 baseline is in [`AGENTS.md`](AGENTS.md).
+
+## Expected skips
+
+A test that cannot run on its host **skips with its reason**, and the skip is the intended result
+there. This is the one list of them, by the place a run happens. Hold a run's `--- SKIP` lines against
+that place's table: a SKIP the table names is expected, and any other is a finding, whether it is a
+test no table names or a listed test in a place whose table does not name it. A `SKIP=n` in a
+runner's summary counts the `--- SKIP` lines of tests and subtests alike. A table's rows are not that
+count: a row can group several tests or subtests, and a row marked *conditional* is a SKIP line only
+where its condition holds. Count the lines a place prints, from the rows that apply to it.
+
+- A test in a file built for another OS (`*_linux_test.go`, `*_windows_test.go`, `//go:build
+  !windows`) is not compiled elsewhere. It neither runs nor skips, and is not listed.
+- A test a runner leaves out with `-skip` is not run and prints no SKIP line. The matrix runner's
+  exclusions are named under *GitHub matrix rows*.
+- **The guard.** `TestExpectedSkipsAreListed` (`tests/harness`, part of `make check`) fails when a
+  test that skips is not named in the first column of a table here, and when a name there is no longer
+  a test or no longer skips. A name is one function of one package: when two packages declare it, the
+  row gives the package, as a path in backticks after the names it qualifies in the same cell (the
+  rows below do); a method is `Receiver.name`. The guard reads tests, not subtests: a row that names
+  `Test/sub` names `Test`, and which subtests skip is the row's own account. It does not tell which
+  receiver a call through a method name that several receivers of a package share goes to, so such a
+  skip is covered by a listed test or method that may reach it. A new `t.Skip` comes with a row in
+  the place it skips; a skip that no place should ever meet goes in *No place above*.
+
+### make check on a Mac
+
+`make check` runs `go test ./...` without the `integration` tag, and needs no database. The first
+four rows are the SKIP lines of a Mac with `socat` installed (`brew install socat`; `nc` is the
+system's). The last two are *conditional* on a tool, and a Mac without `socat` prints one more line.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestPeerUIDOtherUser` | needs a test process running as uid 0: it starts the server half as uid 12345 and connects as root | a root container (L1, L4) |
+| `TestSameUserOnlyOtherUID` | needs uid 0: it starts the control server as root, opens its directory and socket to others (the test's own change to its own temporary files; the directory rules keep others out otherwise) and connects as uid 12345. `TestJudgePeer` is the rule's every case on any host | a root container (L1, L4) |
+| `TestControlEndpointChecks/the_directory_belongs_to_another_user` | needs root, to give a directory to another uid. The owner rule itself is also checked, for every user, against the shared judging function | a root container (L1) |
+| `TestNoEntryNoDefault` (`cmd/goarchive/cmd`) | needs a uid with no user-database entry, with `USER` and `HOME` set: an enabled job with no `socket_dir` is refused with the no-default message and nothing is created under `$HOME`; the same job with `socket_dir` set starts; a job with control off creates nothing | L5 only |
+| `TestShellClientsReturnWhenTheServerCloses/socat` | *conditional*: `socat` is not on the `PATH`. A Mac that has it prints no line; a Mac without it does. Of the places below, GitHub's *Check* job, *Gate verify*'s integration job and the matrix rows have none | a Mac with `socat`; L1, which installs it with `apt-get` |
+| `TestShellClientsReturnWhenTheServerCloses/nc` | *conditional*: no OpenBSD `nc` on the `PATH`. macOS and the Ubuntu runners ship one, so only L3 (below) prints this line | a Mac, L1, GitHub Linux |
+
+### Integration on the local estate
+
+The gate's integration stage: `go test -tags=integration ./internal/... ./cmd/...` against db1 and db2
+(`tests/scripts/run-tests.sh --integration-only`). The tag compiles the unit tests too, so every SKIP
+of *make check on a Mac* prints here as well, and with them these. Each of the six below needs a server
+setting the estate does not have, and **runs on its row** of the environment matrix (a row sets that
+setting on a throwaway pair).
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestMySQLMaxErrorCount` | `@@GLOBAL.max_error_count` is not 0 | row `max_error_count_0` |
+| `TestMySQLSQLNotesPin` | `@@GLOBAL.sql_notes` is not 0 | row `sql_notes_0` |
+| `TestMySQLWaitTimeout` (its side A subtest) | `@@GLOBAL.wait_timeout` is not below the 30 s keep-alive | row `wait_timeout_10` |
+| `TestMySQLInitConnectCharset/text`, `TestMySQLInitConnectCharset/key` | the account's session is already `utf8mb4`; the pair needs a narrowed one | row `init_connect_set_names` |
+| `TestMySQLArchiveValueLargerThanThePacket` | the estate's two servers have the same `max_allowed_packet`, so no value exceeds the destination's and fits the source's | row `max_allowed_packet_dst_4m`, where a skip is a failure |
+
+### The L1 to L5 containers
+
+Linux, `golang:1.26.8`, the commands under *The control socket's platform tests* above. They run the
+two control packages and `cmd/goarchive/cmd`'s `TestControl` tests, and L5 its own two. A layer not
+named below skips nothing: L4 (uid 0 and another uid, in both directions) and L5 (no user-database entry).
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestStartLeavesAnUndecidedSocket`, `TestConnectPermissionError`, `TestControlExitCodes/9_for_a_permission_error_on_connect` | **L1 and L2** (root): a socket with no permission bits refuses a connect only to a user other than root | a Mac, L3 and GitHub Linux |
+| `TestPeerUIDOtherUser`, `TestSameUserOnlyOtherUID`, `TestControlEndpointChecks/the_directory_belongs_to_another_user` | **L3** (a non-root uid with an entry): each needs uid 0 | L1, L4 |
+| `TestShellClientsReturnWhenTheServerCloses/nc`, `TestShellClientsReturnWhenTheServerCloses/socat` | **L3**: the non-root user cannot install the tools, which L1 installs with `apt-get` | L1 |
+
+### GitHub Windows
+
+The CI job *Logger on Windows* (`.github/workflows/ci.yml`): `./internal/logger`, `./internal/control/...`
+and `./internal/controlpath`, then `cmd/goarchive/cmd`'s `TestControl` tests. These skips were read
+from the job's log.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestStartLeavesAnUndecidedSocket`, `TestConnectPermissionError`, `TestControlExitCodes/9_for_a_permission_error_on_connect` | a Windows socket file has no mode bits to deny | a Mac, L3 and GitHub Linux |
+| `TestDefaultDirectoryCreation`, `TestDirectoryRules`, `TestControlEndpointChecks/the_directory_has_group_or_other_bits`, `TestControlEndpointChecks/the_owner_rule_is_the_shared_judging_function`, `TestControlEndpointChecks/the_directory_belongs_to_another_user` | directory modes and owners are not enforced on Windows (the last also needs root) | Linux and macOS |
+| `TestNotASocket`, `TestControlEndpointChecks/the_directory_is_a_symbolic_link`, `TestControlEndpointChecks/the_socket_path_is_a_symbolic_link_to_a_socket` | creating a symbolic link needs a privilege on Windows | Linux and macOS |
+| `TestLockNameRemoved`, `TestEndAfterTakeover`, `TestDirectoryReplaced` | Windows refuses to remove a lock file the run holds open (`being used by another process`) and to rename a directory with open handles (`Access is denied`), so these cases cannot arise there; `TestIdentityCheckRepairsNothing` and `TestShutdownPendingTick` keep their socket halves on Windows | Linux and macOS |
+| `TestShellClientsReturnWhenTheServerCloses` | the published lines are for a POSIX shell | a Mac with `socat`, L1 |
+| `TestHomeOfUnknownUID` | Windows takes the profile of the process token, not a uid (elsewhere it skips if uid 12345 has an entry, which no place here has) | Linux and macOS |
+
+### GitHub Linux
+
+An Ubuntu runner has a non-root user, `CI=true` and `nc`, and has `socat` only where the workflow
+installs it. Read from the workflows as written:
+
+- **The CI job *Check*** (`make check`, `ci.yml`) installs no tool. It skips what *make check on a
+  Mac* lists, with the `socat` subtest of `TestShellClientsReturnWhenTheServerCloses` (a Mac without
+  `socat` would print it too), and the two rows below.
+- ***Gate verify*** (`gate-verify.yml`) runs each image as two jobs that start together
+  (`run-gate.sh --part`). The **integration** job (the static checks, the unit stage and the
+  integration stage) installs MySQL Shell and no shell-client tool, so the `socat` subtest skips in
+  both stages. Its unit stage skips what *Check* skips; its integration stage skips what
+  *Integration on the local estate* lists, with the `socat` subtest and the two rows below. The
+  **e2e** job runs the shell E2E tests and the validation demos, no Go test, so it prints none of
+  these lines; it installs `nc` and `socat` for E2E test 20, which fails, not skips, without them.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestSetupGracefulShutdown_TwoPhase` | `CI=true`, which GitHub sets: the test needs a real signal, which that environment does not take | a Mac, the local estate |
+| `TestStopPhases` | the same: it runs its first part, from code, and skips before the signal | a Mac, the local estate |
+
+### GitHub matrix rows
+
+A row job runs the integration inventory on a throwaway pair, on an Ubuntu runner with `CI=true` that
+`matrix-verify.yml` gives no `socat`. It skips what *GitHub Linux* lists for the *Check* job, and **the
+row tests of** *Integration on the local estate* **on every row but their own**. These skip on a row
+instead:
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestCheckRangeWarningDetectsFullScanFallback`, `TestCheckRangeWarningFailsClosedWithoutRetainedWarnings` (`internal/key`), `TestMySQLRangeWarning` (`internal/tracking`) | row `max_allowed_packet_64k`: they send their statements straight to MySQL, past preflight, and no statement fits a 64 KiB packet | every other row, and the estate |
+| `TestMySQLSourceDeletePermission` | row `partial_revokes_on`: it needs `partial_revokes` OFF; `TestMySQLPartialRevokes` is that row's | every other row, and the estate |
+
+Not skips, so not rows here: `-skip` leaves out `TestMySQLLiveReplicationGate`, `TestMySQLStopDuringHold`
+and `TestMySQLStopNeverCutsAPass` (they drive db3, the estate's replica) from every row, and on GitHub
+`tests/envmatrix/gh-skip.txt`'s tests; a `group` row runs only the unfinished-work guard tests.
+
+### No place above
+
+A skip that no place above meets: a SKIP of one of these is a finding, a host that is broken or one
+the project does not support. A name here that a place above also lists is listed there for its own
+skip.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `shortTemp`, `enableControl` (`cmd/goarchive/cmd`; helpers of every test that makes a socket directory) | no short directory for a socket: `/tmp` is missing and the system's temporary directory is too long | every host with a `/tmp`, and Windows |
+| `TestMaxLen` | no path limit is recorded for the OS: it is not darwin, linux or windows | those three |
+| `TestPathLength` | the temporary directory leaves no room for a job name under the path limit | every host with a normal temporary directory |
+| `TestMySQLMixedCaseNames` | `lower_case_table_names` is 2, which only a macOS server has: only 0 and 1 run on Linux servers | the estate (0) and row `lower_case_table_names_1` |
+| `TestCheckIntervalDuration`, `TestCheckIntervalBound`, `TestWholeNumberGettersRoundTrip`, `TestSettersRefuseWhatTheFileRefuses`, `TestToleranceStepDoesNotOverflow` | an `int` narrower than 64 bits has no value of the size they need: a 32-bit build | every 64-bit build |
+| `TestIdentityDoesNotFollowALink`, `TestJudgeSocket`, `TestJudgeDirKind` | a symbolic link cannot be made: a Windows account without the privilege (GitHub's runner has it, and runs them) | every place above |
+| `TestStartControlRefusals` (`cmd/goarchive/cmd`), `TestDeviceNameLoadsWhereNotReserved` (`internal/jobspec`) | Windows, where no job runs them: the Windows job runs the control packages and `TestControl` only | Linux and macOS |
+| `TestImageRunTestIgnoresDockerWarnings` (`tests/harness`) | no `bash` on the `PATH` | every host with `bash` |
 
 ## Environment Variables
 

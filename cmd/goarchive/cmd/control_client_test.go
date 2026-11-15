@@ -473,7 +473,10 @@ func TestControlExitCodes(t *testing.T) {
 
 // TestControlTimeouts (spec §7 row 77): exit 6 in the exchange, with the listener holding the
 // connection and the client giving up at its own deadline, which is told from an immediate refusal
-// or another transport error by the time it took.
+// or another transport error by the time it took. There is no case for the dial: no supported
+// platform holds a connection attempt (Linux and macOS in C1, Windows in CI, where a refusal and a
+// full queue both fail at once), so a test could not stage one. The client's dial deadline is
+// TestControlDialDeadlinePassed's and TestControlClassifyDialError's.
 func TestControlTimeouts(t *testing.T) {
 	t.Run("exchange", func(t *testing.T) {
 		withLimits(t, controlLimits{dial: 5 * time.Second, exchange: 300 * time.Millisecond, maxReply: 1 << 20})
@@ -488,10 +491,6 @@ func TestControlTimeouts(t *testing.T) {
 		if l.connections() != 1 {
 			t.Errorf("%d connection(s), want the one that was held", l.connections())
 		}
-	})
-	t.Run("dial", func(t *testing.T) {
-		t.Skip("no connection attempt stalls on Linux or macOS (spec §9 item 7) and no platform has been measured to stall: " +
-			"a passed dial deadline is classified by TestControlDialDeadlinePassed and TestControlClassifyDialError")
 	})
 }
 

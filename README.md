@@ -334,7 +334,6 @@ How to run every test layer: [tests/README.md](tests/README.md).
 - Archive to BigQuery
 - Observability: Prometheus metrics, OpenTelemetry traces, dashboards
 - Parallelism: multi-root-PK concurrent processing, pipelining copy/verify/delete
-- Admin API for runtime pause / resume / inspect
 - Multi-tenancy and horizontal scale
 - Adaptive rate limiting
 - Web based GUI
