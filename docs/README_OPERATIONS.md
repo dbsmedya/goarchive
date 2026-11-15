@@ -812,6 +812,12 @@ reset.
 | `replication.servers[].checked_at` | When the server was probed; `null` until it is |
 | `changes` | How many runtime changes this run has accepted |
 
+`status` says the same as these fields, for a person: a summary line, then the content in labelled lines (the
+build and its protocol, the times, whether a stop was requested, the pause inputs and the sentinel file, the
+replication gate and its `cache_ttl` even when the run does not use it, the accepted changes, the roots
+skipped and recovered, the estimate and the per-table counts). The JSON is the contract; the text's layout
+may change, so a script reads `status-json`.
+
 The gate is synchronous: outside a probe, `status` shows each server's last verdict and its age, not a
 live value, and reading it never probes. `status` and `status-json` write no log entry and query nothing;
 a collector may poll every second.
