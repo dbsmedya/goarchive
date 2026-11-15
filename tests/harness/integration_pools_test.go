@@ -24,6 +24,7 @@ var allowedRawPools = map[string]string{
 	"internal/engine/charset_session_integration_test.go":    "probes sessions the charset check would refuse",
 	"internal/engine/trigger_visibility_integration_test.go": "a BuildDSN pool without the checks, on purpose",
 	"internal/preflight/charsets_integration_test.go":        "probes sessions the charset check would refuse",
+	"internal/preflight/group_integration_test.go":           "records every statement a pool sends, to pin preflight's read order: a recording connector over the driver's, which database.OpenPool has no hook for",
 }
 
 // TestIntegrationPoolsUseOpenPool (M7c-F6): every pool the package integration suites hand to

@@ -40,7 +40,7 @@ tested against several MySQL releases instead of being rediscovered per check.
 |---|---|
 | `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers and the proof that a trigger list is complete, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
 | `pkg/sqlutil` | Identifier quoting and validation. |
-| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set and its Group Replication state, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking). |
+| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set and its Group Replication state, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking); and the [Group Replication facts](README_OPERATIONS.md#group-replication) preflight reads first: each server's plugin state, group name and transaction size limit, the source's `read_only` settings, and a member source's view of its group. |
 
 The library also ships a registry of documented MySQL version quirks and records where
 behaviour diverges across the 8.0, 8.4 and 9.7 lines; supported versions are in
@@ -73,6 +73,23 @@ adding a check does not add a round trip. Grants are read on a dedicated connect
 together with the trigger list they prove when a trigger check needs both, and the
 connection is released before any other query runs; this keeps the answer accurate on a
 pool and avoids self-deadlocking a single-connection configuration.
+
+## Group Replication facts
+
+Preflight reads them through the library once, as its first stage, and returns them in its result,
+so `validate`, `dry-run` and a run share one read ([what is read, and in which order](README_OPERATIONS.md#group-replication)):
+
+| Fact | Used for |
+|---|---|
+| `ReplicationConfig` | The source's `read_only`, `super_read_only` and `server_id`: the first statement sent to the source |
+| `GroupReplication` | Each side's plugin state, configured group name and `group_replication_transaction_size_limit` (with whether the server reported it) |
+| `GroupMembers` | A member source's view: each member's state and role, and which row is the source's own. Needs `SELECT` on `performance_schema.replication_group_members`; read only from a plugin that is `ACTIVE` with a group name |
+
+The transaction size limit came with dbsgomysql v1.5.0, whose upgrade notes apply to any code that builds the library's
+`GroupReplication` value: an unkeyed literal no longer compiles, a comparison of the whole value
+with one that sets only the status and the name is false wherever the plugin is `ACTIVE` (compare the
+fields you mean), and the fact issues a third statement. GoArchive's own literals are keyed and it
+compares fields.
 
 ## Versioning
 

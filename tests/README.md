@@ -1023,6 +1023,17 @@ setting on a throwaway pair).
 | `TestMySQLInitConnectCharset/text`, `TestMySQLInitConnectCharset/key` | the account's session is already `utf8mb4`; the pair needs a narrowed one | row `init_connect_set_names` |
 | `TestMySQLArchiveValueLargerThanThePacket` | the estate's two servers have the same `max_allowed_packet`, so no value exceeds the destination's and fits the source's | row `max_allowed_packet_dst_4m`, where a skip is a failure |
 
+The tests below need a Group Replication member as `TEST_SOURCE`. On this estate (db1 is a plain
+server), on every GitHub row and on every *Gate verify* image they skip, one line per test; they run on
+the group estate (`make test-up TOPOLOGY=group`, [The group estate](#the-group-estate)). The first
+column is each package's helper, which every group-only test of that package calls.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `requireMemberSource` (`internal/preflight`) | the source is not a Group Replication member: its plugin is not `ACTIVE`, or it has no group name | the group estate |
+| `requireGroupMemberSource` (`internal/engine`) | the same | the group estate |
+| `requireGroupMemberSource` (`cmd/goarchive/cmd`) | the same | the group estate |
+
 ### The L1 to L5 containers
 
 Linux, `golang:1.26.8`, the commands under *The control socket's platform tests* above. They run the
@@ -1074,8 +1085,9 @@ installs it. Read from the workflows as written:
 ### GitHub matrix rows
 
 A row job runs the integration inventory on a throwaway pair, on an Ubuntu runner with `CI=true` that
-`matrix-verify.yml` gives no `socat`. It skips what *GitHub Linux* lists for the *Check* job, and **the
-row tests of** *Integration on the local estate* **on every row but their own**. These skip on a row
+`matrix-verify.yml` gives no `socat`. It skips what *GitHub Linux* lists for the *Check* job, **the
+row tests of** *Integration on the local estate* **on every row but their own**, and the group-only
+tests of the same section on every row but a `group` row, which runs only the unfinished-work guard tests. These skip on a row
 instead:
 
 | Test | Why it skips | Where it runs |

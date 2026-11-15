@@ -246,10 +246,12 @@ func Run(ctx context.Context, cfg Config) (rep *Report, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// A run logs its statement caps; validate and dry-run print them instead (spec §3.7).
+	// A run logs its statement caps and its Group Replication block; validate and dry-run print them
+	// instead (spec §3.7, §4.7).
 	for _, c := range res.Caps {
 		cfg.Logger.Infof("Statement cap: %s: %d key tuples per statement", c, c.Tuples)
 	}
+	logGroupReport(cfg.Logger, res, cfg.Processing)
 	cfg.began = began
 	return start(ctx, cfg, tracking.Binding{
 		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
@@ -277,7 +279,7 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		}
 	}
 	res, err = preflight.Run(ctx, preflight.Config{
-		Source: cfg.Source, SourceDatabase: src.Schema,
+		Source: cfg.Source, SourceDatabase: src.Schema, SourceServerUUID: src.ServerUUID,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
 		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Processing: cfg.Processing, Logger: cfg.Logger,
@@ -290,6 +292,14 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		cfg.preflighted(res)
 	}
 	return src, dst, res, nil
+}
+
+// logGroupReport logs spec §4.7's Group Replication block as one entry, and nothing for a pair
+// with no group in it. The console of a run is not changed.
+func logGroupReport(log *logger.Logger, res *preflight.Result, proc config.ProcessingConfig) {
+	if block := res.GroupReport(proc); block != "" {
+		log.Info(block)
+	}
 }
 
 // utcProbe returns 86400 only in a session whose time zone is UTC.

@@ -95,7 +95,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 		// The R45 banners, as a run would print them (spec §3.4a; Codex MR R2).
 		emitBanners(log, c.ErrOrStderr(), banners(doc, spec.Type, verification, false, o.forceTriggers))
 		res, err := preflight.Run(ctx, preflight.Config{
-			Source: mgr.Source, SourceDatabase: src.Schema,
+			Source: mgr.Source, SourceDatabase: src.Schema, SourceServerUUID: src.ServerUUID,
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,
 			JobSchema: doc.Shared.Destination.EffectiveJobSchema(),
 			Spec:      spec, Verification: verification, ForceTriggers: o.forceTriggers, Logger: log,
@@ -109,7 +109,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 			continue
 		}
 		_, _ = fmt.Fprintf(out, "   PASSED\n")
-		printCaps(out, res.Caps)
+		printValidation(out, res, spec.EffectiveProcessing(doc.Shared.Processing))
 		_, _ = fmt.Fprintln(out)
 	}
 	if len(failed) > 0 {

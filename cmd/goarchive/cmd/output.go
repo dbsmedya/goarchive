@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/engine"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
@@ -242,6 +243,24 @@ func sortedKeys[K interface{ ~string | ~uint16 }, V any](m map[K]V) []K {
 }
 
 // printCaps prints the effective statement caps (spec §4.3, M6-5).
+// printGroupReport prints spec §4.7's Group Replication block, and nothing for a pair with no
+// group in it. It reports whether it printed.
+func printGroupReport(w io.Writer, res *preflight.Result, proc config.ProcessingConfig) bool {
+	block := res.GroupReport(proc)
+	if block == "" {
+		return false
+	}
+	_, _ = fmt.Fprintln(w, block)
+	return true
+}
+
+// printValidation is what validate prints for a job that passed: the Group Replication block
+// when there is one, then the statement caps.
+func printValidation(w io.Writer, res *preflight.Result, proc config.ProcessingConfig) {
+	printGroupReport(w, res, proc)
+	printCaps(w, res.Caps)
+}
+
 func printCaps(w io.Writer, caps []preflight.Cap) {
 	_, _ = fmt.Fprintln(w, "Statement caps (key tuples per statement):")
 	for _, c := range caps {
@@ -331,6 +350,9 @@ func printExplanation(w io.Writer, name string, typ jobspec.Type, file string, d
 	p("  %s\n", line)
 	p("\n")
 
+	if printGroupReport(w, ex.Preflight, proc) {
+		p("\n")
+	}
 	printCaps(w, ex.Preflight.Caps)
 	p("\n")
 

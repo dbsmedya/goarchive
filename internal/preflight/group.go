@@ -1,0 +1,166 @@
+package preflight
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
+	"github.com/go-sql-driver/mysql"
+
+	"github.com/dbsmedya/goarchive/v3/internal/config"
+)
+
+// Group is what preflight read about Group Replication on the two servers (spec §4.2, GR C2).
+// For a pair with no group in it every field is the zero value, apart from Identity, which is
+// then the source's server uuid.
+//
+// The facts are read once, as the first stage of every preflight, so validate, dry-run and a run
+// all see them, and they are read whatever checks are skipped: the identity and the report depend
+// on them. The engine's guard still reads GTIDStatus itself, under the source table locks.
+type Group struct {
+	// SourceConfig is the source's ReplicationConfig, the first statement preflight sends to it.
+	SourceConfig dbsrepl.Config
+	// Source and Destination are each side's GroupReplication: the plugin's state, the configured
+	// group name and the transaction size limit.
+	Source, Destination dbsrepl.GroupReplication
+	// Members is the source's view of its group. It is read only when Source's plugin is ACTIVE
+	// with a group name, and is nil otherwise.
+	Members []dbsrepl.GroupMember
+	// Identity is the source's data identity: the group name when the source is an ONLINE member,
+	// else its server uuid (Identity the function). Nothing binds a job to it yet.
+	Identity string
+}
+
+// configured reports whether a server's Group Replication plugin is ACTIVE with a group name.
+// That is the test for reading the view: a server without it is not asked, so it needs no grant.
+func configured(g dbsrepl.GroupReplication) bool {
+	return g.PluginStatus == "ACTIVE" && g.GroupName != ""
+}
+
+// ownRow returns the view's row that describes the queried server, or nil.
+func ownRow(members []dbsrepl.GroupMember) *dbsrepl.GroupMember {
+	for i := range members {
+		if members[i].Self {
+			return &members[i]
+		}
+	}
+	return nil
+}
+
+// Identity is the source's data identity (spec §4.2): the group name only when the plugin is
+// ACTIVE, a group name is set and the server's own row in its view is ONLINE; the server's uuid
+// in every other case. A server with a name that is not running in a group logs under its own
+// uuid, so recording the name for it would make the guard on its replicas miss its jobs. An
+// anonymous row (the one a server reports before the plugin ever started) is never the own row.
+func Identity(g dbsrepl.GroupReplication, members []dbsrepl.GroupMember, serverUUID string) string {
+	if configured(g) {
+		if own := ownRow(members); own != nil && own.MemberID != "" && own.State == "ONLINE" {
+			return g.GroupName
+		}
+	}
+	return serverUUID
+}
+
+// readGroupFacts is preflight's first stage (spec §4.2, In which order): the source's
+// ReplicationConfig before any other statement, then each side's plugin state, then the source's
+// view and only for a plugin that is ACTIVE with a name. A fenced new primary answers some of
+// these reads and holds others, so the order is what lets a later change refuse it before it
+// waits. The destination's own ReplicationConfig is read by the check that needs it.
+func readGroupFacts(ctx context.Context, f *facts) error {
+	g := &f.group
+	var err error
+	if g.SourceConfig, err = f.src.ReplicationConfig(ctx); err != nil {
+		return fmt.Errorf("read the source's replication configuration: %w", err)
+	}
+	if g.Source, err = f.src.GroupReplication(ctx); err != nil {
+		return fmt.Errorf("read the source's Group Replication state: %w", err)
+	}
+	if g.Destination, err = f.dst.GroupReplication(ctx); err != nil {
+		return fmt.Errorf("read the destination's Group Replication state: %w", err)
+	}
+	if configured(g.Source) {
+		if g.Members, err = f.src.GroupMembers(ctx); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1142 {
+				return &Error{Check: "SOURCE_GROUP_VIEW_PERMISSION_CHECK", Message: fmt.Sprintf(
+					"The source is configured for Group Replication group %s, and its account cannot read the group's view (%v). "+
+						"GoArchive reads the view to tell whether the source is a running member of the group; grant it "+
+						"directly to the account (GRANT SELECT ON performance_schema.replication_group_members TO <user>)",
+					g.Source.GroupName, err)}
+			}
+			return fmt.Errorf("read the source's group view: %w", err)
+		}
+	}
+	g.Identity = Identity(g.Source, g.Members, f.cfg.SourceServerUUID)
+	return nil
+}
+
+// GroupReport is spec §4.7's block, as printed by validate and dry-run and logged by a run: one
+// block when the source or the destination is configured for Group Replication, and "" for a
+// pair with no group in it. The sizes are the job's. The mode word is not in it yet.
+func (r *Result) GroupReport(p config.ProcessingConfig) string {
+	g := r.Group
+	if !configured(g.Source) && !configured(g.Destination) {
+		return ""
+	}
+	return strings.Join([]string{
+		"Group Replication:",
+		"  source:      " + sourceLine(g),
+		"  destination: " + destinationLine(g.Destination),
+		fmt.Sprintf("  sizes:       batch_size %d, batch_delete_size %d (each transaction must fit the limit of its side)",
+			p.BatchSize, p.BatchDeleteSize),
+	}, "\n")
+}
+
+func sourceLine(g Group) string {
+	if line, plain := notConfigured(g.Source); plain {
+		return line
+	}
+	own := ownRow(g.Members)
+	limit := limitText(g.Source)
+	if own != nil && own.MemberID != "" && own.State == "ONLINE" {
+		line := "member of group " + g.Source.GroupName + ", ONLINE"
+		if own.Role != "" {
+			line += ", " + own.Role
+		}
+		return line + "; " + limit
+	}
+	state := "no row of its own in its view"
+	if own != nil {
+		state = "state " + own.State
+	}
+	return "configured for group " + g.Source.GroupName + ", not a running member (" + state + "); " + limit
+}
+
+// destinationLine has no state or role: the destination's view is not read.
+func destinationLine(g dbsrepl.GroupReplication) string {
+	if line, plain := notConfigured(g); plain {
+		return line
+	}
+	return "configured for group " + g.GroupName + "; " + limitText(g)
+}
+
+// notConfigured is the line of a server that is not configured for a group.
+func notConfigured(g dbsrepl.GroupReplication) (string, bool) {
+	switch {
+	case g.PluginStatus != "ACTIVE":
+		return "Group Replication plugin not active", true
+	case g.GroupName == "":
+		return "Group Replication plugin active, no group name set", true
+	}
+	return "", false
+}
+
+// limitText is a server's group_replication_transaction_size_limit as the report spells it. A
+// known 0 is the server's own "no limit" for that variable, and rules nothing else out.
+func limitText(g dbsrepl.GroupReplication) string {
+	switch {
+	case !g.TransactionSizeLimitKnown:
+		return "transaction size limit unknown"
+	case g.TransactionSizeLimit == 0:
+		return "transaction size limit 0 (the server's own \"no limit\")"
+	}
+	return fmt.Sprintf("transaction size limit %d bytes", g.TransactionSizeLimit)
+}

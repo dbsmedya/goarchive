@@ -1,7 +1,7 @@
 # Group Replication source for the environment matrix
 
 `compose_group_replication.yaml` and `gr-bootstrap.sh` are copied unchanged from dbsgomysql
-**v1.4.0** (`tests/docker/`), the library's own Group Replication test topology: a
+**v1.4.0** (`tests/docker/`; the two files are identical in v1.5.0, the current pin), the library's own Group Replication test topology: a
 three-member single-primary InnoDB Cluster (gr1 the primary) and three standalone servers.
 Copy them again, unchanged, when the dbsgomysql pin moves and the library's files change.
 

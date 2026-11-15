@@ -348,9 +348,11 @@ func TestMySQLSourceStructure(t *testing.T) {
 // it returns a plain error wrapping the cause, never a *preflight.Error, which would say
 // the schema is unfit.
 //
-// Pair: a closed source pool → "preflight table_existence inspection failed: …", and a
-// closed destination pool → "preflight job_schema inspection failed: …", neither an
-// *Error; the same config with open pools → a Result with every table's key.
+// Pair: a closed source pool → "read the source's replication configuration: …", and a
+// closed destination pool → "read the destination's Group Replication state: …", neither an
+// *Error; the same config with open pools → a Result with every table's key. Preflight's
+// first statements are the group facts (GR C2), so a closed pool fails there, ahead of the
+// table and job-schema inspections whose own messages checks_test.go pins.
 func TestMySQLInspectionFailureIsNotARefusal(t *testing.T) {
 	src := scratch(t, "TEST_SOURCE", "schinspect")
 	execAll(t, src, orderTables(schCS)...)
@@ -376,8 +378,8 @@ func TestMySQLInspectionFailureIsNotARefusal(t *testing.T) {
 		src, dst *sql.DB
 		prefix   string
 	}{
-		{"closed source", closed("TEST_SOURCE", srcName), dst, "preflight table_existence inspection failed: "},
-		{"closed destination", src, closed("TEST_DEST", dstName), "preflight job_schema inspection failed: "},
+		{"closed source", closed("TEST_SOURCE", srcName), dst, "read the source's replication configuration: "},
+		{"closed destination", src, closed("TEST_DEST", dstName), "read the destination's Group Replication state: "},
 	} {
 		res, err := run(tc.src, tc.dst)
 		var pe *Error

@@ -49,6 +49,9 @@ func TestMySQLTriggersTheAccountCannotSee(t *testing.T) {
 				execAll(t, admin, "DROP USER IF EXISTS '"+user+"'@'%'", "CREATE USER '"+user+"'@'%' IDENTIFIED BY 'witness_only'",
 					"GRANT "+grants+" ON `"+schema+"`.* TO '"+user+"'@'%'", "GRANT PROCESS ON *.* TO '"+user+"'@'%'")
 				t.Cleanup(func() { _, _ = admin.Exec("DROP USER IF EXISTS '" + user + "'@'%'") })
+				if side == "source" {
+					grantGroupView(t, admin, "'"+user+"'@'%'")
+				}
 				want, wantTables := hidden, []string{"payload(unconfirmed)"}
 				if canSee {
 					execAll(t, admin, "GRANT TRIGGER ON `"+schema+"`.* TO '"+user+"'@'%'")

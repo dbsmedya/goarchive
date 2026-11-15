@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	"github.com/dbsmedya/dbsgomysql/pkg/validations"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -36,9 +37,43 @@ type fakeServer struct {
 	mem        uint64
 	packet     uint64 // max_allowed_packet
 	calls      []string
+
+	// The group facts. The zero values are a server without the plugin: read_only off, no
+	// plugin, no view. An error field fails that read.
+	config     dbsrepl.Config
+	configErr  error
+	group      dbsrepl.GroupReplication
+	groupErr   error
+	members    []dbsrepl.GroupMember
+	membersErr error
+
+	// name and shared, when set, also record each call in one list shared by both servers,
+	// as "src.Tables": the order across the two servers is what the read-order tests pin.
+	name   string
+	shared *[]string
 }
 
-func (s *fakeServer) call(name string) { s.calls = append(s.calls, name) }
+func (s *fakeServer) call(name string) {
+	s.calls = append(s.calls, name)
+	if s.shared != nil {
+		*s.shared = append(*s.shared, s.name+"."+name)
+	}
+}
+
+func (s *fakeServer) ReplicationConfig(context.Context) (dbsrepl.Config, error) {
+	s.call("ReplicationConfig")
+	return s.config, s.configErr
+}
+
+func (s *fakeServer) GroupReplication(context.Context) (dbsrepl.GroupReplication, error) {
+	s.call("GroupReplication")
+	return s.group, s.groupErr
+}
+
+func (s *fakeServer) GroupMembers(context.Context) ([]dbsrepl.GroupMember, error) {
+	s.call("GroupMembers")
+	return s.members, s.membersErr
+}
 
 func (s *fakeServer) Tables(_ context.Context, tables []string) ([]validations.TableInfo, error) {
 	s.call("Tables")
