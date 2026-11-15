@@ -641,7 +641,8 @@ A GoArchive job sees it in four ways:
 comes first. GoArchive pins the `wait_timeout` of its pool sessions to the larger of the server's global value and 28800
 seconds, so no server setting makes a held run give up in under eight hours (`max_execution_time`
 and `innodb_lock_wait_timeout` were measured not to end it). When `wait_timeout` passes first, MySQL ends the
-statement with error 3781, and the run stops with exit code 1 and this message, in the run's diagnostic, in its
+statement with error 3781 (for a session whose `group_replication_consistency` is `BEFORE_ON_PRIMARY_FAILOVER`,
+the 8.4 and 9.7 default, or `AFTER`), and the run stops with exit code 1 and this message, in the run's diagnostic, in its
 closing log entry (the statement's own error stays in the entry's `cause` field) and, under `validate`,
 on the job's `FAILED:` line:
 
@@ -649,6 +650,22 @@ on the job's `FAILED:` line:
 the server held a statement of this run while a newly elected Group Replication primary applied its
 backlog, and the session's wait_timeout passed first (MySQL error 3781). The statement did not run. Run
 again when the primary is writable; the next run recovers what the log holds.
+```
+
+**A session set to `BEFORE` or `BEFORE_AND_AFTER`** is held the same way, and the server ends its statement
+with error 3797 instead of 3781 ("Error while waiting for group transactions commit on
+`group_replication_consistency= 'BEFORE'`"). GoArchive never sets either value: it is the server's or the
+account's. The wait is not only a failover's: under `BEFORE`, a read on a secondary whose applier is behind waits
+for it to catch up and ends the same way. A hold can begin at the start of a transaction, before any table is read.
+The run stops with exit code 1 and its own message, in the same three places. It does not say which case it was:
+
+```text
+the server made a statement of this run wait until this member had applied the group's earlier transactions,
+and the wait ended first (MySQL error 3797). The statement did not run. Sessions whose
+group_replication_consistency is BEFORE or BEFORE_AND_AFTER wait this way, on a newly elected primary that is
+applying its backlog and on a secondary whose applier is behind, for at most the session's wait_timeout.
+GoArchive does not set either value: it is the server's or the account's setting. Run again when the member has
+caught up; the next run recovers what the log holds.
 ```
 
 **Stopping a held run.** The first stop (a `SIGINT` or `SIGTERM`, or the socket's `stop`) is accepted and
@@ -662,6 +679,10 @@ reaches one: the statement stays held. What ends it:
 
 Either way nothing the run had committed is undone, and the next run's [recovery](#crash-recovery) finishes
 what the log holds. Killing the run's connection on the server also ends it at once, with exit code 1.
+
+Stopping a held run ends GoArchive, not the server's session: the server's thread stays in the process list
+(`Executing hook on transaction begin.`) until the backlog is applied or the session's `wait_timeout` passes. `KILL`
+it to end it sooner.
 
 ### A transaction over the size limit
 
