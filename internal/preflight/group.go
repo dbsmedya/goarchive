@@ -16,12 +16,13 @@ import (
 // For a pair with no group in it every field is the zero value, apart from Identity, which is
 // then the source's server uuid.
 //
-// The facts are read once, as the first stage of every preflight, so validate, dry-run and a run
+// The facts are read once, in the first two stages of every preflight, so validate, dry-run and a run
 // all see them, and they are read whatever checks are skipped: the identity and the report depend
 // on them. The engine's guard still reads GTIDStatus itself, under the source table locks.
 type Group struct {
-	// SourceConfig is the source's ReplicationConfig, the first statement preflight sends to it.
-	SourceConfig dbsrepl.Config
+	// SourceConfig and DestinationConfig are each side's ReplicationConfig, the first statement
+	// preflight sends to that side: the two read-only checks judge them before any plugin state is read.
+	SourceConfig, DestinationConfig dbsrepl.Config
 	// Source and Destination are each side's GroupReplication: the plugin's state, the configured
 	// group name and the transaction size limit.
 	Source, Destination dbsrepl.GroupReplication
@@ -116,17 +117,61 @@ func (g Group) DestinationSizeLimit() SizeLimit {
 	return SizeLimit{Known: true, Bytes: g.Destination.TransactionSizeLimit, Group: g.Destination.GroupName, Member: MemberUnread}
 }
 
-// readGroupFacts is preflight's first stage (spec §4.2, In which order): the source's
-// ReplicationConfig before any other statement, then each side's plugin state, then the source's
-// view and only for a plugin that is ACTIVE with a name. A fenced new primary answers some of
-// these reads and holds others, so the order is what lets a later change refuse it before it
-// waits. The destination's own ReplicationConfig is read by the check that needs it.
-func readGroupFacts(ctx context.Context, f *facts) error {
+// readOnlyGeneral is spec §4.5's sentence, the only thing either read-only message says about why
+// a server may be read-only: the cause by role is the group report's, not these checks'.
+const readOnlyGeneral = "On a Group Replication group a secondary is read-only, and so is a newly elected primary until it has applied its backlog."
+
+// readOnlyVariables names which of the two variables is on, for a message.
+func readOnlyVariables(c dbsrepl.Config) string {
+	switch {
+	case c.ReadOnly && c.SuperReadOnly:
+		return "read_only and super_read_only are ON"
+	case c.SuperReadOnly:
+		return "super_read_only is ON"
+	default:
+		return "read_only is ON"
+	}
+}
+
+// checkReadOnly is preflight's first stage (spec §4.2, In which order; §4.5): each side's
+// ReplicationConfig before any other statement, judged as it is read, so a server that is read-only
+// is refused before the plugin-state read that a fenced new primary holds. It runs under every skip
+// policy, and no flag skips either check.
+//
+// SOURCE_READ_ONLY_CHECK (an archive and a purge, which delete from the source and whose recovery
+// replays deletes there): read_only or super_read_only on the source. A copy-only run never writes
+// the source and is exempt. DEST_READ_ONLY_CHECK (every job type: each writes its data or its
+// tracking tables to the destination): super_read_only on the destination only, so read_only alone
+// stays as it is, an account that may write through it still can. Neither message names a cause.
+func checkReadOnly(ctx context.Context, f *facts) error {
 	g := &f.group
 	var err error
 	if g.SourceConfig, err = f.src.ReplicationConfig(ctx); err != nil {
 		return fmt.Errorf("read the source's replication configuration: %w", err)
 	}
+	if ProfileFor(f.cfg.Spec.Type) != ProfileNonDestructive && (g.SourceConfig.ReadOnly || g.SourceConfig.SuperReadOnly) {
+		return &Error{Check: "SOURCE_READ_ONLY_CHECK", Message: fmt.Sprintf(
+			"the source is read-only (%s). An archive or a purge deletes from the source, and its recovery replays deletes there, "+
+				"so it is refused before anything is copied or replayed. %s", readOnlyVariables(g.SourceConfig), readOnlyGeneral)}
+	}
+	if g.DestinationConfig, err = f.dst.ReplicationConfig(ctx); err != nil {
+		return fmt.Errorf("read the destination's replication configuration: %w", err)
+	}
+	if g.DestinationConfig.SuperReadOnly {
+		return &Error{Check: "DEST_READ_ONLY_CHECK", Message: fmt.Sprintf(
+			"the destination is read-only (%s). Every job writes to the destination: its data, or its tracking tables, "+
+				"so it is refused before anything else is asked of it. %s", readOnlyVariables(g.DestinationConfig), readOnlyGeneral)}
+	}
+	return nil
+}
+
+// readGroupFacts is preflight's second stage (spec §4.2, In which order): each side's plugin state,
+// then the source's view and only for a plugin that is ACTIVE with a name. Both ReplicationConfig
+// reads are already done (checkReadOnly). A fenced new primary answers the configuration reads and
+// holds these, so the order is what lets the read-only checks refuse it before it waits.
+func readGroupFacts(ctx context.Context, f *facts) error {
+	g := &f.group
+	var err error
 	if g.Source, err = f.src.GroupReplication(ctx); err != nil {
 		return fmt.Errorf("read the source's Group Replication state: %w", err)
 	}

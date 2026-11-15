@@ -104,7 +104,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 		})
 		syncLogger(log)
 		if err != nil {
-			_, _ = fmt.Fprintf(out, "   FAILED: %v\n\n", err)
+			printFailure(out, err)
 			failed = append(failed, name)
 			continue
 		}
@@ -130,4 +130,10 @@ func printControlLine(w io.Writer, doc *jobspec.Document, spec *jobspec.Spec, na
 		return false
 	}
 	return true
+}
+
+// printFailure is validate's line for a job that failed, printed before the aggregate error drops the
+// job's cause (the named stop for MySQL error 3781, the error's own text otherwise).
+func printFailure(out io.Writer, err error) {
+	_, _ = fmt.Fprintf(out, "   FAILED: %s\n\n", failureText(err))
 }

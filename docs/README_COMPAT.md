@@ -247,3 +247,51 @@ never commits a transaction after one of its statements failed, so a 3100 that w
 
 **Still open.** Percona and limits other than 4096 were not run; the 16-byte figure is from 9.7.4 only; whether
 the member's error log has a line for 3231 was not recorded.
+
+## A newly elected primary is read-only until it has applied its backlog
+
+**Affects:** archive, purge and copy-only jobs whose source or destination is a Group Replication member that
+has just become the primary of a single-primary group, by a planned switch or after the old primary failed.
+
+**What the manual says.** The MySQL 8.4 Reference Manual's page on
+[transaction consistency guarantees](https://dev.mysql.com/doc/refman/8.4/en/group-replication-consistency-guarantees.html)
+says, of `EVENTUAL`, that "in the event of a primary failover, the new primary can accept new read-only and
+read/write transactions before the previous primary transactions are all applied. Read-only transactions could
+result in outdated values, read/write transactions could result in a rollback due to conflicts." Its page on
+[single-primary mode](https://dev.mysql.com/doc/refman/8.4/en/group-replication-single-primary-mode.html) says
+that a new primary "is automatically set to read/write". The manual does not describe a window in which the new
+primary is read-only. Everything below is a measurement, not the manual.
+
+**Observed** (2026-11-15, on Oracle MySQL 8.0.46, 8.4.13 and 9.7.4, three-member single-primary groups; Percona
+was not run; the same result on all three series). The new primary's applier was kept busy by a table lock
+held on it, so that its backlog stayed unapplied for as long as the lock was held:
+
+| Case | Result |
+|---|---|
+| The new primary after `group_replication_set_as_primary` (1 s) and after the old primary was killed (20 to 23 s) | It is `PRIMARY` in `performance_schema.replication_group_members` and has `super_read_only` on, for as long as the backlog is unapplied. A write from a job's account gets `ERROR 1290`. The plugin lifts `super_read_only` itself when the backlog is applied: its log says, at every election, "A new primary with address … was elected. The new primary will execute all previous group transactions before allowing writes." |
+| Six trials (a switch and a kill on each series), each polling the new primary in an `EVENTUAL` session 1.9 to 10.1 million times: `super_read_only`, then whether a row of the backlog was there | No poll read `super_read_only` off with the backlog's row still missing: no writable primary with an unapplied backlog was seen |
+| The applier's queue counter (`COUNT_TRANSACTIONS_REMOTE_IN_APPLIER_QUEUE`) | Not a measure of the backlog: it read 0 while `super_read_only` was still on, the transactions having left the queue for blocked workers |
+| A job whose session is `EVENTUAL` (the 3.0 behaviour on a server whose default or setting is `EVENTUAL`), on that primary | It reads stale data. An archive's recovery did not see roots the log held as `copied` or `deleting` whose `INSERT` was unapplied, logged them as "already gone from the source" and marked them `completed` while the rows were still in the source, which makes the next archive run fail on duplicates in the destination; a child row not yet applied is left out of the copy and the first `DELETE` fails with `1290`, which stops the run loudly |
+| The same jobs on a session the server fences (`group_replication_consistency` `BEFORE_ON_PRIMARY_FAILOVER` or stronger) | The run's first table read is held by the server (thread state "Executing hook on transaction begin."); when the backlog was released after 45 s the run went on and finished with every root deleted, `completed`, and the destination holding each root with all its children |
+| Which statements a fence holds on that primary | Held: a table read, `information_schema.TABLES` and the plugin-state read of `information_schema.PLUGINS`. Let through: `SELECT @@GLOBAL.…` (the configuration read), the group's view in `performance_schema`, `GET_LOCK`, and `SET SESSION group_replication_consistency` |
+| What ends a held statement | Only the session's `wait_timeout`, with `ERROR 3781 (HY000): Timeout exceeded for held statement while new Group Replication primary member is applying backlog.` (measured with a client whose `wait_timeout` was 8 s). `max_execution_time=8000` and `innodb_lock_wait_timeout=8` did not end it in 40 s. GoArchive pins its pool sessions' `wait_timeout` to the larger of the global value and 28800, so a held GoArchive statement waits at least eight hours; eight hours were not waited for |
+| Stopping a held run | The first signal, or the socket's `stop`, is accepted and the statement stays held; a second `stop` answers `already stopping`; the next signal cancels the run (`context canceled`, exit 1). `KILL` of the connection on the server ends it at once (`invalid connection`, exit 1) |
+
+**Why it matters.** The result differs from the manual's account of `EVENTUAL`, and the difference decides
+what a job can safely do on such a primary: a read-only server cannot take a `DELETE`, so an archive's or a
+purge's recovery must not conclude that a root is "already gone" from what it reads there.
+
+**What GoArchive does.** An archive or a purge whose source is read-only, and any job whose destination has
+`super_read_only` on, is refused at once, before anything is copied, replayed or held, by
+[`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check) and
+[`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check). The refusal is judged on the
+configuration read, which a fence lets through, and not on any statement that it holds. A run that the server
+holds past the session's `wait_timeout` ends with a named stop and exit code 1
+([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)). GoArchive makes no claim the manual does
+not make: it does not rely on the window to behave as measured, and a server that behaved as the manual says
+(a writable new primary that serves stale reads) is not covered by the measurement above.
+
+**Still open.** Percona was not run. The backlog was held by a lock on the applier and not by a slow apply, so
+the plugin's log line is what ties the lift of `super_read_only` to the apply. Nothing documents the window, so
+a later server may behave as the manual says. Eight hours were not waited for, and the investigation into the
+window itself is deferred.

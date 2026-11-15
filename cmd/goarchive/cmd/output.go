@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/go-sql-driver/mysql"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
@@ -168,6 +170,35 @@ func plural(n int, one, many string) string {
 	return many
 }
 
+// heldStatementTimeoutText is spec §4.7's message for a statement MySQL ended with error 3781: a
+// session that a Group Replication fence held (BEFORE_ON_PRIMARY_FAILOVER on a newly elected
+// primary, which has a backlog to apply) waited past its wait_timeout.
+const heldStatementTimeoutText = "the server held a statement of this run while a newly elected Group Replication primary applied its backlog, " +
+	"and the session's wait_timeout passed first (MySQL error 3781). The statement did not run. " +
+	"Run again when the primary is writable; the next run recovers what the log holds."
+
+// heldStatementTimeout returns heldStatementTimeoutText when MySQL error 3781 is in err's chain, and
+// "" otherwise (a cancelled context, another error number or a text that merely says 3781). It looks
+// at the error number only, whichever statement returned it: a preflight read, a recovery statement
+// or a batch statement. It is applied where a failure is printed, before an aggregate drops the
+// chain (validate's line for a job, the run's closing entry, the command's diagnostic).
+func heldStatementTimeout(err error) string {
+	var me *mysql.MySQLError
+	if errors.As(err, &me) && me.Number == 3781 {
+		return heldStatementTimeoutText
+	}
+	return ""
+}
+
+// failureText is how a failed run's or job's error is printed: the named stop for error 3781, the
+// error's own text for everything else. The exit code is the caller's and does not change.
+func failureText(err error) string {
+	if text := heldStatementTimeout(err); text != "" {
+		return text
+	}
+	return err.Error()
+}
+
 // logOutcome writes a run's last log entry: how the run ended, with the report's counts when
 // the engine returned one (GH #5). The closing block reaches stdout only with --progress, so
 // without this a log file, under file_only too, would end at the last batch, and a failed run
@@ -215,7 +246,11 @@ func logOutcome(log *logger.Logger, typ jobspec.Type, rep *engine.Report, err er
 	}
 	switch {
 	case err != nil:
-		fields = append(fields, "error", err.Error())
+		// The named stop for error 3781 reads as the error; the statement's own error is kept in "cause".
+		fields = append(fields, "error", failureText(err))
+		if failureText(err) != err.Error() {
+			fields = append(fields, "cause", err.Error())
+		}
 		out.Desugar().WithOptions(zap.AddStacktrace(zapcore.FatalLevel)).Sugar().Errorw("Run failed", fields...)
 	case rep != nil && rep.Stopped:
 		out.Infow("Run stopped before the end of the where range: run the job again to continue", fields...)

@@ -167,9 +167,11 @@ func stages(cfg Config) []stage {
 	deletes := policy && profile != ProfileNonDestructive
 
 	return []stage{
-		// The group facts come before every other statement, under SkipPolicy too: the source's
-		// ReplicationConfig first, then the plugin's state on each side, then the view (spec §4.2,
-		// In which order). The identity and the report depend on them, so no flag skips them.
+		// The group facts come before every other statement, under SkipPolicy too: each side's
+		// ReplicationConfig first, judged by the two read-only checks (G9, G13), then the plugin's
+		// state on each side, then the view (spec §4.2, In which order; §4.5). The identity and
+		// the report depend on them, and no flag skips either check.
+		{"ReadOnly", true, checkReadOnly},
 		{"GroupFacts", true, readGroupFacts},
 
 		// Structure first: the earliest actionable failure.

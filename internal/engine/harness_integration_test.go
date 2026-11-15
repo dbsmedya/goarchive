@@ -20,6 +20,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/lock"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run the engine end to end: the source on TEST_SOURCE_* (db1) and the
@@ -30,6 +31,9 @@ import (
 // globals the test emulates under the pins (database.Global).
 func openServer(t *testing.T, prefix, schema string, params map[string]string) *sql.DB {
 	t.Helper()
+	if prefix == "TEST_REPLICA" {
+		testestate.LockReplica(t) // the replica is one test's at a time, across packages (internal/testestate)
+	}
 	host, user, pass := os.Getenv(prefix+"_HOST"), os.Getenv(prefix+"_USER"), os.Getenv(prefix+"_PASSWORD")
 	port, _ := strconv.Atoi(os.Getenv(prefix + "_PORT"))
 	if host == "" || user == "" || port == 0 {

@@ -21,6 +21,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/logger"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run the group facts through a run (GR C2): a source account without the view's
@@ -39,6 +40,7 @@ func requireGroupMemberSource(t *testing.T) {
 	if g.PluginStatus != "ACTIVE" || g.GroupName == "" {
 		t.Skip("the source is not a Group Replication member: this test runs on the group estate (TOPOLOGY=group)")
 	}
+	testestate.RequireGroupBase(t) // a group a killed test left changed is not built on
 }
 
 // grantGroupView gives a source account SELECT on the group's view when the server is a Group

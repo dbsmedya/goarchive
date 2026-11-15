@@ -13,6 +13,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run the commands end to end: the source on TEST_SOURCE_* (db1) and the
@@ -26,6 +27,9 @@ type server struct {
 
 func serverFor(t *testing.T, prefix string) server {
 	t.Helper()
+	if prefix == "TEST_REPLICA" {
+		testestate.LockReplica(t) // the replica is one test's at a time, across packages (internal/testestate)
+	}
 	port, _ := strconv.Atoi(os.Getenv(prefix + "_PORT"))
 	s := server{os.Getenv(prefix + "_HOST"), os.Getenv(prefix + "_USER"), os.Getenv(prefix + "_PASSWORD"), port}
 	if s.host == "" || s.user == "" || s.port == 0 {

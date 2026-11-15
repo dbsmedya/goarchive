@@ -19,6 +19,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // These tests run preflight's permission and visibility checks as real, least-privileged
@@ -62,6 +63,9 @@ func acctFixture(t *testing.T, name string) (src, dst *sql.DB, srcSchema, dstSch
 // acctOpen opens a pool on one test server as user, as goarchive opens its own.
 func acctOpen(t *testing.T, prefix, schema, user, pass string) *sql.DB {
 	t.Helper()
+	if prefix == "TEST_REPLICA" {
+		testestate.LockReplica(t)
+	}
 	host := os.Getenv(prefix + "_HOST")
 	port, _ := strconv.Atoi(os.Getenv(prefix + "_PORT"))
 	if host == "" || port == 0 {

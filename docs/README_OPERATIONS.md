@@ -546,16 +546,23 @@ the same facts, finds no group and prints nothing.
 In this order, before preflight reads any table or catalog, and whatever is skipped
 (`--skip-dangerously-validate-preflight-allow-experimental` skips checks, never these reads):
 
-1. **The source's configuration:** `read_only`, `super_read_only` and `server_id`. It is the first
-   statement preflight sends to the source.
+1. **Each side's configuration:** `read_only`, `super_read_only` and `server_id`, the source's first and
+   then the destination's. Each is the first statement preflight sends to that server, and each is
+   judged as it is read: a source that is read-only is refused by
+   [`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check) (an archive and a purge),
+   and a destination with `super_read_only` on by
+   [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check) (every job type). No flag skips
+   either, and neither waits for the reads that follow.
 2. **Each side's plugin state:** whether the Group Replication plugin is `ACTIVE`, the group name it
    is configured with, and its `group_replication_transaction_size_limit`.
 3. **The source's view of its group**, only when its plugin is `ACTIVE` and a group name is set:
    each member with its state and role, and which row is the source's own. A server that is not
    configured for a group is never asked for it.
 
-A read that fails stops preflight with the error, as any failed inspection does. Only the third
-read needs a grant: `SELECT` on `performance_schema.replication_group_members`
+A read that fails stops preflight with the error, as any failed inspection does. The order matters:
+a newly elected primary answers the first read and can hold the second
+([a failover's backlog](#a-failovers-backlog)), so the read-only refusals come before it. Only the
+third read needs a grant: `SELECT` on `performance_schema.replication_group_members`
 ([Permissions](README_PERMISSIONS.md#source)). Without it the job is refused with
 [`SOURCE_GROUP_VIEW_PERMISSION_CHECK`](README_VALIDATION.md#source_group_view_permission_check),
 exit 1, before anything is locked, copied or replayed.
@@ -585,6 +592,63 @@ Group Replication:
   each delete chunk must fit the limit of the server they run on; `sizes` is the job's own
   `batch_size` and `batch_delete_size`. `0` is the server's own "no limit" for this variable, and
   `unknown` means the server did not report it.
+
+### A failover's backlog
+
+After a failover, the new primary is `PRIMARY` in the group's view but stays read-only
+(`super_read_only` on) until it has applied the transactions the old primary had committed. The MySQL
+manual does not describe that window; it was measured on Oracle MySQL 8.0.46, 8.4.13 and 9.7.4, after a
+planned switch and after the primary was killed ([the measurement](README_COMPAT.md#a-newly-elected-primary-is-read-only-until-it-has-applied-its-backlog)).
+A GoArchive job sees it in four ways:
+
+- **An archive or a purge whose source is that server is refused at once**, by
+  [`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check), before anything is copied or
+  replayed, and the run is not held. A job whose log holds roots as `copied` or `deleting` keeps them
+  exactly as they are: recovery has not run, no root is replayed or marked `completed`, and no row is
+  deleted. The same refusal comes under `--skip-dangerously-validate-preflight-allow-experimental`.
+  Run the job again when the primary is writable, or point it at the new primary once it is, and the
+  run recovers what the log holds.
+- **Any job whose destination is that server is refused at once**, by
+  [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check), whatever its type: it would
+  fail at its first write, and a server that fences the session would hold it before that.
+- **A copy-only run on that server is not refused**, because it only reads. Whether it waits depends on
+  the server's `group_replication_consistency` for GoArchive's session. With
+  `BEFORE_ON_PRIMARY_FAILOVER` or a stronger value (the default on 8.4 and 9.7; `EVENTUAL` is the 8.0
+  default, and a cluster built by the AdminAPI persists the series' own), the server holds the
+  session's statements on a newly elected primary until the backlog is applied, and the run goes on
+  by itself when it is. With `EVENTUAL` the run reads at once, and its reads can lag the group until
+  the backlog is applied.
+- **A run the server is holding shows nothing new.** The log has `Run starting` and, with the control
+  socket on, the `Control socket` line. `status` reads `starting, batch 0` with `activity: none` and
+  `hold: none`, or its last state if the run was already going. A statement that takes much longer than
+  usual after a failover is the server holding it, not GoArchive waiting for a replica: a
+  [replication hold](#replication-gating) is a different thing, and says so in the log and in `status`.
+
+**What ends a held statement.** The backlog being applied, or the session's `wait_timeout`, whichever
+comes first. GoArchive pins the `wait_timeout` of its pool sessions to the larger of the server's global value and 28800
+seconds, so no server setting makes a held run give up in under eight hours (`max_execution_time`
+and `innodb_lock_wait_timeout` were measured not to end it). When `wait_timeout` passes first, MySQL ends the
+statement with error 3781, and the run stops with exit code 1 and this message, in the run's diagnostic, in its
+closing log entry (the statement's own error stays in the entry's `cause` field) and, under `validate`,
+on the job's `FAILED:` line:
+
+```text
+the server held a statement of this run while a newly elected Group Replication primary applied its
+backlog, and the session's wait_timeout passed first (MySQL error 3781). The statement did not run. Run
+again when the primary is writable; the next run recovers what the log holds.
+```
+
+**Stopping a held run.** The first stop (a `SIGINT` or `SIGTERM`, or the socket's `stop`) is accepted and
+logged as `Stop requested`, but it takes effect at the next batch boundary, and a held statement never
+reaches one: the statement stays held. What ends it:
+
+- with no stop requested before: **two signals**. The first is logged and changes nothing; the second logs
+  `Cancelling the run now`, cancels the statement and ends the run with exit code 1;
+- after the control socket's `stop`: **one signal**. A second `stop` answers `already stopping` and changes
+  nothing, because no socket command cancels a run; the signal is the second phase.
+
+Either way nothing the run had committed is undone, and the next run's [recovery](#crash-recovery) finishes
+what the log holds. Killing the run's connection on the server also ends it at once, with exit code 1.
 
 ### A transaction over the size limit
 
