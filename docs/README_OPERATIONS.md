@@ -586,6 +586,82 @@ Group Replication:
   `batch_size` and `batch_delete_size`. `0` is the server's own "no limit" for this variable, and
   `unknown` means the server did not report it.
 
+### A transaction over the size limit
+
+`group_replication_transaction_size_limit` (default 150000000 bytes) bounds the transactions of a Group
+Replication server, and a batch's transactions can exceed it: a delete chunk on a source, or the copy
+transaction and its log writes on a destination, that is a Group Replication server. MySQL enforces it in two
+places and reports two errors ([the measurements](README_COMPAT.md#a-transactions-write-set-is-also-bounded-by-group_replication_transaction_size_limit)).
+When the run knew the server's limit at its start (the plugin was `ACTIVE`; [the block above](#what-you-see)
+prints it), it ends with an error that names the limit and the setting to lower. A server that did not report a
+limit (no plugin, or not `ACTIVE`) leaves the error as MySQL sent it.
+
+**Error 3100, at the commit: the transaction's size.** MySQL reports `Error 3100 … replication hook
+'before_commit'`, which does not name the cause: a member that stops or leaves the group during a commit gets
+the same error. So the message says what the run saw and no more:
+
+```text
+engine: batch 7: engine: delete from order_items: the commit failed with MySQL error 3100 (replication
+hook 'before_commit') on the source, which was an ONLINE member of Group Replication group 8a94f357-…
+when the run started. Group Replication refuses a transaction larger than
+group_replication_transaction_size_limit, which was 150000000 bytes on this server when the run started.
+MySQL's error does not say whether that was the reason; the member's error log does. If it was, lower
+batch_delete_size (now 500) and rerun. Nothing is lost: the roots stay logged as copied, and the rerun's
+recovery finishes them.
+```
+
+- **Find the reason in the member's error log.** A transaction over the limit is logged there with its size
+  and the limit (`Transaction of size … exceeds specified limit …`). Without that line the failure had another
+  cause, and lowering a batch size will not help.
+- **A limit of 0** is the server's own "no limit" for the variable. The message then says so as history, offers
+  no remedy from a batch size, and points at the error log: the limit may have been changed since.
+
+**Error 3231, at a statement: the transaction's write set.** The same variable bounds a transaction's write set,
+which grows with the number of rows the transaction changes and with their keys, not with the size of the rows.
+MySQL refuses the statement that takes it over the limit with `Error 3231`, whose text names the cause. A
+transaction of a few large rows meets 3100; one of many small rows meets 3231 first. The message states the
+cause and the remedy, which is unconditional, a limit of 0 included:
+
+```text
+engine: batch 7: engine: delete from order_items: the statement failed with MySQL error 3231 on the source,
+which was an ONLINE member of Group Replication group 8a94f357-… when the run started. MySQL refused it
+because the transaction's write set exceeded a limit. Group Replication bounds a transaction's write set by
+group_replication_transaction_size_limit, which was 65536 bytes on this server when the run started. The write
+set grows with the number of rows the transaction changes and with their keys, not with the size of the rows.
+Lower batch_delete_size (now 20000) and rerun. Nothing is lost: the roots stay logged as copied, and the
+rerun's recovery finishes them.
+```
+
+- **How many rows.** Measured with the limit at 4096 bytes: on a table with only a primary key, a transaction
+  of 512 rows was accepted and 513 refused, which is 8 bytes of write set a row (Oracle MySQL 8.0.46, 8.4.13
+  and 9.7.4). On a table with a unique key or a foreign key besides, 256 rows were accepted and 257 refused, 16
+  bytes a row (9.7.4 only). These are figures for those table shapes on those servers, not a formula: at the
+  default limit the first shape needs about 18.7 million rows in one transaction, and a limit a DBA lowered to
+  1 MiB needs about 131000. The message gives no per-row figure.
+- **The setting:** a delete chunk is sized by `batch_delete_size`, and the copy transaction and the log
+  writes by `batch_size`. A recovery page is read by `batch_size` too, so a `batch_size` that is too large for
+  the destination's limit fails the log write after the deletes of a recovery as well.
+
+**What to do, for both.** Lower the setting the message names, and rerun. A run that has not failed yet can
+have either lowered over the control socket ([Runtime control](#runtime-control)); after a failure the rerun
+starts with the file's values. GoArchive cannot tell you a safe size: what counts is the rows' images (3100) or
+their number and keys (3231).
+
+**Nothing is lost.** The engine rolls the failed transaction back as it does after any statement error, and
+never commits it:
+
+- a delete chunk: the roots stay logged (`copied`, or `deleting` for a purge) and the rerun's recovery finishes
+  them;
+- the copy transaction, at a copy `INSERT`, at its log `INSERT` or at its commit: the batch was rolled back, so
+  nothing of it was copied, logged or deleted;
+- a purge's log write before its deletes: nothing was logged or deleted;
+- the log write that completes a batch after its deletes, in a run or in a recovery page: the rows are deleted
+  and the roots stay logged for recovery to complete.
+
+**The values are the start's.** The message reads nothing at the failure: the limit and the membership are what
+the run saw when it began, and the limit may have changed since. A destination's view is not read, so the
+message never says it was a running member.
+
 ## Runtime control
 
 A run can listen on a Unix socket. While it works you can look at it, pause it, stop it, and change how

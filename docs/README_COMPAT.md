@@ -201,3 +201,49 @@ For a table that sha256 refuses:
 
 **Still open.** Rebuilding each member with its type on the destination, with a `CAST` per member
 from the source's `JSON_TYPE`, keeps types and avoids the 8.x parser. It is not built.
+
+---
+
+## A transaction's write set is also bounded by `group_replication_transaction_size_limit`
+
+**Affects:** archive, purge and copy-only jobs whose source or destination is a Group Replication member. Every
+transaction of a batch is involved: a delete chunk, the copy transaction and its log insert, and a purge's log
+write before its deletes and the log write after them.
+
+**What the manual says.** The MySQL 8.4 Reference Manual's entry for
+[`group_replication_transaction_size_limit`](https://dev.mysql.com/doc/refman/8.4/en/group-replication-system-variables.html#sysvar_group_replication_transaction_size_limit)
+says that it "configures the maximum transaction size in bytes which the replication group accepts". By its
+entry, a larger transaction is rolled back and not broadcast to the group, the default is 150000000 bytes, `0`
+means unlimited, and a change applies from the next transaction. The entry does not mention the transaction's
+write set, error 3231, a per-key figure, or what state a transaction is left in after a statement fails.
+Everything below is a measurement, not the manual.
+
+**Observed** (2026-11-15, on Oracle MySQL 8.0.46, 8.4.13 and 9.7.4, three-member single-primary groups; the
+limit set to 4096 bytes on every member and restored; Percona was not run; the same result on all three unless
+a row says otherwise):
+
+| Case | Result |
+|---|---|
+| A table with a primary key only: one transaction changes 512 rows, then 513 | 512 are accepted. 513 get `ERROR 3231 (HY000): The size of writeset data for the current transaction exceeds a limit imposed by an external component. If using Group Replication check 'group_replication_transaction_size_limit'.` It comes at the statement that takes the write set over the limit, before any commit: 8 bytes of write set for a row |
+| A table with a unique key or a foreign key as well (9.7.4 only) | 256 rows are accepted and 257 refused, for a `DELETE` and for an `INSERT`: 16 bytes for a row |
+| After a 3231 inside a transaction | The transaction is still open and only the statement is undone: an earlier `INSERT` of the same transaction is still visible. A `COMMIT` then fails with error 3100 (`Error on observer while running replication hook 'before_commit'`) and rolls the whole transaction back |
+| After a 3231 in autocommit | The statement is refused whole and leaves nothing |
+| One row of 100 KB (the control) | No error at the statement; 3100 at the commit, and the whole transaction is rolled back |
+
+The 8 and 16 bytes are figures for these table shapes on these servers, not a general formula.
+
+**Why it matters.** The variable is enforced in two places with two errors. The transaction's size is checked at
+the commit and gives 3100, whose text does not say why (a member that stops or leaves the group during a commit
+gives the same error). The transaction's write set is checked as each statement adds to it and gives 3231,
+whose text says why. A transaction of a few large rows meets 3100; one of many small rows meets 3231 first. At
+the default limit, 3231 needs about 18.7 million rows of a primary-key-only table in one transaction; at a
+limit a DBA lowered to 1 MiB, about 131000.
+
+**What GoArchive does.** When the limit of the side was known at the run's start, a 3100 at a commit and a 3231
+at a statement each end the run with an error that names the limit, the setting to lower and what is not lost
+([A transaction over the size limit](README_OPERATIONS.md#a-transaction-over-the-size-limit)). The 3100 message
+says that MySQL's error does not name the cause; the 3231 message states it, as MySQL's error does. GoArchive
+never commits a transaction after one of its statements failed, so a 3100 that would follow a 3231 is not seen.
+
+**Still open.** Percona and limits other than 4096 were not run; the 16-byte figure is from 9.7.4 only; whether
+the member's error log has a line for 3231 was not recorded.
