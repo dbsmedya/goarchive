@@ -162,3 +162,56 @@ func TestTeeEscapes(t *testing.T) {
 		t.Errorf("rendered %q", got)
 	}
 }
+
+// TestAuditRoute (Codex batch 2 finding 3): Audit is Always's route (past the level filter, to the log's
+// own stream, once) plus the console tee under the tee's own policy: a Live entry always, a warning or an
+// error when the configured level keeps it, never a FileOnly one, and nothing at all without the tee.
+// Always itself still never reaches the tee.
+func TestAuditRoute(t *testing.T) {
+	cfg, p := fileCfg(t, "json")
+	cfg.Level = "error"
+	l, out, errb := newCaptured(t, cfg, true)
+	l = l.WithJob("j")
+
+	l.Audit().Infow("audit info, live", Live)
+	l.Audit().Infow("audit info, plain")
+	l.Audit().Warnw("audit warning")
+	l.Audit().Errorw("audit error")
+	l.Audit().Infow("audit info, file only", Live, FileOnly)
+	l.Always().Infow("always info, live", Live)
+
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing (the tee is stderr)", out)
+	}
+	e := errb.String()
+	for _, w := range []string{"INFO  audit info, live\n", "ERROR audit error\n"} {
+		if strings.Count(e, w) != 1 {
+			t.Errorf("stderr lacks %q once:\n%s", w, e)
+		}
+	}
+	for _, no := range []string{"audit info, plain", "audit warning", "file only", "always info", "job=", liveKey} {
+		if strings.Contains(e, no) {
+			t.Errorf("stderr has %q at level error:\n%s", no, e)
+		}
+	}
+	f := readFile(t, l, p)
+	for _, w := range []string{"audit info, live", "audit info, plain", "audit warning", "audit error", "audit info, file only", "always info, live"} {
+		if strings.Count(f, `"msg":"`+w+`"`) != 1 {
+			t.Errorf("the file does not hold %q exactly once, past level error:\n%s", w, f)
+		}
+	}
+	if strings.Contains(f, liveKey) || strings.Contains(f, fileOnlyKey) {
+		t.Errorf("file carries a routing mark:\n%s", f)
+	}
+
+	// A log on the console has no tee: Audit is one entry of that log, as Always is.
+	var cout, cerr bytes.Buffer
+	cl, err := New(&config.LoggingConfig{Level: "error", Format: "json", Output: "stdout"}, Options{Stdout: &cout, Stderr: &cerr, Tee: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl.Audit().Infow("console audit", Live)
+	if strings.Count(cout.String(), `"msg":"console audit"`) != 1 || cerr.Len() != 0 {
+		t.Errorf("console log: stdout %q stderr %q, want the entry once on stdout", cout.String(), cerr.String())
+	}
+}

@@ -561,3 +561,79 @@ func TestReportsPrintSocketPath(t *testing.T) {
 		t.Errorf("validate, a path that cannot be formed: %q, want the reason and a failure", out.String())
 	}
 }
+
+// TestControlSinkRoutes (Codex batch 2 finding 3; spec §4.10): the audit entries go past the level
+// filter to the log, and reach the console tee by the tee's own policy: an accepted change (info,
+// marked live) always, a warning or an error when the configured level keeps it. File-only and a run
+// without --progress show nothing on the console. The file holds each entry once, never a second copy
+// for the tee. The `Control socket:` entry stays off the tee, so a cron run is silent.
+func TestControlSinkRoutes(t *testing.T) {
+	const (
+		change   = "Runtime setting changed: batch_size 1000 -> 500 (control socket, uid 1000, pid 4242); from the next batch"
+		identity = "Control lock lost: the lock file is no longer the one this run created"
+		panicked = "Control socket handler panicked: boom"
+	)
+	for _, tc := range []struct {
+		name     string
+		level    string
+		tee      bool
+		fileOnly bool
+		entry    tuning.Level
+		msg      string
+		onStderr bool
+	}{
+		{"a change reaches the tee at a restrictive level", "error", true, false, tuning.LevelInfo, change, true},
+		{"a change reaches the tee at level debug", "debug", true, false, tuning.LevelInfo, change, true},
+		{"an identity warning reaches the tee when the level keeps warnings", "warn", true, false, tuning.LevelWarn, identity, true},
+		{"an identity warning stays off the tee when the level does not", "error", true, false, tuning.LevelWarn, identity, false},
+		{"an error reaches the tee", "error", true, false, tuning.LevelError, panicked, true},
+		{"nothing without the tee", "error", false, false, tuning.LevelInfo, change, false},
+		{"nothing for a file-only log", "error", true, true, tuning.LevelInfo, change, false},
+		{"nothing for a file-only warning", "info", true, true, tuning.LevelWarn, identity, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "run.log")
+			var out, errb bytes.Buffer
+			log, err := logger.New(&config.LoggingConfig{Level: tc.level, Format: "json", Output: file, FileOnly: tc.fileOnly},
+				logger.Options{Stdout: &out, Stderr: &errb, Tee: tc.tee})
+			if err != nil {
+				t.Fatal(err)
+			}
+			logSink{log.WithJob("job")}.Entry(tc.entry, tc.msg, "revision", uint64(1))
+			_ = log.Close()
+
+			data, _ := os.ReadFile(file)
+			if n := strings.Count(string(data), tc.msg); n != 1 {
+				t.Errorf("the log file holds the entry %d times, want once, past the level %s:\n%s", n, tc.level, data)
+			}
+			if got := strings.Contains(errb.String(), tc.msg); got != tc.onStderr {
+				t.Errorf("on stderr = %v, want %v:\n%s", got, tc.onStderr, errb.String())
+			}
+			if tc.onStderr && strings.Count(errb.String(), tc.msg) != 1 {
+				t.Errorf("stderr holds the entry %d times, want once:\n%s", strings.Count(errb.String(), tc.msg), errb.String())
+			}
+			if out.Len() != 0 {
+				t.Errorf("stdout = %q, want nothing: the tee is stderr", out.String())
+			}
+		})
+	}
+
+	t.Run("the socket's path stays off the tee", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "run.log")
+		var out, errb bytes.Buffer
+		log, err := logger.New(&config.LoggingConfig{Level: "error", Format: "json", Output: file},
+			logger.Options{Stdout: &out, Stderr: &errb, Tee: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		logControlSocket(log.WithJob("job"), "/run/job.sock")
+		_ = log.Close()
+		data, _ := os.ReadFile(file)
+		if strings.Count(string(data), "Control socket: /run/job.sock") != 1 {
+			t.Errorf("the log file lacks the entry, or holds it twice, at level error:\n%s", data)
+		}
+		if out.Len()+errb.Len() != 0 {
+			t.Errorf("console = %q / %q, want a silent cron run", out.String(), errb.String())
+		}
+	})
+}
