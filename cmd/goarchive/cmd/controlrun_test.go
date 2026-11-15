@@ -27,14 +27,22 @@ import (
 // output's runtime-changes line, the control-socket line of validate and dry-run, and the exit code of
 // a socket in use. No database is needed here; what a run does over the socket is the integration tests'.
 
-// shortTemp is a directory with a short path for a socket; t.TempDir is too long on macOS.
+// shortTemp is a directory with a short path for a socket; t.TempDir is too long on macOS. /tmp is
+// the short one where it exists; where it does not (Windows) the system's temporary directory is,
+// which is short enough there, and a directory whose path would not leave room for a socket skips.
 func shortTemp(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "gc")
 	if err != nil {
+		dir, err = os.MkdirTemp("", "gc")
+	}
+	if err != nil {
 		t.Skipf("no short directory for a socket: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if len(dir) > 60 {
+		t.Skipf("no short directory for a socket: %s is %d bytes", dir, len(dir))
+	}
 	return dir
 }
 
@@ -344,8 +352,10 @@ func TestControlReport(t *testing.T) {
 		t.Errorf("control off = %q, %v, want %q", line, err, "control socket: off")
 	}
 
-	set := parseDoc(t, "", "    control:\n      enabled: true\n      socket_dir: /run/goarchive\n", "job", jobspec.Archive)
-	if line, err := controlReport(set, set.Jobs["job"], "job"); err != nil || line != "control socket: /run/goarchive/job.sock" {
+	// An absolute directory on every platform: /run/goarchive is not one on Windows.
+	dir := filepath.Join(os.TempDir(), "goarchive-run")
+	set := parseDoc(t, "", "    control:\n      enabled: true\n      socket_dir: '"+dir+"'\n", "job", jobspec.Archive)
+	if line, err := controlReport(set, set.Jobs["job"], "job"); err != nil || line != "control socket: "+filepath.Join(dir, "job.sock") {
 		t.Errorf("socket_dir set = %q, %v, want its path, with no remark about a default", line, err)
 	}
 

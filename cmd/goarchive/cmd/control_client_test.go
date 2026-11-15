@@ -570,8 +570,13 @@ func TestControlCutAtLineBoundaryIsALimit(t *testing.T) {
 // TestControlEndpointChecks (spec §7 row 79): exit 8, with nothing connected and nothing sent, and
 // modes, owners and files left as they were.
 func TestControlEndpointChecks(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the owner and mode checks are not made on Windows (best effort, spec §4.9); links need a privilege there")
+	// Windows makes no owner or mode check (best effort, spec §4.9) and a symbolic link needs a
+	// privilege there, so those cases skip; the regular file runs everywhere.
+	notOnWindows := func(t *testing.T, why string) {
+		t.Helper()
+		if runtime.GOOS == "windows" {
+			t.Skip(why)
+		}
 	}
 	refused := func(t *testing.T, l *testListener, path, want string) {
 		t.Helper()
@@ -587,6 +592,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		}
 	}
 	t.Run("the directory is a symbolic link", func(t *testing.T) {
+		notOnWindows(t, "creating a symbolic link needs a privilege on Windows")
 		real := filepath.Join(shortTemp(t), "real")
 		if err := os.Mkdir(real, 0o700); err != nil {
 			t.Fatal(err)
@@ -602,6 +608,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		}
 	})
 	t.Run("the directory has group or other bits", func(t *testing.T) {
+		notOnWindows(t, "directory modes are not enforced on Windows")
 		l := newListener(t, replying("OK\nnever\n"))
 		if err := os.Chmod(l.Dir, 0o750); err != nil {
 			t.Fatal(err)
@@ -612,6 +619,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		}
 	})
 	t.Run("the owner rule is the shared judging function", func(t *testing.T) {
+		notOnWindows(t, "directory owners are not enforced on Windows")
 		l := newListener(t, replying("OK\nnever\n"))
 		err := checkEndpoint(l.Path, os.Geteuid()+1)
 		var ce *controlError
@@ -623,6 +631,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		}
 	})
 	t.Run("the directory belongs to another user", func(t *testing.T) {
+		notOnWindows(t, "directory owners are not enforced on Windows")
 		if os.Geteuid() != 0 {
 			t.Skip("needs root to give a directory to another uid (the L1 container)")
 		}
@@ -636,6 +645,7 @@ func TestControlEndpointChecks(t *testing.T) {
 		refused(t, l, l.Path, "owned by uid 12345")
 	})
 	t.Run("the socket path is a symbolic link to a socket", func(t *testing.T) {
+		notOnWindows(t, "creating a symbolic link needs a privilege on Windows")
 		dir := shortTemp(t)
 		l := newListenerAt(t, filepath.Join(dir, "real.sock"), replying("OK\nnever\n"))
 		link := filepath.Join(dir, "j.sock")
