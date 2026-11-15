@@ -64,3 +64,58 @@ type fakeView struct {
 func (v fakeView) text() []string { return v.lines }
 
 func (v fakeView) jsonLine() (string, error) { return v.json, nil }
+
+// fakeTracker, fakeGate and fakeShutdown are the sources a status is read from; each answers what
+// the test set.
+type fakeTracker struct {
+	mu sync.Mutex
+	s  TrackerStatus
+}
+
+func (f *fakeTracker) Status() TrackerStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.s
+}
+
+func (f *fakeTracker) set(s TrackerStatus) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.s = s
+}
+
+type fakeGate struct {
+	mu sync.Mutex
+	r  GateRecord
+	n  int
+}
+
+func (f *fakeGate) Record() GateRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.n++
+	return f.r
+}
+
+func (f *fakeGate) set(r GateRecord) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.r = r
+}
+
+type fakeShutdown struct {
+	mu      sync.Mutex
+	stopped bool
+}
+
+func (f *fakeShutdown) StopRequested() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopped
+}
+
+func (f *fakeShutdown) set(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = v
+}
