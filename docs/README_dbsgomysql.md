@@ -76,12 +76,12 @@ pool and avoids self-deadlocking a single-connection configuration.
 
 ## Group Replication facts
 
-Preflight reads them through the library once, as its first stage, and returns them in its result,
+Preflight reads them through the library once, in its first two stages, and returns them in its result,
 so `validate`, `dry-run` and a run share one read ([what is read, and in which order](README_OPERATIONS.md#group-replication)):
 
 | Fact | Used for |
 |---|---|
-| `ReplicationConfig` | The source's `read_only`, `super_read_only` and `server_id`: the first statement sent to the source |
+| `ReplicationConfig` | Each side's `read_only`, `super_read_only` and `server_id`: the first statement sent to that server, judged by [`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check) and [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check) |
 | `GroupReplication` | Each side's plugin state, configured group name and `group_replication_transaction_size_limit` (with whether the server reported it) |
 | `GroupMembers` | A member source's view: each member's state and role, and which row is the source's own. Needs `SELECT` on `performance_schema.replication_group_members`; read only from a plugin that is `ACTIVE` with a group name |
 

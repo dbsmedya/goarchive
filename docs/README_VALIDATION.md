@@ -49,11 +49,13 @@ PK_COLUMN_CHECK: The configured primary_key must list the PRIMARY KEY's columns,
 key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_id, line_no))])
 ```
 
-Preflight's first statements are not checks: it reads the
-[Group Replication facts](README_OPERATIONS.md#group-replication) of both servers (the source's
+Preflight's first statements are not checks, apart from two: it reads the
+[Group Replication facts](README_OPERATIONS.md#group-replication) of both servers (each side's
 configuration, each side's plugin state and, for a source that is a member, its view of the group)
 before it reads any table. They are read whatever is skipped, and they are what `validate`, `dry-run`
-and a run print as the Group Replication block.
+and a run print as the Group Replication block. The two checks that judge the configurations as they
+are read, [`SOURCE_READ_ONLY_CHECK`](#source_read_only_check) and
+[`DEST_READ_ONLY_CHECK`](#dest_read_only_check), come first, and no flag skips either.
 
 Preflight computes each key-addressed statement's cap, the most key tuples it carries, and fails
 when a cap cannot be computed. `validate` and `dry-run` print the caps; a run logs one
@@ -68,6 +70,8 @@ type.
 
 | Check | archive | purge | copy-only |
 |-------|:-------:|:-----:|:---------:|
+| `SOURCE_READ_ONLY_CHECK` | ✅ | ✅ | ❌ |
+| `DEST_READ_ONLY_CHECK` | ✅ | ✅ | ✅ |
 | `SOURCE_GROUP_VIEW_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
 | `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ |
 | `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ |
@@ -97,10 +101,14 @@ type.
 | `DELETE_TRIGGER_CHECK` | ✅ | ✅ | ❌ |
 | `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ |
 
-- **`SOURCE_GROUP_VIEW_PERMISSION_CHECK`** is the one check of preflight's first stage, which reads the
-  [Group Replication facts](README_OPERATIONS.md#group-replication) before any table. It refuses only a
+- **The two read-only checks and `SOURCE_GROUP_VIEW_PERMISSION_CHECK`** are the checks of preflight's
+  first two stages, which read the [Group Replication facts](README_OPERATIONS.md#group-replication)
+  before any table. The read-only checks come first, on each side's configuration, so a server that is
+  read-only is refused before the plugin-state read that a Group Replication fence can hold
+  ([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)). The view's check refuses only a
   source that is a Group Replication member whose account cannot read the group's view; a source
-  without the plugin is never asked, and nothing is refused.
+  without the plugin is never asked, and nothing is refused. A source that is read-only, an archive's
+  or a purge's, is refused for that first, even when its account also lacks the view's grant.
 - **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
   it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
 - **Copy-only** deletes nothing, so no cascade can fire: it skips the foreign-key visibility
@@ -468,13 +476,59 @@ Table-scoped checks name `TABLE(state)`, e.g. `orders(unconfirmed)`;
 tests four privileges on one schema. Each fix is a
 [grant recipe](README_PERMISSIONS.md#grant-recipes).
 
+### `SOURCE_READ_ONLY_CHECK`
+
+An archive or a purge deletes from the source, and a run's recovery replays deletes there, so a
+source with `read_only` or `super_read_only` on is refused before anything is copied or replayed. It
+is judged on the source's configuration, preflight's first statement there, and says which of the two
+variables is on. Which one stops GoArchive's own account depends on its privileges, so the check
+refuses on either. It runs for an archive and a purge; a copy-only run never writes the source and is
+exempt (reading a secondary or a replica is a use [the docs describe](README_OPERATIONS.md#group-replication)).
+Under `--skip-dangerously-validate-preflight-allow-experimental` it still runs, and no other flag skips it.
+
+It applies to any read-only source, a plain replica included. On a Group Replication group a
+secondary is read-only, and so is a newly elected primary until it has applied its backlog
+([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)); the message says that and names no
+cause, since the check cannot tell which of them the source is:
+
+```
+SOURCE_READ_ONLY_CHECK: the source is read-only (read_only and super_read_only are ON). An archive or a
+purge deletes from the source, and its recovery replays deletes there, so it is refused before anything
+is copied or replayed. On a Group Replication group a secondary is read-only, and so is a newly elected
+primary until it has applied its backlog.
+```
+
+Point the job at a source that is writable, or wait until the primary is, and run again. The log's
+roots stay as they are and the next run recovers them.
+
+### `DEST_READ_ONLY_CHECK`
+
+Every job type writes to the destination: its data, or its tracking tables. A destination with
+`super_read_only` on is refused before anything else is asked of it, for an archive, a purge and a
+copy-only run, and `validate` and `dry-run` answer for the job as a run would. No account can write
+under `super_read_only`, so the check refuses no run that could have written at that moment; it is
+also what a Group Replication secondary and a newly elected primary are set to. `read_only` alone
+still lets a privileged account write and is not refused: such a run works, or fails at its first
+write, as it does today. No flag skips this check, and nothing bypasses it, because the server would
+refuse the writes.
+
+```
+DEST_READ_ONLY_CHECK: the destination is read-only (read_only and super_read_only are ON). Every job
+writes to the destination: its data, or its tracking tables, so it is refused before anything else is
+asked of it. On a Group Replication group a secondary is read-only, and so is a newly elected primary
+until it has applied its backlog.
+```
+
+When both servers are read-only, the source's refusal is the one reported: it is judged first, and the
+destination's configuration is not read for a job that is already refused.
+
 ### `SOURCE_GROUP_VIEW_PERMISSION_CHECK`
 
 A source that is a Group Replication member (its plugin is `ACTIVE` and a group name is set)
 needs `SELECT` on `performance_schema.replication_group_members`: GoArchive reads the group's
 view to tell whether the source is a running member. It is not one of the provable-grant checks
-above: the server's own refusal (error 1142) is the answer, so it has no states, and it is the
-first read of preflight, so nothing has been locked, copied or replayed when it fails. A source
+above: the server's own refusal (error 1142) is the answer, so it has no states, and it is judged
+before any table is read, so nothing has been locked, copied or replayed when it fails. A source
 without the plugin is never asked and needs nothing. Runs for every job type.
 
 ```
@@ -734,7 +788,9 @@ foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK
 Still enforced on a run: the [connection checks](#connection-checks), the
 [Group Replication facts](README_OPERATIONS.md#group-replication) and so
 `SOURCE_GROUP_VIEW_PERMISSION_CHECK` (the identity and the report depend on them, so no flag skips
-their reads), `PRIMARY_KEY_CHECK`,
+their reads), [`SOURCE_READ_ONLY_CHECK`](#source_read_only_check) and
+[`DEST_READ_ONLY_CHECK`](#dest_read_only_check) (judged on the configurations those reads
+return, and no flag skips them either), `PRIMARY_KEY_CHECK`,
 `KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the statement caps (computed from the source keys
 and, for archive and copy-only, the destination keys, which must be readable), the job's
 [startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. The JSON
