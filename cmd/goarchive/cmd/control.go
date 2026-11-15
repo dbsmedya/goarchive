@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -204,9 +206,9 @@ func (c controlClient) ask(path, line string) (string, error) {
 func (c controlClient) exchangeError(path string, err error) *controlError {
 	const unsure = "the request may or may not have been applied: read it back with -g or status-json"
 	if errors.Is(err, os.ErrDeadlineExceeded) {
-		return &controlError{exitTimeout, fmt.Errorf("no complete reply from the control socket at %s within %v; %s", path, c.limits.exchange, unsure)}
+		return &controlError{exitTimeout, fmt.Errorf("no complete reply from the control socket at %q within %v; %s", path, c.limits.exchange, unsure)}
 	}
-	return &controlError{exitTransport, fmt.Errorf("the exchange with the control socket at %s failed: %v; %s", path, err, unsure)}
+	return &controlError{exitTransport, fmt.Errorf("the exchange with the control socket at %q failed: %s; %s", path, oneLine(err.Error()), unsure)}
 }
 
 // isMissing is "nothing is at this path": the name is not there, or a part of the path is not a
@@ -215,14 +217,33 @@ func isMissing(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
+// oneLine renders free text, such as a library error that embeds the path, on one line: a control
+// character becomes its escape, so a path with a newline or a terminal escape in it cannot split or
+// repaint a diagnostic. Everything else is left as written.
+func oneLine(s string) string {
+	if strings.IndexFunc(s, unicode.IsControl) < 0 {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			q := strconv.Quote(string(r))
+			b.WriteString(q[1 : len(q)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 const noSocketMeaning = "the job is not running, control is not enabled for it, or the path is wrong"
 
 func noSocket(path string) *controlError {
-	return &controlError{exitNoSocket, fmt.Errorf("no control socket at %s: %s", path, noSocketMeaning)}
+	return &controlError{exitNoSocket, fmt.Errorf("no control socket at %q: %s", path, noSocketMeaning)}
 }
 
 func refusedEndpoint(path, found string) *controlError {
-	return &controlError{exitRefusedEndpoint, fmt.Errorf("refusing to connect to %s: %s", path, found)}
+	return &controlError{exitRefusedEndpoint, fmt.Errorf("refusing to connect to %q: %s", path, oneLine(found))}
 }
 
 // checkEndpoint looks at where the client is about to connect, without following links and without
@@ -240,7 +261,7 @@ func checkEndpoint(path string, euid int) error {
 		return refusedEndpoint(path, "its directory cannot be examined: "+err.Error())
 	}
 	if err := controlpath.JudgeDir(fi, euid); err != nil {
-		return refusedEndpoint(path, fmt.Sprintf("its directory %s %v", dir, err))
+		return refusedEndpoint(path, fmt.Sprintf("its directory %q %v", dir, err))
 	}
 	fi, err = os.Lstat(path)
 	switch {
@@ -266,15 +287,15 @@ func classifyConnect(path string, err error) *controlError {
 	case isMissing(err):
 		return noSocket(path)
 	case control.IsRefused(err):
-		return &controlError{exitNoSocket, fmt.Errorf("the control socket at %s is stale: nothing listens on it, so the run that made it has ended (killed?); %s", path, noSocketMeaning)}
+		return &controlError{exitNoSocket, fmt.Errorf("the control socket at %q is stale: nothing listens on it, so the run that made it has ended (killed?); %s", path, noSocketMeaning)}
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
-		return &controlError{exitTimeout, fmt.Errorf("no connection to the control socket at %s was made within the client's connect deadline", path)}
+		return &controlError{exitTimeout, fmt.Errorf("no connection to the control socket at %q was made within the client's connect deadline", path)}
 	case isQueueFull(err):
-		return &controlError{exitTransport, fmt.Errorf("the control socket at %s is busy: its connection queue is full; try again", path)}
+		return &controlError{exitTransport, fmt.Errorf("the control socket at %q is busy: its connection queue is full; try again", path)}
 	case errors.Is(err, fs.ErrPermission):
-		return &controlError{exitTransport, fmt.Errorf("permission denied on the control socket at %s: run goarchive control as the OS user that runs the job", path)}
+		return &controlError{exitTransport, fmt.Errorf("permission denied on the control socket at %q: run goarchive control as the OS user that runs the job", path)}
 	}
-	return &controlError{exitTransport, fmt.Errorf("could not connect to the control socket at %s: %v", path, err)}
+	return &controlError{exitTransport, fmt.Errorf("could not connect to the control socket at %q: %s", path, oneLine(err.Error()))}
 }
 
 // judgeReply judges the envelope of a reply and nothing inside the body: it does not know what a
@@ -284,7 +305,7 @@ func classifyConnect(path string, err error) *controlError {
 // boundary (spec §4.3), so exit 0 means a well-formed OK reply, not a complete snapshot.
 func judgeReply(path string, reply []byte, max int) (string, error) {
 	malformed := func(why string) error {
-		return &controlError{exitMalformedReply, fmt.Errorf("the reply from the control socket at %s is malformed: %s", path, why)}
+		return &controlError{exitMalformedReply, fmt.Errorf("the reply from the control socket at %q is malformed: %s", path, why)}
 	}
 	switch {
 	case len(reply) == 0:
