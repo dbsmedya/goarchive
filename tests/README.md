@@ -490,8 +490,13 @@ go test -p 1 -tags=integration ./internal/... ./cmd/... -count=1       # the int
   else waits" without starving the others, so the stage is run package by package, and the tests inside a
   package already run one after another (no integration test calls `t.Parallel`:
   `TestIntegrationTestsDoNotRunInParallel`). Run side by side, a test of one package failed registering its
-  job because a test of another had made `gr-dest` read-only. Each group test also begins by reading the group's base state, and fails, naming what differs, when a killed run left it
-  changed ([Servers the suites share](#servers-the-suites-share)).
+  job because a test of another had made `gr-dest` read-only. **The runners do this themselves for the group
+  topology:** `TOPOLOGY=group bash tests/scripts/run-tests.sh --integration-only` and `make test-integration
+  TOPOLOGY=group` add `-p 1`, and the plain route's `go test` is exactly what it was
+  (`TestTheRunnersGroupRouteRunsOnePackageAtATime`, `TestMakeTestIntegrationRunsTheGroupEstateOnePackageAtATime`). A
+  `go test` of your own on this estate needs the flag. Each group test also begins by reading the group's base
+  state, and fails, naming what differs, when a killed run left it changed
+  ([Servers the suites share](#servers-the-suites-share)).
 - **The image** is one per series, `GA_ESTATE_IMAGE` (the plain estate's variable too): `mysql:8.0`,
   `mysql:8.4` (the default), `mysql:9.7`, or `percona/percona-server` of the same series. A data directory
   belongs to its series: change the image with `make test-reset TOPOLOGY=group`. The setup loads the
