@@ -85,18 +85,44 @@ func startLive(t *testing.T, sock string, args ...string) *liveRun {
 	return r
 }
 
-// ask waits for the socket and makes one request.
-func (r *liveRun) ask(request string) string {
+// runEndGrace is how long a request that found its socket going waits for the run's exit code: the
+// socket is removed first, and the command returns after its closing entries.
+const runEndGrace = 10 * time.Second
+
+// exited reports whether the run's exit code has arrived, within the time given (none: now). It leaves
+// the code in r.done, so that finish still returns it.
+func (r *liveRun) exited(within time.Duration) bool {
+	if within <= 0 {
+		select {
+		case code := <-r.done:
+			r.done <- code
+			return true
+		default:
+			return false
+		}
+	}
+	select {
+	case code := <-r.done:
+		r.done <- code
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// tryAsk waits for the socket and makes one request, for a run that may end between two of them. It
+// reports ended, and no reply, when the run has: its socket is gone and its exit code has arrived; the
+// socket went between the look and the dial; or the server closed without a reply. The exit code is left
+// for finish. A socket that never comes, or a dial that fails while the run goes on, fails the test.
+func (r *liveRun) tryAsk(request string) (reply string, ended bool) {
 	r.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Lstat(r.sock); err == nil {
 			break
 		}
-		select {
-		case code := <-r.done:
-			r.t.Fatalf("the run ended (code %d) before its socket was served:\nstderr:\n%s", code, r.errb.String())
-		default:
+		if r.exited(0) {
+			return "", true
 		}
 		if time.Now().After(deadline) {
 			r.t.Fatalf("no socket at %s after 30 s:\n%s", r.sock, r.errb.String())
@@ -105,19 +131,40 @@ func (r *liveRun) ask(request string) string {
 	}
 	c, err := net.DialTimeout("unix", r.sock, 5*time.Second)
 	if err != nil {
+		// The run ends by removing its socket: it can go between the look and the dial.
+		if r.exited(runEndGrace) {
+			return "", true
+		}
 		r.t.Fatalf("dial %s: %v", r.sock, err)
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	_, _ = c.Write([]byte(request + "\n"))
 	b, _ := io.ReadAll(c)
-	return string(b)
+	if len(b) == 0 && r.exited(runEndGrace) {
+		return "", true
+	}
+	return string(b), false
 }
 
-// status is status-json parsed.
-func (r *liveRun) status() map[string]any {
+// ask waits for the socket and makes one request. A run that ends first fails the test: use tryAsk
+// where the run may finish between two requests.
+func (r *liveRun) ask(request string) string {
 	r.t.Helper()
-	reply := r.ask("status-json")
+	reply, ended := r.tryAsk(request)
+	if ended {
+		r.t.Fatalf("the run ended before %q was served:\nstderr:\n%s", request, r.errb.String())
+	}
+	return reply
+}
+
+// tryStatus is status-json parsed, for a run that may end between two requests (tryAsk).
+func (r *liveRun) tryStatus() (st map[string]any, ended bool) {
+	r.t.Helper()
+	reply, ended := r.tryAsk("status-json")
+	if ended {
+		return nil, true
+	}
 	_, body, ok := strings.Cut(reply, "OK\n")
 	if !ok {
 		r.t.Fatalf("status-json = %q", reply)
@@ -126,7 +173,17 @@ func (r *liveRun) status() map[string]any {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &m); err != nil {
 		r.t.Fatalf("status-json %q: %v", body, err)
 	}
-	return m
+	return m, false
+}
+
+// status is status-json parsed. A run that ends first fails the test.
+func (r *liveRun) status() map[string]any {
+	r.t.Helper()
+	st, ended := r.tryStatus()
+	if ended {
+		r.t.Fatalf("the run ended before status-json was served:\nstderr:\n%s", r.errb.String())
+	}
+	return st
 }
 
 // waitFor polls status-json until cond holds, and fails the test with what if the run ends or the time
@@ -648,14 +705,20 @@ func TestMySQLControlToleranceRaisedSocket(t *testing.T) {
 		t.Fatalf("a raise straight to 100 = %q, want a step refusal naming 2", reply)
 	}
 
+	// The run may finish between two requests: the raise that lets the last probe pass ends the hold, and
+	// the three roots take about 40 ms (the loop sleeps 20 ms after a refusal), so the run's end is the
+	// hold's end too, as much as a state that is no longer held.
 	raises := 0
 	for current := 1; ; {
-		st := r.status()
-		if st["state"] != "held" {
+		st, ended := r.tryStatus()
+		if ended || st["state"] != "held" {
 			break
 		}
 		next := current + 1
-		reply := r.ask("seconds_behind_source_within=" + strconv.Itoa(next))
+		reply, ended := r.tryAsk("seconds_behind_source_within=" + strconv.Itoa(next))
+		if ended {
+			break
+		}
 		switch {
 		case strings.HasPrefix(reply, "OK\n"):
 			raises, current = raises+1, next
