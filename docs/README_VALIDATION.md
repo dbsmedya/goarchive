@@ -73,6 +73,7 @@ type.
 | `SOURCE_READ_ONLY_CHECK` | ✅ | ✅ | ❌ |
 | `DEST_READ_ONLY_CHECK` | ✅ | ✅ | ✅ |
 | `SOURCE_GROUP_VIEW_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
+| `REPLICATION_TYPE_CHECK` | ✅ (replication enabled) | ✅ (replication enabled) | ❌ |
 | `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ |
 | `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ |
 | `KEY_TYPE_UNSUPPORTED` | ✅ | ✅ | ✅ |
@@ -539,6 +540,32 @@ GoArchive reads the view to tell whether the source is a running member of the g
 directly to the account (GRANT SELECT ON performance_schema.replication_group_members TO <user>)
 ```
 
+### `REPLICATION_TYPE_CHECK`
+
+A server listed in `replication.servers` with `type: group` must be configured for Group Replication: its
+plugin `ACTIVE` with a group name, and the same group as the source's when the source is configured for one. The
+check reads each group server's state through the connection opened to it, which needs no privilege. It runs for
+an archive and a purge with `replication.enabled: true`: a copy-only job deletes nothing and never asks the gate,
+and with replication off there is no gate. It is a policy check, so
+`--skip-dangerously-validate-preflight-allow-experimental` skips it. It follows the group facts, whose source group
+it compares with.
+
+The refusal names every wrong server, the type written and what was found:
+
+```
+REPLICATION_TYPE_CHECK: replication.servers[1] gr9.internal:3306 is listed with type: group, but the Group
+Replication plugin is not installed on it. A server listed with type: group must be configured for the source's
+group; an asynchronous replica is listed without a type, or with type: async.
+```
+
+The other findings are: the plugin is `INACTIVE` or `DISABLED` (or another state) on it, it is `ACTIVE` with no group
+name set, or it is configured for another group than the source's (the message names both).
+
+A server whose state cannot be read, because its connection failed after it was opened or the read errored, is not
+judged: one `WARNING: REPLICATION_TYPE_CHECK: …` line says so (on stderr like a run banner, and in the log) and the run
+goes on, the replication gate deciding about it. A server that is down when the command starts fails the connection
+phase, for every monitored server, before preflight.
+
 ### `SOURCE_SELECT_PERMISSION_CHECK`
 
 The source account needs `SELECT` on every job table. Runs for every job type.
@@ -631,6 +658,12 @@ Logged, never fatal:
   a charset difference under sha256 verification, column names that differ only in ASCII
   letter case, and a column order that differs from the source's
   ([Schema compatibility rules](#schema-compatibility-rules)).
+- **A Group Replication source that no group server watches**, for archive and purge jobs with
+  `replication.enabled: true`, under `--skip-dangerously-validate-preflight-allow-experimental` too: one
+  `WARNING: replication: the source is a Group Replication member and no server of type group is monitored: the
+  group's backlog does not hold this job`, when the source is an `ONLINE` member and no `type: group` server is
+  listed. It is a warning and not a refusal, because gating only an asynchronous replica is a legitimate
+  choice. It prints on stderr like a run banner.
 - **A JSON column under `verification: count` or `none`**, for archive and copy-only jobs, under
   `--skip-dangerously-validate-preflight-allow-experimental` too: one `WARNING:` naming every JSON
   column of the job's source tables, and every destination column that is JSON where its same-named
@@ -649,7 +682,8 @@ Logged, never fatal:
   ```
 
 Preflight logs them at warning level, under every command, so `logging.level: error` hides them. The
-JSON warning is the exception: like a run banner, it prints on stderr whatever the log level.
+JSON warning and the two replication warnings (the unmonitored group and an unreadable group server) are the
+exception: like a run banner, they print on stderr whatever the log level.
 
 ---
 

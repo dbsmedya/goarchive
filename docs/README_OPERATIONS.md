@@ -109,6 +109,12 @@ archive and purge jobs; `verification: count`, `verification: none` and
 entry on stderr, in the log's format; otherwise it is a plain `WARNING:` line. `dry-run` and
 `validate` print them too.
 
+An archive or purge job whose source is an `ONLINE` Group Replication member, with `replication.enabled: true`
+and no server of `type: group` listed, gets one more, also under the skip flag:
+`WARNING: replication: the source is a Group Replication member and no server of type group is monitored: the
+group's backlog does not hold this job`. It is a banner and not a refusal, because gating only an asynchronous
+replica is a legitimate choice. A job with replication off, or a source that is no member, gets none.
+
 A replication lag tolerance raised above its configured value over the
 [control socket](#the-tolerances-step-rule-and-the-warning) is reported the same way, each time it is
 raised, while the run is going: one `WARNING:` line on stderr and a log entry, whatever the log level.
@@ -478,6 +484,13 @@ cannot be read, a privilege error included: an account lacking
 [`REPLICATION CLIENT`](README_PERMISSIONS.md#monitored-replicas-optional) holds the job rather
 than being skipped. By default **every channel counts**; `channels` narrows that
 ([channel selection](README_CONFIGURATION.md#channel-selection)).
+
+A server listed without a type is an asynchronous replica and needs a replication channel. A Group Replication
+member has none of its own that counts, so listed that way it holds the job with `REPLICATION_CONFIGURED`, whose
+detail ends with the hint that a Group Replication member is listed with `type: group`. To watch a member, list it
+with [`type: group`](README_CONFIGURATION.md#servers) and the two group bounds. The gate does not probe such a
+server yet: a run with one listed is refused before it starts, and `validate` and `dry-run` check the listing
+([`REPLICATION_TYPE_CHECK`](README_VALIDATION.md#replication_type_check)).
 
 ### What you see while it holds
 

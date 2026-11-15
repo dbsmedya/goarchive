@@ -366,7 +366,104 @@ func TestValidateReplication(t *testing.T) {
 			name:    "unsupported replication type",
 			mutate:  func(c *Config) { c.Replication.Servers[0].Type = "galera" },
 			field:   "replication.servers[0].type",
-			message: `unsupported replication type "galera" for server r1:3306; supported: async`,
+			message: `unsupported replication type "galera" for server r1:3306; supported: async, group`,
+		},
+		{
+			name:   "type async is valid",
+			mutate: func(c *Config) { c.Replication.Servers[0].Type = "async" },
+		},
+		{
+			name: "type group is valid with both bounds",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(1000), intp(1000)
+			},
+		},
+		{
+			name: "type group with channels",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.Servers[0].Channels = []string{""}
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(1000), intp(1000)
+			},
+			field:   "replication.servers[0].channels",
+			message: "server r1:3306 is type group and takes no channels: channels select asynchronous replication channels, and a group has none to select",
+		},
+		{
+			name: "type group with an empty channels list is valid",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.Servers[0].Channels = []string{}
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(1000), intp(1000)
+			},
+		},
+		{
+			name: "a group server without the applier bound",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupCertifierQueueWithin = intp(1000)
+			},
+			field:   "replication.group_applier_queue_within",
+			message: "group_applier_queue_within is required when a server is type group",
+		},
+		{
+			name: "a group server without the certifier bound",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupApplierQueueWithin = intp(1000)
+			},
+			field:   "replication.group_certifier_queue_within",
+			message: "group_certifier_queue_within is required when a server is type group",
+		},
+		{
+			name: "zero bounds are valid: no queue is tolerated",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(0), intp(0)
+			},
+		},
+		{
+			name: "a negative applier bound",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(-1), intp(1000)
+			},
+			field:   "replication.group_applier_queue_within",
+			message: "group_applier_queue_within cannot be negative",
+		},
+		{
+			name: "a negative certifier bound",
+			mutate: func(c *Config) {
+				c.Replication.Servers[0].Type = "group"
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = intp(1000), intp(-5)
+			},
+			field:   "replication.group_certifier_queue_within",
+			message: "group_certifier_queue_within cannot be negative",
+		},
+		{
+			name: "no bound is needed without a group server",
+			mutate: func(c *Config) {
+				c.Replication.GroupApplierQueueWithin, c.Replication.GroupCertifierQueueWithin = nil, nil
+			},
+		},
+		{
+			name:   "a bound set without a group server is valid",
+			mutate: func(c *Config) { c.Replication.GroupApplierQueueWithin = intp(10) },
+		},
+		{
+			name:    "a bound set without a group server is still validated",
+			mutate:  func(c *Config) { c.Replication.GroupCertifierQueueWithin = intp(-1) },
+			field:   "replication.group_certifier_queue_within",
+			message: "group_certifier_queue_within cannot be negative",
+		},
+		{
+			name: "the bounds are required for a group server of a disabled block too",
+			mutate: func(c *Config) {
+				c.Replication.Enabled = false
+				c.Replication.Servers[0].Type = "group"
+			},
+			field:   "replication.group_applier_queue_within",
+			message: "group_applier_queue_within is required when a server is type group",
 		},
 		{
 			name:    "negative tolerance",
@@ -480,3 +577,6 @@ func TestValidateReplication(t *testing.T) {
 		})
 	}
 }
+
+// intp is a pointer to n: the two group bounds distinguish absent from 0.
+func intp(n int) *int { return &n }

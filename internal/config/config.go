@@ -37,16 +37,21 @@ type DatabaseConfig struct {
 // ReplicationConfig configures the replication gate: the fleet of replicas to
 // monitor and the tolerance, cadence and cache lifetime applied to them.
 type ReplicationConfig struct {
-	Enabled                   bool                      `yaml:"enabled"`
-	SecondsBehindSourceWithin int                       `yaml:"seconds_behind_source_within"`
+	Enabled                   bool `yaml:"enabled"`
+	SecondsBehindSourceWithin int  `yaml:"seconds_behind_source_within"`
+	// GroupApplierQueueWithin and GroupCertifierQueueWithin bound the transactions a Group Replication
+	// member may have queued: they are required, with no default, when a server of type group is listed
+	// (spec §4.1). They are pointers because an absent bound is not the bound 0, which tolerates no queue.
+	GroupApplierQueueWithin   *int                      `yaml:"group_applier_queue_within"`
+	GroupCertifierQueueWithin *int                      `yaml:"group_certifier_queue_within"`
 	CheckInterval             int                       `yaml:"check_interval"`
 	CacheTTL                  int                       `yaml:"cache_ttl"`
 	Servers                   []ReplicationServerConfig `yaml:"servers"`
 }
 
-// ReplicationServerConfig is one monitored replica. Channels selects which
-// replication channels are gated: an empty slice means all channels, while a
-// slice containing "" means the default (unnamed) channel only.
+// ReplicationServerConfig is one monitored server. Type is async (the default) or group. Channels selects which
+// replication channels of an asynchronous server are gated: an empty slice means all channels, while a
+// slice containing "" means the default (unnamed) channel only. A group server takes no channels.
 type ReplicationServerConfig struct {
 	Host     string   `yaml:"host"`
 	Port     int      `yaml:"port"`

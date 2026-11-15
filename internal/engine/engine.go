@@ -73,6 +73,11 @@ type Config struct {
 
 	// Lag is the replication lag gate; nil means none.
 	Lag LagGate
+	// Replication is the job's replication block and ReplicaPools the pools opened on its servers,
+	// index-paired with its servers (database.Manager.Replicas): preflight's REPLICATION_TYPE_CHECK and
+	// the banner of a member source that no group server watches read them (GR C5). The gate is Lag.
+	Replication  config.ReplicationConfig
+	ReplicaPools []*sql.DB
 	// Stop closes on the first signal: the run stops at the next batch boundary, or at once
 	// during a replication hold (LAG-1).
 	Stop <-chan struct{}
@@ -283,7 +288,8 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
 		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Processing: cfg.Processing, Logger: cfg.Logger,
-		Banner: cfg.Banner,
+		Banner:      cfg.Banner,
+		Replication: cfg.Replication, ReplicaPools: cfg.ReplicaPools,
 	})
 	if err != nil {
 		return src, dst, nil, err

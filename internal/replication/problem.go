@@ -22,6 +22,11 @@ const checkChannelNotFound = "CHANNEL_NOT_FOUND"
 // operator-facing text, so it is never an invisible empty string.
 const defaultChannelLabel = "<default>"
 
+// groupTypeHint ends the detail of REPLICATION_CONFIGURED: a member's own channels are not asynchronous
+// channels, so a member listed as an asynchronous replica holds the job with this finding, and the way out
+// is its type.
+const groupTypeHint = "Hint: a Group Replication member is listed with `type: group`"
+
 // problem is one reason the replication gate holds the job. It is goarchive's
 // own type: library findings convert into it losslessly, and goarchive-local
 // causes such as a missing channel use it too.
@@ -126,6 +131,10 @@ func renderProblem(p problem, tolerance int64) string {
 		if facts, ok := p.facts.(channelNotFoundFacts); ok {
 			return renderNotFound(facts)
 		}
+	case dbsrepl.IDReplicationConfigured:
+		// The hint is unconditional (spec §4.3): an asynchronous server is probed with ReplicaStatus alone,
+		// so the gate cannot tell whether it is a Group Replication member, and no read is added to find out.
+		return sanitizeLine(p.check+": "+p.message) + " " + groupTypeHint
 	}
 
 	return sanitizeLine(p.check + ": " + p.message)

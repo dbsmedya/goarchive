@@ -74,6 +74,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		Processing:    spec.EffectiveProcessing(doc.Shared.Processing),
 		Verification:  verification,
 		ForceTriggers: o.forceTriggers, SkipPolicy: o.skipPreflight,
+		Replication: doc.Shared.Replication, ReplicaPools: mgr.Replicas,
 		Logger: log,
 		Banner: func(b string) { emitBanners(log, c.ErrOrStderr(), []string{b}) },
 	})
