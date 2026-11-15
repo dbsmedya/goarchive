@@ -49,18 +49,71 @@ func ownRow(members []dbsrepl.GroupMember) *dbsrepl.GroupMember {
 	return nil
 }
 
+// onlineOwn reports whether the view's row of the queried server is ONLINE. An anonymous row (the
+// one a server reports before the plugin ever started) is never the own row.
+func onlineOwn(members []dbsrepl.GroupMember) bool {
+	own := ownRow(members)
+	return own != nil && own.MemberID != "" && own.State == "ONLINE"
+}
+
 // Identity is the source's data identity (spec §4.2): the group name only when the plugin is
 // ACTIVE, a group name is set and the server's own row in its view is ONLINE; the server's uuid
 // in every other case. A server with a name that is not running in a group logs under its own
-// uuid, so recording the name for it would make the guard on its replicas miss its jobs. An
-// anonymous row (the one a server reports before the plugin ever started) is never the own row.
+// uuid, so recording the name for it would make the guard on its replicas miss its jobs.
 func Identity(g dbsrepl.GroupReplication, members []dbsrepl.GroupMember, serverUUID string) string {
-	if configured(g) {
-		if own := ownRow(members); own != nil && own.MemberID != "" && own.State == "ONLINE" {
-			return g.GroupName
-		}
+	if configured(g) && onlineOwn(members) {
+		return g.GroupName
 	}
 	return serverUUID
+}
+
+// Membership is how a side was seen at the start, for the words of an error about it (spec §4.4):
+// a known limit proves that the plugin is ACTIVE, not that the server is a running member.
+type Membership int
+
+const (
+	_ Membership = iota // the zero value: no limit is known, nothing is said
+	// MemberOnline is a source whose own row in its view was ONLINE.
+	MemberOnline
+	// MemberNotRunning is a source whose plugin is ACTIVE and whose own row was not ONLINE.
+	MemberNotRunning
+	// MemberUnread is a destination: its view is not read, so its membership is not claimed.
+	MemberUnread
+)
+
+// SizeLimit is one side's group_replication_transaction_size_limit as the start read it, with what
+// is known of the side's membership. Known is false for a server that did not report it (no plugin,
+// or not ACTIVE), and the zero SizeLimit then says nothing: a commit error on that side is left as
+// MySQL sent it. A known Bytes of 0 is the server's own "no limit" for that variable.
+type SizeLimit struct {
+	Known  bool
+	Bytes  uint64
+	Group  string // the configured group name, "" when none is set
+	Member Membership
+}
+
+// SourceSizeLimit is the source's limit and membership at the start.
+func (g Group) SourceSizeLimit() SizeLimit {
+	if !g.Source.TransactionSizeLimitKnown {
+		return SizeLimit{}
+	}
+	l := SizeLimit{Known: true, Bytes: g.Source.TransactionSizeLimit, Member: MemberNotRunning}
+	if configured(g.Source) {
+		l.Group = g.Source.GroupName
+		if onlineOwn(g.Members) {
+			l.Member = MemberOnline
+		}
+	}
+	return l
+}
+
+// DestinationSizeLimit is the destination's limit at the start. Its view is not read, so its
+// membership is MemberUnread.
+func (g Group) DestinationSizeLimit() SizeLimit {
+	if !g.Destination.TransactionSizeLimitKnown {
+		return SizeLimit{}
+	}
+	return SizeLimit{Known: true, Bytes: g.Destination.TransactionSizeLimit, Group: g.Destination.GroupName, Member: MemberUnread}
 }
 
 // readGroupFacts is preflight's first stage (spec §4.2, In which order): the source's
@@ -120,7 +173,7 @@ func sourceLine(g Group) string {
 	}
 	own := ownRow(g.Members)
 	limit := limitText(g.Source)
-	if own != nil && own.MemberID != "" && own.State == "ONLINE" {
+	if onlineOwn(g.Members) {
 		line := "member of group " + g.Source.GroupName + ", ONLINE"
 		if own.Role != "" {
 			line += ", " + own.Role

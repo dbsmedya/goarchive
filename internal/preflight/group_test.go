@@ -360,3 +360,47 @@ func TestTheGroupReport(t *testing.T) {
 		}
 	})
 }
+
+// TestSizeLimits: what a failed commit's message may say of a side's transaction size limit, from the
+// facts read at the start (spec §4.4, GR C3). A known limit proves the plugin is ACTIVE, not that the
+// server is a running member, so the membership is told apart: an ONLINE member, a server whose plugin
+// is active and that was not a running member, and a destination, whose view is not read.
+func TestSizeLimits(t *testing.T) {
+	active := dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true}
+	own := func(state string) []dbsrepl.GroupMember {
+		return []dbsrepl.GroupMember{{MemberID: sourceUUID, State: state, Role: "PRIMARY", Self: true}}
+	}
+	for _, tc := range []struct {
+		name string
+		g    Group
+		src  SizeLimit
+		dst  SizeLimit
+	}{
+		{"a plain pair", Group{}, SizeLimit{}, SizeLimit{}},
+		{"an ONLINE member and a plain destination", Group{Source: active, Members: own("ONLINE")},
+			SizeLimit{Known: true, Bytes: 150000000, Group: groupName, Member: MemberOnline}, SizeLimit{}},
+		{"a member that is RECOVERING", Group{Source: active, Members: own("RECOVERING")},
+			SizeLimit{Known: true, Bytes: 150000000, Group: groupName, Member: MemberNotRunning}, SizeLimit{}},
+		{"a name and no row of its own", Group{Source: active},
+			SizeLimit{Known: true, Bytes: 150000000, Group: groupName, Member: MemberNotRunning}, SizeLimit{}},
+		{"an active plugin with no name", Group{Source: dbsrepl.GroupReplication{PluginStatus: "ACTIVE", TransactionSizeLimit: 9, TransactionSizeLimitKnown: true}},
+			SizeLimit{Known: true, Bytes: 9, Member: MemberNotRunning}, SizeLimit{}},
+		{"a limit of 0 is known", Group{Source: dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimitKnown: true}, Members: own("ONLINE")},
+			SizeLimit{Known: true, Bytes: 0, Group: groupName, Member: MemberOnline}, SizeLimit{}},
+		{"a limit the server did not report", Group{Source: dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName}, Members: own("ONLINE")},
+			SizeLimit{}, SizeLimit{}},
+		{"a member destination", Group{Destination: active},
+			SizeLimit{}, SizeLimit{Known: true, Bytes: 150000000, Group: groupName, Member: MemberUnread}},
+		{"a destination with a disabled plugin", Group{Destination: dbsrepl.GroupReplication{PluginStatus: "DISABLED"}},
+			SizeLimit{}, SizeLimit{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.g.SourceSizeLimit(); got != tc.src {
+				t.Errorf("SourceSizeLimit = %+v, want %+v", got, tc.src)
+			}
+			if got := tc.g.DestinationSizeLimit(); got != tc.dst {
+				t.Errorf("DestinationSizeLimit = %+v, want %+v", got, tc.dst)
+			}
+		})
+	}
+}

@@ -7,6 +7,8 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/key"
+	"github.com/dbsmedya/goarchive/v3/internal/preflight"
+	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
 // KeySetError fails a key-addressed statement whose result does not match the keys it was
@@ -245,3 +247,134 @@ func formatKey(k key.Key) string {
 	}
 	return "(" + strings.Join(parts, ", ") + ")"
 }
+
+// Commit names which of a run's commits failed.
+type Commit int
+
+const (
+	// CommitDelete is one delete chunk on the source.
+	CommitDelete Commit = iota
+	// CommitCopy is a batch's copy transaction on the destination: the rows and their log entries.
+	CommitCopy
+	// CommitLogBefore is a purge's log write on the destination before any delete.
+	CommitLogBefore
+	// CommitLogAfter is the log write that completes a batch's roots after their deletes.
+	CommitLogAfter
+)
+
+// GroupCommitError is a commit that MySQL refused with error 3100, the replication hook's failure, on a
+// server whose Group Replication transaction size limit was known when the run started (GRT-1, spec
+// §4.4). Error 3100 does not say why: a transaction over group_replication_transaction_size_limit is one
+// reason, and a member that stops or leaves the group during the commit is another (M2b). So the message
+// gives the limit as the start read it, says that the member's error log holds the reason, and offers the
+// setting that sizes the transaction. The values are the start's, and the message says so: nothing is
+// read at the failure. The original error stays in the chain.
+type GroupCommitError struct {
+	Side    string // "source" or "destination"
+	Commit  Commit
+	What    string              // the statement or phase, as the message leads with it: "delete from order_items"
+	Limit   preflight.SizeLimit // the side's limit and membership at the start
+	Setting string              // the setting that sizes this transaction: batch_delete_size or batch_size
+	Value   int                 // its value now
+	Roots   tracking.Status     // what the batch's roots are logged as after the failure (delete chunks and the log write after them)
+	Err     error               // the commit's error, which holds the *mysql.MySQLError
+}
+
+func (e *GroupCommitError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "engine: %s: the commit failed with MySQL error 3100 (replication hook 'before_commit') on %s. ", e.What, e.where())
+	log := "the server's"
+	if e.Limit.Member == preflight.MemberOnline {
+		log = "the member's"
+	}
+	if e.Limit.Bytes == 0 {
+		// A known 0 is the server's own "no limit" for this variable, said as history: the limit may have changed
+		// since, and nothing is ruled out, so no remedy is offered from a batch size.
+		fmt.Fprintf(&b, "group_replication_transaction_size_limit imposed no limit (0) on this server when the run started. "+
+			"The reason for the failure is in %s error log. ", log)
+	} else {
+		fmt.Fprintf(&b, "Group Replication refuses a transaction larger than group_replication_transaction_size_limit, "+
+			"which was %d bytes on this server when the run started. MySQL's error does not say whether that was the reason; "+
+			"%s error log does. If it was, lower %s (now %d) and rerun. ", e.Limit.Bytes, log, e.Setting, e.Value)
+	}
+	b.WriteString(e.lost())
+	return b.String()
+}
+
+func (e *GroupCommitError) where() string { return groupWhere(e.Limit) }
+
+func (e *GroupCommitError) lost() string { return groupLost(e.Commit, e.Roots) }
+
+func (e *GroupCommitError) Unwrap() error { return e.Err }
+
+// groupWhere is the phrase after "on" in the message of either error of the limit: what the start observed
+// of the side, and no more. A known limit proves the plugin is active, not that the server is a running
+// member, and a destination's view is not read.
+func groupWhere(l preflight.SizeLimit) string {
+	switch l.Member {
+	case preflight.MemberOnline:
+		return "the source, which was an ONLINE member of Group Replication group " + l.Group + " when the run started"
+	case preflight.MemberNotRunning:
+		return "the source, where the Group Replication plugin is active but which was not a running member when the run started"
+	}
+	if l.Group != "" {
+		return "the destination, where the Group Replication plugin is active (group " + l.Group + ")"
+	}
+	return "the destination, where the Group Replication plugin is active"
+}
+
+// groupLost says what the failed transaction left, which is today's outcome of each (spec §4.4): the engine
+// rolls it back as it does after any error, and nothing of it commits.
+func groupLost(c Commit, roots tracking.Status) string {
+	switch c {
+	case CommitDelete:
+		return "Nothing is lost: the roots stay logged as " + roots.String() + ", and the rerun's recovery finishes them."
+	case CommitCopy:
+		return "Nothing is lost: the batch was rolled back, so nothing of it was copied, logged or deleted, and the rerun starts it again."
+	case CommitLogBefore:
+		return "Nothing is lost: nothing of the batch was logged or deleted, and the rerun starts it again."
+	}
+	return "Nothing is lost: the batch's rows are deleted and its roots stay logged as " + roots.String() + ", and the rerun's recovery completes them."
+}
+
+// GroupWriteSetError is a statement that MySQL refused with error 3231 in one of the four transactions of
+// fact 12's three sites, on a server whose Group Replication transaction size limit was known when the run
+// started (GRT-1, spec §4.4, fact 25). The same variable bounds a transaction's write set, which grows with
+// the number of rows it changes and their keys and not with their size, and MySQL refuses the statement that
+// takes the write set over it. Unlike 3100, whose cause the error does not name, 3231 says why, so the
+// message states the cause and its remedy is unconditional: a smaller transaction has a smaller write set
+// whatever the limit is. A known limit of 0 keeps the remedy: the cause is known, only the value may be out
+// of date. It carries what GroupCommitError carries, and the original error stays in the chain. The
+// transaction is rolled back by the engine, as after any statement error: MySQL leaves it open, and a COMMIT
+// would fail with 3100, but no run commits after a failed statement.
+type GroupWriteSetError struct {
+	Side    string // "source" or "destination"
+	Commit  Commit // the transaction the statement was in
+	What    string // the transaction, as the message leads with it: "delete from order_items"
+	Limit   preflight.SizeLimit
+	Setting string          // batch_delete_size or batch_size
+	Value   int             // its value now
+	Roots   tracking.Status // what the batch's roots are logged as after the failure
+	Err     error           // the statement's error, which holds the *mysql.MySQLError
+}
+
+func (e *GroupWriteSetError) Error() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "engine: %s: the statement failed with MySQL error 3231 on %s. MySQL refused it because the transaction's write set exceeded a limit. ",
+		e.What, groupWhere(e.Limit))
+	if e.Limit.Bytes == 0 {
+		// A known 0 is the server's own "no limit" for the variable, said as history: the cause is known, so the
+		// remedy stays; only the value may be out of date.
+		b.WriteString("Group Replication bounds a transaction's write set by group_replication_transaction_size_limit, " +
+			"which imposed no limit (0) on this server when the run started and has not been read since. ")
+	} else {
+		fmt.Fprintf(&b, "Group Replication bounds a transaction's write set by group_replication_transaction_size_limit, "+
+			"which was %d bytes on this server when the run started. "+
+			"The write set grows with the number of rows the transaction changes and with their keys, not with the size of the rows. ", e.Limit.Bytes)
+	}
+	fmt.Fprintf(&b, "Lower %s (now %d) and rerun. ", e.Setting, e.Value)
+	b.WriteString(groupLost(e.Commit, e.Roots))
+	return b.String()
+}
+
+func (e *GroupWriteSetError) Unwrap() error { return e.Err }

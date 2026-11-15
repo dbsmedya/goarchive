@@ -30,7 +30,11 @@ const (
 // them and logs the roots with status st, all in one destination transaction (spec §6.3,
 // §7.4). It commits only when every step passed; otherwise nothing of the batch exists in
 // the destination or the log.
-func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status) error {
+func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status) (retErr error) {
+	// A statement of the copy transaction (a copy INSERT, or the log INSERT of the batch's roots) that Group
+	// Replication refused with 3231 ends it as a GroupWriteSetError, whatever wrapper the error carries. The
+	// transaction is rolled back by the deferred Rollback and never committed after a failed statement.
+	defer func() { retErr = r.endedBy(retErr, CommitCopy, "copy transaction", st) }()
 	conn, err := r.cfg.Destination.Conn(ctx)
 	if err != nil {
 		return err
@@ -85,6 +89,9 @@ func (r *run) copy(ctx context.Context, src queryer, t *tree, st tracking.Status
 		return r.logInsertError(err)
 	}
 	if err := r.commit(ctx, tx, atCopyWritten); err != nil {
+		if g := r.groupCommitError(err, CommitCopy, "copy transaction", st); g != nil {
+			return g
+		}
 		return fmt.Errorf("engine: commit the destination transaction: %w", err)
 	}
 	for table, n := range copied {
