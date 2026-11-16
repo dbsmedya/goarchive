@@ -211,7 +211,7 @@ The locks live on one server. Every connection must reach one backend for the wh
 a read/write-splitting proxy could send the locks to a replica while the deletes go to the
 primary. A copy-only job reading a replica and an archive writing its primary are not
 serialized; the [run contract](#no-ddl-and-no-concurrent-writes-during-a-run-contract) covers
-that case. A multi-primary Group Replication group is refused: [`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check).
+that case.
 
 #### Partial deletes after an interruption
 
