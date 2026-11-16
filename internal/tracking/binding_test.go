@@ -84,6 +84,9 @@ func TestBindingErrorMessage(t *testing.T) {
 		"restore the original config or source and run once",
 		`"Abandoning logged roots"`,
 		`"Re-binding a job after a failover"`,
+		// the member's own uuid or another member's, now a member of a group (spec §4.2, GR C9)
+		"now a member of a Group Replication group",
+		"the group's name",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message lacks %q:\n%s", want, msg)

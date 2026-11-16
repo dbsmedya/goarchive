@@ -37,9 +37,9 @@ destination database):
 |--------|-------------|-------|
 | `archiver_job` | one table, one row per job | The registry: type, root table, binding, status, heartbeat |
 | `archiver_job_log_<id>` | one table per job | Each logged root key and its status |
-| `goarchive_meta` | one table, one row | The tracking schema's label, `3.0` |
+| `goarchive_meta` | one table, one row | The tracking schema's label, `3.1` |
 
-The first run in a new schema creates the tables and the `3.0` label under the schema lock
+The first run in a new schema creates the tables and the `3.1` label under the schema lock
 ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)), so two runs
 starting together in one new schema do not both create it: the second waits, up to 60
 seconds, and finds it ready.
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS archiver_job (
 | `root_table` | The root table; fixed for the job's life |
 | `job_type` | `archive`, `purge` or `copy-only`; fixed for the job's life |
 | `job_status` | `0` idle, `1` running, `3` failed (the last run ended in an error) |
-| `source_server_uuid`, `source_database` | The source the job's log rows came from |
+| `source_server_uuid`, `source_database` | The source the job's log rows came from. `source_server_uuid` is the source's **data identity**: the Group Replication group's name when the run's source was an `ONLINE` member of a group, the server's `server_uuid` otherwise (the column keeps its name) |
 | `destination_database` | The database the copies went to; it can differ from `job_schema` |
 | `destination_server_uuid` | Reserved for binding the destination server; not written by this release (`''`) |
 | `config_fingerprint` | The relations (parents, tables, column pairs) and the `where` text, as JSON |
@@ -153,14 +153,30 @@ bookkeeping integrity checks: no flag skips them.
 
    | Job type | Compared |
    |----------|----------|
-   | archive | source server and database, relations, destination database |
-   | purge | source server and database, relations, `where` |
-   | copy-only | source server and database, relations, destination database |
+   | archive | source identity and database, relations, destination database |
+   | purge | source identity and database, relations, `where` |
+   | copy-only | source identity and database, relations, destination database |
 
-   The refusal lists three ways out: restore the original config or source and run once; or
-   [abandon the roots](#abandoning-logged-roots); or, after a source failover,
-   [re-bind the job](#re-binding-a-job-after-a-failover). With no pending work, the stored
-   binding is overwritten with the current one, so changes between clean runs are free.
+   The source identity is the stored `source_server_uuid` against the run's data identity, and
+   equal means the same source, with no exception:
+
+   | Stored | The run's source | |
+   |---|---|---|
+   | the group's name | any `ONLINE` member of that group | the same source: a failover within the group needs no re-bind |
+   | a server's uuid | that server, standalone | the same source |
+   | a server's uuid | that server as an `ONLINE` member (it joined a group, or a 3.0 run wrote the row) | a different source |
+   | another member's uuid (a 3.0 row) | an `ONLINE` member | a different source: [Moving from 3.0](README_UPGRADING_3_1.md#moving-from-30) |
+   | the group's name | a server outside the group, or a member that is not `ONLINE` | a different source |
+
+   A different source is refused while the job has pending work, and the stored value is
+   overwritten without any. An archive or a purge on a read-only source is refused by
+   `SOURCE_READ_ONLY_CHECK` before the binding is judged.
+
+   The refusal lists the ways out: restore the original config or source and run once; or
+   [abandon the roots](#abandoning-logged-roots); or, after a source failover to a server holding
+   the same data under another identity, [re-bind the job](#re-binding-a-job-after-a-failover).
+   With no pending work, the stored binding is overwritten with the current one, so changes
+   between clean runs are free.
 
 **Registration** is two steps, because the log is named by the job's id: the job row is written
 with an empty `root_key_columns`, then the log is created, and only then are the key's names
@@ -174,7 +190,7 @@ drops that table (after confirming no job uses it) or restores `archiver_job`.
 ## Lifecycle
 
 1. **First run in the schema** — `goarchive_meta` and `archiver_job` are created under the
-   schema lock; a fresh schema is labelled `3.0` ([version marker](#tracking-schema-version-marker)).
+   schema lock; a fresh schema is labelled `3.1` ([version marker](#tracking-schema-version-marker)).
 2. **First run of a job** — the job is registered and its log created.
 3. **During a run** — `job_status = 1`, the heartbeat refreshes, log rows are written per batch.
 4. **The end of a run** — `job_status` returns to `0`, or `3` after an error. A crash or kill
@@ -296,15 +312,23 @@ DELETE FROM goarchive.archiver_job_log_42 WHERE ga_status = 2;   -- copy-only: c
 
 ## Re-binding a job after a failover
 
-After a source failover, the promoted server holds the same data under a new `server_uuid`, and
-the binding check refuses a job with pending work. Once you have confirmed it is the same data,
-point the job at the new server, then rerun it to finish the logged work:
+**A failover within a Group Replication group needs no re-bind**: a job run on a member is bound to
+the group's name, and the rerun on the new primary meets the same value
+([Group Replication](README_GROUP_REPLICATION.md)). The re-bind is for a source that is not a member,
+and for a row recorded on a server's uuid that a group now holds.
+
+After a source failover to a server that holds the same data under another identity (a promoted
+replica, a member that joined the group by clone), the binding check refuses a job with pending
+work. Once you have confirmed it is the same data, point the job at the new source, then rerun it
+to finish the logged work:
 
 ```sql
--- On the new source:
+-- On the new source, when it is not a member of a group: its uuid
 SELECT @@GLOBAL.server_uuid;
+-- when it is an ONLINE member: the group's name
+SELECT @@GLOBAL.group_replication_group_name;
 -- On the destination, with that value:
-UPDATE goarchive.archiver_job SET source_server_uuid = '<new server_uuid>'
+UPDATE goarchive.archiver_job SET source_server_uuid = '<new uuid or group name>'
 WHERE job_name = 'archive_old_orders';
 ```
 
@@ -312,10 +336,11 @@ This is a deliberate act: replaying a log against a source that does not hold th
 deletes or skips the wrong rows.
 
 Until the re-bind, other jobs whose trees share the stopped job's tables are refused on the new
-server too when it holds the old server's transactions (the old `server_uuid` is in its
-`gtid_executed`), does not run `gtid_mode = ON`, or is a Group Replication member. Two cases are not
-seen, and need the re-bind before any other job runs on those tables: a server that received
-the data only before a GTID migration, and a server outside a group that holds the group's data
+server too when it holds the old server's transactions (the old `server_uuid`, or the group's name,
+is in its `gtid_executed`), does not run `gtid_mode = ON`, or has a Group Replication group name
+configured. Two cases are not seen, and need the re-bind before any other job runs on those tables:
+a server that received the data only before a GTID migration, and a server outside a group, for a job
+still recorded on a member's own uuid that the 3.0 → 3.1 upgrade left unconverted
 ([Sequential by design](README_LIMITATIONS.md#sequential-by-design)). Write the uuid exactly: a
 value that is not a well-formed uuid is refused by the job's own run and keeps blocking
 overlapping jobs.
@@ -399,8 +424,10 @@ CREATE TABLE IF NOT EXISTS goarchive_meta (
 
 One row, `id = 1`. The value is the **tracking-schema label**, not the binary version: a release
 changes it when it changes the tables' layout **or a column's meaning**. This release writes and
-recognises exactly one label, `3.0`. At startup it labels a fresh schema and refuses everything
-else; there is no inferred revision and no automatic migration.
+recognises exactly one label, `3.1`: GoArchive 3.0 wrote `3.0` with the same tables, and the label
+changed because `source_server_uuid` may now hold a group's name. At startup it labels a fresh
+schema and refuses everything else; there is no inferred revision and no automatic migration of a
+2.x schema, and a `3.0` schema is converted by [a procedure of yours](README_UPGRADING_3_1.md#moving-from-30).
 
 ### Tracking-schema upgrade procedures
 
@@ -410,8 +437,9 @@ matches the refusal:
 | The refusal says the tables… | Procedure |
 |---|---|
 | report `schema_version` `"2.0"` or `"2.2"`, or hold a 2.x `archiver_job` | Written by GoArchive 2.x or earlier: [Moving from 2.2](README_UPGRADING_3_0.md#moving-from-22) |
-| are labelled 3.0 but have no `archiver_job` table | Restore `archiver_job` from a backup, or drop every tracking table to start afresh |
-| hold job rows but no `schema_version` label | After confirming GoArchive 3.0 wrote them: `INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '3.0')`; or drop every tracking table |
+| report `schema_version` `"3.0"` | Written by GoArchive 3.0: [Moving from 3.0](README_UPGRADING_3_1.md#moving-from-30). The tables are left as they are |
+| are labelled 3.1 but have no `archiver_job` table | Restore `archiver_job` from a backup, or drop every tracking table to start afresh |
+| hold job rows but no `schema_version` label | Find out which GoArchive wrote them. GoArchive 3.1: `INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '3.1')`. GoArchive 3.0: `INSERT INTO goarchive.goarchive_meta (id, schema_version) VALUES (1, '3.0')`, and the next run refuses them with [Moving from 3.0](README_UPGRADING_3_1.md#moving-from-30). Or drop every tracking table |
 | report any other `schema_version` | Another GoArchive release wrote them, earlier or later: find out which first. An earlier release's tables: finish its jobs with its binary, then drop them. A later release's tables: run that release, and do not drop them. Or point `job_schema` at another schema, which leaves them untouched |
 
 ---

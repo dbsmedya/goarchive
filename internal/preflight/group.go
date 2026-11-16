@@ -32,7 +32,7 @@ type Group struct {
 	// with a group name, and is nil otherwise.
 	Members []dbsrepl.GroupMember
 	// Identity is the source's data identity: the group name when the source is an ONLINE member,
-	// else its server uuid (Identity the function). Nothing binds a job to it yet.
+	// else its server uuid (Identity the function). It is the value a job is bound to (the engine's bindingOf).
 	Identity string
 }
 

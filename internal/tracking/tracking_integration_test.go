@@ -245,13 +245,13 @@ func inTx(t *testing.T, db *sql.DB, commit bool, f func(tx *sql.Tx) error) error
 	return tx.Commit()
 }
 
-// TestMySQLSchemaLabel: a new job_schema is created and stamped 3.0, a second Open and
+// TestMySQLSchemaLabel: a new job_schema is created and stamped 3.1, a second Open and
 // eight concurrent ones accept it, and nothing else is written.
 func TestMySQLSchemaLabel(t *testing.T) {
 	schema, db := scratch(t, "label")
 	mustOpen(t, db, schema)
 	var label string
-	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.0" {
+	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.1" {
 		t.Fatalf("label = %q, %v", label, err)
 	}
 	var wg sync.WaitGroup
@@ -330,7 +330,7 @@ func TestMySQLSchemaCreationWaitsForTheLock(t *testing.T) {
 		t.Fatal("Open did not return within 5 s of the release")
 	}
 	var label string
-	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.0" {
+	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.1" {
 		t.Fatalf("label = %q, %v", label, err)
 	}
 	if h := lockHolder(t, db, name); h != 0 {
@@ -374,7 +374,7 @@ func TestMySQLSchemaCreationMeetsAFinishingRun(t *testing.T) {
 	s := mustOpen(t, db, schema)
 	exec(t, db, "DROP TABLE goarchive_meta")
 	f := &finishingFacts{facts: inspectorFacts{schema: schema, insp: validations.NewInspector(db, schema)}, finish: func() {
-		exec(t, db, s.createMetaTableSQL(), "INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.0')",
+		exec(t, db, s.createMetaTableSQL(), "INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.1')",
 			"INSERT INTO archiver_job (job_name, root_table, job_type, source_server_uuid, source_database, "+
 				"destination_database, config_fingerprint, root_key_columns) VALUES ('j','t','archive','u','s','d','{}','[]')")
 	}}
@@ -382,7 +382,7 @@ func TestMySQLSchemaCreationMeetsAFinishingRun(t *testing.T) {
 		t.Fatalf("Open() while another run finished the schema = %v", err)
 	}
 	var label string
-	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.0" {
+	if err := db.QueryRow("SELECT schema_version FROM goarchive_meta WHERE id = 1").Scan(&label); err != nil || label != "3.1" {
 		t.Fatalf("label = %q, %v", label, err)
 	}
 }
@@ -452,6 +452,12 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		"root_table VARCHAR(255) NOT NULL, job_type VARCHAR(32) NOT NULL DEFAULT 'archive', last_processed_root_pk_id VARCHAR(255), " +
 		"job_status TINYINT NOT NULL DEFAULT 0, UNIQUE KEY uk_job_name (job_name)) ENGINE=InnoDB"
 	const meta = "CREATE TABLE goarchive_meta (id TINYINT NOT NULL PRIMARY KEY, schema_version VARCHAR(16) NOT NULL) ENGINE=InnoDB"
+	// A 3.0 archiver_job as GoArchive 3.0 wrote it: every binding column, destination_server_uuid included.
+	const job30 = "CREATE TABLE archiver_job (id BIGINT AUTO_INCREMENT PRIMARY KEY, job_name VARCHAR(255) NOT NULL, " +
+		"root_table VARCHAR(64) NOT NULL, job_type VARCHAR(16) NOT NULL, job_status TINYINT NOT NULL DEFAULT 0, " +
+		"source_server_uuid VARCHAR(64) NOT NULL, source_database VARCHAR(64) NOT NULL, destination_database VARCHAR(64) NOT NULL, " +
+		"destination_server_uuid VARCHAR(64) NOT NULL DEFAULT '', config_fingerprint TEXT NOT NULL, root_key_columns TEXT NOT NULL, " +
+		"UNIQUE KEY uk_job_name (job_name)) ENGINE=InnoDB"
 	// A 3.0 archiver_job as built before destination_server_uuid (pre-alpha minors item 3).
 	const job30pre = "CREATE TABLE archiver_job (id BIGINT AUTO_INCREMENT PRIMARY KEY, job_name VARCHAR(255) NOT NULL, " +
 		"root_table VARCHAR(64) NOT NULL, job_type VARCHAR(16) NOT NULL, job_status TINYINT NOT NULL DEFAULT 0, " +
@@ -466,12 +472,17 @@ func TestMySQLRefusesOtherSchemas(t *testing.T) {
 		{"label22", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '2.2')"}, `report schema_version "2.2"`,
 			"Finish every 2.x job with the 2.x binary"},
 		// SLR-1: a label 2.x never wrote is not given the 2.x drop.
-		{"unknown", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.1')"}, `report schema_version "3.1"`,
+		{"unknown", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.2')"}, `report schema_version "3.2"`,
 			"an earlier or a later GoArchive release"},
+		// GR C9: tables 3.0 wrote are refused with their own procedure, and left as they are.
+		{"label30", []string{job30, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"}, `report schema_version "3.0"`,
+			`docs/README_UPGRADING_3_1.md, "Moving from 3.0"`},
+		{"label30nojob", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"}, `report schema_version "3.0"`,
+			`docs/README_UPGRADING_3_1.md, "Moving from 3.0"`},
 		{"bare2x", []string{job2x}, "hold a 2.x archiver_job table without a schema_version label", ""},
 		{"rows2x", []string{job2x, "INSERT INTO archiver_job (job_name, root_table) VALUES ('j', 't')"},
 			"hold a 2.x archiver_job table without a schema_version label", ""},
-		{"nojob", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"}, "are labelled 3.0 but have no archiver_job table", ""},
+		{"nojob", []string{meta, "INSERT INTO goarchive_meta VALUES (1, '3.1')"}, "are labelled 3.1 but have no archiver_job table", ""},
 		// The DBA's shortcut: relabel a 2.x schema instead of finishing and dropping it.
 		{"label30on2x", []string{job2x, meta, "INSERT INTO goarchive_meta VALUES (1, '3.0')"},
 			`hold a 2.x archiver_job table under schema_version "3.0"`, ""},

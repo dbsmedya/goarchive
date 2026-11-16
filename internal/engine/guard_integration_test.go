@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dbsmedya/dbsgomysql/pkg/replication"
+
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
@@ -172,8 +174,8 @@ const guardTestUUID = "f11ed000-57a1-4c0d-9e5e-000000000001"
 // absentTestUUID is never put into any set.
 const absentTestUUID = "f11ed000-57a1-4c0d-9e5e-0000000000ff"
 
-// sourceDataFacts reads the source's facts the way the engine does, through the library.
-func sourceDataFacts(t *testing.T, db *sql.DB) sourceFacts {
+// sourceDataFacts reads the source's GTID facts the way the engine does, through the library.
+func sourceDataFacts(t *testing.T, db *sql.DB) replication.GTIDStatus {
 	t.Helper()
 	f, err := readSourceData(context.Background(), db)
 	if err != nil {
@@ -200,8 +202,8 @@ func injectGTID(t *testing.T) {
 			t.Fatalf("%s: %v", stmt, err)
 		}
 	}
-	if f := sourceDataFacts(t, admin); !strings.Contains(strings.ToLower(f.gtid.Executed), guardTestUUID) {
-		t.Fatalf("gtid_executed %q lacks %s after the injection", f.gtid.Executed, guardTestUUID)
+	if f := sourceDataFacts(t, admin); !strings.Contains(strings.ToLower(f.Executed), guardTestUUID) {
+		t.Fatalf("gtid_executed %q lacks %s after the injection", f.Executed, guardTestUUID)
 	}
 }
 
@@ -214,22 +216,27 @@ func TestMySQLGuardSourceData(t *testing.T) {
 	e, archive, purge := guardEnv(t, "g_data")
 	e.interrupted(t, archive, atCommitted)
 	facts := sourceDataFacts(t, e.src)
-	precise := facts.gtid.Mode == "ON" && facts.group.GroupName == ""
+	// the group name configured on this source, which the engine takes from preflight's facts: read here through the library
+	g, err := replication.NewInspector(e.src).GroupReplication(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	precise := facts.Mode == "ON" && g.GroupName == ""
 	branch := "precise (gtid_executed)"
 	switch {
-	case facts.group.GroupName != "":
-		branch = "fallback (Group Replication member)"
+	case g.GroupName != "":
+		branch = "fallback (a configured Group Replication group)"
 	case !precise:
-		branch = "fallback (gtid_mode " + facts.gtid.Mode + ")"
+		branch = "fallback (gtid_mode " + facts.Mode + ")"
 	}
-	t.Logf("gtid_mode %s, group %q: %s branch", facts.gtid.Mode, facts.group.GroupName, branch)
+	t.Logf("gtid_mode %s, group %q: %s branch", facts.Mode, g.GroupName, branch)
 
 	if precise {
 		injectGTID(t)
 	}
 	setJob(t, e, "j", "source_server_uuid = '"+guardTestUUID+"'")
 	before := srcRows(t, e)
-	_, err := e.run(t, purge)
+	_, err = e.run(t, purge)
 	oe := refusedBy(t, e, err, "notes", before, "j")
 	if !strings.Contains(oe.Error(), "recorded on source server "+guardTestUUID) {
 		t.Errorf("the refusal does not say why another server's job counts:\n%s", oe)
@@ -242,9 +249,9 @@ func TestMySQLGuardSourceData(t *testing.T) {
 		t.Errorf("gtid_mode ON, no group: a job on a server whose data this source does not hold blocked the run: %v", err)
 	case !precise:
 		oe := refusedBy(t, e, err, "notes", before, "j")
-		want := "gtid_mode is " + facts.gtid.Mode
-		if facts.group.GroupName != "" {
-			want = "Group Replication member"
+		want := "gtid_mode is " + facts.Mode
+		if g.GroupName != "" {
+			want = "configured for Group Replication group " + g.GroupName
 		}
 		if !strings.Contains(oe.Error(), want) {
 			t.Errorf("the refusal does not give the fallback %q:\n%s", want, oe)
@@ -333,11 +340,13 @@ func TestMySQLGuardMutualBlock(t *testing.T) {
 func TestMySQLGuardSourceFactsUnreadable(t *testing.T) {
 	e, archive, _ := guardEnv(t, "g_facts")
 	saved := readSourceData
-	readSourceData = func(context.Context, *sql.DB) (sourceFacts, error) { return sourceFacts{}, errors.New("proxy says no") }
+	readSourceData = func(context.Context, *sql.DB) (replication.GTIDStatus, error) {
+		return replication.GTIDStatus{}, errors.New("proxy says no")
+	}
 	t.Cleanup(func() { readSourceData = saved })
 	before := srcRows(t, e)
 	_, err := e.run(t, archive)
-	if err == nil || !strings.Contains(err.Error(), "cannot read the source's gtid_mode") || !strings.Contains(err.Error(), "proxy says no") {
+	if err == nil || !strings.Contains(err.Error(), "cannot read the source's gtid_mode and gtid_executed") || !strings.Contains(err.Error(), "proxy says no") {
 		t.Fatalf("Run = %v, want the source-facts refusal", err)
 	}
 	if srcRows(t, e) != before || count(t, e.dst, "SELECT COUNT(*) FROM archiver_job") != 0 {

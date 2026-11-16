@@ -1,5 +1,5 @@
 // Package tracking is the 3.0 job registry and per-job log (spec §6): the tracking
-// schema in the destination job_schema, labelled 3.0; archiver_job with the job binding
+// schema in the destination job_schema, labelled 3.1; archiver_job with the job binding
 // and the root key's column names; the typed log archiver_job_log_<id>, one column per
 // root key column; the log-key check and the binding check that run before recovery; and
 // the log status writes, made inside the caller's transaction.
@@ -10,8 +10,13 @@ package tracking
 import "fmt"
 
 // SchemaLabel is the one tracking-schema label this binary recognizes (spec §6.1). Every
-// other label, 2.x included, is refused; there is no migration (R37).
-const SchemaLabel = "3.0"
+// other label, 2.x and 3.0 included, is refused; there is no migration of a 2.x schema (R37), and a 3.0 schema is
+// converted by the procedure of docs/README_UPGRADING_3_1.md (GR C9, G4). The tables' layout is the same as 3.0's: the
+// bump says that a job's source_server_uuid may now be a Group Replication group's name.
+const SchemaLabel = "3.1"
+
+// label30 is the label GoArchive 3.0 wrote: refused with its own procedure.
+const label30 = "3.0"
 
 // Status is a root's state in the job's log, stored as TINYINT ga_status (spec §6.3).
 // 2.x's pending (0) and failed (3) do not exist in 3.0, and their numbers are not reused.

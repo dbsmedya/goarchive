@@ -143,8 +143,8 @@ preflight.
   documented grants on MySQL 8.0.46, 8.4.13 and 9.7.4; a server or account that refuses it fails the connection with
   [`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check), which names the two ways out.
 - **The source facts need no privilege, but one.** The unfinished-work guard reads the source's
-  `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql, and preflight
-  reads the source's `read_only` settings and each side's plugin state and transaction size limit;
+  `gtid_mode` and `gtid_executed` through dbsgomysql, and preflight
+  reads the source's `read_only` settings and each side's plugin state, group name and transaction size limit;
   none of these needs a grant beyond connecting
   ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)). The one that does is
   the source's view of its group, `performance_schema.replication_group_members`, read only from

@@ -152,7 +152,7 @@ type locks struct {
 // as its set is held, then runs the unfinished-work guard (source-table-locks spec §5.1;
 // unfinished-work guard spec §6). A lost set calls fail with the reason. On an error nothing
 // is held.
-func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, store *tracking.Store, source tracking.Binding) (_ *locks, err error) {
+func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, store *tracking.Store, source tracking.Binding, who sourceWho) (_ *locks, err error) {
 	sourceDatabase := source.SourceDatabase
 	l := &locks{table: map[string][2]string{}}
 	watch, stopWatch := context.WithCancel(ctx)
@@ -214,13 +214,13 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 	}
 
 	// The unfinished-work guard, under every table lock (spec §6).
-	facts, err := readSourceData(ctx, cfg.Source)
+	gtid, err := readSourceData(ctx, cfg.Source)
 	if err != nil {
-		return nil, fmt.Errorf("engine: cannot read the source's gtid_mode, gtid_executed and Group Replication state, which decide "+
+		return nil, fmt.Errorf("engine: cannot read the source's gtid_mode and gtid_executed, which decide "+
 			"whose unfinished work this run must respect: %w. This run did nothing", err)
 	}
 	same := func(stored string) bool {
-		ok, _ := sameData(source.SourceServerUUID, facts, stored)
+		ok, _ := sameData(who, gtid, stored)
 		return ok
 	}
 	blockers, err := store.Blockers(ctx, sourceDatabase, same, tree, cfg.Name)
@@ -230,7 +230,7 @@ func lockJob(ctx context.Context, fail context.CancelCauseFunc, cfg Config, stor
 	if len(blockers) > 0 {
 		why := map[string]string{}
 		for _, b := range blockers {
-			_, why[b.Name] = sameData(source.SourceServerUUID, facts, b.SourceServerUUID)
+			_, why[b.Name] = sameData(who, gtid, b.SourceServerUUID)
 		}
 		return nil, &OverlapError{Job: cfg.Name, Database: sourceDatabase,
 			Registry: sqlutil.QuoteIdentifier(cfg.JobSchema) + "." + sqlutil.QuoteIdentifier("archiver_job"), Blockers: blockers, Why: why}

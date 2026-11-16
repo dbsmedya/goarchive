@@ -16,6 +16,7 @@ Detailed specifications for GoArchive. Start at the
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
 | [Testing](README_TESTING.md) | What each test layer proves |
 | [Upgrading to 3.0](README_UPGRADING_3_0.md) | Moving from 2.x and from each 3.0 prerelease (alpha.0 to RC.1): the tracking tables, configuration and command-line changes, changed limits |
+| [Upgrading to 3.1](README_UPGRADING_3_1.md) | Moving a 3.0 registry to 3.1: the tracking-schema label, the conversion of a job bound to a member's uuid, and why the upgrade is one way |
 | [Character sets](README_CHARSETS.md) | The session pin, the supported and refused character sets, converting a refused column |
 | [MySQL compatibility notes](README_COMPAT.md) | MySQL server behaviours that change how GoArchive binds keys or copies values, the path it takes for each, and what is still open |
 | [Why GoArchive uses dbsgomysql](README_dbsgomysql.md) | What the validation library provides, the fact/policy split, and the consumer boundary |
@@ -41,3 +42,4 @@ Detailed specifications for GoArchive. Start at the
 - **Running a job on a Group Replication group** → [Group Replication](README_GROUP_REPLICATION.md)
 - **Maintaining the tracking tables, or clearing a crashed job** → [Job Tracking Schema](README_JOBS_SCHEMA.md)
 - **Upgrading from 2.x or a 3.0 prerelease** → [Upgrading to 3.0](README_UPGRADING_3_0.md)
+- **Upgrading from 3.0** → [Upgrading to 3.1](README_UPGRADING_3_1.md)

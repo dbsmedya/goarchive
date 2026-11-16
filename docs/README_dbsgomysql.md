@@ -40,7 +40,7 @@ tested against several MySQL releases instead of being rediscovered per check.
 |---|---|
 | `pkg/validations` | Schema, privilege, and metadata facts (tables, columns, primary keys, triggers and the proof that a trigger list is complete, invisible columns, foreign keys, grants), plus the comparison primitives behind destination schema compatibility. Findings are typed values, not formatted strings — GoArchive decides what is fatal. |
 | `pkg/sqlutil` | Identifier quoting and validation. |
-| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set and its Group Replication state, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking); and the [Group Replication facts](README_GROUP_REPLICATION.md#what-is-read) preflight reads first: each server's plugin state, group name and transaction size limit, the source's `read_only` settings, and a member source's view of its group. |
+| `pkg/replication` | Replica status facts, read by the [replication gate](README_OPERATIONS.md#replication-gating); the source's GTID mode and executed set, read by the [unfinished-work guard](README_OPERATIONS.md#concurrency-and-locking); and the [Group Replication facts](README_GROUP_REPLICATION.md#what-is-read) preflight reads first: each server's plugin state, group name and transaction size limit, the source's `read_only` settings, and a member source's view of its group. |
 
 The library also ships a registry of documented MySQL version quirks and records where
 behaviour diverges across the 8.0, 8.4 and 9.7 lines; supported versions are in
