@@ -36,7 +36,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | Inspect INSERT conversion / truncation warnings before source deletion | ✅ [checked after every application-data INSERT](docs/README_OPERATIONS.md#insert-diagnostics-and-subdivision) | No built-in check in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver) |
 | Crash recovery / resume | ✅ a per-root log; interrupted roots are finished at the next start | ❌ |
 | Protection against overlapping runs | ✅ a job lock on the destination and a `GET_LOCK` on every tree table on the source, checked before every commit, and a guard that refuses a run over a stopped job's unfinished work ([Concurrency and locking](docs/README_OPERATIONS.md#concurrency-and-locking)) | `--pid` file on one host only; no server-side lock and no record of an interrupted run in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver) |
-| Change settings during a run | ✅ batch sizes, sleeps and the replication tolerance, within the limits the configuration sets, and pause and stop, over a private Unix socket ([Runtime control](docs/README_OPERATIONS.md#runtime-control)) | Options are read once at start; a `--sentinel` file (`--stop`) or a signal ends the run, in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver) |
+| Change settings during a run | ✅ over a private Unix socket: pause, stop, and change batch sizes (up to their starting values), sleeps, and the asynchronous replica lag tolerance (by its step rule) ([Runtime control](docs/README_OPERATIONS.md#runtime-control)) | Options are read once at start; a `--sentinel` file (`--stop`) or a signal ends the run, in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver) |
 | Foreign key coverage check | ✅ blocks uncovered FKs | ❌ |
 | Composite primary keys | ✅ root and child, with composite foreign keys | ✅ |
 | Non-integer primary keys | ✅ root and child (string, UUID, DECIMAL, temporal); FLOAT/DOUBLE, ENUM/SET and BIT keys are refused | ✅ |
@@ -44,7 +44,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | MyISAM sources / MySQL 5.x (EOL) | Unsupported; no support planned | ✅ |
 | Batched write mechanisms | Parameterized multi-row INSERT / chunked `DELETE … WHERE (key) IN (...)` | `LOAD DATA LOCAL INFILE` / range DELETE |
 | PXC flow control | ❌ | ✅ |
-| Group Replication | ✅ the replication gate holds the job while a member is not `ONLINE` or a member's applier or certifier queue is over its bound ([Group Replication members](docs/README_OPERATIONS.md#group-replication-members)) | No Group Replication check in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver); `--check-replica-lag` reads an asynchronous replica's lag |
+| Group Replication monitoring | ✅ the replication gate holds the job while a member in a listed server's view is not `ONLINE` or its applier or certifier queue is over its bound ([Group Replication members](docs/README_OPERATIONS.md#group-replication-members)) | No Group Replication check in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver); `--check-replica-lag` reads an asynchronous replica's lag |
 | Extensibility | ❌ | ✅ 9 plugin hooks |
 
 This comparison covers the reviewed pt-archiver v3.7.2 source linked above. GoArchive's
