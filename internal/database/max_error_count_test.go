@@ -43,7 +43,7 @@ func (f *fakeSession) QueryContext(_ context.Context, q string, _ []driver.Named
 	// The failover fence's reads (G12): a server of this fake is a plain one, whose plugin is not installed, so the
 	// library's four reads find no group name and no PLUGINS row and the connector sets nothing.
 	switch {
-	case strings.Contains(q, "group_replication_group_name"), strings.Contains(q, "information_schema.PLUGINS"):
+	case strings.Contains(q, "group_replication_group_name"), strings.Contains(q, "PLUGIN_STATUS"):
 		return rowsOf([]string{"VARIABLE_VALUE", "PLUGIN_STATUS"}, nil), nil
 	case strings.Contains(q, "performance_schema.session_variables"), strings.Contains(q, "performance_schema.global_variables"):
 		return rowsOf([]string{"VARIABLE_VALUE"}, [][]driver.Value{{[]byte("EVENTUAL")}}), nil

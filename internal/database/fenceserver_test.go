@@ -168,7 +168,7 @@ func (s *fenceServer) QueryContext(ctx context.Context, query string, _ []driver
 			return rowsOf([]string{"VARIABLE_VALUE"}, nil), nil
 		}
 		return rowsOf([]string{"VARIABLE_VALUE"}, [][]driver.Value{{[]byte(s.global)}}), nil
-	case strings.Contains(query, "information_schema.PLUGINS"):
+	case strings.Contains(query, "PLUGIN_STATUS"):
 		if s.plugin == "" || s.plugin == "ACTIVE" {
 			return rowsOf([]string{"PLUGIN_STATUS"}, nil), nil
 		}

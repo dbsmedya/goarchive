@@ -25,29 +25,39 @@ const (
 	fence    = "BEFORE_ON_PRIMARY_FAILOVER"
 )
 
-// libraryReads is the library's statements for a plugin that is ACTIVE (three: the name row exists) and for one that is
-// not (four: the PLUGINS read follows).
+// libraryReads is what the library's read does on a driver connection, as kinds (kindsOf): three statements for a plugin that
+// is ACTIVE (the group name's row exists) and four for one that is not (the plugin's status follows). The statements' own text
+// is the library's, and a unit test of goarchive does not carry it.
 func libraryReads(active bool) []string {
-	reads := []string{"Q SELECT VARIABLE_VALUE FROM performance_schema.global_variables WHERE VARIABLE_NAME = 'group_replication_group_name'",
-		"Q SELECT VARIABLE_VALUE FROM performance_schema.session_variables WHERE VARIABLE_NAME = 'group_replication_consistency'",
-		"Q SELECT VARIABLE_VALUE FROM performance_schema.global_variables WHERE VARIABLE_NAME = 'group_replication_consistency'"}
+	reads := []string{"group name", "session value", "global value"}
 	if !active {
-		reads = append(reads, "Q SELECT PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'group_replication'")
+		reads = append(reads, "plugin status")
 	}
 	return reads
 }
 
-// shape cuts each recorded statement to its leading words so a test compares what was asked and not the row limit the
-// library appends to each.
-func shape(statements []string) []string {
+// kindsOf names each recorded statement by what it asks, so a test compares what was asked and not the library's text.
+func kindsOf(statements []string) []string {
 	out := make([]string, len(statements))
 	for i, s := range statements {
-		for _, cut := range []string{" LIMIT ", " limit "} {
-			if k := strings.Index(s, cut); k >= 0 {
-				s = s[:k]
-			}
+		switch {
+		case strings.HasPrefix(s, "X "):
+			out[i] = "SET"
+		case strings.Contains(s, "max_error_count"):
+			out[i] = "max_error_count"
+		case strings.Contains(s, "character_set_client"):
+			out[i] = "charset"
+		case strings.Contains(s, "group_replication_group_name"):
+			out[i] = "group name"
+		case strings.Contains(s, "session_variables"):
+			out[i] = "session value"
+		case strings.Contains(s, "global_variables"):
+			out[i] = "global value"
+		case strings.Contains(s, "PLUGIN_STATUS"):
+			out[i] = "plugin status"
+		default:
+			out[i] = s
 		}
-		out[i] = s
 	}
 	return out
 }
@@ -122,7 +132,7 @@ func TestGroupFenceDecisionTable(t *testing.T) {
 				t.Errorf("the session's value afterwards = %q, want %q", session, tc.wantSession)
 			}
 			if tc.wantReadsAre != nil {
-				if got := shape(conn.statements()); !slices.Equal(got, tc.wantReadsAre) {
+				if got := kindsOf(conn.statements()); !slices.Equal(got, tc.wantReadsAre) {
 					t.Errorf("statements = %q, want only the library's reads %q", got, tc.wantReadsAre)
 				}
 			}
@@ -137,8 +147,8 @@ func TestGroupFenceSetsOnceAndReadsBackWhole(t *testing.T) {
 	if err := ensureGroupConsistency(context.Background(), conn, "gr2:3306"); err != nil {
 		t.Fatal(err)
 	}
-	want := append(append(libraryReads(true), "X "+setFence), libraryReads(true)...)
-	if got := shape(conn.statements()); !slices.Equal(got, want) {
+	want := append(append(libraryReads(true), "SET"), libraryReads(true)...)
+	if got := kindsOf(conn.statements()); !slices.Equal(got, want) {
 		t.Errorf("statements:\n%q\nwant\n%q", got, want)
 	}
 	if conn.wasClosed() {
@@ -167,7 +177,7 @@ func TestGroupFenceRefusesWhatItCannotEstablish(t *testing.T) {
 		}, []string{"cannot read", "1142"}},
 		{"the plugin's state cannot be read", func(c *fenceServer) {
 			c.plugin = "" // no name row, so the library reads PLUGINS, which fails
-			c.failQuery = map[string]error{"information_schema.PLUGINS": &mysql.MySQLError{Number: 1142, Message: "SELECT command denied"}}
+			c.failQuery = map[string]error{"PLUGIN_STATUS": &mysql.MySQLError{Number: 1142, Message: "SELECT command denied"}}
 		}, []string{"cannot read", "1142"}},
 		{"the session read is refused", func(c *fenceServer) {
 			c.failQuery = map[string]error{"performance_schema.session_variables": &mysql.MySQLError{Number: 1142, Message: "SELECT command denied"}}
@@ -313,9 +323,8 @@ func TestConnectorFencesEveryConnectionAndClosesARefusedOne(t *testing.T) {
 		t.Error("the connection handed out was closed")
 	}
 	// the existing checks come first, then the library's reads
-	statements := shape(first.statements())
-	if len(statements) < 3 || !strings.Contains(statements[0], "max_error_count") || !strings.Contains(statements[1], "character_set_client") ||
-		!strings.Contains(statements[2], "group_replication_group_name") {
+	statements := kindsOf(first.statements())
+	if len(statements) < 3 || statements[0] != "max_error_count" || statements[1] != "charset" || statements[2] != "group name" {
 		t.Errorf("statements = %q, want the max_error_count and charset checks before the library's reads", statements)
 	}
 
