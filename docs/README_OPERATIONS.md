@@ -235,9 +235,11 @@ closing log entry carries the same line as its `runtime_changes` field:
 ```
 
 For each setting that was changed it names the configured value, the final value and the number of
-changes (a setting changed and then restored is still listed); a lag tolerance that ends above its
-configured value is marked, as in `seconds_behind_source_within 10 -> 40 (3 changes, above the configured
-value)`. A run that accepted nothing prints and logs nothing new. A run's console is otherwise unchanged
+changes (a setting changed and then restored is still listed); a lag tolerance or a group bound that ends
+above its configured value is marked, as in `seconds_behind_source_within 10 -> 40 (3 changes, above the
+configured value)` or `group_applier_queue_within 1000 -> 3000 (3 changes, above the configured value)`. The
+line is bounded by the eight settings, however often they were changed. A run that accepted nothing prints
+and logs nothing new. A run's console is otherwise unchanged
 with control enabled: the socket's path is in the log only (`Control socket: <path>`), and a successful
 cron-style run stays silent.
 
@@ -521,11 +523,12 @@ replication hold ended by a stop request; job held 2h14m5s
 ### What can change while it runs
 
 With [runtime control](#runtime-control), `seconds_behind_source_within` and `check_interval` can be
-changed while the run goes, and a change applies to every `DELETE` whose gate decision has not yet been
-made. A probe round judges every server by the tolerance it loaded when it began, and a pass is valid only
-for the settings it was judged under: a round that passes while the tolerance is lowered is discarded and
-judged again at once, so a delete is never let through on a verdict made under settings that have since been
-replaced. The settings are read once more as the very last step of a pass, after the line that says the job
+changed while the run goes, and so can `group_applier_queue_within` and `group_certifier_queue_within` where
+the gate lists a server of `type: group`. A change applies to every `DELETE` whose gate decision has not yet
+been made. A probe round judges every server by the tolerance it loaded when it began, and every group server
+by the one pair of bounds it loaded then, and a pass is valid only for the settings it was judged under: a
+round that passes while the tolerance or a bound is lowered is discarded and judged again at once, so a delete
+is never let through on a verdict made under settings that have since been replaced. The settings are read once more as the very last step of a pass, after the line that says the job
 is resuming has been written and after a cached pass has been looked up, so a change made while those were
 under way is not missed. What the log shows depends on when the change is found:
 
@@ -540,7 +543,7 @@ under way is not missed. What the log shows depends on when the change is found:
   rules for a stop, go on from where the call began to hold; the per-server hold entries that those
   "recovered" lines ended are gone, so a server that still fails at the new settings starts a new one.
 
-A tolerance raised above its configured value goes
+A tolerance or a group bound raised above its configured value goes
 one step at a time ([the step rule](#the-tolerances-step-rule-and-the-warning)). `cache_ttl` is startup
 configuration only: over the socket it is an unknown key.
 
@@ -757,9 +760,14 @@ number   = 1*digit [ "." 1*digit ]
 | `delete_sleep_seconds` | a number of seconds | archive and purge |
 | `seconds_behind_source_within` | a whole number of seconds | archive and purge, with `replication.enabled` |
 | `check_interval` | a whole number of seconds | archive and purge, with `replication.enabled` |
+| `group_applier_queue_within` | a whole number of transactions | archive and purge, with `replication.enabled` and a `type: group` server |
+| `group_certifier_queue_within` | a whole number of transactions | archive and purge, with `replication.enabled` and a `type: group` server |
 
-`help` lists only the settings the run accepts, and a refused setting's getter is refused the same way.
-`cache_ttl`, `group_applier_queue_within` and `group_certifier_queue_within` are not settings: over the socket they are unknown keys. Left out on purpose: anything that
+`help` lists only the settings the run accepts, and a refused setting's getter is refused the same way:
+in a run that does not use the gate the answer is `this run does not use the replication gate`, and in one
+whose gate lists no server of `type: group`, `this run's gate has no server of type group`. The two bounds
+follow `check_interval` in `help` and in the status.
+`cache_ttl` is not a setting: over the socket it is an unknown key. Left out on purpose: anything that
 takes SQL, a host, a URL or a path (the sentinel file included); `verification`, `--force-triggers`,
 foreign-key checks, the preflight bypass; `replication.enabled`, the server list; an abort command.
 
@@ -777,7 +785,7 @@ know as a refusal**.
 | `ending` | The run is ending; nothing is changed any more |
 | `invalid` | The number is not a value this setting can take: a fraction for a whole-number setting, a number too large to hold, or one the configuration file would refuse |
 | `ceiling` | A size above the run's starting value |
-| `step` | A tolerance raise breaks the step rule; the message says the largest value accepted now, or that the replicas have not yet been checked under the current tolerance |
+| `step` | A raise of the tolerance or of a group bound breaks the step rule; the message says the largest value accepted now, or that the replicas (or the group) have not yet been checked under the current settings |
 | `busy` | The run's log is not keeping up; nothing was changed. Try again |
 
 A request that fails in more than one way gets the first word that applies, in the order of this table:
@@ -826,6 +834,8 @@ reset.
 | `hold.servers[].lag_seconds` | The largest lag among the gated channels; `null` when a channel reports NULL or the read failed, and always `null` for a group server |
 | `hold.servers[].applier_queue` | For a group server, the largest applier queue in its view at the last probe, in transactions; `null` when it was not probed or its read failed, and always `null` for an asynchronous server |
 | `hold.servers[].certifier_queue` | The same for the certification queue |
+| `hold.servers[].applier_queue_within` | For a group server, the bound its last probe was judged by, which can differ from the setting in force; `null` for an asynchronous server and for a server not probed |
+| `hold.servers[].certifier_queue_within` | The same for the certification queue |
 | `hold.servers[].tolerance` | The tolerance it was judged by |
 | `hold.servers[].checked_at` | When it was last probed |
 | `counters.batches` | Batches completed |
@@ -839,12 +849,12 @@ reset.
 | `progress.roots_estimate` | The optimizer's estimate of the roots in range; `progress` is `null` without `--progress` and before the estimate is read |
 | `progress.percent` | The share done, capped at 100 |
 | `progress.eta` | The time left in seconds; `null` while it cannot be told |
-| `settings.<name>.value` | The value in force, for each setting the run accepts |
+| `settings.<name>.value` | The value in force, for each setting the run accepts; the two group bounds are among them where the gate lists a `type: group` server |
 | `settings.<name>.configured` | The value the run started with |
 | `replication.enabled` | `replication.enabled` in the configuration |
 | `replication.used` | Whether this run uses the gate |
 | `replication.cache_ttl` | The configured `cache_ttl`, which is not a setting |
-| `replication.group_applier_queue_within` | The configured bound of a group server's applier queue, which is not a setting; `null` when no `type: group` server is listed |
+| `replication.group_applier_queue_within` | The value in force of the bound on a group server's applier queue, read from the same snapshot as `settings.group_applier_queue_within.value`; where the run does not use the gate it is the configured value, which nothing can change there. `null` when no `type: group` server is listed |
 | `replication.group_certifier_queue_within` | The same for the certification queue |
 | `replication.last_pass_at` | When the gate last passed; `null` if it has not |
 | `replication.servers[].server` | Each server's last verdict: `host:port` |
@@ -855,6 +865,8 @@ reset.
 | `replication.servers[].lag_seconds` | The largest lag among the gated channels, or `null`; always `null` for a group server |
 | `replication.servers[].applier_queue` | For a group server, the largest applier queue in its view at the last probe, or `null` when it was not probed or its read failed; always `null` for an asynchronous server |
 | `replication.servers[].certifier_queue` | The same for the certification queue |
+| `replication.servers[].applier_queue_within` | For a group server, the bound its last probe was judged by, which can differ from the setting in force between a change and the next probe; `null` for an asynchronous server and for a server not probed |
+| `replication.servers[].certifier_queue_within` | The same for the certification queue |
 | `replication.servers[].tolerance` | The tolerance the verdict was judged by |
 | `replication.servers[].checked_at` | When the server was probed; `null` until it is |
 | `changes` | How many runtime changes this run has accepted |
@@ -891,7 +903,7 @@ netcat) was not tried; one that keeps waiting for the end of input is not readin
 | `batch_size` | Once at the top of each batch and of each recovery page | From the next batch or page. That one value is the fetch limit, the end test and the chunk size of every read, discovery and verification statement of the batch |
 | `batch_delete_size` | Immediately before each DELETE is built, after its sleep and its gate decision | From the next DELETE to be issued, the one a hold is holding included |
 | `sleep_seconds`, `delete_sleep_seconds` | At the start of each sleep, and again on each change | At once: a sleep in progress ends when the time already slept reaches the new value |
-| `seconds_behind_source_within`, `check_interval` | Once per probe round | To every DELETE whose gate decision has not yet been made, one sleeping before its decision included |
+| `seconds_behind_source_within`, `check_interval`, `group_applier_queue_within`, `group_certifier_queue_within` | Once per probe round | To every DELETE whose gate decision has not yet been made, one sleeping before its decision included |
 
 Nothing pauses inside a batch: `pause` takes effect at the next boundary and the batch in flight finishes,
 and `status` shows `running` with the pause listed as requested until the loop is actually waiting.
@@ -904,7 +916,9 @@ send statements that `MAX_ALLOWED_PACKET_CHECK` never judged; a typo that raises
 one that lowers it makes the run slow, visibly, and one command undoes it; and the starting value is what
 `dry-run` showed and what memory was planned for. Growing a run beyond its configuration needs a stop and
 a rerun with a changed file. Sleeps and `check_interval` have no ceiling or floor beyond the file's rules
-(not negative, finite and small enough to be a duration; `check_interval` positive).
+(not negative, finite and small enough to be a duration; `check_interval` positive). The two group bounds
+have no ceiling either (no statement was proved against them): above the configured value they follow
+[the step rule](#the-tolerances-step-rule-and-the-warning).
 
 #### The tolerance's step rule and the warning
 
@@ -920,9 +934,37 @@ Error: step: seconds_behind_source_within 50 is more than one step above the cur
 value accepted now is 20 (the configured 10 is the step)
 ```
 
+**The two group bounds follow the same rule**, each with its own configured value as the step (1 when that
+is 0): `group_applier_queue_within` and `group_certifier_queue_within` are lowered freely, down to 0, which
+tolerates no queue, and a raise back up to the configured value is accepted in one command. Above it a raise
+is at most the current value plus the bound's own configured value, from a value below the configuration at
+most the higher of the configured value and that sum, and only after the gate has probed the group under the
+current settings. With a configured applier bound of 1000 and a member's queue at 4210, you send 2000, 3000,
+4000 and 5000; `5000` sent first is refused:
+
+```text
+Error: step: group_applier_queue_within 5000 is more than one step above the current 1000; the largest
+value accepted now is 2000 (the configured 1000 is the step)
+```
+
+**The tolerance and the two bounds share one round.** Any accepted change of one of them, the interval
+included, is a change of the gate's settings: it discards a pass cached or reached under the old ones, and the
+next raise above a configured value, of any of the three, waits for a probe round completed under the new
+settings. An operator who raises both bounds waits one round between the two commands: during a hold that
+round runs at once after each accepted change; outside a hold it is the next `DELETE`'s gate decision, which
+inside a batch's copy phase can be a while away, so a script retries on `step`. A raise that stays at or below
+the configured value needs no round. A bound configured at 0 rises by 1 per round: to follow a threshold
+upward, configure the bound you mean and not 0.
+
 A raise above the configured value is reported loudly, as the run banners are: one `WARNING:` line on
-stderr and a log entry, whatever the log level. The status shows `value` and `configured`, and the closing
-output marks a final value above the configuration.
+stderr and a log entry, whatever the log level. The bounds' line names the group:
+
+```text
+WARNING: group_applier_queue_within raised to 2000, above the configured 1000, over the control socket (uid 1000): members of the group may fall further behind before deletes hold.
+```
+
+The status shows `value` and `configured`, and the closing output marks a final value above the
+configuration. A lowering and a restore are logged as any other change and write no `WARNING:`.
 
 **What the log records.** Every accepted change is one log entry, past the level filter, with the setting,
 the old and new values, the revision, the time, and the peer's user id and process id where the platform

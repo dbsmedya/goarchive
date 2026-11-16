@@ -8,6 +8,8 @@ import (
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
 // A `type: group` server in the gate (RG-1; spec §4.3, GR C6). The fleet is one list, one round, one snapshot and one
@@ -40,11 +42,11 @@ type groupReader interface {
 	GroupMemberStats(ctx context.Context) ([]dbsrepl.GroupMemberStats, error)
 }
 
-// groupProbe is what a `type: group` server adds to a server: its reader and the two bounds it is judged by, in
-// transactions. The bounds are configuration, not settings, so no gate revision moves for them.
+// groupProbe is what a `type: group` server adds to a server: its reader. The two bounds it is judged by are the
+// store's, read once per round from the round's snapshot with the tolerance, so every group server of a round is judged
+// by one pair and a change of either moves the gate revision (GR C7s).
 type groupProbe struct {
-	reader                         groupReader
-	applierWithin, certifierWithin int64
+	reader groupReader
 }
 
 // groupSnapshot is what one probe of a group server read.
@@ -208,10 +210,10 @@ func groupReadDetail(table string, err error) string {
 	return sanitizeLine(err.Error())
 }
 
-// groupBounds renders a group server's two bounds for the startup line.
-func groupBounds(p *groupProbe) string {
+// groupBounds renders the two group bounds in force for the startup line.
+func groupBounds(st tuning.Settings) string {
 	return strings.Join([]string{
-		fmt.Sprintf("applier queue within %d", p.applierWithin),
-		fmt.Sprintf("certifier queue within %d", p.certifierWithin),
+		fmt.Sprintf("applier queue within %d", st.GroupApplierQueueWithin),
+		fmt.Sprintf("certifier queue within %d", st.GroupCertifierQueueWithin),
 	}, ", ")
 }

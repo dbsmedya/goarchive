@@ -80,8 +80,11 @@ type ServerVerdict struct {
 	// ApplierQueue and CertifierQueue are a group server's two largest queues at the last probe; nil when it
 	// has not been probed or its read failed, and always nil for an asynchronous server.
 	ApplierQueue, CertifierQueue *int64
-	Tolerance                    int64
-	CheckedAt                    time.Time
+	// ApplierQueueWithin and CertifierQueueWithin are the two bounds a group server's last probe was judged by: a
+	// verdict can be older than the setting. Nil for an asynchronous server and for a group server never probed.
+	ApplierQueueWithin, CertifierQueueWithin *int64
+	Tolerance                                int64
+	CheckedAt                                time.Time
 }
 
 // GateRecord is the gate's last-verdict record. HoldingSince is zero when the gate is not holding.
@@ -109,7 +112,8 @@ type Info struct {
 	ReplicationEnabled bool
 	CacheTTL           int
 	// GroupApplierQueueWithin and GroupCertifierQueueWithin are the configured group bounds, nil when
-	// no group server is listed.
+	// no group server is listed. A status reports them where the gate is unused, since nothing can change
+	// them there; where the run's store applies them, it reports the values in force.
 	GroupApplierQueueWithin, GroupCertifierQueueWithin *int
 }
 
@@ -216,16 +220,18 @@ type pauseJSON struct {
 }
 
 type verdictJSON struct {
-	Server         string  `json:"server"`
-	Type           string  `json:"type"`
-	Healthy        *bool   `json:"healthy"`
-	Cause          string  `json:"cause"`
-	Detail         string  `json:"detail"`
-	LagSeconds     *int64  `json:"lag_seconds"`
-	ApplierQueue   *int64  `json:"applier_queue"`
-	CertifierQueue *int64  `json:"certifier_queue"`
-	Tolerance      int64   `json:"tolerance"`
-	CheckedAt      *string `json:"checked_at"`
+	Server               string  `json:"server"`
+	Type                 string  `json:"type"`
+	Healthy              *bool   `json:"healthy"`
+	Cause                string  `json:"cause"`
+	Detail               string  `json:"detail"`
+	LagSeconds           *int64  `json:"lag_seconds"`
+	ApplierQueue         *int64  `json:"applier_queue"`
+	CertifierQueue       *int64  `json:"certifier_queue"`
+	ApplierQueueWithin   *int64  `json:"applier_queue_within"`
+	CertifierQueueWithin *int64  `json:"certifier_queue_within"`
+	Tolerance            int64   `json:"tolerance"`
+	CheckedAt            *string `json:"checked_at"`
 }
 
 type holdJSON struct {
@@ -299,7 +305,9 @@ func verdicts(in []ServerVerdict) []verdictJSON {
 	for _, s := range in {
 		j := verdictJSON{
 			Server: s.Server, Type: s.kind(), Cause: s.Cause, Detail: s.Detail, LagSeconds: s.Lag,
-			ApplierQueue: s.ApplierQueue, CertifierQueue: s.CertifierQueue, Tolerance: s.Tolerance, CheckedAt: nullable(s.CheckedAt),
+			ApplierQueue: s.ApplierQueue, CertifierQueue: s.CertifierQueue,
+			ApplierQueueWithin: s.ApplierQueueWithin, CertifierQueueWithin: s.CertifierQueueWithin,
+			Tolerance: s.Tolerance, CheckedAt: nullable(s.CheckedAt),
 		}
 		if !s.CheckedAt.IsZero() {
 			healthy := s.Healthy
@@ -314,6 +322,7 @@ func verdicts(in []ServerVerdict) []verdictJSON {
 func (v *view) jsonLine() (string, error) {
 	r := v.read()
 	st := r.tracker
+	applierWithin, certifierWithin := v.groupBounds(r)
 	j := statusJSON{
 		Protocol: protocolVersion, Version: v.info.Version, Job: v.info.Job, JobType: v.info.JobType,
 		ConfigFile: v.info.ConfigFile, PID: v.info.PID, Socket: v.socket,
@@ -328,7 +337,7 @@ func (v *view) jsonLine() (string, error) {
 		Settings: map[string]settingJSON{},
 		Replication: replicationJSON{
 			Enabled: v.info.ReplicationEnabled, Used: r.hasGate, CacheTTL: v.info.CacheTTL,
-			GroupApplierQueueWithin: v.info.GroupApplierQueueWithin, GroupCertifierQueueWithin: v.info.GroupCertifierQueueWithin,
+			GroupApplierQueueWithin: applierWithin, GroupCertifierQueueWithin: certifierWithin,
 			Servers: verdicts(r.gate.Servers),
 		},
 		Changes: r.snap.Revision,
@@ -475,9 +484,9 @@ const replicationIndent = "               "
 func (v *view) replicationLines(r read) []string {
 	if !r.hasGate {
 		if !v.info.ReplicationEnabled {
-			return []string{fmt.Sprintf("  replication: not enabled, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText()}
+			return []string{fmt.Sprintf("  replication: not enabled, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText(r)}
 		}
-		return []string{fmt.Sprintf("  replication: enabled, not used by this run, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText()}
+		return []string{fmt.Sprintf("  replication: enabled, not used by this run, cache_ttl %ds", v.info.CacheTTL) + v.groupBoundsText(r)}
 	}
 	enabled := "not enabled"
 	if v.info.ReplicationEnabled {
@@ -487,18 +496,29 @@ func (v *view) replicationLines(r read) []string {
 	if !r.gate.LastPass.IsZero() {
 		last = fmt.Sprintf("last pass %s ago (%s)", FormatDuration(r.now.Sub(r.gate.LastPass)), rfc3339(r.gate.LastPass))
 	}
-	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last) + v.groupBoundsText()}
+	lines := []string{fmt.Sprintf("  replication: %s, used, cache_ttl %ds, %s", enabled, v.info.CacheTTL, last) + v.groupBoundsText(r)}
 	for _, s := range r.gate.Servers {
 		lines = append(lines, replicationIndent+verdictText(s, r.now))
 	}
 	return lines
 }
 
-// groupBoundsText is the configured group bounds at the end of the replication line, as status-json reports them under
+// groupBounds is the pair of group bounds status reports under replication, and nil for each when no group server is
+// listed: the values in force where the run's store applies them, read from the same snapshot as the settings entries,
+// and the configured values where the gate is unused, which nothing can change there.
+func (v *view) groupBounds(r read) (applier, certifier *int) {
+	if ok, _ := v.store.Applies(tuning.GroupApplierQueueWithin); ok {
+		a, c := r.snap.GroupApplierQueueWithin, r.snap.GroupCertifierQueueWithin
+		return &a, &c
+	}
+	return v.info.GroupApplierQueueWithin, v.info.GroupCertifierQueueWithin
+}
+
+// groupBoundsText is the group bounds at the end of the replication line, as status-json reports them under
 // replication, and nothing when no group server is listed. It ends the line of a used gate, of a block that is enabled and
 // not used by this run, and of one that is not enabled: a copy-only job or a disabled block can list group servers too.
-func (v *view) groupBoundsText() string {
-	a, c := v.info.GroupApplierQueueWithin, v.info.GroupCertifierQueueWithin
+func (v *view) groupBoundsText(r read) string {
+	a, c := v.groupBounds(r)
 	if a == nil || c == nil {
 		return ""
 	}
@@ -518,15 +538,20 @@ func verdictText(s ServerVerdict, now time.Time) string {
 		verdict = fmt.Sprintf("%s (%s)", s.Cause, s.Detail)
 	}
 	if s.kind() == "group" {
-		// A group server has no lag and no tolerance: its line says its two queues at the last probe.
-		queue := func(n *int64) string {
-			if n == nil {
-				return "unknown"
+		// A group server has no lag and no tolerance: its line says its two queues at the last probe, each with the
+		// bound it was judged by, which can differ from the setting now.
+		queue := func(n, within *int64) string {
+			text := "unknown"
+			if n != nil {
+				text = fmt.Sprintf("%d", *n)
 			}
-			return fmt.Sprintf("%d", *n)
+			if within != nil {
+				text += fmt.Sprintf(" (bound %d)", *within)
+			}
+			return text
 		}
 		return fmt.Sprintf("%s %s, group, applier queue %s, certifier queue %s, checked %s ago (%s)",
-			s.Server, verdict, queue(s.ApplierQueue), queue(s.CertifierQueue), age, at)
+			s.Server, verdict, queue(s.ApplierQueue, s.ApplierQueueWithin), queue(s.CertifierQueue, s.CertifierQueueWithin), age, at)
 	}
 	lag := "lag unknown"
 	if s.Lag != nil {

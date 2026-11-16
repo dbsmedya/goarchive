@@ -13,7 +13,7 @@ const (
 	ReasonInvalid Reason = "invalid"
 	// ReasonCeiling: a size above the run's starting value.
 	ReasonCeiling Reason = "ceiling"
-	// ReasonStep: a tolerance raise that breaks the step rule.
+	// ReasonStep: a raise of the tolerance or of a group bound that breaks the step rule.
 	ReasonStep Reason = "step"
 	// ReasonBusy: the audit queue has no place; nothing was changed.
 	ReasonBusy Reason = "busy"

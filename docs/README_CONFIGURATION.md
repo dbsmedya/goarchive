@@ -132,7 +132,7 @@ never gated. Absent, monitoring is off.
 | `enabled` | Turn replication gating on | `false` |
 | `seconds_behind_source_within` | Lag tolerance in seconds for the asynchronous servers; `0` demands exact sync. Not negative | `10` |
 | `group_applier_queue_within` | The transactions any member of a `type: group` server's view may have waiting to be applied; `0` tolerates none. Not negative. **Required, with no default, when a server is `type: group`**, whether or not the block is enabled; without one it may be absent, and a value that is set is still validated | — |
-| `group_certifier_queue_within` | The same for the transactions waiting to be certified. Neither bound is a runtime setting: over the control socket they are unknown keys | — |
+| `group_certifier_queue_within` | The same for the transactions waiting to be certified. Both bounds are also runtime settings of a run whose gate lists a group server: the file's value is where the run starts and what a raise above it is measured by ([the setters](README_OPERATIONS.md#the-tolerances-step-rule-and-the-warning)) | — |
 | `check_interval` | Seconds between re-checks while holding; positive **when enabled**, and at most `9223372036` (the interval must fit a duration) | `5` |
 | `cache_ttl` | Seconds a **passing** verdict stays fresh; `0` checks every time. Not negative | `15` |
 | `servers` | The servers to monitor, asynchronous replicas and Group Replication members; at least one **when enabled** | — |

@@ -85,6 +85,54 @@ func TestPerValueValidatorsAreTheFiles(t *testing.T) {
 	}
 }
 
+// TestGroupBoundValidatorsAreTheFiles (GR C7s, spec §4.3 *The two bounds as runtime settings*): each group
+// bound has one per-value function, which validateGroupBounds calls for a value that is set, so that the file and
+// a setter refuse the same values with the same words. The file keeps its own presence checks: a missing bound
+// with a group server is not the function's to judge.
+func TestGroupBoundValidatorsAreTheFiles(t *testing.T) {
+	servers := []ReplicationServerConfig{{Host: "g", Port: 3306, User: "u", Type: "group"}}
+	for _, v := range []int{math.MinInt32, -5, -1, 0, 1, 2, 10, 1000, math.MaxInt32, math.MaxInt} {
+		a, c := v, 1000
+		r := ReplicationConfig{Enabled: true, SecondsBehindSourceWithin: 10, CheckInterval: 5, Servers: servers, GroupApplierQueueWithin: &a, GroupCertifierQueueWithin: &c}
+		file, _ := sharedWith(r).ValidateShared().(ValidationErrors)
+		if got, want := messageOn(file, "replication.group_applier_queue_within"), errText(ValidateGroupApplierQueueWithin(v)); got != want {
+			t.Errorf("group_applier_queue_within %d: the file says %q, ValidateGroupApplierQueueWithin says %q", v, got, want)
+		}
+		a, c = 1000, v
+		file, _ = sharedWith(r).ValidateShared().(ValidationErrors)
+		if got, want := messageOn(file, "replication.group_certifier_queue_within"), errText(ValidateGroupCertifierQueueWithin(v)); got != want {
+			t.Errorf("group_certifier_queue_within %d: the file says %q, ValidateGroupCertifierQueueWithin says %q", v, got, want)
+		}
+	}
+
+	for name, tc := range map[string]struct {
+		fn      func(int) error
+		message string
+	}{
+		"group_applier_queue_within":   {ValidateGroupApplierQueueWithin, "group_applier_queue_within cannot be negative"},
+		"group_certifier_queue_within": {ValidateGroupCertifierQueueWithin, "group_certifier_queue_within cannot be negative"},
+	} {
+		if err := tc.fn(-1); err == nil || err.Error() != tc.message {
+			t.Errorf("%s: -1 gives %v, want %q", name, err, tc.message)
+		}
+		for _, v := range []int{0, 1, 1000, math.MaxInt} {
+			if err := tc.fn(v); err != nil {
+				t.Errorf("%s: %d refused: %v", name, v, err)
+			}
+		}
+	}
+
+	// A bound the file does not set is the presence check's, whatever the function says.
+	r := ReplicationConfig{Enabled: true, SecondsBehindSourceWithin: 10, CheckInterval: 5, Servers: servers}
+	file, _ := sharedWith(r).ValidateShared().(ValidationErrors)
+	if got := messageOn(file, "replication.group_applier_queue_within"); got != "group_applier_queue_within is required when a server is type group" {
+		t.Errorf("a missing applier bound: the file says %q", got)
+	}
+	if got := messageOn(file, "replication.group_certifier_queue_within"); got != "group_certifier_queue_within is required when a server is type group" {
+		t.Errorf("a missing certifier bound: the file says %q", got)
+	}
+}
+
 // TestSleepDuration (coordinator's call at C2): one conversion of a configured sleep, used by
 // the validator and by the engine, so the bound and the conversion cannot drift. It is the
 // expression s * float64(time.Second), and a value ValidateSleepSeconds accepts converts to a

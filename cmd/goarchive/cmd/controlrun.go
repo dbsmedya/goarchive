@@ -29,21 +29,31 @@ import (
 // neither package), and the server's start and end around the run.
 
 // newRunStore builds the settings store a run reads: it starts at the job's processing values and the
-// configured gate values, which are the ceilings and the tolerance the step rule measures a raise by,
-// and the run's kind says which settings apply. A run without a socket gets the same store and nothing
+// configured gate values, which are the ceilings and the tolerance and group bounds the step rule measures
+// a raise by, and the run's kind says which settings apply. A run without a socket gets the same store and nothing
 // writes it, so its behaviour is the configuration's. requestStop is the first phase of a stop.
 func newRunStore(doc *jobspec.Document, spec *jobspec.Spec, requestStop func()) *tuning.Store {
 	proc := spec.EffectiveProcessing(doc.Shared.Processing)
 	repl := doc.Shared.Replication
+	start := tuning.Settings{
+		BatchSize: proc.BatchSize, BatchDeleteSize: proc.BatchDeleteSize,
+		SleepSeconds: proc.SleepSeconds, DeleteSleepSeconds: proc.DeleteSleepSeconds,
+		SecondsBehindSourceWithin: repl.SecondsBehindSourceWithin, CheckInterval: repl.CheckInterval,
+	}
+	// The two group bounds are the configured ones wherever a group server is listed (the step rule measures a raise by
+	// them); they are settings only where the gate is used and lists one.
+	group := false
+	if a, c := groupBounds(repl); a != nil && c != nil {
+		start.GroupApplierQueueWithin, start.GroupCertifierQueueWithin = *a, *c
+		group = true
+	}
+	gate := repl.Enabled && spec.Type != jobspec.CopyOnly
 	return tuning.New(tuning.Options{
-		Start: tuning.Settings{
-			BatchSize: proc.BatchSize, BatchDeleteSize: proc.BatchDeleteSize,
-			SleepSeconds: proc.SleepSeconds, DeleteSleepSeconds: proc.DeleteSleepSeconds,
-			SecondsBehindSourceWithin: repl.SecondsBehindSourceWithin, CheckInterval: repl.CheckInterval,
-		},
+		Start: start,
 		Applies: tuning.Applicability{
 			Delete: spec.Type != jobspec.CopyOnly,
-			Gate:   repl.Enabled && spec.Type != jobspec.CopyOnly,
+			Gate:   gate,
+			Group:  gate && group,
 		},
 		RequestStop: requestStop,
 	})
@@ -104,6 +114,7 @@ func (s *gateSlot) Record() control.GateRecord {
 			Tolerance: v.Tolerance, CheckedAt: v.CheckedAt,
 		}
 		sv.Lag, sv.ApplierQueue, sv.CertifierQueue = copyCount(v.Lag), copyCount(v.ApplierQueue), copyCount(v.CertifierQueue)
+		sv.ApplierQueueWithin, sv.CertifierQueueWithin = copyCount(v.ApplierQueueWithin), copyCount(v.CertifierQueueWithin)
 		out.Servers = append(out.Servers, sv)
 	}
 	return out

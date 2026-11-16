@@ -73,7 +73,8 @@ Both examples below connect GoArchive to the group's members directly, and the p
   peers' views. List every member the proxy routes reads to, so that each is judged by its own current row and not
   by a copy up to a second old. One listed member already covers the present view from copies.
 - **`group_applier_queue_within`.** Where a proxy has a threshold on the same counter, choose a value below it (the
-  [ProxySQL example](#example-a-group-behind-proxysql)). Otherwise choose it from how far behind the application's
+  [ProxySQL example](#example-a-group-behind-proxysql)), and follow the threshold when it changes
+  ([during a run](#following-a-proxys-threshold-during-a-run)). Otherwise choose it from how far behind the application's
   reads may be, in transactions. It counts transactions, not rows or bytes.
 - **`group_certifier_queue_within`.** No proxy reads this queue. In measurements on 8.0, 8.4 and 9.7, the
   certification queue of a primary under GoArchive's own load stayed at 0, so a small value holds the job only when
@@ -184,13 +185,18 @@ Things to know:
 - **A queue equal to its bound passes**, and a bound of `0` tolerates no queue.
 - **There is no lag**: `lag_seconds` is `null` for a group server. Its verdict carries the largest applier queue and
   the largest certification queue of its view at the last probe instead, and `null` for both before the first probe and
-  after a failed read. The tolerance of a round does not apply to it.
+  after a failed read, with the two bounds it was judged by. The tolerance of a round does not apply to it.
 - **A failed read** is classified as for a replica: `unreachable` for a connection that is gone, `unreadable` for
   anything else, a missing `SELECT` on either table included, in which case the line names the table and the grant.
   A server that is down when the run starts fails the connection phase, as every monitored server does; one that goes
   down during the run holds the job as `unreachable`.
-- **The two bounds are configuration**, not settings: over the [control socket](README_OPERATIONS.md#runtime-control) they are unknown keys,
-  and a change of the tolerance or the interval does not move them.
+- **The two bounds are configuration and runtime settings.** The file's values are where a run starts. Over the
+  [control socket](README_OPERATIONS.md#runtime-control) both can be changed while the run goes, and a change applies
+  from the next gate decision, to every group server at once: a round judges all of them by one pair of bounds, a pass
+  cached or reached under an older pair never stands, and a hold ends its wait and judges again at once. They share the
+  tolerance's and the interval's gate round, so a change of any of the four moves it. A verdict names the bounds it was
+  judged by, which between a change and the next probe are not the values in force. How to change them, and in which
+  order, is [Following a proxy's threshold during a run](#following-a-proxys-threshold-during-a-run).
 
 A hold line has the shape of every other, with the finding as its detail:
 
@@ -198,8 +204,48 @@ A hold line has the shape of every other, with the finding as its detail:
 replication hold: server gr2.internal:3306 unhealthy (GROUP_REPLICATION_APPLIER_QUEUE_WITHIN: Group member "…" reports an applier queue of 4210, above the bound 1000); job held, retrying in 5s
 ```
 
-`status` says the same in the server's line, with the queues in place of the lag and the tolerance:
-`gr2.internal:3306 unhealthy (…), group, applier queue 4210, certifier queue 0, checked 3s ago (…)`.
+`status` says the same in the server's line, with the queues in place of the lag and the tolerance, each queue with the
+bound it was judged by:
+`gr2.internal:3306 unhealthy (…), group, applier queue 4210 (bound 1000), certifier queue 0 (bound 1000), checked 3s ago (…)`.
+`status-json` has them as `applier_queue_within` and `certifier_queue_within` on each server, and the bounds in force
+under `replication` and `settings`.
+
+## Following a proxy's threshold during a run
+
+Where a proxy's threshold changes while a job runs, the bound is changed with it, over the
+[control socket](README_OPERATIONS.md#runtime-control), without stopping the job. `group_applier_queue_within` and
+`group_certifier_queue_within` are settings of a run that uses the replication gate and lists a `type: group` server;
+anywhere else the request is refused as `inapplicable`, with the reason in its message.
+
+- **The order.** To loosen, raise the proxy's value first, then goarchive's bound. To tighten, lower goarchive's bound
+  first, then the proxy's. So goarchive's bound is not above the proxy's value in between. It keeps the two numbers in
+  that relation and says nothing about which of the two reacts first: the gate reads when the run asks it, as
+  [the ProxySQL example](#example-a-group-behind-proxysql) says.
+- **The steps.** A lowering is one command, to any value down to `0`, which tolerates no queue, and so is a raise back
+  up to the configured value. Above the configured value a raise goes one step at a time: at most the current value
+  plus the bound's own configured value, and only after the gate has completed a probe round under the current
+  settings ([the step rule](README_OPERATIONS.md#the-tolerances-step-rule-and-the-warning)). With a configured bound
+  of 80 and a target of 400, you send `160`, `240`, `320` and `400`, each accepted after the gate's next round, each
+  with a `WARNING:` line on stderr and in the log. `ERR step` means "not yet" or "too far", and its message says which;
+  `400` sent first is too far:
+
+  ```bash
+  goarchive control /home/archiver/.goarchive/run/orders_archive.sock -s group_applier_queue_within=400
+  # Error: step: group_applier_queue_within 400 is more than one step above the current 80; the largest value
+  # accepted now is 160 (the configured 80 is the step)
+  goarchive control /home/archiver/.goarchive/run/orders_archive.sock -s group_applier_queue_within=160
+  ```
+- **One round for the settings of the gate.** The tolerance, the interval and the two bounds share one round. After any
+  accepted change of one of them, the next raise above a configured value waits for a probe round completed under the
+  new settings, so raising both bounds waits one round between the two commands. During a hold that round runs at once;
+  otherwise it is the next delete's gate decision, which can be a while away, and a script retries on `step`.
+- **How a change applies.** From the next gate decision, to every delete whose decision has not yet been made. A bound
+  below the queue a member has holds the job at that decision, and a raise during a hold is judged at once. The status
+  shows the value in force, the configured value, and for each group server the bounds its last probe was judged by.
+- **The file.** A change over the socket lasts for the run, and the next run starts from the file, so the file is
+  changed too. A bound configured at `0` rises by 1 per round: configure the bound you mean, not `0`. A larger move
+  than the steps allow is the file's: stop the run, change the bound, and run again; an archive or a purge goes on from
+  its log.
 
 ## Example: a group behind ProxySQL
 
@@ -251,6 +297,11 @@ What the text beside it says:
 4. `group_certifier_queue_within` is set on its own terms, because ProxySQL reads nothing about certification.
 5. By default ProxySQL shuns a backend for this in the reader hostgroup only. Where ProxySQL reads its view (the table
    above), it compares the view's number, which may differ, and the view has to be installed.
+6. **When ProxySQL's `max_transactions_behind` is changed online, follow it during the run** with
+   `goarchive control <socket> -s group_applier_queue_within=<n>`: raise ProxySQL's value first to loosen, lower
+   goarchive's bound first to tighten, and climb above the configured 80 in steps of 80, each one accepted after the
+   gate's next round. It promises no order of reaction
+   ([Following a proxy's threshold during a run](#following-a-proxys-threshold-during-a-run)).
 
 ## Example: a group behind MySQL Router
 
@@ -283,7 +334,9 @@ What the text beside it says:
    and it does nothing about other writers.
 3. **The bound is chosen from the application**: how many transactions behind a read on a secondary may be. The
    upper reference for both bounds is the flow-control bullet under [Choosing each value](#choosing-each-value).
-4. **There is no Router value to follow**, so nothing is retuned when Router's configuration changes.
+4. **There is no Router value to follow**, so nothing is retuned when Router's configuration changes. The setters
+   ([Following a proxy's threshold during a run](#following-a-proxys-threshold-during-a-run)) serve the operator's own
+   judgement during a run: the same commands and steps, with no proxy value to move first.
 5. **Member state.** Router routes to `ONLINE` members only, and treats `RECOVERING`, `UNREACHABLE`, `OFFLINE` and
    `ERROR` members as unavailable. goarchive's gate holds while a listed server's view shows a member that is not
    `ONLINE`, `RECOVERING` included, or while a listed server's own row is not `ONLINE`. The two act on the same

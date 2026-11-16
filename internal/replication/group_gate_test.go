@@ -131,15 +131,16 @@ type fleetMember struct {
 	group *fakeGroupReader
 }
 
-// newFleetHarness is newStoreHarness over a fleet of both kinds. Group servers are bound at 1000 and 1000 and the
-// gate has been told that the source is the member srcID, unless a test says otherwise.
+// newFleetHarness is newStoreHarness over a fleet of both kinds. Group servers are bound at 1000 and 1000, by the
+// store's values (the gate reads both bounds from its snapshot), and the gate has been told that the source is the
+// member srcID, unless a test says otherwise.
 func newFleetHarness(t *testing.T, ttl time.Duration, tolerance, interval int, fleet ...fleetMember) *gateHarness {
 	t.Helper()
 	h := newStoreHarness(t, ttl, tolerance, interval)
 	var servers []server
 	for i, m := range fleet {
 		if m.group != nil {
-			servers = append(servers, server{id: fmt.Sprintf("gr%d:3306", i+1), group: &groupProbe{reader: m.group, applierWithin: 1000, certifierWithin: 1000}})
+			servers = append(servers, server{id: fmt.Sprintf("gr%d:3306", i+1), group: &groupProbe{reader: m.group}})
 		} else {
 			servers = append(servers, server{id: fmt.Sprintf("replica%d:3306", i+1), reader: m.async})
 		}
@@ -666,8 +667,14 @@ func TestNewBuildsAGroupServer(t *testing.T) {
 	if g.servers[0].group != nil || g.servers[1].group == nil || g.servers[1].reader != nil {
 		t.Fatalf("servers = %+v, want an asynchronous first and a group second", g.servers)
 	}
-	if p := g.servers[1].group; p.applierWithin != 1000 || p.certifierWithin != 500 || p.reader == nil {
-		t.Errorf("group probe = %+v, want the two bounds and a reader", p)
+	if p := g.servers[1].group; p.reader == nil {
+		t.Errorf("group probe = %+v, want a reader", p)
+	}
+	if st := g.store.Start(); st.GroupApplierQueueWithin != 1000 || st.GroupCertifierQueueWithin != 500 {
+		t.Errorf("the constant store starts at bounds %d and %d, want the configured 1000 and 500", st.GroupApplierQueueWithin, st.GroupCertifierQueueWithin)
+	}
+	if ok, why := g.store.Applies(tuning.GroupApplierQueueWithin); !ok {
+		t.Errorf("a constant store does not apply the bounds of a gate with a group server: %s", why)
 	}
 	if g.source.told {
 		t.Error("a new gate has been told about the source: it must start in the not-told state")

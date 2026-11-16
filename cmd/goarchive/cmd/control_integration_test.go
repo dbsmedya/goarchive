@@ -423,6 +423,8 @@ func TestMySQLControlCopyOnlySocket(t *testing.T) {
 		"delete_sleep_seconds=1":         "ERR inapplicable a copy-only job deletes nothing\n",
 		"seconds_behind_source_within=5": "ERR inapplicable this run does not use the replication gate\n",
 		"check_interval=2":               "ERR inapplicable this run does not use the replication gate\n",
+		"group_applier_queue_within=5":   "ERR inapplicable this run does not use the replication gate\n",
+		"group_certifier_queue_within=?": "ERR inapplicable this run does not use the replication gate\n",
 		"batch_delete_size=?":            "ERR inapplicable a copy-only job deletes nothing\n",
 		"batch_size=1":                   "OK\nbatch_size: 2 -> 1, from the next batch or recovery page\n",
 		"sleep_seconds=0":                "OK\nsleep_seconds: 1 -> 0, at once\n",
@@ -432,7 +434,7 @@ func TestMySQLControlCopyOnlySocket(t *testing.T) {
 		}
 	}
 	help := r.ask("help")
-	for _, absent := range []string{"batch_delete_size", "delete_sleep_seconds", "seconds_behind_source_within", "check_interval"} {
+	for _, absent := range []string{"batch_delete_size", "delete_sleep_seconds", "seconds_behind_source_within", "check_interval", "group_applier_queue_within", "group_certifier_queue_within"} {
 		if strings.Contains(help, absent) {
 			t.Errorf("help lists %s on a copy-only run:\n%s", absent, help)
 		}
@@ -576,6 +578,37 @@ func TestMySQLControlStatus(t *testing.T) {
 		t.Errorf("status text:\n%s\nwant the hold line", text)
 	}
 
+	r.ask("stop")
+	if code := r.finish(); code != 3 {
+		t.Fatalf("exit %d, want 3", code)
+	}
+}
+
+// TestMySQLControlAnAsynchronousGateHasNoGroupBounds (GR C7s): a run whose gate lists only the asynchronous replica
+// refuses the two group bounds, getter and setter, with the gate's own words, does not list them in help, and has
+// six settings in its status with null bounds under replication; its tolerance is still a setting.
+func TestMySQLControlAnAsynchronousGateHasNoGroupBounds(t *testing.T) {
+	f, dir := holdFixture(t, "ctlnogroup")
+	r := startLive(t, filepath.Join(dir, "archive_orders.sock"), "archive", "-c", f.config, "--job", "archive_orders")
+	st := r.waitState("held")
+	for _, line := range []string{"group_applier_queue_within=?", "group_certifier_queue_within=?", "group_applier_queue_within=5", "group_certifier_queue_within=5"} {
+		if got, want := r.ask(line), "ERR inapplicable this run's gate has no server of type group\n"; got != want {
+			t.Errorf("%s = %q, want %q", line, got, want)
+		}
+	}
+	if help := r.ask("help"); strings.Contains(help, "group_applier_queue_within") || strings.Contains(help, "group_certifier_queue_within") || !strings.Contains(help, "check_interval=<n>") {
+		t.Errorf("help of a gate with no group server:\n%s", help)
+	}
+	if n := len(st["settings"].(map[string]any)); n != 6 {
+		t.Errorf("settings = %v, want the six that exist without a group server", st["settings"])
+	}
+	repl := st["replication"].(map[string]any)
+	if v, has := repl["group_applier_queue_within"]; !has || v != nil {
+		t.Errorf("replication.group_applier_queue_within = %v (present %v), want null", v, has)
+	}
+	if got := r.ask("seconds_behind_source_within=5"); !strings.HasPrefix(got, "OK\nseconds_behind_source_within: 30 -> 5") {
+		t.Errorf("the tolerance setter = %q, want it accepted", got)
+	}
 	r.ask("stop")
 	if code := r.finish(); code != 3 {
 		t.Fatalf("exit %d, want 3", code)
