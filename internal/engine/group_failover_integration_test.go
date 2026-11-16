@@ -17,6 +17,7 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/jobspec"
 	"github.com/dbsmedya/goarchive/v3/internal/preflight"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 	"github.com/dbsmedya/goarchive/v3/internal/tracking"
 )
 
@@ -30,9 +31,6 @@ const (
 	consistencyVar = "group_replication_consistency"
 	fenced         = "BEFORE_ON_PRIMARY_FAILOVER"
 )
-
-// eventual is a pool parameter that raises a session to EVENTUAL (database.Global's value is SQL text).
-var eventual = map[string]string{consistencyVar: "'EVENTUAL'"}
 
 // failover is the state's handles.
 type failover struct {
@@ -78,9 +76,9 @@ const canonicalView = "gr1 PRIMARY ONLINE|gr2 SECONDARY ONLINE|gr3 SECONDARY ONL
 func newlyElectedPrimary(t *testing.T) failover {
 	t.Helper()
 	f := failover{
-		gr1:      openServer(t, "TEST_SOURCE", "", eventual),
-		gr2probe: openServer(t, "TEST_GROUP_MEMBER2", "", eventual),
-		gr3:      openServer(t, "TEST_GROUP_MEMBER3", "", eventual),
+		gr1:      testestate.OpenUnfenced(t, "TEST_SOURCE", ""),
+		gr2probe: testestate.OpenUnfenced(t, "TEST_GROUP_MEMBER2", ""),
+		gr3:      testestate.OpenUnfenced(t, "TEST_GROUP_MEMBER3", ""),
 	}
 	if v := f.view(t); v != canonicalView {
 		t.Fatalf("the group is %q, want %q: the state starts from the estate's own", v, canonicalView)
@@ -114,7 +112,7 @@ func newlyElectedPrimary(t *testing.T) failover {
 	original := scalarStr(f.gr2probe, "SELECT @@GLOBAL."+consistencyVar)
 	execAll(t, f.gr2probe, "SET GLOBAL "+consistencyVar+" = '"+fenced+"'")
 
-	lock, err := openServer(t, "TEST_GROUP_MEMBER2", blocker, eventual).Conn(ctx)
+	lock, err := testestate.OpenUnfenced(t, "TEST_GROUP_MEMBER2", blocker).Conn(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +220,7 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 	dstRole := newEnvOn(t, "grrodst", "TEST_DEST", "TEST_SOURCE")
 	dstRole.both(t, numsDDL)
 	seedNums(t, dstRole.src, 20)
-	admin := openServer(t, "TEST_SOURCE", "", eventual)
+	admin := testestate.OpenUnfenced(t, "TEST_SOURCE", "")
 	const user, pass = "ga3c4_nogrant", "ga3m5-nogrant-pw"
 	account := "'" + user + "'@'%'"
 	execAll(t, admin, "DROP USER IF EXISTS "+account, "CREATE USER "+account+" IDENTIFIED BY '"+pass+"'",
@@ -231,6 +229,12 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 
 	newlyElectedPrimary(t)
 
+	// The cause comes from the role of the source's own row (GR C8): a read-only PRIMARY says it was newly elected or made
+	// read-only; the account without the view's grant gets the general sentence and the grant; the destination's refusal
+	// names no cause.
+	const general = "a newly elected primary until it has applied its backlog"
+	const primaryCause = "is the PRIMARY of group "
+	const newlyElected = "it was newly elected and is still applying its backlog, or an operator made it read-only"
 	ctx := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.Background(), 40*time.Second)
 	}
@@ -251,14 +255,19 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 		if !strings.Contains(pe.Message, wantMessage) {
 			t.Errorf("the refusal does not say %q:\n%s", wantMessage, pe.Message)
 		}
+		if wantMessage == primaryCause && !strings.Contains(pe.Message, newlyElected) {
+			t.Errorf("the refusal names the PRIMARY and not both causes (%q):\n%s", newlyElected, pe.Message)
+		}
+		if strings.Contains(pe.Message, "performance_schema.replication_group_members") != (wantMessage == general && check == "SOURCE_READ_ONLY_CHECK") {
+			t.Errorf("the grant is named = %v, want it named only for the account without it:\n%s", !strings.Contains(pe.Message, "performance_schema.replication_group_members"), pe.Message)
+		}
 	}
 	// onGr2 is a pool on the new primary as its role requires: the server's own fenced setting, or an EVENTUAL session
 	onGr2 := func(schema string, session bool) *sql.DB {
-		params := map[string]string(nil)
 		if session {
-			params = eventual
+			return testestate.OpenUnfenced(t, "TEST_GROUP_MEMBER2", schema) // a session that is not fenced: goarchive's pool would fence it
 		}
-		return openServer(t, "TEST_GROUP_MEMBER2", schema, params)
+		return openServer(t, "TEST_GROUP_MEMBER2", schema, nil)
 	}
 	untouched := func(t *testing.T, e env, stuck tracking.Status, destRows bool) {
 		t.Helper()
@@ -274,7 +283,6 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 			}
 		}
 	}
-	const general = "a newly elected primary until it has applied its backlog"
 
 	for _, tc := range []struct {
 		name    string
@@ -300,7 +308,11 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 				cfg.Source = openAccount(t, "TEST_GROUP_MEMBER2", tc.e.srcSchema, user, pass)
 			}
 			cfg.SkipPolicy = tc.skip
-			refusedAtOnce(t, cfg, "SOURCE_READ_ONLY_CHECK", general)
+			want := primaryCause
+			if tc.account {
+				want = general
+			}
+			refusedAtOnce(t, cfg, "SOURCE_READ_ONLY_CHECK", want)
 			untouched(t, tc.e, tc.stuck, tc.stuck == tracking.StatusCopied)
 		})
 	}
@@ -320,14 +332,14 @@ func TestMySQLANewlyElectedPrimaryIsRefusedAtOnce(t *testing.T) {
 
 // TestMySQLAReadOnlySecondaryIsRefusedForBeingReadOnlyWithoutTheGrant is spec §8's precedence on an ordinary
 // secondary, which needs no backlog: an archive by an account without the view's grant is refused by
-// SOURCE_READ_ONLY_CHECK, and a copy-only job by the same account by the permission check. The secondary is
-// read-only, so no other statement of the refused job is asked of it.
+// SOURCE_READ_ONLY_CHECK, with the grant named and no cause (GR C8), and a copy-only job by the same account by the
+// permission check. The secondary is read-only, so no other statement of the refused job is asked of it.
 func TestMySQLAReadOnlySecondaryIsRefusedForBeingReadOnlyWithoutTheGrant(t *testing.T) {
 	requireGroupMemberSource(t)
 	e := newEnv(t, "grrosecondary")
 	e.both(t, numsDDL)
 	seedNums(t, e.src, 20)
-	admin := openServer(t, "TEST_SOURCE", "", eventual)
+	admin := testestate.OpenUnfenced(t, "TEST_SOURCE", "")
 	const user, pass = "ga3c4_nogrant2", "ga3m5-nogrant2-pw"
 	account := "'" + user + "'@'%'"
 	execAll(t, admin, "DROP USER IF EXISTS "+account, "CREATE USER "+account+" IDENTIFIED BY '"+pass+"'",
@@ -339,7 +351,7 @@ func TestMySQLAReadOnlySecondaryIsRefusedForBeingReadOnlyWithoutTheGrant(t *test
 	if err := admin.QueryRowContext(context.Background(), "SELECT @@GLOBAL.gtid_executed").Scan(&gtids); err != nil {
 		t.Fatal(err)
 	}
-	gr3 := openServer(t, "TEST_GROUP_MEMBER3", "", eventual)
+	gr3 := testestate.OpenUnfenced(t, "TEST_GROUP_MEMBER3", "")
 	if err := gr3.QueryRowContext(context.Background(), "SELECT WAIT_FOR_EXECUTED_GTID_SET(?, 60)", gtids).Scan(&rc); err != nil || rc.Int64 != 0 {
 		t.Fatalf("gr3 did not apply the primary's transactions: %v (%v)", rc, err)
 	}
@@ -360,8 +372,16 @@ func TestMySQLAReadOnlySecondaryIsRefusedForBeingReadOnlyWithoutTheGrant(t *test
 			if !errors.As(err, &pe) || pe.Check != tc.check {
 				t.Fatalf("Run() = %v, want %s", err, tc.check)
 			}
-			if strings.Contains(pe.Message, "performance_schema") && tc.check == "SOURCE_READ_ONLY_CHECK" {
-				t.Errorf("the read-only refusal names the grant:\n%s", pe.Message)
+			// GR C8, spec §4.5's fourth row: the grant is named, and no cause is
+			if tc.check == "SOURCE_READ_ONLY_CHECK" {
+				if !strings.Contains(pe.Message, "GRANT SELECT ON performance_schema.replication_group_members TO <user>") {
+					t.Errorf("the read-only refusal does not name the grant:\n%s", pe.Message)
+				}
+				for _, claim := range []string{"is a SECONDARY", "is the PRIMARY", "the primary is "} {
+					if strings.Contains(pe.Message, claim) {
+						t.Errorf("the refusal names a cause (%q) the account could not read:\n%s", claim, pe.Message)
+					}
+				}
 			}
 		})
 	}

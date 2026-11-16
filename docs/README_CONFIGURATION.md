@@ -117,6 +117,7 @@ server's global. None is configurable.
 | `wait_timeout` | `GREATEST(@@GLOBAL.wait_timeout, 28800)`; `300` on the two lock sessions | A batch's source session waits while the destination copies, verifies and commits; a shorter server value could close it under the batch. No batch session is held through a pause or a replication hold; the two lock sessions are. A lock session is checked every 30 seconds, and its 300 seconds bound how long a lost host keeps its locks ([The lock sessions must stay alive](README_OPERATIONS.md#the-lock-sessions-must-stay-alive)) |
 | character set | `utf8mb4`, collated `utf8mb4_general_ci` (`SET NAMES` after authentication, so after any `init_connect`) | GoArchive reads and binds every value through the session's character set; a narrowed session would read text it cannot hold as `?` ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)) |
 | `max_error_count` | raised from 0 to 1024 (source and destination) | GoArchive reads every statement's warnings ([`MAX_ERROR_COUNT_CHECK`](README_VALIDATION.md#max_error_count_check)) |
+| `group_replication_consistency` | set to `BEFORE_ON_PRIMARY_FAILOVER` when the session is `EVENTUAL` and the Group Replication plugin is `ACTIVE` (source and destination); a stronger value is kept, and a server without the plugin is left alone | A session behind this fence is held on a newly elected primary until it has applied its backlog, so no read or write is served from before it ([`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check)) |
 
 ---
 

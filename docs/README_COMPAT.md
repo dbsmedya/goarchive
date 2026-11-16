@@ -276,6 +276,7 @@ held on it, so that its backlog stayed unapplied for as long as the lock was hel
 | Which statements a fence holds on that primary | Held: a table read, `information_schema.TABLES` and the plugin-state read of `information_schema.PLUGINS`. Let through: `SELECT @@GLOBAL.…` (the configuration read), the group's view in `performance_schema`, `GET_LOCK`, and `SET SESSION group_replication_consistency` |
 | What ends a held statement | Only the session's `wait_timeout`, with `ERROR 3781 (HY000): Timeout exceeded for held statement while new Group Replication primary member is applying backlog.` (measured with a client whose `wait_timeout` was 8 s). `max_execution_time=8000` and `innodb_lock_wait_timeout=8` did not end it in 40 s. GoArchive pins its pool sessions' `wait_timeout` to the larger of the global value and 28800, so a held GoArchive statement waits at least eight hours; eight hours were not waited for. For a session whose `group_replication_consistency` is `BEFORE` or `BEFORE_AND_AFTER` the library's fence table (six servers) records `ERROR 3797 … Error while waiting for group transactions commit on group_replication_consistency= 'BEFORE'` for the same hold, which this repository did not repeat |
 | Stopping a held run | The first signal, or the socket's `stop`, is accepted and the statement stays held; a second `stop` answers `already stopping`; the next signal cancels the run (`context canceled`, exit 1). `KILL` of the connection on the server ends it at once (`invalid connection`, exit 1) |
+| What a held write does after its client cancelled it or went away (2026-11-16, on 8.4.13 only) | The server's thread stays held ("Executing hook on transaction begin."), keeps the session's advisory locks, and runs the statement when the hold ends. A held `INSERT` outside a transaction that the client's context cancelled, and one whose client had closed its connection, were both applied when the backlog was applied, and the locks were free after |
 
 **Why it matters.** The result differs from the manual's account of `EVENTUAL`, and the difference decides
 what a job can safely do on such a primary: a read-only server cannot take a `DELETE`, so an archive's or a
@@ -287,11 +288,15 @@ purge's recovery must not conclude that a root is "already gone" from what it re
 [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check). The refusal is judged on the
 configuration read, which a fence lets through, and not on any statement that it holds. A run that the server
 holds past the session's `wait_timeout` ends with a named stop and exit code 1
-([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). GoArchive makes no claim the manual does
+([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). Its own sessions to a server whose plugin
+is `ACTIVE` are made fenced when they connect, a replacement in the middle of a run included
+([`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check)), so that no read of data or of the
+tracking tables is served from before the backlog; and the read-only refusal names its cause from the role of the
+source's own row. GoArchive makes no claim the manual does
 not make: it does not rely on the window to behave as measured, and a server that behaved as the manual says
 (a writable new primary that serves stale reads) is not covered by the measurement above.
 
-**Still open.** Percona was not run. The backlog was held by a lock on the applier and not by a slow apply, so
+**Still open.** Percona was not run, and the held write of the row above was measured on one series. The backlog was held by a lock on the applier and not by a slow apply, so
 the plugin's log line is what ties the lift of `super_read_only` to the apply. Nothing documents the window, so
 a later server may behave as the manual says. Eight hours were not waited for, and the investigation into the
 window itself is deferred.

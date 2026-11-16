@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
@@ -145,6 +147,76 @@ func readOnlyVariables(c dbsrepl.Config) string {
 	}
 }
 
+// readOnlyViewGrant is what a refusal says when the group's view could not be read to name a cause.
+const readOnlyViewGrant = "The source's account cannot read the group's view, so the cause is not named: " +
+	"GRANT SELECT ON performance_schema.replication_group_members TO <user>."
+
+// readOnlySourceCause is the sentence a refused read-only source ends with (spec §4.5's table, GR C8). The refusal itself
+// needs only the configuration read; the cause needs the source's role, and the role needs the view, which is read only for
+// a server configured for a group. The plugin-state read (the library's v1.6.0) and the view are reads a fence does not hold,
+// so asking after the refusal cannot hang on a newly elected primary. Whatever cannot be read leaves the general sentence:
+// the refusal is issued either way.
+//
+//	own row SECONDARY            the source is a SECONDARY of its group, and the primary's host and port
+//	own row PRIMARY              the source is the group's PRIMARY and is read-only: newly elected, or made so
+//	not a member, plugin not ACTIVE, or not ONLINE   the general sentence
+//	the view's grant is missing  the general sentence and the grant
+func readOnlySourceCause(ctx context.Context, f *facts) string {
+	src, err := f.src.GroupReplication(ctx)
+	if err != nil || !configured(src) {
+		return readOnlyGeneral
+	}
+	members, err := f.src.GroupMembers(ctx)
+	if err != nil {
+		var me *mysql.MySQLError
+		if errors.As(err, &me) && me.Number == 1142 {
+			return readOnlyGeneral + " " + readOnlyViewGrant
+		}
+		return readOnlyGeneral
+	}
+	if !onlineOwn(members) {
+		return readOnlyGeneral
+	}
+	switch ownRow(members).Role {
+	case "SECONDARY":
+		cause := "The source is a SECONDARY of group " + src.GroupName
+		for i := range members {
+			if members[i].Role == "PRIMARY" {
+				return cause + "; the primary is " + memberAddress(members[i]) + "."
+			}
+		}
+		return cause + "."
+	case "PRIMARY":
+		return "The source is the PRIMARY of group " + src.GroupName + " and is read-only: it was newly elected and is still applying its backlog, " +
+			"or an operator made it read-only. Run again when it is writable."
+	}
+	return readOnlyGeneral
+}
+
+// memberAddress is a view row's host and, when the server sent one, its port.
+func memberAddress(m dbsrepl.GroupMember) string {
+	if !m.Port.Valid {
+		return m.Host
+	}
+	return net.JoinHostPort(m.Host, strconv.FormatInt(m.Port.Int64, 10))
+}
+
+// warnReadOnlyPrimary is copy-only's warning (spec §4.5, GR C8). A copy-only run may read a read-only source, so it is not
+// refused; but when that source is the PRIMARY of its group in its own view and is read-only, it may be a newly elected
+// primary that holds the run's reads until it has applied its backlog, and the run says so, and how a held run is
+// stopped, before its first table read. A secondary, a writable primary and a plain server get nothing.
+func warnReadOnlyPrimary(_ context.Context, f *facts) error {
+	g := f.group
+	if (!g.SourceConfig.ReadOnly && !g.SourceConfig.SuperReadOnly) || !configured(g.Source) || !onlineOwn(g.Members) || ownRow(g.Members).Role != "PRIMARY" {
+		return nil
+	}
+	f.warn(fmt.Sprintf("WARNING: the source is the PRIMARY of Group Replication group %s and is read-only (%s). If it was newly elected, the server holds this run's reads "+
+		"until it has applied its backlog, for at most the session's wait_timeout, and GoArchive prints nothing while it does; a primary an operator made read-only holds nothing. "+
+		"To stop a held run send two signals (SIGINT or SIGTERM), or one after a `stop` over the control socket: the first signal or the `stop` asks for a stop at the next batch, "+
+		"which a held run never reaches, and the second signal cancels it.", g.Source.GroupName, readOnlyVariables(g.SourceConfig)))
+	return nil
+}
+
 // checkReadOnly is preflight's first stage (spec §4.2, In which order; §4.5): each side's
 // ReplicationConfig before any other statement, judged as it is read, so a server that is read-only
 // is refused before the plugin-state read that a fenced new primary holds. It runs under every skip
@@ -164,7 +236,7 @@ func checkReadOnly(ctx context.Context, f *facts) error {
 	if ProfileFor(f.cfg.Spec.Type) != ProfileNonDestructive && (g.SourceConfig.ReadOnly || g.SourceConfig.SuperReadOnly) {
 		return &Error{Check: "SOURCE_READ_ONLY_CHECK", Message: fmt.Sprintf(
 			"the source is read-only (%s). An archive or a purge deletes from the source, and its recovery replays deletes there, "+
-				"so it is refused before anything is copied or replayed. %s", readOnlyVariables(g.SourceConfig), readOnlyGeneral)}
+				"so it is refused before anything is copied or replayed. %s", readOnlyVariables(g.SourceConfig), readOnlySourceCause(ctx, f))}
 	}
 	if g.DestinationConfig, err = f.dst.ReplicationConfig(ctx); err != nil {
 		return fmt.Errorf("read the destination's replication configuration: %w", err)

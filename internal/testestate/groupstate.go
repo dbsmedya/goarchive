@@ -12,6 +12,29 @@ import (
 	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 )
 
+// SetGlobalConsistency sets a member's global group_replication_consistency to value for the rest of the test, and puts
+// the value it had back when the test ends, reading it back through the library and failing the test if it differs. It
+// is how a test makes a group whose global is EVENTUAL (the 8.0 default) on a series whose default is stronger (GR C8).
+func SetGlobalConsistency(t testing.TB, db *sql.DB, value string) {
+	t.Helper()
+	ctx, cancel := cleanupSafeContext(t, GroupReplicationWaitDeadline)
+	defer cancel()
+	was, err := dbsrepl.NewInspector(db).GroupConsistency(ctx)
+	if err != nil || !was.GlobalConsistencyKnown {
+		t.Fatalf("read the member's global group_replication_consistency: %v (known %v)", err, was.GlobalConsistencyKnown)
+	}
+	restore := func() {
+		execGR(t, db, "SET GLOBAL group_replication_consistency = "+quoteSQLString(was.GlobalConsistency))
+		rctx, rcancel := cleanupSafeContext(t, GroupReplicationWaitDeadline)
+		defer rcancel()
+		if got, err := dbsrepl.NewInspector(db).GroupConsistency(rctx); err != nil || got.GlobalConsistency != was.GlobalConsistency {
+			t.Errorf("the member's global group_replication_consistency is %q (%v) after the restore, want %q: %s", got.GlobalConsistency, err, was.GlobalConsistency, teardownInstruction)
+		}
+	}
+	t.Cleanup(restore)
+	execGR(t, db, "SET GLOBAL group_replication_consistency = "+quoteSQLString(value))
+}
+
 // StopMember runs STOP GROUP_REPLICATION on db and waits until the member reports itself OFFLINE.
 func StopMember(t testing.TB, db *sql.DB) {
 	t.Helper()

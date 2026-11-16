@@ -117,10 +117,16 @@ In this order, before preflight reads any table or catalog, and whatever is skip
    each member with its state and role, and which row is the source's own. A server that is not
    configured for a group is never asked for it.
 
+Before these, on each new connection, the connector reads the plugin's state and the session's own
+`group_replication_consistency` and makes the session a fenced one where the plugin is `ACTIVE`
+([`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check); a server without the plugin costs four small
+reads there, and is not changed).
+
 A read that fails stops preflight with the error, as any failed inspection does. The order matters:
-a newly elected primary answers the first read and can hold the second
-([a failover's backlog](#a-failovers-backlog)), so the read-only refusals come before it. Only the
-third read needs a grant: `SELECT` on `performance_schema.replication_group_members`
+the read-only refusals come before anything a failover's fence can hold ([a failover's backlog](#a-failovers-backlog)).
+The reads of the plugin's state and of the view are of the server's own variables and views, which that fence does not
+hold, so they also come before the first table read, and a source that was refused for being read-only can be asked why
+(the refusal then names its cause). Only the third read needs a grant: `SELECT` on `performance_schema.replication_group_members`
 ([Permissions](README_PERMISSIONS.md#source)). Without it the job is refused with
 [`SOURCE_GROUP_VIEW_PERMISSION_CHECK`](README_VALIDATION.md#source_group_view_permission_check),
 exit 1, before anything is locked, copied or replayed.
@@ -369,18 +375,35 @@ A GoArchive job sees it in four ways:
 - **Any job whose destination is that server is refused at once**, by
   [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check), whatever its type: it would
   fail at its first write, and a server that fences the session would hold it before that.
-- **A copy-only run on that server is not refused**, because it only reads. Whether it waits depends on
-  the server's `group_replication_consistency` for GoArchive's session. With
-  `BEFORE_ON_PRIMARY_FAILOVER` or a stronger value (the default on 8.4 and 9.7; `EVENTUAL` is the 8.0
-  default, and a cluster built by the AdminAPI persists the series' own), the server holds the
-  session's statements on a newly elected primary until the backlog is applied, and the run goes on
-  by itself when it is. With `EVENTUAL` the run reads at once, and its reads can lag the group until
-  the backlog is applied.
+- **A copy-only run on that server is not refused**, because it only reads, and it is warned. When its
+  source is the `PRIMARY` of its group and is read-only, the run prints one warning before its first table
+  read: if the primary was newly elected, the server holds the run's reads until it has applied its backlog,
+  for at most the session's `wait_timeout`, and GoArchive prints nothing meanwhile; and how a held run is stopped
+  (below). The warning is not printed on a secondary or a writable primary. GoArchive makes its own sessions
+  wait: on a server whose plugin is `ACTIVE`, a session at `EVENTUAL` (the 8.0 default) is set to
+  `BEFORE_ON_PRIMARY_FAILOVER` when it connects, so the server holds the session's table reads on a newly elected
+  primary until the backlog is applied, and the run goes on by itself when it is, with every row the backlog
+  carried ("What the fence does", below).
 - **A run the server is holding shows nothing new.** The log has `Run starting` and, with the control
   socket on, the `Control socket` line. `status` reads `starting, batch 0` with `activity: none` and
   `hold: none`, or its last state if the run was already going. A statement that takes much longer than
   usual after a failover is the server holding it, not GoArchive waiting for a replica: a
   [replication hold](README_OPERATIONS.md#replication-gating) is a different thing, and says so in the log and in `status`.
+
+**What the fence does.** GoArchive runs every source and destination connection behind the server's fence, so that
+none of its reads or writes of data or of the tracking tables is served by a newly elected primary that is still
+applying its backlog. On each new connection to a server whose plugin is `ACTIVE`, before the pool hands it out and
+so before any read can use it (a replacement opened in the middle of a run included), it asks for the session's own
+`group_replication_consistency`: a session at `EVENTUAL` is set to `BEFORE_ON_PRIMARY_FAILOVER` and read back, and
+the four stronger values (`BEFORE_ON_PRIMARY_FAILOVER`, `BEFORE`, `AFTER`, `BEFORE_AND_AFTER`) are kept as they are;
+a value it does not know, or one it cannot establish, refuses the connection
+([`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check)). The `SET` is one statement on the new
+connection and needs no grant beyond the documented ones. A server whose plugin is not `ACTIVE` is left as it is.
+What the fence does not do: a copy-only run that reads an ordinary lagging secondary is not made current by it. That
+run reads what the secondary has applied, which is what reading a replica has always meant, because
+`BEFORE_ON_PRIMARY_FAILOVER` adds no barrier on a secondary. An operator's own `BEFORE` or `BEFORE_AND_AFTER`, which
+GoArchive keeps, makes a read wait on a secondary too, under that value's own rules. And a primary switched away
+during a run is not covered by any rule: the run fails at its next write to the source with MySQL's read-only error.
 
 **What ends a held statement.** The backlog being applied, or the session's `wait_timeout`, whichever
 comes first. GoArchive pins the `wait_timeout` of its pool sessions to the larger of the server's global value and 28800
@@ -427,7 +450,14 @@ what the log holds. Killing the run's connection on the server also ends it at o
 
 Stopping a held run ends GoArchive, not the server's session: the server's thread stays in the process list
 (`Executing hook on transaction begin.`) until the backlog is applied or the session's `wait_timeout` passes. `KILL`
-it to end it sooner.
+it to end it sooner. Measured on MySQL 8.4.13, the thread keeps its statement: **a write outside a transaction that
+GoArchive had cancelled, or whose client had gone, is applied when the hold ends**, and the thread keeps the session's
+advisory locks until then. GoArchive's own work is all inside transactions, which are rolled back; the writes outside
+one are the registry's, and the last of them is the job's final status. If a stop reaches the final status write while
+it is held, the write is cancelled after the 5 seconds a cleanup statement gets, the run ends, its thread keeps the
+job's lock, and **a run of the same job started within the lock session's 300-second `wait_timeout`, unless the
+backlog is applied first, finds the lock held** and is refused as for any job that is running. The status the run
+meant to write is written when the hold ends.
 
 ## A transaction over the size limit
 `group_replication_transaction_size_limit` (default 150000000 bytes) bounds the transactions of a Group

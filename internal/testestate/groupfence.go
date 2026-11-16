@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,11 +65,32 @@ type GroupFence struct {
 	released    bool
 }
 
+// FenceOptions shape the fence a test builds on top of the harness's own schema (GR C8). The zero value is the harness
+// as dbsgomysql builds it.
+type FenceOptions struct {
+	// Prepare are statements run on the group's primary once the harness's schema exists and every member has applied
+	// it, before the secondary's applier is held, so the rows and tables they make are already on the secondary.
+	// "{schema}" in a statement is the harness's schema.
+	Prepare []string
+	// Backlog are statements run, in order, in the one transaction that the secondary's applier cannot apply past the
+	// lock, so their rows are the ones a fenced read must wait for. "{schema}" is the harness's schema too.
+	Backlog []string
+	// NoElection holds the secondary's applier and writes the backlog, and elects nobody: gr2 stays an ordinary
+	// secondary that is behind, which is where a session's BEFORE_ON_PRIMARY_FAILOVER adds no barrier.
+	NoElection bool
+}
+
 // BuildGroupFence fences the topology's Secondary (gr2) as a newly elected primary and returns once gr2
 // reports itself PRIMARY with super_read_only = 1; it fails the test if super_read_only is anything else
 // there. Before it changes anything it registers a cleanup that calls Release, so a failure at any later
 // step still restores the topology.
 func BuildGroupFence(t testing.TB, topology *GroupTopology) *GroupFence {
+	t.Helper()
+	return BuildGroupFenceWith(t, topology, FenceOptions{})
+}
+
+// BuildGroupFenceWith is BuildGroupFence with the options' tables, late rows and election.
+func BuildGroupFenceWith(t testing.TB, topology *GroupTopology, options FenceOptions) *GroupFence {
 	t.Helper()
 
 	EnsureGroupOnline(t, topology)
@@ -100,12 +122,25 @@ func BuildGroupFence(t testing.TB, topology *GroupTopology) *GroupFence {
 		fence.exec(t, fence.oldPrimary, statement)
 	}
 	fence.waitApplied(t)
+	for _, statement := range options.Prepare {
+		fence.exec(t, fence.oldPrimary, fence.expand(statement))
+	}
+	if len(options.Prepare) > 0 {
+		fence.waitApplied(t)
+	}
 
 	fence.holdApplier(t)
-	fence.writeBacklog(t)
-	fence.elect(t)
+	fence.writeBacklog(t, options.Backlog)
+	if !options.NoElection {
+		fence.elect(t)
+	}
 
 	return fence
+}
+
+// expand puts the harness's schema in a statement written with "{schema}".
+func (f *GroupFence) expand(statement string) string {
+	return strings.ReplaceAll(statement, "{schema}", f.Schema)
 }
 
 // holdApplier takes LOCK TABLES ... READ on the blocker table on gr2, in a session of its own.
@@ -130,7 +165,7 @@ func (f *GroupFence) holdApplier(t testing.TB) {
 
 // writeBacklog commits one transaction on gr1 that gr2's applier cannot apply past the lock, and waits until
 // a gr2 worker is applying it.
-func (f *GroupFence) writeBacklog(t testing.TB) {
+func (f *GroupFence) writeBacklog(t testing.TB, extra []string) {
 	t.Helper()
 
 	ctx, cancel := cleanupSafeContext(t, grStatementTimeout)
@@ -140,10 +175,14 @@ func (f *GroupFence) writeBacklog(t testing.TB) {
 	if err != nil {
 		t.Fatalf("begin the backlog transaction on the primary: %v", err)
 	}
-	for _, statement := range []string{
+	statements := []string{
 		"UPDATE " + f.Schema + ".blocker SET v = v + 1 WHERE id = 1",
 		"INSERT INTO " + f.HeldTable + " VALUES (1)",
-	} {
+	}
+	for _, statement := range extra {
+		statements = append(statements, f.expand(statement))
+	}
+	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			if rollbackErr := tx.Rollback(); rollbackErr != nil {
 				t.Errorf("roll back the backlog transaction on the primary: %v", rollbackErr)
@@ -254,6 +293,15 @@ func (f *GroupFence) Release(t testing.TB) {
 	f.waitApplied(t)
 }
 
+// UnlockApplier ends the lock that holds the secondary's applier, so the backlog applies and a fenced statement is let
+// go, and leaves the rest of the teardown to Release: the election's end, the group's roles and the harness's schema. A
+// test that must see what a held statement or run does after the backlog is applied calls it, waits for them, and lets
+// the cleanup's Release drop the schema afterwards (GR C8).
+func (f *GroupFence) UnlockApplier(t testing.TB) {
+	t.Helper()
+	f.unlock(t)
+}
+
 // unlock ends the lock session: UNLOCK TABLES on it, or KILL from another session when that fails.
 func (f *GroupFence) unlock(t testing.TB) {
 	t.Helper()
@@ -318,6 +366,52 @@ func openEventualDB(t testing.TB, role, dsn string) *sql.DB {
 	})
 
 	return db
+}
+
+// ElectPrimary makes member the group's primary with no backlog held (group_replication_set_as_primary), and returns
+// once it reports itself PRIMARY and writable. A cleanup puts the group's primary back to gr1 when it is not, so a test
+// that moves the primary needs no teardown of its own for the plain election (GR C8).
+func ElectPrimary(t testing.TB, topology *GroupTopology, member *sql.DB) {
+	t.Helper()
+
+	EnsureGroupOnline(t, topology)
+	original := ServerUUID(t, topology.Primary)
+	t.Cleanup(func() {
+		if MemberRole(t, topology.Primary) != MemberPrimary {
+			execGR(t, member, setAsPrimary(original))
+			pollUntil(t, "the group primary is PRIMARY and writable again", func() (bool, string) {
+				role, readOnly := MemberRole(t, topology.Primary), SuperReadOnly(t, topology.Primary)
+
+				return role == MemberPrimary && !readOnly, fmt.Sprintf("role %s, super_read_only = %t", role, readOnly)
+			})
+		}
+	})
+	execGR(t, member, setAsPrimary(ServerUUID(t, member)))
+	pollUntil(t, "the elected member becomes PRIMARY and writable", func() (bool, string) {
+		role, readOnly := MemberRole(t, member), SuperReadOnly(t, member)
+
+		return role == MemberPrimary && !readOnly, fmt.Sprintf("role %s, super_read_only = %t", role, readOnly)
+	})
+}
+
+// OpenUnfenced opens a pool on the estate's server named by prefix (TEST_SOURCE, TEST_GROUP_MEMBER2, ...) as root, whose
+// every session sets its own group_replication_consistency to EVENTUAL as it connects, through the driver alone: no
+// goarchive connector, so nothing puts a fence behind it (GR C8). It is for a test's reads and writes of a server state a
+// fence holds, which must not be held by what they observe or undo, and for a source a test wants read without the fence.
+// schema is the default schema, or "".
+func OpenUnfenced(t testing.TB, prefix, schema string) *sql.DB {
+	t.Helper()
+	cfg, err := envConfig(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn, err := mysql.ParseDSN(plainDSN(cfg))
+	if err != nil {
+		t.Fatalf("parse the DSN of %s: %v", prefix, err)
+	}
+	dsn.DBName = schema
+
+	return openEventualDB(t, prefix+" (unfenced)", dsn.FormatDSN())
 }
 
 func fenceSuffix(t testing.TB) string {

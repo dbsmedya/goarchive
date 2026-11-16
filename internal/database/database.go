@@ -235,12 +235,15 @@ func openOn(ctx context.Context, c driver.Connector, cfg *config.DatabaseConfig)
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		// The first connection ran the max_error_count and session charset checks:
+		// The first connection ran the max_error_count, session charset and failover fence checks:
 		// a property of the server and the account, not a transient, so no retry.
 		if _, ok := errors.AsType[*MaxErrorCountError](err); ok {
 			return nil, err
 		}
 		if _, ok := errors.AsType[*SessionCharsetError](err); ok {
+			return nil, err
+		}
+		if _, ok := errors.AsType[*GroupConsistencyError](err); ok {
 			return nil, err
 		}
 		return nil, &retryableError{err}

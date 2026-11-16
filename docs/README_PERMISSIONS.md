@@ -136,6 +136,12 @@ preflight.
 - **The session character set needs no privilege.** The `SET NAMES` every connection runs, and
   the read of its result ([`SESSION_CHARSET_CHECK`](README_VALIDATION.md#session_charset_check)),
   are session statements any account may run.
+- **The failover fence needs no privilege beyond the documented ones.** On a server whose Group Replication
+  plugin is `ACTIVE`, a new connection reads the plugin's state and its own `group_replication_consistency`
+  (from `performance_schema`, which any account that can connect may read) and, for a session at `EVENTUAL`, runs
+  `SET SESSION group_replication_consistency = 'BEFORE_ON_PRIMARY_FAILOVER'`. The `SET` was accepted for the
+  documented grants on MySQL 8.0.46, 8.4.13 and 9.7.4; a server or account that refuses it fails the connection with
+  [`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check), which names the two ways out.
 - **The source facts need no privilege, but one.** The unfinished-work guard reads the source's
   `gtid_mode` and `gtid_executed` and its Group Replication state through dbsgomysql, and preflight
   reads the source's `read_only` settings and each side's plugin state and transaction size limit;
