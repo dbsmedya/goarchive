@@ -177,7 +177,7 @@ func TestMultiPrimaryConsultsNoRole(t *testing.T) {
 		w.asMember("ONLINE", "PRIMARY")
 		w.src.members = w.src.members[:1]
 		w.src.group = withMode(w.src.group, "OFF", true)
-		w.mustFail("GROUP_MULTI_PRIMARY_CHECK")
+		w.refused("GROUP_MULTI_PRIMARY_CHECK")
 	})
 	t.Run("a SECONDARY own row, mode OFF", func(t *testing.T) {
 		w := healthy(t, jobspec.Archive)
