@@ -44,7 +44,7 @@ tested against several MySQL releases instead of being rediscovered per check.
 
 The library also ships a registry of documented MySQL version quirks and records where
 behaviour diverges across the 8.0, 8.4 and 9.7 lines; supported versions are in
-[Environment](README_LIMITATIONS.md#environment).
+[Supported versions](README_OPERATIONS.md#supported-versions).
 
 ## The division of labour
 

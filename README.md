@@ -1,7 +1,7 @@
 # GoArchive — Archive MySQL Rows Across Single or Multiple Relational Tables, with Parent and Child Rows
 
-[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](docs/README_LIMITATIONS.md#environment)
-[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](docs/README_LIMITATIONS.md#environment)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-blue)](docs/README_OPERATIONS.md#supported-versions)
+[![MySQL](https://img.shields.io/badge/MySQL-8.0.40+-orange)](docs/README_OPERATIONS.md#supported-versions)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 **GoArchive respects foreign key constraints and ORM relations. Archive, copy, or purge a parent row together with every child row that depends on it — in dependency order, verified before anything is deleted.**
