@@ -178,8 +178,7 @@ its own rerun finishes that work. Its limits:
   Group Replication member, or the shards were provisioned from one another. Give each source
   server its own [`job_schema`](README_CONFIGURATION.md#job_schema-destination-only).
 - **Not detected:** a server that received the stopped job's data only before a GTID
-  migration, and a server outside a group, for a job still recorded on a member's own uuid that
-  the 3.0 → 3.1 upgrade left unconverted.
+  migration, and a server outside a group, for a job the 3.1 upgrade left on a member's uuid.
   [Re-bind the stopped job](README_JOBS_SCHEMA.md#re-binding-a-job-after-a-failover) before
   another job runs on its tables.
 - **Not detected:** a stopped job recorded on a replica of this source.
