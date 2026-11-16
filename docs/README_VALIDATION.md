@@ -50,7 +50,7 @@ key order (tables: [order_lines(primary_key (id) but the PRIMARY KEY is (order_i
 ```
 
 Preflight's first statements are not checks, apart from two: it reads the
-[Group Replication facts](README_OPERATIONS.md#group-replication) of both servers (each side's
+[Group Replication facts](README_GROUP_REPLICATION.md#what-is-read) of both servers (each side's
 configuration, each side's plugin state and, for a source that is a member, its view of the group)
 before it reads any table. They are read whatever is skipped, and they are what `validate`, `dry-run`
 and a run print as the Group Replication block. The two checks that judge the configurations as they
@@ -104,10 +104,10 @@ type.
 | `MAX_ALLOWED_PACKET_CHECK` | ✅ | ✅ | ✅ |
 
 - **The two read-only checks and `SOURCE_GROUP_VIEW_PERMISSION_CHECK`** are the checks of preflight's
-  first two stages, which read the [Group Replication facts](README_OPERATIONS.md#group-replication)
+  first two stages, which read the [Group Replication facts](README_GROUP_REPLICATION.md#what-is-read)
   before any table. The read-only checks come first, on each side's configuration, so a server that is
   read-only is refused before the plugin-state read that a Group Replication fence can hold
-  ([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)). The view's check refuses only a
+  ([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). The view's check refuses only a
   source that is a Group Replication member whose account cannot read the group's view; a source
   without the plugin is never asked, and nothing is refused. A source that is read-only, an archive's
   or a purge's, is refused for that first, even when its account also lacks the view's grant.
@@ -488,12 +488,12 @@ source with `read_only` or `super_read_only` on is refused before anything is co
 is judged on the source's configuration, preflight's first statement there, and says which of the two
 variables is on. Which one stops GoArchive's own account depends on its privileges, so the check
 refuses on either. It runs for an archive and a purge; a copy-only run never writes the source and is
-exempt (reading a secondary or a replica is a use [the docs describe](README_OPERATIONS.md#group-replication)).
+exempt (reading a secondary or a replica is a use [the docs describe](README_GROUP_REPLICATION.md)).
 Under `--skip-dangerously-validate-preflight-allow-experimental` it still runs, and no other flag skips it.
 
 It applies to any read-only source, a plain replica included. On a Group Replication group a
 secondary is read-only, and so is a newly elected primary until it has applied its backlog
-([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)); the message says that and names no
+([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)); the message says that and names no
 cause, since the check cannot tell which of them the source is:
 
 ```
@@ -873,7 +873,7 @@ foreign_key column fails as a statement-caps error instead of RELATION_KEY_CHECK
 ```
 
 Still enforced on a run: the [connection checks](#connection-checks), the
-[Group Replication facts](README_OPERATIONS.md#group-replication) and so
+[Group Replication facts](README_GROUP_REPLICATION.md#what-is-read) and so
 `SOURCE_GROUP_VIEW_PERMISSION_CHECK` (the identity and the report depend on them, so no flag skips
 their reads), [`SOURCE_READ_ONLY_CHECK`](#source_read_only_check) and
 [`DEST_READ_ONLY_CHECK`](#dest_read_only_check) (judged on the configurations those reads

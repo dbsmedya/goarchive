@@ -71,7 +71,7 @@ Source and destination must be different databases
 
 Nothing in either block says whether the server is a Group Replication member: point them at one
 as at any server. Whether it is a member is a fact the server reports, and `validate`, `dry-run` and
-the run's log print what was found ([Group Replication](README_OPERATIONS.md#group-replication)).
+the run's log print what was found ([Group Replication](README_GROUP_REPLICATION.md#what-you-see)).
 What the replication gate watches is declared, not detected: list the members to watch under
 [`replication.servers`](#servers) with `type: group`.
 
@@ -160,7 +160,7 @@ member. A member listed without a type is an asynchronous server with no channel
 
 The gate judges a group server by what the group says of itself: the state of every member of its view and the size of
 the applier and certification queues, against the two bounds above, and not by a lag
-([Group Replication members](README_OPERATIONS.md#group-replication-members)). Its account needs `SELECT` on two
+([Group Replication members](README_GROUP_REPLICATION.md#group-replication-members)). Its account needs `SELECT` on two
 `performance_schema` tables instead of `REPLICATION CLIENT`
 ([Permissions](README_PERMISSIONS.md#monitored-replicas-optional)).
 

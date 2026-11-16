@@ -74,7 +74,7 @@ Only with `replication.enabled: true`. A server whose account lacks it holds the
 being skipped ([Replication gating](README_OPERATIONS.md#replication-gating)).
 
 A server listed with `type: group` needs two other grants **in place of** `REPLICATION CLIENT`, which it does not
-use, for the two reads its probe makes ([Group Replication members](README_OPERATIONS.md#group-replication-members)):
+use, for the two reads its probe makes ([Group Replication members](README_GROUP_REPLICATION.md#group-replication-members)):
 
 ```sql
 -- On EACH server listed with type: group, for that entry's user.
@@ -143,7 +143,7 @@ preflight.
   ([Concurrency and locking](README_OPERATIONS.md#concurrency-and-locking)). The one that does is
   the source's view of its group, `performance_schema.replication_group_members`, read only from
   a server whose plugin is `ACTIVE` with a group name
-  ([Group Replication](README_OPERATIONS.md#group-replication)).
+  ([Group Replication](README_GROUP_REPLICATION.md#what-is-read)).
 - **`SESSION_VARIABLES_ADMIN`** also lets the account change other restricted session variables,
   so raising the global `max_error_count` is usually the better remedy. The recipes above do not
   include it.
