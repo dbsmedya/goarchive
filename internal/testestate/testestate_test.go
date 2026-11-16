@@ -75,9 +75,14 @@ func onlineView(self string) []dbsrepl.GroupMember {
 	return view
 }
 
+// globally is the library's GroupConsistency of a member whose global value is v.
+func globally(v string) dbsrepl.GroupConsistency {
+	return dbsrepl.GroupConsistency{PluginStatus: "ACTIVE", GlobalConsistency: v, GlobalConsistencyKnown: true}
+}
+
 func baseMembers() []memberFacts {
 	gr := dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: "g", TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true}
-	return []memberFacts{{"gr1", gr, "BEFORE_ON_PRIMARY_FAILOVER"}, {"gr2", gr, "BEFORE_ON_PRIMARY_FAILOVER"}, {"gr3", gr, "BEFORE_ON_PRIMARY_FAILOVER"}}
+	return []memberFacts{{"gr1", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}, {"gr2", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}, {"gr3", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}}
 }
 
 // TestGroupProblemsNameEachChangedState: gr1 is the PRIMARY with all three members ONLINE, the size
@@ -97,7 +102,9 @@ func TestGroupProblemsNameEachChangedState(t *testing.T) {
 	unknown := baseMembers()
 	unknown[2].limit.TransactionSizeLimitKnown = false
 	raised := baseMembers()
-	raised[1].consistency = "EVENTUAL"
+	raised[1].consistency = globally("EVENTUAL")
+	unreported := baseMembers()
+	unreported[2].consistency = dbsrepl.GroupConsistency{PluginStatus: "ACTIVE"}
 
 	for _, tc := range []struct {
 		name    string
@@ -111,6 +118,7 @@ func TestGroupProblemsNameEachChangedState(t *testing.T) {
 		{"a lowered limit", onlineView("gr1"), lowered, "gr2: group_replication_transaction_size_limit is 4096, want 150000000"},
 		{"an unknown limit", onlineView("gr1"), unknown, "gr3: group_replication_transaction_size_limit is not reported"},
 		{"another consistency", onlineView("gr1"), raised, "gr2: group_replication_consistency is EVENTUAL, want BEFORE_ON_PRIMARY_FAILOVER"},
+		{"an unreported consistency", onlineView("gr1"), unreported, "gr3: group_replication_consistency is not reported"},
 	} {
 		got := groupProblems(tc.view, tc.members, limit, consistency)
 		if len(got) != 1 || got[0] != tc.want {
