@@ -29,11 +29,10 @@ func (nopSink) Entry(tuning.Level, string, ...any) {}
 // the emitter catches up. A place of the queue comes back only when the emitter has written the
 // event it held, so an accepted change always has its place and the queue cannot grow.
 type emitter struct {
-	store      *tuning.Store
-	audit      *tuning.Audit
-	sink       Sink
-	banner     func(string)
-	configured int
+	store  *tuning.Store
+	audit  *tuning.Audit
+	sink   Sink
+	banner func(string)
 
 	// admit orders a note's admission against the cutoff: a note holds the read lock from its
 	// check of closed to its put, and the cutoff takes the write lock, so that once it returns no
@@ -55,8 +54,7 @@ func newEmitter(store *tuning.Store, sink Sink, banner func(string)) *emitter {
 	}
 	return &emitter{
 		store: store, audit: store.Audit(), sink: sink, banner: banner,
-		configured: store.Start().SecondsBehindSourceWithin,
-		stop:       make(chan struct{}), done: make(chan struct{}),
+		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 }
 
@@ -179,22 +177,31 @@ func (e *emitter) write(ev tuning.Event) {
 	}
 }
 
-// warnIfRaised reports a raise of the lag tolerance above its configured value as a run banner is
-// (spec §4.6 Loud): one WARNING line through the Banner. A lowering, a restore and a raise up to
-// the configured value are ordinary changes.
+// warnIfRaised reports a raise of the lag tolerance or of a group bound above its configured value as a run banner
+// is (spec §4.6 and §4.3 Loud): one WARNING line through the Banner. A lowering, a restore and a raise up to the
+// configured value are ordinary changes.
 func (e *emitter) warnIfRaised(ev tuning.Event) {
-	if e.banner == nil || ev.Key != tuning.SecondsBehindSourceWithin {
+	var consequence string
+	switch ev.Key {
+	case tuning.SecondsBehindSourceWithin:
+		consequence = "replicas may fall further behind before deletes hold"
+	case tuning.GroupApplierQueueWithin, tuning.GroupCertifierQueueWithin:
+		consequence = "members of the group may fall further behind before deletes hold"
+	default:
+		return
+	}
+	if e.banner == nil {
 		return
 	}
 	now, errNew := strconv.Atoi(ev.New)
 	was, errOld := strconv.Atoi(ev.Old)
-	if errNew != nil || errOld != nil || now <= was || now <= e.configured {
+	configured, errConf := strconv.Atoi(e.store.Start().Text(ev.Key))
+	if errNew != nil || errOld != nil || errConf != nil || now <= was || now <= configured {
 		return
 	}
 	who := ""
 	if ev.Peer.UID >= 0 {
 		who = fmt.Sprintf(" (uid %d)", ev.Peer.UID)
 	}
-	e.banner(fmt.Sprintf("WARNING: %s raised to %d, above the configured %d, over the control socket%s: replicas may fall further behind before deletes hold.",
-		ev.Key, now, e.configured, who))
+	e.banner(fmt.Sprintf("WARNING: %s raised to %d, above the configured %d, over the control socket%s: %s.", ev.Key, now, configured, who, consequence))
 }

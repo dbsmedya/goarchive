@@ -218,4 +218,7 @@ var settingHelp = map[tuning.Key]string{
 	tuning.DeleteSleepSeconds:        "seconds between DELETEs",
 	tuning.SecondsBehindSourceWithin: "lag tolerance in seconds; above the configured value only one step at a time",
 	tuning.CheckInterval:             "seconds between re-checks while the gate holds",
+	// The two group bounds, in transactions; a raise above the configured value takes one step at a time, as the tolerance does.
+	tuning.GroupApplierQueueWithin:   "applier queue bound in transactions; above the configured value only one step at a time",
+	tuning.GroupCertifierQueueWithin: "certification queue bound in transactions; above the configured value only one step at a time",
 }

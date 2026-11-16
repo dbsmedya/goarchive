@@ -1159,7 +1159,7 @@ skip.
 | `TestMaxLen` | no path limit is recorded for the OS: it is not darwin, linux or windows | those three |
 | `TestPathLength` | the temporary directory leaves no room for a job name under the path limit | every host with a normal temporary directory |
 | `TestMySQLMixedCaseNames` | `lower_case_table_names` is 2, which only a macOS server has: only 0 and 1 run on Linux servers | the estate (0) and row `lower_case_table_names_1` |
-| `TestCheckIntervalDuration`, `TestCheckIntervalBound`, `TestWholeNumberGettersRoundTrip`, `TestSettersRefuseWhatTheFileRefuses`, `TestToleranceStepDoesNotOverflow` | an `int` narrower than 64 bits has no value of the size they need: a 32-bit build | every 64-bit build |
+| `TestCheckIntervalDuration`, `TestCheckIntervalBound`, `TestWholeNumberGettersRoundTrip`, `TestSettersRefuseWhatTheFileRefuses`, `TestToleranceStepDoesNotOverflow`, `TestGroupBoundStepDoesNotOverflow` | an `int` narrower than 64 bits has no value of the size they need: a 32-bit build | every 64-bit build |
 | `TestIdentityDoesNotFollowALink`, `TestJudgeSocket`, `TestJudgeDirKind` | a symbolic link cannot be made: a Windows account without the privilege (GitHub's runner has it, and runs them) | every place above |
 | `TestStartControlRefusals` (`cmd/goarchive/cmd`), `TestDeviceNameLoadsWhereNotReserved` (`internal/jobspec`) | Windows, where no job runs them: the Windows job runs the control packages and `TestControl` only | Linux and macOS |
 | `TestImageRunTestIgnoresDockerWarnings` (`tests/harness`) | no `bash` on the `PATH` | every host with `bash` |
