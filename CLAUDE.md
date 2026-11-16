@@ -183,7 +183,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Moving from 2.x to 3.0: tracking tables, config and flag changes | `docs/README_UPGRADING_3_0.md` |
 | MySQL server behaviours that change how GoArchive binds keys (compatibility issues) | `docs/README_COMPAT.md` |
 | Character sets: the session pin, the supported and refused lists, converting a column | `docs/README_CHARSETS.md` |
-| Runtime control: enabling and the path, the protocol contract (version, grammar, actions, settings, reason words, `status-json` fields), when a change applies, the ceilings, the step rule of the tolerance and the group bounds, security | `docs/README_OPERATIONS.md` → *Runtime control* (the `control:` block: `docs/README_CONFIGURATION.md`) |
+| Runtime control: enabling and the path, the protocol contract (version, grammar, actions, settings, reason words, `status-json` fields), when a change applies, the ceilings, the step rule of the tolerance and the group bounds, security | `docs/README_RUNTIME_CONTROL.md` (the `control:` block: `docs/README_CONFIGURATION.md`) |
 
 ### Where behavior lives in code
 

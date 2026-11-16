@@ -10,6 +10,7 @@ Detailed specifications for GoArchive. Start at the
 | [Permissions](README_PERMISSIONS.md) | Grant recipes, the privilege matrix, the provable-grant rule, troubleshooting |
 | [Limitations](README_LIMITATIONS.md) | Hard constraints and the run contract, model limitations, operational cautions, trust model, supported versions |
 | [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning and memory, pausing, replication gating, crash recovery and resume, concurrency and locking |
+| [Runtime control](README_RUNTIME_CONTROL.md) | The run's control socket: enabling it and its path, the `goarchive control` client, the protocol contract, runtime settings, `status-json`, the tolerance's step rule, security |
 | [Group Replication](README_GROUP_REPLICATION.md) | Running a job on a Group Replication group: what is supported, where to point GoArchive, how to choose each value, what is read and printed, and two worked examples (ProxySQL, MySQL Router) |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: the tracking tables, the startup checks, inspection queries, what is safe to delete, failover re-binding |
 | [Duplicate cleanup](README_DUPLICATE_CLEANUP.md) | Removing duplicate rows with one job: keep the minimum primary key per key |
@@ -36,6 +37,7 @@ Detailed specifications for GoArchive. Start at the
 - **A column's character set is refused** → [Character sets](README_CHARSETS.md)
 - **Deciding whether GoArchive fits your schema** → [Limitations](README_LIMITATIONS.md)
 - **A run is too slow, or needs pausing or resuming** → [Operations](README_OPERATIONS.md)
+- **Pausing, stopping or retuning a run over its control socket** → [Runtime control](README_RUNTIME_CONTROL.md)
 - **Running a job on a Group Replication group** → [Group Replication](README_GROUP_REPLICATION.md)
 - **Maintaining the tracking tables, or clearing a crashed job** → [Job Tracking Schema](README_JOBS_SCHEMA.md)
 - **Upgrading from 2.x or a 3.0 prerelease** → [Upgrading to 3.0](README_UPGRADING_3_0.md)

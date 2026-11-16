@@ -750,7 +750,7 @@ recovery, and the tolerance raised over the socket with its warnings. The replic
 set `SOURCE_DELAY` on db3 and put both back when they end.
 
 `TestProtocolContractMatchesDoc` (`tests/harness`) compares the protocol contract in
-`docs/README_OPERATIONS.md` (the actions, the settings, the reason words and the `status-json` fields) with
+`docs/README_RUNTIME_CONTROL.md` (the actions, the settings, the reason words and the `status-json` fields) with
 the server's own tables, read from its source, so a protocol change that does not update the doc fails
 `make check`.
 

@@ -12,13 +12,13 @@ import (
 	"testing"
 )
 
-// The control socket's protocol is a public contract (TEL-1, spec §4.3, D19): README_OPERATIONS.md's
-// *Runtime control* section lists its actions, its settings, its error reason words and the fields of
-// status-json, and a protocol change must update that section in the same change. These tests compare
+// The control socket's protocol is a public contract (TEL-1, spec §4.3, D19): README_RUNTIME_CONTROL.md's
+// protocol contract lists its actions, its settings, its error reason words and the fields of
+// status-json, and a protocol change must update that document in the same change. These tests compare
 // each list with the server's own tables, read from its source, so that the doc and the server cannot
 // drift apart. The doc's tables are found by their lead-in labels and their first column is compared.
 const (
-	contractDocPath  = "docs/README_OPERATIONS.md"
+	contractDocPath  = "docs/README_RUNTIME_CONTROL.md"
 	commandsGoPath   = "internal/control/commands.go"
 	protocolGoPath   = "internal/control/protocol.go"
 	statusGoPath     = "internal/control/status.go"
