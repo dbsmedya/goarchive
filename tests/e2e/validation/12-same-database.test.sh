@@ -4,7 +4,7 @@
 # arrives with the documented error category, not that the run succeeded.
 # Runs only under --sakila-examples / `make e2e-examples`.
 #
-# Both connection blocks name 127.0.0.1:3305/sakila. GoArchive identifies a
+# Both connection blocks name the source, 127.0.0.1:3305 on the plain estate, and sakila. GoArchive identifies a
 # database by the server_uuid its connection reports plus the selected schema,
 # and refuses to start when source and destination match — at connection time,
 # before preflight, out of reach of --skip-dangerously-validate-preflight-allow-experimental (issue #13).
@@ -18,7 +18,7 @@
 # that the guard runs BEFORE preflight.
 
 test_name="Test12_SameDatabaseRefused"
-test_desc="Same-database refusal: source and destination are both 127.0.0.1:3305/sakila [validation demo]"
+test_desc="Same-database refusal: source and destination are both the source server and sakila [validation demo]"
 config_file="test12_same_database.yaml"
 tables="payment"
 mode="example"

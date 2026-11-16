@@ -5,25 +5,31 @@
 # target SHA, every row is OK, and the run holds exactly the rows and gates it wants; exit 2 on
 # counts that are missing or not numbers, or that want nothing.
 #
-#   tests/envmatrix/gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<job>=<result> ...]
+#   tests/envmatrix/gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<group-gates-wanted>] [<job>=<result> ...]
 #
-# Matrix verify wants every rows.tsv row and 0 gates; Gate verify wants 0 rows and 6 gates.
+# Matrix verify wants every rows.tsv row and 0 gates; Gate verify wants 0 rows, 6 gates and 3 group gates.
+# The group gates (GRG-1) are the gate on the group estate, one image per series: the same two parts,
+# uploaded as gate-group-integration-<n> and gate-group-e2e-<n>, certified on the same evidence and counted
+# apart, from <group-gates-wanted> (a bare number after the gate count; absent means none are wanted, and
+# one that is present anyway is an unexpected image).
 # Since RVG-3 a gate is one image's two part artifacts, gate-integration-<n> and gate-e2e-<n>, and
 # it counts only when both are certified. A part is certified only on the evidence
 # tests/AGENTS.md requires of a gate: exactly one run.tsv, for the target SHA, on a clean tree,
 # PASS with command and recording exits 0, naming the artifact's part; the completion marker of
 # that run, SHA and part beside it; and its summary.txt. The wanted images are 0 to
 # <gates-wanted> - 1, named in decimal without leading zeros; any other gate-* artifact, and a
-# wanted image without both parts, fails the run. Each <job>=<result> is a needs.<job>.result; anything but success
+# wanted image without both parts, fails the run. The same holds of the group gates, with their own names and count. Each <job>=<result> is a needs.<job>.result; anything but success
 # fails the run, whatever its artifacts say.
 set -uo pipefail
 
-usage="usage: gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<job>=<result> ...]"
+usage="usage: gh-summary.sh <artifacts-dir> <sha> <rows-wanted> <gates-wanted> [<group-gates-wanted>] [<job>=<result> ...]"
 [[ $# -ge 4 && $3 =~ ^[0-9]+$ && $4 =~ ^[0-9]+$ ]] || { echo "$usage" >&2; exit 2; }
 (( 10#$3 + 10#$4 > 0 )) || { echo "gh-summary.sh: a summary that wants no rows and no gates verifies nothing" >&2; exit 2; }
 
 dir=$1 sha=$2 want_rows=$((10#$3)) want_gates=$((10#$4)) bad=0
 shift 4
+want_group=0
+if [[ ${1:-} =~ ^[0-9]+$ ]]; then want_group=$((10#$1)); shift; fi
 title="Matrix verify"
 if [[ $want_gates -gt 0 ]]; then title="Gate verify"; fi
 echo "## $title: \`${sha:0:12}\`"
@@ -71,31 +77,37 @@ counts() {
     [[ $# -eq 4 ]] && echo "E2E $1/$2, examples $3/$4"
 }
 
-# ok_integration[n] and ok_e2e[n] mark wanted image n's certified parts.
-ok_integration=() ok_e2e=()
+# ok_integration[n] and ok_e2e[n] mark wanted image n's certified parts; ok_group_integration and
+# ok_group_e2e are the group gates'.
+ok_integration=() ok_e2e=() ok_group_integration=() ok_group_e2e=()
+group_seen=0
 for g in "$dir"/gate-*; do
     [[ -d $g ]] || continue
     name=$(basename "$g")
     version=$(cat "$g/server-version.txt" 2>/dev/null || echo "?")
-    if ! [[ $name =~ ^gate-(integration|e2e)-(0|[1-9][0-9]{0,2})$ ]]; then
+    if ! [[ $name =~ ^gate-(group-)?(integration|e2e)-(0|[1-9][0-9]{0,2})$ ]]; then
         echo "| $name | NOT CERTIFIED: not a part artifact | | $version |"; bad=1; continue
     fi
-    part=${BASH_REMATCH[1]} n=${BASH_REMATCH[2]}
-    if [[ $n -ge $want_gates ]]; then
-        echo "| gate-$n $part | NOT CERTIFIED: unexpected image | | $version |"; bad=1; continue
+    kind=${BASH_REMATCH[1]%-} part=${BASH_REMATCH[2]} n=${BASH_REMATCH[3]}
+    want=$want_gates label="gate-$n"
+    if [[ -n $kind ]]; then want=$want_group label="gate-group-$n"; group_seen=1; fi
+    if [[ $n -ge $want ]]; then
+        echo "| $label $part | NOT CERTIFIED: unexpected image | | $version |"; bad=1; continue
     fi
     runs=()
     while IFS= read -r r; do runs+=("$r"); done < <(find "$g" -name run.tsv)
     if [[ ${#runs[@]} -ne 1 ]]; then
-        echo "| gate-$n $part | NOT CERTIFIED: ${#runs[@]} run records | | $version |"; bad=1; continue
+        echo "| $label $part | NOT CERTIFIED: ${#runs[@]} run records | | $version |"; bad=1; continue
     fi
     why=$(certify "${runs[0]}" "$part")
     c=$(counts "$(dirname "${runs[0]}")/summary.txt" "$part")
     if [[ -n $why ]]; then
-        echo "| gate-$n $part | NOT CERTIFIED: $why | $c | $version |"; bad=1; continue
+        echo "| $label $part | NOT CERTIFIED: $why | $c | $version |"; bad=1; continue
     fi
-    echo "| gate-$n $part | PASS | $c | $version |"
-    if [[ $part == integration ]]; then ok_integration[n]=1; else ok_e2e[n]=1; fi
+    echo "| $label $part | PASS | $c | $version |"
+    if [[ -n $kind ]]; then
+        if [[ $part == integration ]]; then ok_group_integration[n]=1; else ok_group_e2e[n]=1; fi
+    elif [[ $part == integration ]]; then ok_integration[n]=1; else ok_e2e[n]=1; fi
 done
 
 gates=0
@@ -104,6 +116,13 @@ for ((n=0; n<want_gates; n++)); do
         if [[ ! -d $dir/gate-$part-$n ]]; then echo "| gate-$n $part | MISSING | | |"; bad=1; fi
     done
     [[ -n ${ok_integration[n]:-} && -n ${ok_e2e[n]:-} ]] && gates=$((gates + 1))
+done
+group_gates=0
+for ((n=0; n<want_group; n++)); do
+    for part in integration e2e; do
+        if [[ ! -d $dir/gate-group-$part-$n ]]; then echo "| gate-group-$n $part | MISSING | | |"; bad=1; fi
+    done
+    [[ -n ${ok_group_integration[n]:-} && -n ${ok_group_e2e[n]:-} ]] && group_gates=$((group_gates + 1))
 done
 
 rows=0
@@ -120,5 +139,7 @@ done
 
 echo
 echo "Gates: $gates (want $want_gates). Matrix rows: $rows (want $want_rows)."
-[[ $gates -eq $want_gates && $rows -eq $want_rows ]] || bad=1
+# The group line is printed only by a run that wants group gates or holds an artifact of one.
+if [[ $want_group -gt 0 || $group_seen -eq 1 ]]; then echo "Group gates: $group_gates (want $want_group)."; fi
+[[ $gates -eq $want_gates && $group_gates -eq $want_group && $rows -eq $want_rows ]] || bad=1
 exit "$bad"

@@ -31,14 +31,14 @@
 
 source:
   host: 127.0.0.1
-  port: 3305
+  port: ${TEST_SOURCE_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila
 
 destination:
   host: 127.0.0.1
-  port: 3307
+  port: ${TEST_DEST_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila_archive

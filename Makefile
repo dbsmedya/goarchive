@@ -245,12 +245,10 @@ test-reset:
 	@echo "Run 'bash tests/scripts/run-tests.sh --setup' to reload Sakila."
 
 # The whole E2E procedure, in the only order that is correct. Use this one.
-# Slow by design: it destroys the estate, rebuilds it, then runs.
+# Slow by design: it destroys the estate, rebuilds it, then runs. On either estate (TOPOLOGY=group
+# for the group's): the configs take their ports from the estate's env file.
 .PHONY: e2e
 e2e:
-	@if [ "$(TOPOLOGY)" != plain ]; then \
-		echo "e2e: the E2E configs (tests/configs) name the plain estate's ports; the $(TOPOLOGY) estate has no E2E yet (GRG-1)"; exit 2; \
-	fi
 	@$(MAKE) test-reset
 	@$(MAKE) e2e-setup
 	@$(MAKE) e2e-tests-must-run-after-setup

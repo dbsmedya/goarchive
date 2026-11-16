@@ -13,7 +13,7 @@
 
 source:
   host: 127.0.0.1
-  port: 3305
+  port: ${TEST_SOURCE_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila
@@ -21,7 +21,7 @@ source:
 
 destination:
   host: 127.0.0.1
-  port: 3307
+  port: ${TEST_DEST_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila_archive
@@ -34,7 +34,7 @@ replication:
   cache_ttl: 0
   servers:
     - host: 127.0.0.1
-      port: 3308
+      port: ${TEST_REPLICA_PORT}
       user: root
       password: ${MYSQL_ROOT_PASSWORD}
       tls: disable

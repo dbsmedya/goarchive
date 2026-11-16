@@ -22,6 +22,11 @@
 # local .yaml -- silent divergence, which is worse than a lost local tweak. Edit
 # the template, never the .yaml.
 #
+# Four placeholders are filled: ${MYSQL_ROOT_PASSWORD}, and the three server ports of the estate
+# the run is on, ${TEST_SOURCE_PORT}, ${TEST_DEST_PORT} and ${TEST_REPLICA_PORT} (tests/.env, or
+# tests/.env.group for TOPOLOGY=group), each with the plain estate's port when unset (3305, 3307,
+# 3308). So the same templates run on both estates (GRG-1).
+#
 # Substitution is bash parameter expansion, NOT sed: a password containing '&' or
 # the sed delimiter corrupts the replacement silently. ${var//pat/rep} is bash 3.2
 # safe -- macOS `make` resolves to /bin/bash 3.2.57, which has no `declare -A` and
@@ -44,7 +49,11 @@ render_test_configs() {
 
         if ! {
             while IFS= read -r line || [ -n "$line" ]; do
-                printf '%s\n' "${line//\$\{MYSQL_ROOT_PASSWORD\}/$MYSQL_ROOT_PASSWORD}"
+                line="${line//\$\{MYSQL_ROOT_PASSWORD\}/$MYSQL_ROOT_PASSWORD}"
+                line="${line//\$\{TEST_SOURCE_PORT\}/${TEST_SOURCE_PORT:-3305}}"
+                line="${line//\$\{TEST_DEST_PORT\}/${TEST_DEST_PORT:-3307}}"
+                line="${line//\$\{TEST_REPLICA_PORT\}/${TEST_REPLICA_PORT:-3308}}"
+                printf '%s\n' "$line"
             done < "$template"
         } > "$rendered"; then
             echo "ERROR: failed to render $rendered from $template" >&2
@@ -55,7 +64,7 @@ render_test_configs() {
         # rather than handing goarchive a config with a literal '${...}' in it.
         if grep -q '\${' "$rendered"; then
             echo "ERROR: $rendered still contains an unsubstituted \${...} placeholder." >&2
-            echo "       render_test_configs only substitutes \${MYSQL_ROOT_PASSWORD}." >&2
+            echo "       render_test_configs substitutes \${MYSQL_ROOT_PASSWORD}, \${TEST_SOURCE_PORT}, \${TEST_DEST_PORT} and \${TEST_REPLICA_PORT}." >&2
             return 1
         fi
 

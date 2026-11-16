@@ -12,6 +12,7 @@
 #   ESTATE_ENV          the env file in tests/ that holds its connection settings
 #   ESTATE_ENV_EXAMPLE  the tracked example that file is created from
 #   ESTATE_CONTAINERS   the names of its containers
+#   ESTATE_SOURCE       the name of its source's container (db1, gr1)
 #   ESTATE_REPLICA      the name of its asynchronous replica, as a message about it should say it (db3, gr-replica)
 #   OTHER_CONTAINERS    the names of the other topology's containers
 #   ESTATE_COMPOSE      the arguments `docker compose` takes for it (empty for plain: tests/compose.yml,
@@ -28,6 +29,7 @@ case "$TOPOLOGY" in
         ESTATE_ENV=".env"
         ESTATE_ENV_EXAMPLE="dot.env"
         ESTATE_CONTAINERS="$PLAIN_CONTAINERS"
+        ESTATE_SOURCE="db1"
         ESTATE_REPLICA="db3"
         OTHER_CONTAINERS="$GROUP_CONTAINERS"
         ESTATE_COMPOSE=()
@@ -36,6 +38,7 @@ case "$TOPOLOGY" in
         ESTATE_ENV=".env.group"
         ESTATE_ENV_EXAMPLE="dot.env.group"
         ESTATE_CONTAINERS="$GROUP_CONTAINERS"
+        ESTATE_SOURCE="gr1"
         ESTATE_REPLICA="gr-replica"
         OTHER_CONTAINERS="$PLAIN_CONTAINERS"
         ESTATE_COMPOSE=(-f compose.group.yml --env-file "$ESTATE_ENV")
