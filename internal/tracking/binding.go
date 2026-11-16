@@ -12,6 +12,9 @@ import (
 // DATABASE() of internal/database's identity probe) and the destination database from
 // the destination pool.
 type Binding struct {
+	// SourceServerUUID is the source's data identity (spec §4.2, GR C9): the Group Replication group's name when the source is an
+	// ONLINE member of a group, and the server's uuid otherwise. The column keeps its name; the value is what a run's
+	// transactions are logged under. It is never empty.
 	SourceServerUUID    string
 	SourceDatabase      string
 	DestinationDatabase string
@@ -110,6 +113,8 @@ func (e *BindingError) Error() string {
 		"  - restore the original config or source and run once, to finish the logged work;\n"+
 		"  - abandon those roots with the procedure in docs/README_JOBS_SCHEMA.md, \"Abandoning logged roots\";\n"+
 		"  - after a source failover to a replica holding the same data under a new server_uuid, re-bind the job "+
-		"with the UPDATE in docs/README_JOBS_SCHEMA.md, \"Re-binding a job after a failover\", once you have confirmed it is the same data",
+		"with the UPDATE in docs/README_JOBS_SCHEMA.md, \"Re-binding a job after a failover\", once you have confirmed it is the same data;\n"+
+		"  - when the job is recorded on a server's uuid and the source is now a member of a Group Replication group, re-bind the job to "+
+		"the group's name with the same procedure, once you have confirmed that the group holds that server's data",
 		e.Job, e.Type, e.Pending, strings.Join(statuses, " or "), strings.Join(parts, " and "))
 }

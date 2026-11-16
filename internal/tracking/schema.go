@@ -82,15 +82,36 @@ const remedyUnknownLabel = "This GoArchive did not write that label: an earlier 
 	"run that release, and do not drop them. Either way, pointing destination.job_schema at another schema " +
 	"leaves them untouched. See \"Tracking-schema upgrade procedures\" in docs/README_JOBS_SCHEMA.md"
 
-// classify decides spec §6.1 and R37 for one state. Every label but 3.0 is refused, and so
+// remedy30 is the procedure for tables GoArchive 3.0 wrote (spec §4.2, GR C9). 3.0 bound a job to its source server's uuid, and
+// 3.1 binds a job on a Group Replication member to the group's name, so a 3.0 registry is converted by a procedure whose one
+// question only the operator can answer, job by job, and never opened as it is.
+const remedy30 = "These tables were written by GoArchive 3.0, which bound each job to its source server's uuid. GoArchive 3.1 binds a job " +
+	"on a Group Replication member to the group's name, so a 3.0 registry is converted by a procedure and is not opened as it is. " +
+	"Stop every GoArchive process that uses the schema, whatever its version, then follow docs/README_UPGRADING_3_1.md, \"Moving from 3.0\". " +
+	"Pointing destination.job_schema at another schema leaves these tables untouched"
+
+// remedyMissingLabel is the procedure for job rows with no label row. The tables may be from either release, so it asks which
+// wrote them: the label to restore is that release's.
+const remedyMissingLabel = "These are tracking tables whose label row is missing. Find out which GoArchive wrote them. " +
+	"If GoArchive 3.1 wrote them, restore the label with INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.1'). " +
+	"If GoArchive 3.0 wrote them, restore it with INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.0'); the next run then " +
+	"refuses them and names docs/README_UPGRADING_3_1.md, \"Moving from 3.0\". Or drop every tracking table to start afresh"
+
+// classify decides spec §6.1 and R37 for one state. Every label but 3.1 is refused, and so
 // is an unlabelled schema unless it is new: 2.x wrote its label before any job row, and
-// releases before 2.0 (1.9.8-RC) wrote none. A 2.x-shaped archiver_job is refused whatever its label.
-// A 3.0 label without archiver_job is refused too: its job ids would restart at 1 and
+// releases before 2.0 (1.9.8-RC) wrote none. A 3.0 label gets its own procedure; a 2.x-shaped archiver_job
+// is refused whatever its label. A 3.1 label without archiver_job is refused too: its job ids would restart at 1 and
 // meet the logs of the jobs that held them.
 func classify(schema string, st schemaState) error {
 	switch {
 	case st.labelled && st.label != SchemaLabel && legacyLabels[st.label]:
 		return &SchemaError{Schema: schema, Found: fmt.Sprintf("report schema_version %q", st.label)}
+	case st.labelled && st.label == label30 && st.job && !st.jobIs30:
+		// A 3.0 label over tables that are not 3.0's: relabelling a 2.x schema is the shortcut R37's procedure exists to
+		// prevent, so the shape is judged before the label is trusted (below).
+		return &SchemaError{Schema: schema, Found: fmt.Sprintf("hold a 2.x archiver_job table under schema_version %q", st.label)}
+	case st.labelled && st.label == label30:
+		return &SchemaError{Schema: schema, Found: fmt.Sprintf("report schema_version %q", st.label), Remedy: remedy30}
 	case st.labelled && st.label != SchemaLabel:
 		// Before the 2.x-shape case: a later release may change archiver_job itself.
 		return &SchemaError{Schema: schema, Found: fmt.Sprintf("report schema_version %q", st.label),
@@ -104,15 +125,13 @@ func classify(schema string, st schemaState) error {
 		}
 		return &SchemaError{Schema: schema, Found: "hold a 2.x archiver_job table " + how}
 	case st.labelled && !st.job:
-		return &SchemaError{Schema: schema, Found: "are labelled 3.0 but have no archiver_job table",
+		return &SchemaError{Schema: schema, Found: fmt.Sprintf("are labelled %s but have no archiver_job table", SchemaLabel),
 			Remedy: "The per-job logs archiver_job_log_<id> would meet new jobs that reuse their ids. Restore archiver_job " +
 				"from a backup, or drop every tracking table (goarchive_meta and every archiver_job_log_<id>) to start afresh"}
 	case st.labelled:
 		return nil
 	case st.job && st.jobHasRow:
-		return &SchemaError{Schema: schema, Found: "hold job rows but no schema_version label",
-			Remedy: "These are 3.0 tables whose label row is missing. After confirming GoArchive 3.0 wrote them, restore it with " +
-				"INSERT INTO goarchive_meta (id, schema_version) VALUES (1, '3.0'), or drop every tracking table to start afresh"}
+		return &SchemaError{Schema: schema, Found: "hold job rows but no schema_version label", Remedy: remedyMissingLabel}
 	default:
 		return nil
 	}
