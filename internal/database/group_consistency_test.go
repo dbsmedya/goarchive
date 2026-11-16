@@ -324,7 +324,7 @@ func TestConnectorFencesEveryConnectionAndClosesARefusedOne(t *testing.T) {
 	if conn != nil {
 		t.Errorf("a refused connection was handed out: %T", conn)
 	}
-	refusal(t, err)
+	_ = refusal(t, err)
 	if second := serverOf(t, inner.conns[1]); !second.wasClosed() {
 		t.Error("the refused connection was not closed")
 	}
@@ -443,7 +443,7 @@ func TestOpenPoolDoesNotRetryAFenceRefusal(t *testing.T) {
 	if err == nil {
 		t.Fatal("openOn accepted a refused connection")
 	}
-	refusal(t, err)
+	_ = refusal(t, err)
 	if _, retry := errors.AsType[*retryableError](err); retry {
 		t.Errorf("%v is marked retryable: a fence refusal is not a transient", err)
 	}
