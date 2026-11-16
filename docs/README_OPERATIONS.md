@@ -81,11 +81,11 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 
 | Command | Flags |
 |---------|-------|
-| `archive` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--progress[=<interval>]` |
-| `copy-only` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--progress[=<interval>]` |
-| `purge` | `-j`, `--job` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--progress[=<interval>]` |
-| `validate` | `-j`, `--job` · `--verification` · `--force-triggers` |
-| `dry-run` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` |
+| `archive` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--allow-multi-primary` · `--progress[=<interval>]` |
+| `copy-only` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--allow-multi-primary` · `--progress[=<interval>]` |
+| `purge` | `-j`, `--job` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--allow-multi-primary` · `--progress[=<interval>]` |
+| `validate` | `-j`, `--job` · `--verification` · `--force-triggers` · `--allow-multi-primary` |
+| `dry-run` | `-j`, `--job` · `--verification` · `--skip-dangerously-validate-preflight-allow-experimental` · `--force-triggers` · `--allow-multi-primary` |
 | `plan` | `-j`, `--job` |
 | `control` | `-s`, `--set` · `-g`, `--get` (one action, or one of these; `-c`/`--config` is refused) |
 
@@ -94,6 +94,7 @@ Processing settings (`batch_size`, sleeps, `sentinel_file`) have no flags
 | `-j`, `--job <name>` | The job to run; required except for `validate`, which checks every job without it |
 | `--verification=<sha256\|count\|none>` | Overrides the job's and the file's `verification` for this run ([`verification`](README_CONFIGURATION.md#verification)). Ignored for a purge job under `validate` and `dry-run` |
 | `--force-triggers` | Accept source DELETE triggers that preflight can list; they fire on every delete ([`DELETE_TRIGGER_CHECK`](README_VALIDATION.md#delete_trigger_check)). Under `validate` and `dry-run` it has no effect on a copy-only job and prints no warning there |
+| `--allow-multi-primary` | Accept a Group Replication group that is in multi-primary mode, or whose mode cannot be read, on the source or the destination: advisory locks are local to one member, so two runs on different members are not serialized ([`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check)). A command-line flag only, with no configuration key; the skip flag below does not stand in for it |
 | `--skip-dangerously-validate-preflight-allow-experimental` | **Dangerous.** Skips preflight's policy checks ([Bypassing preflight](README_VALIDATION.md#bypassing-preflight)) |
 | `--progress[=<interval>]` | Periodic progress, a start line and a closing block ([Progress display](#progress-display), [Output and exit codes](#output-and-exit-codes)) |
 | `-s`, `--set <key>=<value>` | `control` only: change one setting of a running job, sent as `<key>=<value>`. Given once per call |
@@ -108,6 +109,11 @@ archive and purge jobs; `verification: count`, `verification: none` and
 ([Warnings](README_VALIDATION.md#warnings)). With `logging.output: stderr` the warning is one log
 entry on stderr, in the log's format; otherwise it is a plain `WARNING:` line. `dry-run` and
 `validate` print them too.
+
+A group that `--allow-multi-primary` accepted gets one banner for each side it accepted, naming the case (a source
+that is a running member of a group in multi-primary mode, a server configured for multi-primary mode, or a mode
+that could not be read), also under the skip flag; a job whose servers are not in such a group gets none, flag or
+not ([`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check)).
 
 An archive or purge job whose source is an `ONLINE` Group Replication member, with `replication.enabled: true`
 and no server of `type: group` listed, gets one more, also under the skip flag:
@@ -597,8 +603,8 @@ pass, a replica that has just become unhealthy is not noticed. `cache_ttl: 0` ch
 
 Every preflight, `validate` and `dry-run` included, starts by reading the Group Replication facts of
 both servers. This section says what is read, in which order, what `validate`, `dry-run` and a run
-print from it, and the one grant it asks for. A pair of servers without Group Replication reads
-the same facts, finds no group and prints nothing.
+print from it, which groups are supported, and the one grant it asks for. A pair of servers without Group
+Replication reads the same facts, finds no group and prints nothing.
 
 ### What is read
 
@@ -613,7 +619,10 @@ In this order, before preflight reads any table or catalog, and whatever is skip
    [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check) (every job type). No flag skips
    either, and neither waits for the reads that follow.
 2. **Each side's plugin state:** whether the Group Replication plugin is `ACTIVE`, the group name it
-   is configured with, and its `group_replication_transaction_size_limit`.
+   is configured with, its `group_replication_transaction_size_limit` and its
+   `group_replication_single_primary_mode`. The mode is judged right away by
+   [`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check), on every server whose plugin is
+   `ACTIVE` with a group name (see [Single-primary groups](#single-primary-groups-are-supported)).
 3. **The source's view of its group**, only when its plugin is `ACTIVE` and a group name is set:
    each member with its state and role, and which row is the source's own. A server that is not
    configured for a group is never asked for it.
@@ -634,7 +643,7 @@ statement caps, and a run logs it once, as one entry:
 
 ```text
 Group Replication:
-  source:      member of group 8a94f357-…, ONLINE, PRIMARY; transaction size limit 150000000 bytes
+  source:      member of group 8a94f357-…, ONLINE, PRIMARY, mode single-primary; transaction size limit 150000000 bytes
   destination: Group Replication plugin not active
   sizes:       batch_size 1000, batch_delete_size 500 (each transaction must fit the limit of its side)
 ```
@@ -644,13 +653,36 @@ Group Replication:
   `ONLINE` member reads `configured for group …, not a running member (state OFFLINE)`, or
   `(no row of its own in its view)`. A source without the plugin reads `Group Replication plugin
   not active`.
+- **The mode word** is the server's `group_replication_single_primary_mode`: `mode single-primary` or
+  `mode multi-primary` on a source whose own row is `ONLINE`, where it is the group's mode; `configured
+  single-primary` or `configured multi-primary` on a source that is not a running member and on the
+  destination, whose view is not read, where it is the server's own setting; and `mode unknown` where the
+  server returned no value or a text that is neither `ON` nor `OFF`. A run is refused for every value but
+  `ON` unless `--allow-multi-primary` accepts it.
 - **`destination`** has no state or role: its view is not read. A destination configured for a group
-  reads `configured for group …`.
+  reads `configured for group …`, then its mode.
 - **The limit** is the server's `group_replication_transaction_size_limit`, as the server reports it.
   A transaction larger than it fails at its commit (error 3100), so each batch's copy transaction and
   each delete chunk must fit the limit of the server they run on; `sizes` is the job's own
   `batch_size` and `batch_delete_size`. `0` is the server's own "no limit" for this variable, and
   `unknown` means the server did not report it.
+
+### Single-primary groups are supported
+
+3.1 supports Group Replication groups in single-primary mode, as the source or as the destination. A group in
+multi-primary mode is refused at the start of every job type, before any table is read, because GoArchive
+serializes runs with advisory locks and an advisory lock is local to one member: two runs connected to different
+members of a multi-primary group are not serialized. The refusal is
+[`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check). It judges the server's own
+`group_replication_single_primary_mode` and never a count of primaries, so a lone member that is still `ONLINE`
+while the others are down, or a peer that is recovering, does not make a multi-primary group look
+single-primary. A mode that cannot be read, or that is neither `ON` nor `OFF`, is refused as well, naming the text.
+
+`--allow-multi-primary` accepts the refusal, on the command line only, and prints a banner that names the case
+(the banners under [Command flags](#command-flags)). It does not make the job safe: multi-primary mode has restrictions of its own,
+cascading foreign keys among them, that GoArchive does not test. The mode is read once, at the start; a mode
+switched during a run is not detected, and a peer that returns while a run is going changes nothing the run
+reports.
 
 ### A failover's backlog
 
