@@ -100,10 +100,11 @@ type Gate struct {
 // DefaultConfig's job and rejection is validation's, so nothing here clamps or
 // defaults a value the operator set.
 //
-// store is the settings store the gate reads its tolerance and interval from;
-// nil is a store that never changes, at the configured values. A store that
-// starts at other values than the configuration is refused: the configured
-// tolerance is what the step rule measures a raise by.
+// store is the settings store the gate reads its tolerance, its interval and, for
+// a group server, its two queue bounds from; nil is a store that never changes, at
+// the configured values. A store that starts at other values than the
+// configuration is refused: the configured values are what the step rule measures
+// a raise by. The two bounds are compared only when a group server is listed.
 func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger, store *tuning.Store) (*Gate, error) {
 	if log == nil {
 		log = logger.NewDefault()
@@ -120,15 +121,39 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger, store 
 			len(cfg.Servers), len(dbs))
 	}
 
+	hasGroup := false
+	for i := range cfg.Servers {
+		hasGroup = hasGroup || cfg.Servers[i].Type == "group"
+	}
+	if hasGroup && (cfg.GroupApplierQueueWithin == nil || cfg.GroupCertifierQueueWithin == nil) {
+		// The two bounds are required by the loader whenever a group server is listed; a construction that gets none is
+		// refused rather than judged by a bound nobody set.
+		return nil, fmt.Errorf("replication: a server is type group and needs group_applier_queue_within and group_certifier_queue_within")
+	}
+
 	if store == nil {
-		store = tuning.Constant(tuning.Settings{
+		start := tuning.Settings{
 			SecondsBehindSourceWithin: cfg.SecondsBehindSourceWithin,
 			CheckInterval:             cfg.CheckInterval,
-		})
+		}
+		if hasGroup {
+			start.GroupApplierQueueWithin, start.GroupCertifierQueueWithin = *cfg.GroupApplierQueueWithin, *cfg.GroupCertifierQueueWithin
+		}
+		store = tuning.Constant(start)
 	}
 	if st := store.Start(); st.SecondsBehindSourceWithin != cfg.SecondsBehindSourceWithin || st.CheckInterval != cfg.CheckInterval {
 		return nil, fmt.Errorf("replication: the settings store starts at tolerance %ds and interval %ds, but the configuration says %ds and %ds",
 			st.SecondsBehindSourceWithin, st.CheckInterval, cfg.SecondsBehindSourceWithin, cfg.CheckInterval)
+	}
+	if st := store.Start(); hasGroup {
+		if st.GroupApplierQueueWithin != *cfg.GroupApplierQueueWithin {
+			return nil, fmt.Errorf("replication: the settings store starts at group_applier_queue_within %d, but the configuration says %d",
+				st.GroupApplierQueueWithin, *cfg.GroupApplierQueueWithin)
+		}
+		if st.GroupCertifierQueueWithin != *cfg.GroupCertifierQueueWithin {
+			return nil, fmt.Errorf("replication: the settings store starts at group_certifier_queue_within %d, but the configuration says %d",
+				st.GroupCertifierQueueWithin, *cfg.GroupCertifierQueueWithin)
+		}
 	}
 
 	servers := make([]server, 0, len(cfg.Servers))
@@ -137,19 +162,8 @@ func New(cfg config.ReplicationConfig, dbs []*sql.DB, log *logger.Logger, store 
 			return nil, fmt.Errorf("replication: nil connection for server %s", cfg.Servers[i].Addr())
 		}
 		if cfg.Servers[i].Type == "group" {
-			// The two bounds are required by the loader whenever a group server is listed; a construction that
-			// gets none is refused rather than judged by a bound nobody set.
-			if cfg.GroupApplierQueueWithin == nil || cfg.GroupCertifierQueueWithin == nil {
-				return nil, fmt.Errorf("replication: server %s is type group and needs group_applier_queue_within and group_certifier_queue_within",
-					cfg.Servers[i].Addr())
-			}
-			servers = append(servers, server{
-				id: cfg.Servers[i].Addr(),
-				group: &groupProbe{
-					reader:        dbsrepl.NewInspector(dbs[i]),
-					applierWithin: int64(*cfg.GroupApplierQueueWithin), certifierWithin: int64(*cfg.GroupCertifierQueueWithin),
-				},
-			})
+			// The bounds are the store's: a round reads them from its snapshot with the tolerance (GR C7s).
+			servers = append(servers, server{id: cfg.Servers[i].Addr(), group: &groupProbe{reader: dbsrepl.NewInspector(dbs[i])}})
 
 			continue
 		}
@@ -202,7 +216,7 @@ func (g *Gate) logStartup() {
 
 	for _, srv := range g.servers {
 		if srv.group != nil {
-			g.logger.Infof("  server %s group: %s", srv.id, groupBounds(srv.group))
+			g.logger.Infof("  server %s group: %s", srv.id, groupBounds(st.Settings))
 
 			continue
 		}
@@ -294,6 +308,9 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 		snap := g.store.Load()
 		tolerance := int64(snap.SecondsBehindSourceWithin)
 		interval := config.CheckIntervalDuration(snap.CheckInterval)
+		// Both group bounds come from this snapshot, with the tolerance: every group server of the round is judged by
+		// one pair, and the verdicts say which (GR C7s).
+		applierWithin, certifierWithin := int64(snap.GroupApplierQueueWithin), int64(snap.GroupCertifierQueueWithin)
 
 		allOK := true
 		// pending holds the recoveries of this round that cannot be told apart from a pass that
@@ -312,14 +329,14 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 			}
 			var (
 				status []dbsrepl.ChannelStatus
-				snap   groupSnapshot
+				view   groupSnapshot
 				table  string
 				err    error
 			)
 			if srv.group != nil {
 				// Both reads of a group server run on the one probe context: a stop that cancels it cancels
 				// whichever read is under way (LAG-1).
-				snap, table, err = srv.group.read(probe)
+				view, table, err = srv.group.read(probe)
 			} else {
 				status, err = srv.reader.ReplicaStatus(probe)
 			}
@@ -342,16 +359,18 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 
 			var cause holdCause
 			var detail string
-			var lag, applier, certifier *int64
+			var lag, applier, certifier, applierBound, certifierBound *int64
 			ok := true
 			switch {
 			case err != nil && srv.group != nil:
+				applierBound, certifierBound = &applierWithin, &certifierWithin
 				ok, cause, detail = false, classify(err), groupReadDetail(table, err)
 			case err != nil:
 				ok, cause, detail = false, classify(err), sanitizeLine(err.Error())
 			case srv.group != nil:
-				applier, certifier = largestQueues(snap.stats)
-				ps := evaluateGroup(snap.members, snap.stats, srv.group.applierWithin, srv.group.certifierWithin, g.currentSource())
+				applierBound, certifierBound = &applierWithin, &certifierWithin
+				applier, certifier = largestQueues(view.stats)
+				ps := evaluateGroup(view.members, view.stats, applierWithin, certifierWithin, g.currentSource())
 				if len(ps) > 0 {
 					ok, cause, detail = false, causeUnhealthy, renderProblems(ps, tolerance)
 				}
@@ -376,7 +395,7 @@ func (g *Gate) WaitForLag(ctx context.Context, stop <-chan struct{}) error {
 				failed = true
 				g.transition(holds, &firstHold, srv.id, cause, detail, interval)
 			}
-			g.record(i, ok, cause, detail, lag, applier, certifier, tolerance, firstHold)
+			g.record(i, ok, cause, detail, lag, applier, certifier, bounds{applierBound, certifierBound}, tolerance, firstHold)
 			if !ok {
 				allOK = false
 			}
@@ -654,6 +673,11 @@ type ServerVerdict struct {
 	// certification queue in its view at the last probe, in transactions; nil when it has not been probed or its
 	// read failed. Always nil for an asynchronous server.
 	ApplierQueue, CertifierQueue *int64
+	// ApplierQueueWithin and CertifierQueueWithin are, for a group server, the two bounds its last probe was judged
+	// by, in transactions: a verdict can be older than the setting, and a reader must be able to tell by which value
+	// it was judged. Nil for an asynchronous server and for a group server that has not been probed; a probe whose
+	// read failed was judged by the round's pair too.
+	ApplierQueueWithin, CertifierQueueWithin *int64
 	// Tolerance is the tolerance the verdict was judged by, in seconds.
 	Tolerance int64
 	// CheckedAt is the time of the probe.
@@ -683,6 +707,7 @@ func (g *Gate) Record() Record {
 		if i < len(g.verdicts) {
 			v = g.verdicts[i]
 			v.Lag, v.ApplierQueue, v.CertifierQueue = copyInt(v.Lag), copyInt(v.ApplierQueue), copyInt(v.CertifierQueue)
+			v.ApplierQueueWithin, v.CertifierQueueWithin = copyInt(v.ApplierQueueWithin), copyInt(v.CertifierQueueWithin)
 		}
 		rec.Servers = append(rec.Servers, v)
 	}
@@ -700,11 +725,16 @@ func copyInt(n *int64) *int64 {
 	return &c
 }
 
+// bounds are the two group bounds a group server's verdict was judged by; both are nil for an asynchronous server.
+type bounds struct{ applier, certifier *int64 }
+
 // record writes server i's verdict, and since when the call holds, under the mutex.
-func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag, applier, certifier *int64, tolerance int64, holdSince time.Time) {
+func (g *Gate) record(i int, ok bool, cause holdCause, detail string, lag, applier, certifier *int64, within bounds, tolerance int64, holdSince time.Time) {
 	v := ServerVerdict{
 		Server: g.servers[i].id, Type: g.servers[i].kind(), Healthy: ok, Lag: lag,
-		ApplierQueue: applier, CertifierQueue: certifier, Tolerance: tolerance, CheckedAt: g.now(),
+		ApplierQueue: applier, CertifierQueue: certifier,
+		ApplierQueueWithin: copyInt(within.applier), CertifierQueueWithin: copyInt(within.certifier),
+		Tolerance: tolerance, CheckedAt: g.now(),
 	}
 	if !ok {
 		v.Cause, v.Detail = cause.String(), detail
