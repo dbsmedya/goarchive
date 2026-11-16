@@ -368,6 +368,32 @@ func openEventualDB(t testing.TB, role, dsn string) *sql.DB {
 	return db
 }
 
+// ElectPrimary makes member the group's primary with no backlog held (group_replication_set_as_primary), and returns
+// once it reports itself PRIMARY and writable. A cleanup puts the group's primary back to gr1 when it is not, so a test
+// that moves the primary needs no teardown of its own for the plain election (GR C8).
+func ElectPrimary(t testing.TB, topology *GroupTopology, member *sql.DB) {
+	t.Helper()
+
+	EnsureGroupOnline(t, topology)
+	original := ServerUUID(t, topology.Primary)
+	t.Cleanup(func() {
+		if MemberRole(t, topology.Primary) != MemberPrimary {
+			execGR(t, member, setAsPrimary(original))
+			pollUntil(t, "the group primary is PRIMARY and writable again", func() (bool, string) {
+				role, readOnly := MemberRole(t, topology.Primary), SuperReadOnly(t, topology.Primary)
+
+				return role == MemberPrimary && !readOnly, fmt.Sprintf("role %s, super_read_only = %t", role, readOnly)
+			})
+		}
+	})
+	execGR(t, member, setAsPrimary(ServerUUID(t, member)))
+	pollUntil(t, "the elected member becomes PRIMARY and writable", func() (bool, string) {
+		role, readOnly := MemberRole(t, member), SuperReadOnly(t, member)
+
+		return role == MemberPrimary && !readOnly, fmt.Sprintf("role %s, super_read_only = %t", role, readOnly)
+	})
+}
+
 // OpenUnfenced opens a pool on the estate's server named by prefix (TEST_SOURCE, TEST_GROUP_MEMBER2, ...) as root, whose
 // every session sets its own group_replication_consistency to EVENTUAL as it connects, through the driver alone: no
 // goarchive connector, so nothing puts a fence behind it (GR C8). It is for a test's reads and writes of a server state a
