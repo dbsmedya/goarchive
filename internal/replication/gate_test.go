@@ -358,8 +358,10 @@ func newStoreHarness(t *testing.T, ttl time.Duration, tolerance, interval int, r
 			Start: tuning.Settings{
 				BatchSize: 1000, BatchDeleteSize: 500, SleepSeconds: 1,
 				SecondsBehindSourceWithin: tolerance, CheckInterval: interval,
+				// A group server of the harness is bounded at 1000 and 1000, which the store holds (GR C7s).
+				GroupApplierQueueWithin: 1000, GroupCertifierQueueWithin: 1000,
 			},
-			Applies: tuning.Applicability{Delete: true, Gate: true},
+			Applies: tuning.Applicability{Delete: true, Gate: true, Group: true},
 		}),
 	}
 
