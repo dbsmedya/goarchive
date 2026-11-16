@@ -12,7 +12,8 @@ import (
 
 // SOURCE_READ_ONLY_CHECK (G9) and DEST_READ_ONLY_CHECK (G13), spec §4.5 (GR C4). Both are judged on a side's
 // ReplicationConfig, its first statement, before the plugin-state read a fenced new primary holds and before
-// recovery replays anything; no flag skips either; neither names a cause (the role is C8's).
+// recovery replays anything; no flag skips either. The destination names no cause. The source's cause, from the role
+// of its own row, and copy-only's warning are readonly_cause_test.go (GR C8).
 
 const sourceGeneral = "On a Group Replication group a secondary is read-only, and so is a newly elected primary until it has applied its backlog."
 
@@ -49,8 +50,10 @@ func TestSourceReadOnlyRefusesAnArchiveAndAPurge(t *testing.T) {
 					if want := sourceMessage(tc.vars); e.Message != want {
 						t.Errorf("message:\n got %s\nwant %s", e.Message, want)
 					}
-					if !slices.Equal(*order, []string{"src.ReplicationConfig"}) {
-						t.Errorf("reads = %v, want only the source's configuration: the refusal comes before anything else is read", *order)
+					// The refusal comes before anything a table needs. The cause (GR C8) asks the source's plugin state, which
+					// the fence does not hold, and only a configured group's view: a plain server's is not read.
+					if want := []string{"src.ReplicationConfig", "src.GroupReplication"}; !slices.Equal(*order, want) {
+						t.Errorf("reads = %v, want %v: the configuration, then the plugin state for the cause, and nothing else", *order, want)
 					}
 				})
 			}
@@ -116,9 +119,9 @@ func TestTheSourceIsJudgedBeforeTheDestination(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyMemberSourceWithoutTheViewGrantIsRefusedForBeingReadOnly (architect, after C2): G9 is judged on the
-// first read, before the view is asked for, so a read-only member source whose account lacks the grant gets
-// SOURCE_READ_ONLY_CHECK. The permission check is what a writable member source and a copy-only job get.
+// TestAReadOnlyMemberSourceWithoutTheViewGrantIsRefusedForBeingReadOnly (architect, after C2; spec §4.5's fourth row,
+// GR C8): a read-only member source whose account lacks the grant is refused for being read-only, with the grant named and
+// no cause; the refusal is issued either way. The permission check is what a writable member source and a copy-only job get.
 func TestAReadOnlyMemberSourceWithoutTheViewGrantIsRefusedForBeingReadOnly(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -137,30 +140,16 @@ func TestAReadOnlyMemberSourceWithoutTheViewGrantIsRefusedForBeingReadOnly(t *te
 			w.src.config = dbsrepl.Config{ReadOnly: tc.readOnly, SuperReadOnly: tc.readOnly}
 			w.src.membersErr = deniedView()
 			e := w.mustFail(tc.want)
-			if tc.want == "SOURCE_READ_ONLY_CHECK" && slices.Contains(w.src.calls, "GroupMembers") {
-				t.Errorf("the view was read before the read-only refusal (calls %v)", w.src.calls)
-			}
-			if strings.Contains(e.Message, "performance_schema") && tc.want == "SOURCE_READ_ONLY_CHECK" {
-				t.Errorf("the read-only refusal names the grant: %s", e.Message)
+			if tc.want == "SOURCE_READ_ONLY_CHECK" {
+				if !strings.Contains(e.Message, "performance_schema.replication_group_members") {
+					t.Errorf("the read-only refusal does not name the grant: %s", e.Message)
+				}
+				for _, claim := range []string{"is a SECONDARY", "is the PRIMARY", "the primary is ", "was newly elected"} {
+					if strings.Contains(e.Message, claim) {
+						t.Errorf("the refusal names a cause (%q) it could not read: %s", claim, e.Message)
+					}
+				}
 			}
 		})
-	}
-}
-
-// TestReadOnlyMessagesNameNoCause: the messages say which variable is on and repeat the general sentence; they
-// do not say whether the server is a secondary, a newly elected primary or an operator's choice (the cause from
-// the role is C8's).
-func TestReadOnlyMessagesNameNoCause(t *testing.T) {
-	w := healthy(t, jobspec.Archive)
-	w.asMember("ONLINE", "SECONDARY")
-	w.src.config = dbsrepl.Config{ReadOnly: true, SuperReadOnly: true}
-	e := w.mustFail("SOURCE_READ_ONLY_CHECK")
-	for _, claim := range []string{"is a SECONDARY", "is the PRIMARY", "the primary is ", "was newly elected", "an operator made"} {
-		if strings.Contains(e.Message, claim) {
-			t.Errorf("the message names a cause (%q): %s", claim, e.Message)
-		}
-	}
-	if !strings.Contains(e.Message, sourceGeneral) {
-		t.Errorf("the message lacks the general sentence: %s", e.Message)
 	}
 }

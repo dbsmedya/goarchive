@@ -49,14 +49,15 @@ func TestStagesByJobType(t *testing.T) {
 		{jobspec.Purge, false, join(structure, []string{"ColumnCharsets", "ForeignKeyMetadataVisibility", "ForeignKeyCoverage",
 			"InternalForeignKeys", "SelfForeignKeys", "SourceSelectPermissions", "SourceDeletePermissions", "DeleteTriggerVisibility", "DeleteTriggers", "CascadeRules", "StatementCaps",
 			"MaxAllowedPacket"})},
-		{jobspec.CopyOnly, false, join(structure, destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
+		// Copy-only alone is warned of a read-only primary, right after the facts (GR C8).
+		{jobspec.CopyOnly, false, join(structure[:3], []string{"ReadOnlyPrimaryWarning"}, structure[3:], destination, []string{"ForeignKeyCoverage", "InternalForeignKeys",
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
 		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3). The group facts are read
 		// too: the identity and the report depend on them (GR C2). The multi-primary check is judged too: the
 		// bypass is its own flag (GR C7).
 		{jobspec.Archive, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.CopyOnly, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.CopyOnly, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "ReadOnlyPrimaryWarning", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
 		{jobspec.Purge, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "StatementCaps"}},
 	} {
 		got := enabledStages(Config{Spec: &jobspec.Spec{Type: tc.typ}, SkipPolicy: tc.skip})
