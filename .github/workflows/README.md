@@ -75,8 +75,18 @@ The gate on every supported image (`tests/README.md` → *The full matrix runs o
   static checks, unit, integration) and `--part e2e` (estate, `e2e`, `e2e-examples`). The e2e job
   installs `netcat-openbsd` and `socat` first: E2E 20 sends the control socket's documented lines
   with `nc -U` and `socat`, and fails when a tool is missing.
+- **The group estate (GRG-1):** the same two parts as two more jobs, `integration-group` and `e2e-group`, on
+  `TOPOLOGY=group` (job `env`) with `tests/dot.env.group` copied to `tests/.env.group`, on one image per
+  series (`mysql` 8.0.40, 8.4.11 and 9.7.1, the plain jobs' own pins; the library's evidence covers both
+  vendors for the facts), six more jobs in all, each with a 90-minute limit (the part takes about ten minutes
+  locally). Their artifacts are `gate-group-integration-<n>` and `gate-group-e2e-<n>`. The integration stage runs
+  one package at a time there (`tests/README.md` → *The group estate*). The matrix's `group_replication_source`
+  row stays.
+- **Server version:** every job's last step reads the source's version from the container its topology names
+  (`ESTATE_SOURCE` in `tests/scripts/topology.sh`: db1 or gr1), and the password from that topology's env file.
 - **Summary:** one table of both parts of every gate (`tests/envmatrix/gh-summary.sh`), on the
-  run page and as the `summary-gate` artifact. It is red when any job did not succeed, when any
+  run page and as the `summary-gate` artifact. It wants the six plain gates and the three group gates
+  (`gh-summary.sh … 0 6 3`), each counted apart. It is red when any job did not succeed, when any
   image lacks a part or a part is not certified (one run record for the target SHA, on a clean
   tree, `PASS` with both exits 0, naming its part, with its completion marker and summary), and
   when the run holds a matrix row.

@@ -220,6 +220,16 @@ after the runner reports; a gate agent never edits it.
   RC-2 PR 2); 570 s on the 1347 inventory (run `20261016T203025Z-19981`, PRC-1's final SHA, with
   another engine test run on the machine); record each new measurement
   here, since the margin shrinks as tests are added.
+- **The group estate's gate (GRG-1):** the gate with `TOPOLOGY=group` and `tests/.env.group` loaded, as the two
+  parts `run-gate.sh --part integration` and `--part e2e`, is measured once per dev→main PR like the other
+  baselines, from *Gate verify*'s `integration-group` and `e2e-group` jobs (one image per series), or from a local run
+  from the main checkout when the operator asks. It has its own inventory and times: the 900 s ceiling above is the
+  whole plain gate's, and the group estate's integration stage runs one package at a time. The first
+  measurement (C10, at `1919cbf`, 8.4.13, a Mac, one part at a time): the integration part
+  `PASS=2685 FAIL=0 SKIP=10` in 612 s (the static stages 8 s, the unit stage 62 s, the setup and the integration stage
+  542 s; run `20261116T225417Z-30688`), and the e2e part `Passed: 14 Failed: 0` and `Passed: 6 Failed: 0` in 367 s
+  (run `20261116T230455Z-49179`): 979 s for both. At the same SHA the plain estate's e2e part took 321 s with the
+  same counts (run `20261116T231136Z-55139`). The PR's numbers replace these.
 - **Release verify on GitHub** (beta.1; split in beta.2 into *Matrix verify* and *Gate verify*):
   the first green run, 38602481533 on 2026-10-14 (beta.1 PR 4, at `ae06474`), took 19 minutes for
   41 jobs. Gates took 15–18 min each, with integration
