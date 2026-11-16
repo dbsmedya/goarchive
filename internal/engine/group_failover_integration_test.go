@@ -35,6 +35,9 @@ const (
 // failover is the state's handles.
 type failover struct {
 	gr1, gr2probe, gr3 *sql.DB // as root, EVENTUAL sessions: reads of the state are never held by it
+	// settle ends the state in the test: the backlog is applied, the switch completes and gr2 is a writable primary. The
+	// test's cleanup does the same when settle was not called, and puts the group back.
+	settle func(t *testing.T)
 }
 
 // waitUntilTrue polls cond every 100 ms until it holds, and fails the test after within.
@@ -132,15 +135,28 @@ func newlyElectedPrimary(t *testing.T) failover {
 	}
 
 	switched := make(chan error, 1)
-	t.Cleanup(func() {
+	var settleErr error
+	settled := false
+	f.settle = func(t *testing.T) {
+		t.Helper()
 		release() // the backlog applies, the switch completes, gr2 is writable
+		if settled {
+			return
+		}
+		settled = true
 		select {
-		case err := <-switched:
-			if err != nil {
-				t.Errorf("the switch to gr2: %v", err)
-			}
+		case settleErr = <-switched:
 		case <-time.After(60 * time.Second):
-			t.Errorf("the switch to gr2 did not complete after the lock was released")
+			settleErr = errors.New("the switch to gr2 did not complete after the lock was released")
+		}
+		if settleErr == nil {
+			waitUntilTrue(t, 30*time.Second, "gr2 to be writable", func() bool { return scalarStr(f.gr2probe, "SELECT @@GLOBAL.super_read_only") == "0" })
+		}
+	}
+	t.Cleanup(func() {
+		f.settle(t)
+		if settleErr != nil {
+			t.Errorf("the switch to gr2: %v", settleErr)
 		}
 		// the switch back, when gr2 became the primary (a UDF takes a constant, never a placeholder); the schema
 		// is dropped on whichever member is the primary by then
