@@ -207,7 +207,7 @@ func memberAddress(m dbsrepl.GroupMember) string {
 // stopped, before its first table read. A secondary, a writable primary and a plain server get nothing.
 func warnReadOnlyPrimary(_ context.Context, f *facts) error {
 	g := f.group
-	if !(g.SourceConfig.ReadOnly || g.SourceConfig.SuperReadOnly) || !configured(g.Source) || !onlineOwn(g.Members) || ownRow(g.Members).Role != "PRIMARY" {
+	if (!g.SourceConfig.ReadOnly && !g.SourceConfig.SuperReadOnly) || !configured(g.Source) || !onlineOwn(g.Members) || ownRow(g.Members).Role != "PRIMARY" {
 		return nil
 	}
 	f.warn(fmt.Sprintf("WARNING: the source is the PRIMARY of Group Replication group %s and is read-only (%s). If it was newly elected, the server holds this run's reads "+
