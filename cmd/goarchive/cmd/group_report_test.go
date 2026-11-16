@@ -23,7 +23,8 @@ func memberResult() *preflight.Result {
 	return &preflight.Result{
 		Caps: []preflight.Cap{{Table: "orders", Server: "source", Statement: "by key", Columns: []string{"id"}, Tuples: 16000}},
 		Group: preflight.Group{
-			Source: dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: reportGroup, TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true},
+			Source: dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: reportGroup, TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true,
+				SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true},
 			Members: []dbsrepl.GroupMember{
 				{MemberID: "11111111-1111-4111-8111-111111111111", State: "ONLINE", Role: "PRIMARY", Self: true},
 			},
@@ -34,7 +35,7 @@ func memberResult() *preflight.Result {
 var reportProcessing = config.ProcessingConfig{BatchSize: 1000, BatchDeleteSize: 500}
 
 const memberBlock = "Group Replication:\n" +
-	"  source:      member of group " + reportGroup + ", ONLINE, PRIMARY; transaction size limit 150000000 bytes\n" +
+	"  source:      member of group " + reportGroup + ", ONLINE, PRIMARY, mode single-primary; transaction size limit 150000000 bytes\n" +
 	"  destination: Group Replication plugin not active\n" +
 	"  sizes:       batch_size 1000, batch_delete_size 500 (each transaction must fit the limit of its side)\n"
 

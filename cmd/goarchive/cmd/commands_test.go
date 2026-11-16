@@ -149,15 +149,16 @@ func TestRunCommandsConnect(t *testing.T) {
 
 // TestFlagMatrix (P4): which command carries which flag. --force-triggers is on the commands
 // whose preflight checks DELETE triggers: archive and purge, and validate and dry-run, which
-// run their preflight. copy-only's profile has no such check (spec §8.1).
+// run their preflight. copy-only's profile has no such check (spec §8.1). --allow-multi-primary is on every
+// command that runs preflight, since the multi-primary refusal is every job type's (spec §4.6, GR C7).
 func TestFlagMatrix(t *testing.T) {
-	all := []string{"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress", "force", "skip-verify"}
+	all := []string{"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "allow-multi-primary", "progress", "force", "skip-verify"}
 	for name, want := range map[string][]string{
-		"archive":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress"},
-		"purge":     {"job", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "progress"},
-		"copy-only": {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "progress"},
-		"dry-run":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers"},
-		"validate":  {"job", "verification", "force-triggers"},
+		"archive":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "allow-multi-primary", "progress"},
+		"purge":     {"job", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "allow-multi-primary", "progress"},
+		"copy-only": {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "allow-multi-primary", "progress"},
+		"dry-run":   {"job", "verification", "skip-dangerously-validate-preflight-allow-experimental", "force-triggers", "allow-multi-primary"},
+		"validate":  {"job", "verification", "force-triggers", "allow-multi-primary"},
 		"plan":      {"job"},
 		"list-jobs": nil,
 	} {
