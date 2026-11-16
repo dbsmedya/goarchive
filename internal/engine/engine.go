@@ -135,6 +135,10 @@ const (
 	// written on a fresh session that takes the lock again first (Codex P1).
 	atFinalWrite point = "final-write"
 
+	// The run's work is done and committed, its heartbeat is stopped, and its final status is about to be written
+	// (GR C8: a test fails the destination over here, so that the write meets the fence).
+	atFinished point = "finished"
+
 	// The boundaries of the delete path, for a test that proves D16's order (spec §4.5): in each
 	// deleteTree call, the first DELETE has no sleep before it, and every later one is sleep, gate
 	// decision, source session, chunk and statement, in that order. Observation only: nothing waits
@@ -386,6 +390,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	err = r.execute(runCtx)
 	stopBeat()
 	err = withCause(runCtx, err)
+	r.reached(atFinished)
 
 	final := tracking.JobIdle
 	if err != nil {
