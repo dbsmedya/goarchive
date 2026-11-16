@@ -175,6 +175,7 @@ Do not restate behavior here. When behavior changes, update the owning file belo
 | Privilege matrix, grant recipes, `PROCESS` requirement, provable-grant rule | `docs/README_PERMISSIONS.md` |
 | Every config block, option, default, precedence rule; logging config | `docs/README_CONFIGURATION.md` |
 | Commands/flags, tuning, pausing, crash recovery, resume gates | `docs/README_OPERATIONS.md` |
+| Group Replication: running a job on a group, what is supported, the members in the gate and their two bounds, the ProxySQL and MySQL Router examples, grants | `docs/README_GROUP_REPLICATION.md` |
 | Hard constraints, model limits, operational cautions | `docs/README_LIMITATIONS.md` |
 | Tracking table DDL, DBA maintenance, safe-truncate rules | `docs/README_JOBS_SCHEMA.md` |
 | Removing duplicate rows with one job (keep the minimum primary key) | `docs/README_DUPLICATE_CLEANUP.md` |
