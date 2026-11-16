@@ -1081,6 +1081,7 @@ column is each package's helper, which every group-only test of that package cal
 | `requireGroupMemberSource` (`internal/engine`) | the same | the group estate |
 | `requireGroupMemberSource` (`cmd/goarchive/cmd`) | the same | the group estate |
 | `requireGroupEstate` (`internal/testestate`) | the same: the three self-tests of the mode helper and the fence harness | the group estate |
+| `TestMySQLTheFenceLeavesTheSessionAsFound` (`internal/database`) | the same, for its subtest on a member (the subtest on a server without the plugin runs on both estates) | the group estate |
 
 ### The L1 to L5 containers
 
