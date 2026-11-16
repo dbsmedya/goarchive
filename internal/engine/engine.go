@@ -70,6 +70,9 @@ type Config struct {
 	// ForceTriggers and SkipPolicy are preflight's (--force-triggers,
 	// --skip-dangerously-validate-preflight-allow-experimental). Neither skips the log-key or binding check (spec §6.4).
 	ForceTriggers, SkipPolicy bool
+	// AllowMultiPrimary is preflight's (--allow-multi-primary): a group in multi-primary mode, or whose mode cannot
+	// be read, is accepted on the source or the destination, with a banner that names the case (spec §4.6).
+	AllowMultiPrimary bool
 
 	// Lag is the replication lag gate; nil means none.
 	Lag LagGate
@@ -297,7 +300,8 @@ func prepare(ctx context.Context, cfg Config) (src, dst database.ServerIdentity,
 		Source: cfg.Source, SourceDatabase: src.Schema, SourceServerUUID: src.ServerUUID,
 		Destination: cfg.Destination, DestinationDatabase: dst.Schema, JobSchema: cfg.JobSchema,
 		Spec: cfg.Spec, Verification: cfg.Verification,
-		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, Processing: cfg.Processing, Logger: cfg.Logger,
+		ForceTriggers: cfg.ForceTriggers, SkipPolicy: cfg.SkipPolicy, AllowMultiPrimary: cfg.AllowMultiPrimary,
+		Processing: cfg.Processing, Logger: cfg.Logger,
 		Banner:      cfg.Banner,
 		Replication: cfg.Replication, ReplicaPools: cfg.ReplicaPools,
 	})

@@ -10,6 +10,7 @@ import (
 var dryrunOpts struct {
 	job, verification            string
 	skipPreflight, forceTriggers bool
+	allowMultiPrimary            bool
 }
 
 var dryrunCmd = &cobra.Command{
@@ -42,6 +43,7 @@ func init() {
 	registerVerificationFlag(dryrunCmd, &dryrunOpts.verification)
 	registerSkipPolicyFlag(dryrunCmd, &dryrunOpts.skipPreflight)
 	registerForceTriggersFlag(dryrunCmd, &dryrunOpts.forceTriggers)
+	registerAllowMultiPrimaryFlag(dryrunCmd, &dryrunOpts.allowMultiPrimary)
 	rootCmd.AddCommand(dryrunCmd)
 }
 
@@ -73,7 +75,7 @@ func runDryrun(c *cobra.Command, _ []string) error {
 		JobSchema:     doc.Shared.Destination.EffectiveJobSchema(),
 		Processing:    spec.EffectiveProcessing(doc.Shared.Processing),
 		Verification:  verification,
-		ForceTriggers: o.forceTriggers, SkipPolicy: o.skipPreflight,
+		ForceTriggers: o.forceTriggers, SkipPolicy: o.skipPreflight, AllowMultiPrimary: o.allowMultiPrimary,
 		Replication: doc.Shared.Replication, ReplicaPools: mgr.Replicas,
 		Logger: log,
 		Banner: func(b string) { emitBanners(log, c.ErrOrStderr(), []string{b}) },

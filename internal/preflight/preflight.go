@@ -93,6 +93,10 @@ type Config struct {
 	// SkipPolicy skips every policy check (--skip-dangerously-validate-preflight-allow-experimental). The key
 	// definitions are still read, because the SQL is built from them (spec §8.3).
 	SkipPolicy bool
+	// AllowMultiPrimary accepts a group that is in multi-primary mode, or whose mode cannot be read
+	// (--allow-multi-primary): GROUP_MULTI_PRIMARY_CHECK then says which case it covered and passes (spec §4.6).
+	// It is the one bypass of that check, and SkipPolicy does not skip the check.
+	AllowMultiPrimary bool
 	// Processing is the job's effective processing block (Spec.EffectiveProcessing). The
 	// engine sends at most BatchSize keys in a statement, BatchDeleteSize in the source's
 	// deletes, so MAX_ALLOWED_PACKET_CHECK bounds each statement there (M7c-F4). Both
@@ -190,6 +194,9 @@ func stages(cfg Config) []stage {
 		// the report depend on them, and no flag skips either check.
 		{"ReadOnly", true, checkReadOnly},
 		{"GroupFacts", true, readGroupFacts},
+		// The mode of each side that is configured for a group (G10), for every job type and under SkipPolicy
+		// too: --allow-multi-primary is the one bypass (spec §4.6).
+		{"MultiPrimary", true, checkMultiPrimary},
 		// The replication block's group servers, for the jobs the gate serves: an archive and a purge with
 		// the block enabled (GR C5). The check is a policy check; the banner is information and is given
 		// whatever is skipped.

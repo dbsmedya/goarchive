@@ -209,7 +209,7 @@ func readGroupFacts(ctx context.Context, f *facts) error {
 
 // GroupReport is spec §4.7's block, as printed by validate and dry-run and logged by a run: one
 // block when the source or the destination is configured for Group Replication, and "" for a
-// pair with no group in it. The sizes are the job's. The mode word is not in it yet.
+// pair with no group in it. The sizes are the job's. The mode word is the library's fact (spec §4.6, §4.7).
 func (r *Result) GroupReport(p config.ProcessingConfig) string {
 	g := r.Group
 	if !configured(g.Source) && !configured(g.Destination) {
@@ -235,13 +235,13 @@ func sourceLine(g Group) string {
 		if own.Role != "" {
 			line += ", " + own.Role
 		}
-		return line + "; " + limit
+		return line + ", " + modeWord(g.Source, true) + "; " + limit
 	}
 	state := "no row of its own in its view"
 	if own != nil {
 		state = "state " + own.State
 	}
-	return "configured for group " + g.Source.GroupName + ", not a running member (" + state + "); " + limit
+	return "configured for group " + g.Source.GroupName + ", not a running member (" + state + "), " + modeWord(g.Source, false) + "; " + limit
 }
 
 // destinationLine has no state or role: the destination's view is not read.
@@ -249,7 +249,7 @@ func destinationLine(g dbsrepl.GroupReplication) string {
 	if line, plain := notConfigured(g); plain {
 		return line
 	}
-	return "configured for group " + g.GroupName + "; " + limitText(g)
+	return "configured for group " + g.GroupName + ", " + modeWord(g, false) + "; " + limitText(g)
 }
 
 // notConfigured is the line of a server that is not configured for a group.

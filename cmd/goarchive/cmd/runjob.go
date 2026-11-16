@@ -16,6 +16,7 @@ import (
 type runOptions struct {
 	job, verification, progress  string
 	skipPreflight, forceTriggers bool
+	allowMultiPrimary            bool
 }
 
 // registerRunFlags adds the flags of the run command for typ (P4): purge copies nothing, so
@@ -31,6 +32,7 @@ func registerRunFlags(c *cobra.Command, o *runOptions, typ jobspec.Type) {
 	if typ != jobspec.CopyOnly {
 		registerForceTriggersFlag(c, &o.forceTriggers)
 	}
+	registerAllowMultiPrimaryFlag(c, &o.allowMultiPrimary)
 	registerProgressFlag(c, &o.progress)
 }
 
@@ -65,6 +67,19 @@ func (r renamedFlag) Set(string) error {
 func registerForceTriggersFlag(c *cobra.Command, forceTriggers *bool) {
 	c.Flags().BoolVar(forceTriggers, "force-triggers", false,
 		"Accept DELETE triggers that preflight can list on source tables of archive and purge jobs; every delete fires them.")
+}
+
+// allowMultiPrimaryFlag is the one bypass of GROUP_MULTI_PRIMARY_CHECK (spec §4.6). It is a command-line flag only: no
+// configuration key reaches it, and --skip-dangerously-validate-preflight-allow-experimental does not stand in for it.
+const allowMultiPrimaryFlag = "allow-multi-primary"
+
+// registerAllowMultiPrimaryFlag adds --allow-multi-primary to a command that runs preflight, every job type's: the
+// multi-primary refusal covers an archive, a purge and a copy-only run alike.
+func registerAllowMultiPrimaryFlag(c *cobra.Command, allow *bool) {
+	c.Flags().BoolVar(allow, allowMultiPrimaryFlag, false,
+		"Accept a Group Replication group that is in multi-primary mode, or whose mode cannot be read, on the source or the "+
+			"destination. Advisory locks are local to one member, so two runs on different members are not serialized; "+
+			"GoArchive 3.1 supports single-primary groups. A banner names the case it accepted.")
 }
 
 // runCommand runs one job command and turns its outcome into what Main expects (spec §3.4):
@@ -195,7 +210,7 @@ func runJob(c *cobra.Command, typ jobspec.Type, o *runOptions) (rep *engine.Repo
 		Processing:              spec.EffectiveProcessing(doc.Shared.Processing),
 		Verification:            verification,
 		DisableForeignKeyChecks: doc.Shared.Safety.DisableForeignKeyChecks,
-		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight,
+		ForceTriggers:           o.forceTriggers, SkipPolicy: o.skipPreflight, AllowMultiPrimary: o.allowMultiPrimary,
 		Lag: lag, TellSource: tellSource, Stop: stop, Logger: log,
 		Replication: doc.Shared.Replication, ReplicaPools: mgr.Replicas,
 		Tuning: store, Tracker: tracker,
