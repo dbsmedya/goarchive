@@ -273,7 +273,7 @@ func estateConsistency(version string) string {
 type memberFacts struct {
 	name        string
 	limit       dbsrepl.GroupReplication
-	consistency string
+	consistency dbsrepl.GroupConsistency
 }
 
 // groupProblems names every way the group differs from its base state: the three members all ONLINE in
@@ -307,8 +307,11 @@ func groupProblems(view []dbsrepl.GroupMember, members []memberFacts, wantLimit 
 		case m.limit.TransactionSizeLimit != wantLimit:
 			problems = append(problems, fmt.Sprintf("%s: group_replication_transaction_size_limit is %d, want %d", m.name, m.limit.TransactionSizeLimit, wantLimit))
 		}
-		if m.consistency != wantConsistency {
-			problems = append(problems, fmt.Sprintf("%s: group_replication_consistency is %s, want %s", m.name, m.consistency, wantConsistency))
+		switch {
+		case !m.consistency.GlobalConsistencyKnown:
+			problems = append(problems, m.name+": group_replication_consistency is not reported")
+		case m.consistency.GlobalConsistency != wantConsistency:
+			problems = append(problems, fmt.Sprintf("%s: group_replication_consistency is %s, want %s", m.name, m.consistency.GlobalConsistency, wantConsistency))
 		}
 	}
 	return problems
@@ -374,7 +377,7 @@ func readGroup(ctx context.Context) ([]string, error) {
 		facts := memberFacts{name: m.name}
 		facts.limit, err = insp.GroupReplication(ctx)
 		if err == nil {
-			err = db.QueryRowContext(ctx, "SELECT @@GLOBAL.group_replication_consistency").Scan(&facts.consistency)
+			facts.consistency, err = insp.GroupConsistency(ctx)
 		}
 		if err == nil && i == 0 {
 			var version string
