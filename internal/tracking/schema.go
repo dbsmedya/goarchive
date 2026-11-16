@@ -19,7 +19,7 @@ const (
 )
 
 // bindingColumns are the 3.0 columns of archiver_job that no 2.x release has. A
-// marker-less archiver_job without them is a 2.x table; under a 3.0 label, one without them
+// marker-less archiver_job without them is a 2.x table; under a 3.x label, one without them
 // is refused too (a pre-alpha 3.0 table lacks destination_server_uuid).
 var bindingColumns = []string{"source_server_uuid", "source_database", "destination_database", "destination_server_uuid",
 	"config_fingerprint", "root_key_columns"}
