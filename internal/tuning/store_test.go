@@ -13,16 +13,18 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 )
 
-// start is the run's configured values: the ceilings of the two sizes and the configured
-// tolerance.
+// start is the run's configured values: the ceilings of the two sizes, the configured tolerance
+// and the two group bounds, whose steps (10, 1000 and 300) differ on purpose so that a rule that
+// borrowed another setting's step would show.
 var start = Settings{
 	BatchSize: 1000, BatchDeleteSize: 500,
 	SleepSeconds: 1, DeleteSleepSeconds: 0,
 	SecondsBehindSourceWithin: 10, CheckInterval: 5,
+	GroupApplierQueueWithin: 1000, GroupCertifierQueueWithin: 300,
 }
 
-// allApply is an archive or purge run with the replication gate.
-var allApply = Applicability{Delete: true, Gate: true}
+// allApply is an archive or purge run with the replication gate and a server of type group in it.
+var allApply = Applicability{Delete: true, Gate: true, Group: true}
 
 var peer = Peer{UID: 1000, PID: 4242}
 
@@ -120,8 +122,9 @@ func TestSetChangesOneSetting(t *testing.T) {
 	}
 }
 
-// TestEveryKeySets: each of the six settings can be set and read back, and a gate setting
-// raises the gate revision while the others leave it.
+// TestEveryKeySets: each of the eight settings can be set and read back, and a gate setting
+// (the tolerance, the interval and the two group bounds) raises the gate revision while the
+// others leave it.
 func TestEveryKeySets(t *testing.T) {
 	s := newStore()
 	for i, tc := range []struct {
@@ -135,6 +138,8 @@ func TestEveryKeySets(t *testing.T) {
 		{DeleteSleepSeconds, "0.25", false},
 		{SecondsBehindSourceWithin, "3", true},
 		{CheckInterval, "2", true},
+		{GroupApplierQueueWithin, "700", true},
+		{GroupCertifierQueueWithin, "200", true},
 	} {
 		before := s.Load()
 		mustSet(t, s, tc.key, tc.text)
@@ -208,6 +213,12 @@ func fileMessage(key Key, v float64) (perValue, inFile string) {
 		inFile = perValue // the file's block needs a whole config; the per-value function is what it calls
 	case CheckInterval:
 		perValue = errText(config.ValidateCheckInterval(int(v)))
+		inFile = perValue
+	case GroupApplierQueueWithin:
+		perValue = errText(config.ValidateGroupApplierQueueWithin(int(v)))
+		inFile = perValue // validateGroupBounds calls it for a value that is set
+	case GroupCertifierQueueWithin:
+		perValue = errText(config.ValidateGroupCertifierQueueWithin(int(v)))
 		inFile = perValue
 	}
 	return perValue, inFile
@@ -365,7 +376,7 @@ func TestApplicability(t *testing.T) {
 			t.Errorf("%s on copy-only: %s %q", k, r.Reason, r.Message)
 		}
 	}
-	for _, k := range []Key{SecondsBehindSourceWithin, CheckInterval} {
+	for _, k := range []Key{SecondsBehindSourceWithin, CheckInterval, GroupApplierQueueWithin, GroupCertifierQueueWithin} {
 		r := refusalOf(t, copyOnly, k, "1")
 		if r.Reason != ReasonInapplicable || !strings.Contains(r.Message, "this run does not use the replication gate") {
 			t.Errorf("%s on copy-only: %s %q", k, r.Reason, r.Message)
@@ -383,7 +394,10 @@ func TestApplicability(t *testing.T) {
 	for _, tc := range []struct {
 		key Key
 		ok  bool
-	}{{BatchSize, true}, {SleepSeconds, true}, {BatchDeleteSize, false}, {DeleteSleepSeconds, false}, {SecondsBehindSourceWithin, false}, {CheckInterval, false}} {
+	}{
+		{BatchSize, true}, {SleepSeconds, true}, {BatchDeleteSize, false}, {DeleteSleepSeconds, false},
+		{SecondsBehindSourceWithin, false}, {CheckInterval, false}, {GroupApplierQueueWithin, false}, {GroupCertifierQueueWithin, false},
+	} {
 		if got, _ := copyOnly.Applies(tc.key); got != tc.ok {
 			t.Errorf("copy-only Applies(%s) = %v", tc.key, got)
 		}
@@ -409,7 +423,10 @@ func TestConcurrentSettersDifferentKeys(t *testing.T) {
 	changes := []struct {
 		key  Key
 		text string
-	}{{BatchSize, "10"}, {BatchDeleteSize, "20"}, {SleepSeconds, "0.5"}, {DeleteSleepSeconds, "0.25"}, {SecondsBehindSourceWithin, "3"}, {CheckInterval, "2"}}
+	}{
+		{BatchSize, "10"}, {BatchDeleteSize, "20"}, {SleepSeconds, "0.5"}, {DeleteSleepSeconds, "0.25"},
+		{SecondsBehindSourceWithin, "3"}, {CheckInterval, "2"}, {GroupApplierQueueWithin, "700"}, {GroupCertifierQueueWithin, "200"},
+	}
 	for round := 0; round < 200; round++ {
 		s := newStore()
 		var wg sync.WaitGroup
@@ -433,9 +450,12 @@ func TestConcurrentSettersDifferentKeys(t *testing.T) {
 			}
 		}
 		snap := s.Load()
-		want := Settings{BatchSize: 10, BatchDeleteSize: 20, SleepSeconds: 0.5, DeleteSleepSeconds: 0.25, SecondsBehindSourceWithin: 3, CheckInterval: 2}
-		if snap.Settings != want || snap.Revision != uint64(len(changes)) || snap.GateRevision != 2 {
-			t.Fatalf("round %d: snapshot %+v, want every change at revision %d and gate revision 2", round, snap, len(changes))
+		want := Settings{
+			BatchSize: 10, BatchDeleteSize: 20, SleepSeconds: 0.5, DeleteSleepSeconds: 0.25, SecondsBehindSourceWithin: 3, CheckInterval: 2,
+			GroupApplierQueueWithin: 700, GroupCertifierQueueWithin: 200,
+		}
+		if snap.Settings != want || snap.Revision != uint64(len(changes)) || snap.GateRevision != 4 {
+			t.Fatalf("round %d: snapshot %+v, want every change at revision %d and gate revision 4 (the tolerance, the interval and the two bounds)", round, snap, len(changes))
 		}
 		sum := s.Terminal()
 		if len(sum.Settings) != len(changes) {
@@ -908,6 +928,8 @@ func TestText(t *testing.T) {
 		{Settings{BatchDeleteSize: 1}, BatchDeleteSize, "1"},
 		{Settings{SecondsBehindSourceWithin: 0}, SecondsBehindSourceWithin, "0"},
 		{Settings{CheckInterval: 5}, CheckInterval, "5"},
+		{Settings{GroupApplierQueueWithin: 25000}, GroupApplierQueueWithin, "25000"},
+		{Settings{GroupCertifierQueueWithin: 0}, GroupCertifierQueueWithin, "0"},
 		{Settings{SleepSeconds: 1}, SleepSeconds, "1"},
 		{Settings{SleepSeconds: 0.25}, SleepSeconds, "0.25"},
 		{Settings{DeleteSleepSeconds: 1e-9}, DeleteSleepSeconds, "0.000000001"},
@@ -927,10 +949,11 @@ func TestText(t *testing.T) {
 	}
 }
 
-// TestKeys: the six settings, in the order help and status list them, and each has an effect
-// the reply and the log can say.
+// TestKeys: the eight settings, in the order help and status list them (the two group bounds
+// follow check_interval, so the six existing lines keep their places), and each has an effect the
+// reply and the log can say.
 func TestKeys(t *testing.T) {
-	want := []Key{BatchSize, BatchDeleteSize, SleepSeconds, DeleteSleepSeconds, SecondsBehindSourceWithin, CheckInterval}
+	want := []Key{BatchSize, BatchDeleteSize, SleepSeconds, DeleteSleepSeconds, SecondsBehindSourceWithin, CheckInterval, GroupApplierQueueWithin, GroupCertifierQueueWithin}
 	if got := Keys(); !slices.Equal(got, want) {
 		t.Fatalf("Keys() = %v", got)
 	}
@@ -947,6 +970,14 @@ func TestKeys(t *testing.T) {
 	}
 	if k, ok := ParseKey("batch_size"); !ok || k != BatchSize {
 		t.Error("batch_size did not parse")
+	}
+	for _, k := range []Key{GroupApplierQueueWithin, GroupCertifierQueueWithin} {
+		if got, ok := ParseKey(string(k)); !ok || got != k {
+			t.Errorf("%s did not parse", k)
+		}
+		if k.Effect() != "from the next gate decision" {
+			t.Errorf("%s takes effect %q, want the other gate settings' words", k, k.Effect())
+		}
 	}
 }
 

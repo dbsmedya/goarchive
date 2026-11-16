@@ -38,6 +38,8 @@ func TestWholeNumberGettersRoundTrip(t *testing.T) {
 		{BatchDeleteSize, []int64{past32, 3_000_000_000, math.MaxInt64}},
 		{SecondsBehindSourceWithin, []int64{past32, 3_000_000_000, math.MaxInt64}},
 		{CheckInterval, []int64{past32, 3_000_000_000, intervalMax}},
+		{GroupApplierQueueWithin, []int64{past32, 3_000_000_000, math.MaxInt64}},
+		{GroupCertifierQueueWithin, []int64{past32, 3_000_000_000, math.MaxInt64}},
 	} {
 		for _, v := range tc.values {
 			// The file accepts the value, so a run can start at it.
@@ -77,7 +79,7 @@ func TestSettersRefuseWhatTheFileRefuses(t *testing.T) {
 		t.Errorf("check_interval %s: %s %q, want invalid with the file's message", most, r.Reason, r.Message)
 	}
 
-	for _, k := range []Key{BatchSize, BatchDeleteSize, SecondsBehindSourceWithin, CheckInterval} {
+	for _, k := range []Key{BatchSize, BatchDeleteSize, SecondsBehindSourceWithin, CheckInterval, GroupApplierQueueWithin, GroupCertifierQueueWithin} {
 		for _, text := range []string{"9223372036854775808", "18446744073709551616", "99999999999999999999"} {
 			if r := refusalOf(t, newStore(), k, text); r.Reason != ReasonInvalid {
 				t.Errorf("%s %s: reason %s, want invalid: the digits overflow an int", k, text, r.Reason)
