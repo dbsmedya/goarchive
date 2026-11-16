@@ -197,6 +197,9 @@ func stages(cfg Config) []stage {
 		// The mode of each side that is configured for a group (G10), for every job type and under SkipPolicy
 		// too: --allow-multi-primary is the one bypass (spec §4.6).
 		{"MultiPrimary", true, checkMultiPrimary},
+		// A copy-only run on a read-only primary is warned, before its first table read, that a newly elected primary may
+		// hold its reads (GR C8). Information, so under SkipPolicy too.
+		{"ReadOnlyPrimaryWarning", profile == ProfileNonDestructive, warnReadOnlyPrimary},
 		// The replication block's group servers, for the jobs the gate serves: an archive and a purge with
 		// the block enabled (GR C5). The check is a policy check; the banner is information and is given
 		// whatever is skipped.
