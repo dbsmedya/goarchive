@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-
-	dbsrepl "github.com/dbsmedya/dbsgomysql/pkg/replication"
 )
 
 // The fence harness's statements. Every session the harness opens on a member sets its own
@@ -281,23 +279,7 @@ func (f *GroupFence) unlock(t testing.TB) {
 // waitApplied waits until gr2 and gr3 have applied every transaction gr1 has.
 func (f *GroupFence) waitApplied(t testing.TB) {
 	t.Helper()
-
-	ctx, cancel := cleanupSafeContext(t, GroupReplicationWaitDeadline)
-	defer cancel()
-
-	gtid, err := dbsrepl.NewInspector(f.oldPrimary).GTIDStatus(ctx)
-	if err != nil {
-		t.Fatalf("read the group primary's gtid_executed: %v", err)
-	}
-	for role, db := range map[string]*sql.DB{"secondary": f.Primary, "rejoiner": f.rejoiner} {
-		var timedOut int
-		if err := db.QueryRowContext(ctx, sqlWaitForGTIDSet, gtid.Executed).Scan(&timedOut); err != nil {
-			t.Fatalf("wait for the %s to apply %q: %v", role, gtid.Executed, err)
-		}
-		if timedOut != 0 {
-			t.Fatalf("the %s did not apply %q within 60 s", role, gtid.Executed)
-		}
-	}
+	waitAppliedOn(t, f.oldPrimary, f.Primary, f.rejoiner)
 }
 
 func (f *GroupFence) exec(t testing.TB, db *sql.DB, statement string) {
