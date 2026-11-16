@@ -18,6 +18,7 @@ import (
 
 	"github.com/dbsmedya/goarchive/v3/internal/config"
 	"github.com/dbsmedya/goarchive/v3/internal/database"
+	"github.com/dbsmedya/goarchive/v3/internal/testestate"
 )
 
 // Stopping a held run (spec §4.2, rev 5.1; §8; GR C4). A copy-only run whose source is a newly elected primary
@@ -31,17 +32,18 @@ const (
 	heldFenced         = "BEFORE_ON_PRIMARY_FAILOVER"
 )
 
-// openMember opens a pool on a group member as root; eventual raises its sessions to EVENTUAL, so that a read of
-// the state is never held by the state.
+// openMember opens a pool on a group member as root. eventual gives a session that is never held by the state a test
+// builds: it comes through the driver alone, with group_replication_consistency EVENTUAL, because goarchive's own pool
+// raises such a session to BEFORE_ON_PRIMARY_FAILOVER (the fence, GR C8) and would be held by the very backlog a test
+// reads and releases.
 func openMember(t *testing.T, prefix, schema string, eventual bool) *sql.DB {
 	t.Helper()
+	if eventual {
+		return testestate.OpenUnfenced(t, prefix, schema)
+	}
 	s := serverFor(t, prefix)
 	cfg := config.DatabaseConfig{Host: s.host, Port: s.port, User: s.user, Password: s.pass, Database: schema, TLS: "disable"}
-	var globals []database.Global
-	if eventual {
-		globals = append(globals, database.Global{Name: heldConsistencyVar, Value: "'EVENTUAL'"})
-	}
-	db, err := database.OpenPool(t.Context(), &cfg, true, globals...)
+	db, err := database.OpenPool(t.Context(), &cfg, true)
 	if err != nil {
 		t.Fatal(err)
 	}

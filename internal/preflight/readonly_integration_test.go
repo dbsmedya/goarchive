@@ -43,12 +43,20 @@ func makeReadOnly(t *testing.T, prefix, mode string) {
 	})
 }
 
-// onlyStatement is the one statement a log should hold: the library's configuration read.
+// onlyStatement is what a refused read-only source was asked: the library's configuration read first, and then, for the
+// cause (GR C8), only the plugin-state reads of the group facts, which a fence does not hold. Nothing that reads a table of
+// the job comes before the refusal.
 func onlyStatement(t *testing.T, log *statementLog, what string) {
 	t.Helper()
 	got := log.all()
-	if len(got) != 1 || !strings.Contains(got[0], "@@GLOBAL.read_only, @@GLOBAL.super_read_only") {
-		t.Errorf("%s sent %q, want only its configuration read: the refusal comes before anything else", what, got)
+	if len(got) == 0 || !strings.Contains(got[0], "@@GLOBAL.read_only, @@GLOBAL.super_read_only") {
+		t.Errorf("%s sent %q, want its configuration read first", what, got)
+		return
+	}
+	for _, statement := range got[1:] {
+		if !strings.Contains(statement, "group_replication") && !strings.Contains(statement, "PLUGINS") {
+			t.Errorf("%s sent %q before its refusal, want only the plugin-state reads the cause needs", what, statement)
+		}
 	}
 }
 
