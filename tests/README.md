@@ -1080,6 +1080,7 @@ column is each package's helper, which every group-only test of that package cal
 | `requireMemberSource` (`internal/preflight`) | the source is not a Group Replication member: its plugin is not `ACTIVE`, or it has no group name | the group estate |
 | `requireGroupMemberSource` (`internal/engine`) | the same | the group estate |
 | `requireGroupMemberSource` (`cmd/goarchive/cmd`) | the same | the group estate |
+| `requireGroupEstate` (`internal/testestate`) | the same: the three self-tests of the mode helper and the fence harness | the group estate |
 
 ### The L1 to L5 containers
 
