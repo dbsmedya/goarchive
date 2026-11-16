@@ -698,7 +698,7 @@ locks**: GoArchive never runs `LOCK TABLES`, and a name locks no table or row, s
 application's reads and writes are not blocked by it. It only stops another GoArchive run.
 
 **The schema lock**, on the destination, is held only while a run creates a new tracking schema
-(a `job_schema` with no `3.0` label yet). One run at a time creates the tables and the label;
+(a `job_schema` with no `3.1` label yet). One run at a time creates the tables and the label;
 another run starting then waits for it, up to 60 seconds, finds the schema ready and goes on.
 If the lock is still held after 60 seconds the run does not start (exit code 4) and names the
 connection holding it. A schema already labelled takes no lock. Then:
@@ -725,16 +725,20 @@ connection holding it. A schema already labelled takes no lock. Then:
      whatever its status.
 
    *The same source data* is:
-   - this server's;
+   - this server's own: its `server_uuid`, or the group name configured on it (a run on an
+     `ONLINE` member records the group's name, [the binding](README_JOBS_SCHEMA.md#startup-checks));
    - that of a server whose transactions are in this server's `gtid_executed`: a promoted
-     replica, a clone, or a server this source replicates from. A server that replicates from
-     this source holds this source's data, not the other way round, so a job recorded there is
-     another server's;
+     replica, a clone, a server this source replicates from, and, for a job recorded on a
+     group's name, a server outside the group that replicates from a member (the group's
+     transactions carry its name). A server that replicates from this source holds this
+     source's data, not the other way round, so a job recorded there is another server's;
    - where the server cannot tell, every server's database of the same name in the registry,
      counted as one:
+     - on a server with a Group Replication group name configured, whatever the state of its
+       membership (`ONLINE`, `RECOVERING`, `OFFLINE`, or no row of its own): a group logs its
+       transactions under its name, not a member's uuid, so another member's uuid need not be in
+       any `gtid_executed`;
      - without `gtid_mode = ON`;
-     - on a Group Replication member, whose group logs its transactions under the group name,
-       not a member's uuid;
      - for shards provisioned from one another, which keep each other's uuids in
        `gtid_executed`.
 

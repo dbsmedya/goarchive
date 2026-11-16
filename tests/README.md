@@ -1210,7 +1210,7 @@ cd tests && ./scripts/check-servers.sh && docker compose up -d
 `make e2e`, or `./scripts/run-tests.sh --setup`.
 
 **`tracking tables in schema "sakila_archive" … this GoArchive requires tracking-schema label
-"3.0"`** — the destination holds tracking tables from another release. `make test-reset`
+"3.1"`** — the destination holds tracking tables from another release. `make test-reset`
 rebuilds the estate (it drops `sakila_archive`).
 
 **Clean slate:**

@@ -25,6 +25,12 @@ Replication reads the same facts, finds no group and prints nothing.
 - **Single-primary groups.** A group in single-primary mode is supported, as the source or as the destination. A
   group in multi-primary mode is refused unless `--allow-multi-primary` accepts it, as described in
   [Single-primary groups are supported](#single-primary-groups-are-supported).
+- **A job bound to the group.** A run on an `ONLINE` member records the group's name as its source in the
+  tracking registry, so a job with pending work finds it again from any member: **a failover needs no
+  re-bind**, and the rerun on the new primary meets the same value
+  ([the binding](README_JOBS_SCHEMA.md#startup-checks)). A run on any other server records that server's uuid.
+  A 3.0 registry is converted once, by a procedure of yours:
+  [Moving from 3.0](README_UPGRADING_3_1.md#moving-from-30).
 - **Named messages.** [A failover's backlog](#a-failovers-backlog) and
   [a transaction over the size limit](#a-transaction-over-the-size-limit) each have their own named messages.
 - **The grant.** The group reads need one grant on the source, described in [Grants](#grants).
@@ -371,7 +377,8 @@ A GoArchive job sees it in four ways:
   exactly as they are: recovery has not run, no root is replayed or marked `completed`, and no row is
   deleted. The same refusal comes under `--skip-dangerously-validate-preflight-allow-experimental`.
   Run the job again when the primary is writable, or point it at the new primary once it is, and the
-  run recovers what the log holds.
+  run recovers what the log holds. The job is not re-bound: it is recorded under the group's name, and
+  the new primary is a member of the same group.
 - **Any job whose destination is that server is refused at once**, by
   [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check), whatever its type: it would
   fail at its first write, and a server that fences the session would hold it before that.
