@@ -355,7 +355,8 @@ connecting.
    - **purge** — log the roots `deleting`, delete child-first in chunks, mark them `completed`.
 
    Each delete chunk is its own source transaction, committed only when it deleted exactly the
-   rows asked for.
+   rows asked for, so the source's row locks are held for one chunk's `DELETE` at a time, not for
+   the whole batch.
 
    The column lists come from startup, so a source column renamed or dropped while the job runs
    fails the next archive or copy-only batch in its copy read, before that batch's destination
