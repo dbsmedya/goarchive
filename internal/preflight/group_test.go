@@ -116,7 +116,7 @@ func TestTheViewIsReadOnlyForAnActiveNamedPlugin(t *testing.T) {
 		{"disabled", dbsrepl.GroupReplication{PluginStatus: "DISABLED"}, false},
 		{"inactive with a name", dbsrepl.GroupReplication{PluginStatus: "INACTIVE", GroupName: groupName}, false},
 		{"active with no name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE"}, false},
-		{"active with a name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName}, true},
+		{"active with a name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := healthy(t, jobspec.Archive)
