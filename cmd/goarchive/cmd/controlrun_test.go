@@ -75,20 +75,30 @@ jobs:
 }
 
 // TestRunStore: a run's settings store starts at the job's processing values and the configured gate
-// values, and the run's kind says which settings apply: nothing is deleted by a copy-only job, and the
-// gate is used by an archive or purge job whose replication is enabled.
+// values, and the run's kind says which settings apply: nothing is deleted by a copy-only job, the
+// gate is used by an archive or purge job whose replication is enabled, and the two group bounds apply
+// where that gate lists a server of type group. The bounds start at the configured ones wherever a
+// group server is listed, since the step rule measures a raise by them.
 func TestRunStore(t *testing.T) {
 	repl := "replication:\n  enabled: true\n  seconds_behind_source_within: 7\n  check_interval: 3\n  servers:\n    - host: r1\n      user: u\n"
+	group := "replication:\n  enabled: true\n  seconds_behind_source_within: 7\n  check_interval: 3\n  group_applier_queue_within: 800\n  group_certifier_queue_within: 250\n" +
+		"  servers:\n    - host: r1\n      user: u\n    - host: g2\n      user: u\n      type: group\n"
+	disabled := "replication:\n  enabled: false\n  group_applier_queue_within: 800\n  group_certifier_queue_within: 250\n  servers:\n    - host: g2\n      user: u\n      type: group\n"
 	for _, tc := range []struct {
-		name   string
-		global string
-		typ    jobspec.Type
-		want   tuning.Applicability
+		name       string
+		global     string
+		typ        jobspec.Type
+		want       tuning.Applicability
+		wantBounds bool
 	}{
-		{"archive with the gate", repl, jobspec.Archive, tuning.Applicability{Delete: true, Gate: true}},
-		{"purge with the gate", repl, jobspec.Purge, tuning.Applicability{Delete: true, Gate: true}},
-		{"archive without replication", "", jobspec.Archive, tuning.Applicability{Delete: true}},
-		{"copy-only with replication", repl, jobspec.CopyOnly, tuning.Applicability{}},
+		{"archive with the gate", repl, jobspec.Archive, tuning.Applicability{Delete: true, Gate: true}, false},
+		{"purge with the gate", repl, jobspec.Purge, tuning.Applicability{Delete: true, Gate: true}, false},
+		{"archive without replication", "", jobspec.Archive, tuning.Applicability{Delete: true}, false},
+		{"copy-only with replication", repl, jobspec.CopyOnly, tuning.Applicability{}, false},
+		{"archive with a group server in the gate", group, jobspec.Archive, tuning.Applicability{Delete: true, Gate: true, Group: true}, true},
+		{"purge with a group server in the gate", group, jobspec.Purge, tuning.Applicability{Delete: true, Gate: true, Group: true}, true},
+		{"copy-only with a group server listed", group, jobspec.CopyOnly, tuning.Applicability{}, true},
+		{"archive with replication disabled and a group server listed", disabled, jobspec.Archive, tuning.Applicability{Delete: true}, true},
 	} {
 		doc := parseDoc(t, tc.global, "", "j", tc.typ)
 		spec := doc.Jobs["j"]
@@ -101,10 +111,18 @@ func TestRunStore(t *testing.T) {
 			start.SecondsBehindSourceWithin != doc.Shared.Replication.SecondsBehindSourceWithin || start.CheckInterval != doc.Shared.Replication.CheckInterval {
 			t.Errorf("%s: store starts at %+v, want the job's processing values and the configured gate values", tc.name, start)
 		}
+		wantApplier, wantCertifier := 0, 0
+		if tc.wantBounds {
+			wantApplier, wantCertifier = 800, 250
+		}
+		if start.GroupApplierQueueWithin != wantApplier || start.GroupCertifierQueueWithin != wantCertifier {
+			t.Errorf("%s: store starts at bounds %d and %d, want the configured %d and %d", tc.name, start.GroupApplierQueueWithin, start.GroupCertifierQueueWithin, wantApplier, wantCertifier)
+		}
 		for _, k := range tuning.Keys() {
 			delete := k == tuning.BatchDeleteSize || k == tuning.DeleteSleepSeconds
 			gate := k == tuning.SecondsBehindSourceWithin || k == tuning.CheckInterval
-			wantApplies := (!delete && !gate) || (delete && tc.want.Delete) || (gate && tc.want.Gate)
+			bound := k == tuning.GroupApplierQueueWithin || k == tuning.GroupCertifierQueueWithin
+			wantApplies := (!delete && !gate && !bound) || (delete && tc.want.Delete) || (gate && tc.want.Gate) || (bound && tc.want.Gate && tc.want.Group)
 			if got, _ := store.Applies(k); got != wantApplies {
 				t.Errorf("%s: %s applies = %v, want %v", tc.name, k, got, wantApplies)
 			}
@@ -133,6 +151,7 @@ func TestGateRecordSource(t *testing.T) {
 		t.Errorf("a record before the gate exists = %+v, want it empty", got)
 	}
 	lag := int64(42)
+	applierQueue, certifierQueue, applierWithin, certifierWithin := int64(12), int64(3), int64(1000), int64(300)
 	at := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	rec := replication.Record{
 		HoldingSince: at.Add(-time.Minute), LastPass: at.Add(-time.Hour),
@@ -140,11 +159,13 @@ func TestGateRecordSource(t *testing.T) {
 			{Server: "r1:3306", Healthy: false, Cause: "unhealthy", Detail: "lag=42s", Lag: &lag, Tolerance: 10, CheckedAt: at},
 			{Server: "r2:3306", Healthy: true, Tolerance: 10, CheckedAt: at},
 			{Server: "r3:3306"},
+			{Server: "g4:3306", Type: "group", Healthy: true, Tolerance: 10, CheckedAt: at, ApplierQueue: &applierQueue, CertifierQueue: &certifierQueue,
+				ApplierQueueWithin: &applierWithin, CertifierQueueWithin: &certifierWithin},
 		},
 	}
 	slot.set(fakeRecorder{rec})
 	got := slot.Record()
-	if !got.HoldingSince.Equal(rec.HoldingSince) || !got.LastPass.Equal(rec.LastPass) || len(got.Servers) != 3 {
+	if !got.HoldingSince.Equal(rec.HoldingSince) || !got.LastPass.Equal(rec.LastPass) || len(got.Servers) != 4 {
 		t.Fatalf("record = %+v, want the gate's", got)
 	}
 	for i, want := range rec.Servers {
@@ -160,6 +181,23 @@ func TestGateRecordSource(t *testing.T) {
 	*got.Servers[0].Lag = 1 // the server's copy is its own
 	if lag != 42 {
 		t.Error("the adapter handed out the gate's own lag")
+	}
+
+	// a group server's queues and the bounds it was judged by come across, and the server's copies are its own; the
+	// others have none
+	g := got.Servers[3]
+	if g.Type != "group" || g.ApplierQueue == nil || *g.ApplierQueue != 12 || g.CertifierQueue == nil || *g.CertifierQueue != 3 ||
+		g.ApplierQueueWithin == nil || *g.ApplierQueueWithin != 1000 || g.CertifierQueueWithin == nil || *g.CertifierQueueWithin != 300 {
+		t.Errorf("group server = %+v, want its queues 12 and 3 and the bounds 1000 and 300 it was judged by", g)
+	}
+	for i := 0; i < 3; i++ {
+		if got.Servers[i].ApplierQueueWithin != nil || got.Servers[i].CertifierQueueWithin != nil {
+			t.Errorf("server %d has bounds %v and %v, want none", i, got.Servers[i].ApplierQueueWithin, got.Servers[i].CertifierQueueWithin)
+		}
+	}
+	*g.ApplierQueueWithin, *g.CertifierQueueWithin = 1, 1
+	if applierWithin != 1000 || certifierWithin != 300 {
+		t.Error("the adapter handed out the gate's own bounds")
 	}
 }
 
@@ -219,6 +257,10 @@ func TestRuntimeChanges(t *testing.T) {
 		{"tolerance above the configuration", tuning.Summary{Settings: []tuning.SettingSummary{
 			{Key: tuning.SecondsBehindSourceWithin, Configured: "10", Final: "40", Changes: 3, AboveConfigured: true}}},
 			"seconds_behind_source_within 10 -> 40 (3 changes, above the configured value)"},
+		{"group bounds, one above the configuration and one restored", tuning.Summary{Settings: []tuning.SettingSummary{
+			{Key: tuning.GroupApplierQueueWithin, Configured: "1000", Final: "3000", Changes: 3, AboveConfigured: true},
+			{Key: tuning.GroupCertifierQueueWithin, Configured: "300", Final: "300", Changes: 2}}},
+			"group_applier_queue_within 1000 -> 3000 (3 changes, above the configured value); group_certifier_queue_within 300 -> 300 (2 changes)"},
 		{"several settings and pauses", tuning.Summary{
 			Settings: []tuning.SettingSummary{{Key: tuning.BatchSize, Configured: "1000", Final: "500", Changes: 1}, {Key: tuning.CheckInterval, Configured: "5", Final: "2", Changes: 4}},
 			Pauses:   2, PausedFor: 65 * time.Second},
@@ -641,11 +683,11 @@ func TestControlSinkRoutes(t *testing.T) {
 // TestGateSlotCarriesTheGroupFields (GR C6): the adapter that hands the gate's record to the control server copies
 // the kind of each server and its two queues, which status and status-json report; a nil queue stays nil.
 func TestGateSlotCarriesTheGroupFields(t *testing.T) {
-	applier, certifier := int64(4210), int64(3)
+	applier, certifier, within := int64(4210), int64(3), int64(1000)
 	var slot gateSlot
 	slot.set(fakeRecorder{rec: replication.Record{Servers: []replication.ServerVerdict{
 		{Server: "replica1:3306", Type: "async", Healthy: true},
-		{Server: "gr2:3306", Type: "group", Healthy: true, ApplierQueue: &applier, CertifierQueue: &certifier},
+		{Server: "gr2:3306", Type: "group", Healthy: true, ApplierQueue: &applier, CertifierQueue: &certifier, ApplierQueueWithin: &within, CertifierQueueWithin: &within},
 		{Server: "gr3:3306", Type: "group"},
 	}}})
 	got := slot.Record().Servers
@@ -658,7 +700,80 @@ func TestGateSlotCarriesTheGroupFields(t *testing.T) {
 	if got[1].ApplierQueue == &applier {
 		t.Error("the adapter shares the gate's pointer: a status read must hold a copy")
 	}
-	if got[2].Type != "group" || got[2].ApplierQueue != nil || got[2].CertifierQueue != nil {
-		t.Errorf("a group server never probed = %+v, want its type and no queue", got[2])
+	if got[2].Type != "group" || got[2].ApplierQueue != nil || got[2].CertifierQueue != nil || got[2].ApplierQueueWithin != nil || got[2].CertifierQueueWithin != nil {
+		t.Errorf("a group server never probed = %+v, want its type and no queue and no bound", got[2])
+	}
+	if got[1].ApplierQueueWithin == nil || *got[1].ApplierQueueWithin != 1000 || got[1].CertifierQueueWithin == nil || *got[1].CertifierQueueWithin != 1000 ||
+		got[1].ApplierQueueWithin == &within || got[1].ApplierQueueWithin == got[1].CertifierQueueWithin {
+		t.Errorf("the group verdict's bounds = %v and %v, want 1000 and 1000, as copies", got[1].ApplierQueueWithin, got[1].CertifierQueueWithin)
+	}
+	if got[0].ApplierQueueWithin != nil || got[0].CertifierQueueWithin != nil {
+		t.Errorf("the asynchronous verdict has bounds %v and %v, want none", got[0].ApplierQueueWithin, got[0].CertifierQueueWithin)
+	}
+}
+
+// groupGateYAML is a replication block whose gate lists a replica and a server of type group, bounded at 800 and 250.
+const groupGateYAML = "replication:\n  enabled: true\n  seconds_behind_source_within: 7\n  check_interval: 3\n  group_applier_queue_within: 800\n  group_certifier_queue_within: 250\n" +
+	"  servers:\n    - host: r1\n      user: u\n    - host: g2\n      user: u\n      type: group\n"
+
+// TestAStartedControlServesTheBoundsOfAGroupGate (GR C7s, the command-wiring path): a run whose gate lists a server of
+// type group has the two bounds in its help, readable and settable over its socket from the configured values, in
+// its status-json settings and in the values `replication` reports in force; a gate with no group server refuses
+// them with its own words.
+func TestAStartedControlServesTheBoundsOfAGroupGate(t *testing.T) {
+	dir := filepath.Join(shortTemp(t), "run")
+	p := testControlParams(t, groupGateYAML, controlYAML(dir))
+	ctl, err := startControl(p)
+	if err != nil || ctl.srv == nil {
+		t.Fatalf("startControl = %v, %v", ctl, err)
+	}
+	defer func() { _ = ctl.close() }()
+	sock := filepath.Join(dir, "job.sock")
+
+	help := askSocket(t, sock, "help")
+	if a, c, ci := strings.Index(help, "group_applier_queue_within=<n>"), strings.Index(help, "group_certifier_queue_within=<n>"), strings.Index(help, "check_interval=<n>"); ci < 0 || a < ci || c < a {
+		t.Errorf("help = %q, want the two bounds after check_interval", help)
+	}
+	if got := askSocket(t, sock, "group_applier_queue_within=?"); got != "OK\ngroup_applier_queue_within=800\n" {
+		t.Errorf("getter = %q, want the configured 800", got)
+	}
+	if got := askSocket(t, sock, "group_certifier_queue_within=?"); got != "OK\ngroup_certifier_queue_within=250\n" {
+		t.Errorf("getter = %q, want the configured 250", got)
+	}
+	if got := askSocket(t, sock, "group_applier_queue_within=400"); got != "OK\ngroup_applier_queue_within: 800 -> 400, from the next gate decision\n" {
+		t.Errorf("setter = %q", got)
+	}
+	if got := askSocket(t, sock, "group_certifier_queue_within=900"); !strings.HasPrefix(got, "ERR step ") {
+		t.Errorf("a raise before any round = %q, want a step refusal", got)
+	}
+	status := askSocket(t, sock, "status-json")
+	for _, want := range []string{
+		`"group_applier_queue_within":{"value":400,"configured":800}`, `"group_certifier_queue_within":{"value":250,"configured":250}`,
+		`"group_applier_queue_within":400,"group_certifier_queue_within":250`,
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status-json lacks %s: %s", want, status)
+		}
+	}
+	if sum := ctl.end(); len(sum.Settings) != 1 || sum.Settings[0].Key != tuning.GroupApplierQueueWithin || sum.Settings[0].Final != "400" || sum.Settings[0].Configured != "800" {
+		t.Errorf("summary = %+v, want the one change of the applier bound, 800 -> 400", sum.Settings)
+	}
+
+	// A gate whose servers are all asynchronous has no such bound.
+	asyncDir := filepath.Join(shortTemp(t), "run")
+	async := testControlParams(t, "replication:\n  enabled: true\n  servers:\n    - host: r1\n      user: u\n", controlYAML(asyncDir))
+	actl, err := startControl(async)
+	if err != nil || actl.srv == nil {
+		t.Fatalf("startControl = %v, %v", actl, err)
+	}
+	defer func() { _ = actl.close() }()
+	asock := filepath.Join(asyncDir, "job.sock")
+	for _, request := range []string{"group_applier_queue_within=?", "group_certifier_queue_within=5"} {
+		if got := askSocket(t, asock, request); got != "ERR inapplicable this run's gate has no server of type group\n" {
+			t.Errorf("%q on an asynchronous gate = %q, want inapplicable with the gate's words", request, got)
+		}
+	}
+	if status := askSocket(t, asock, "status-json"); strings.Contains(status, `"group_applier_queue_within":{`) || !strings.Contains(status, `"group_applier_queue_within":null`) {
+		t.Errorf("status-json of an asynchronous gate = %s, want no bound setting and null bounds in replication", status)
 	}
 }

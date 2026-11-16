@@ -159,6 +159,47 @@ func TestToleranceRaiseWarns(t *testing.T) {
 	}
 }
 
+// TestGroupBoundRaiseWarns (GR C7s, spec §4.3 *Loud*): each accepted raise of a group bound above its configured value
+// is one WARNING line through the Banner, in the spec's words, naming the bound, its new and its configured value, and
+// who asked. A lowering, a restore, a raise up to the configured value and a refused raise are logged as any other
+// change, or not at all, and write none; the summary marks a final value above the configuration.
+func TestGroupBoundRaiseWarns(t *testing.T) {
+	f := newEmitterFixture(t, 0, groupApplies)
+	round := func() { f.store.RoundCompleted(f.store.Load().GateRevision) }
+	f.set(t, tuning.GroupApplierQueueWithin, "400")   // a lowering
+	f.set(t, tuning.GroupApplierQueueWithin, "1000")  // the restore
+	f.set(t, tuning.GroupCertifierQueueWithin, "100") // a lowering
+	f.set(t, tuning.GroupCertifierQueueWithin, "300") // the restore
+	round()
+	f.set(t, tuning.GroupApplierQueueWithin, "2000") // a raise above 1000
+	round()
+	f.set(t, tuning.GroupCertifierQueueWithin, "600") // a raise above 300, its own step
+	round()
+	if _, err := f.store.Set(tuning.GroupApplierQueueWithin, "9000", testPeer); err == nil {
+		t.Fatal("a raise of 7000 over one step of 1000 was accepted")
+	}
+	f.set(t, tuning.GroupApplierQueueWithin, "1500")  // a lowering from above the configuration
+	f.set(t, tuning.GroupCertifierQueueWithin, "450") // and the other
+	sum := f.store.Terminal()
+	f.em.cutoff()
+	f.em.drain()
+
+	want := []string{
+		"WARNING: group_applier_queue_within raised to 2000, above the configured 1000, over the control socket (uid 1000): members of the group may fall further behind before deletes hold.",
+		"WARNING: group_certifier_queue_within raised to 600, above the configured 300, over the control socket (uid 1000): members of the group may fall further behind before deletes hold.",
+	}
+	if got := f.banner.got(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("banners = %q, want %q", got, want)
+	}
+	if n := len(f.sink.messages()); n != 8 {
+		t.Errorf("entries = %d, want one per accepted change, 8: %q", n, f.sink.messages())
+	}
+	if len(sum.Settings) != 2 || !sum.Settings[0].AboveConfigured || !sum.Settings[1].AboveConfigured ||
+		sum.Settings[0].Key != tuning.GroupApplierQueueWithin || sum.Settings[0].Final != "1500" || sum.Settings[1].Final != "450" {
+		t.Errorf("summary = %+v, want both bounds, final 1500 and 450, above their configurations", sum.Settings)
+	}
+}
+
 // TestEmitterOrder: entries reach the sink in revision order, one per accepted change, whatever
 // other entries are queued between them.
 func TestEmitterOrder(t *testing.T) {

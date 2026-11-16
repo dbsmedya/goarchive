@@ -7,16 +7,19 @@ import (
 	"github.com/dbsmedya/goarchive/v3/internal/tuning"
 )
 
-// The run's configured values: the ceilings of the two sizes and the configured tolerance.
+// The run's configured values: the ceilings of the two sizes, the configured tolerance and the two group bounds.
 var testStart = tuning.Settings{
 	BatchSize: 1000, BatchDeleteSize: 500,
 	SleepSeconds: 1, DeleteSleepSeconds: 0,
 	SecondsBehindSourceWithin: 10, CheckInterval: 5,
+	GroupApplierQueueWithin: 1000, GroupCertifierQueueWithin: 300,
 }
 
 var (
-	// archiveApplies is an archive or purge run with the replication gate.
+	// archiveApplies is an archive or purge run with the replication gate and asynchronous servers only.
 	archiveApplies = tuning.Applicability{Delete: true, Gate: true}
+	// groupApplies is an archive or purge run whose gate also has a server of type group.
+	groupApplies = tuning.Applicability{Delete: true, Gate: true, Group: true}
 	// noGateApplies is an archive run without replication.
 	noGateApplies = tuning.Applicability{Delete: true, Gate: false}
 	// copyOnlyApplies is a copy-only run: nothing is deleted, and no gate is used.

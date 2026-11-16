@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,9 +92,10 @@ func TestHelpListsWhatTheRunAccepts(t *testing.T) {
 		want    []string
 		not     []string
 	}{
-		{"all", archiveApplies, []string{"help", "status", "status-json", "pause", "resume", "stop", "batch_size=<n>", "batch_delete_size=<n>", "sleep_seconds=<s>", "delete_sleep_seconds=<s>", "seconds_behind_source_within=<n>", "check_interval=<n>"}, nil},
-		{"no gate", noGateApplies, []string{"batch_size=<n>", "batch_delete_size=<n>", "delete_sleep_seconds=<s>"}, []string{"seconds_behind_source_within=<n>", "check_interval=<n>"}},
-		{"copy-only", copyOnlyApplies, []string{"help", "pause", "resume", "stop", "batch_size=<n>", "sleep_seconds=<s>"}, []string{"batch_delete_size=<n>", "delete_sleep_seconds=<s>", "seconds_behind_source_within=<n>", "check_interval=<n>"}},
+		{"all", archiveApplies, []string{"help", "status", "status-json", "pause", "resume", "stop", "batch_size=<n>", "batch_delete_size=<n>", "sleep_seconds=<s>", "delete_sleep_seconds=<s>", "seconds_behind_source_within=<n>", "check_interval=<n>"}, []string{"group_applier_queue_within=<n>", "group_certifier_queue_within=<n>"}},
+		{"a gate with a group server", groupApplies, []string{"batch_size=<n>", "seconds_behind_source_within=<n>", "check_interval=<n>", "group_applier_queue_within=<n>", "group_certifier_queue_within=<n>"}, nil},
+		{"no gate", noGateApplies, []string{"batch_size=<n>", "batch_delete_size=<n>", "delete_sleep_seconds=<s>"}, []string{"seconds_behind_source_within=<n>", "check_interval=<n>", "group_applier_queue_within=<n>", "group_certifier_queue_within=<n>"}},
+		{"copy-only", copyOnlyApplies, []string{"help", "pause", "resume", "stop", "batch_size=<n>", "sleep_seconds=<s>"}, []string{"batch_delete_size=<n>", "delete_sleep_seconds=<s>", "seconds_behind_source_within=<n>", "check_interval=<n>", "group_applier_queue_within=<n>", "group_certifier_queue_within=<n>"}},
 	} {
 		store, _ := newTestStore(t, tc.applies)
 		got := names(newCmds(store, "").do("help"))
@@ -144,11 +146,12 @@ func TestCacheTTLNotASetting(t *testing.T) {
 	}
 }
 
-// TestApplicability (spec §7 row 40): on a copy-only run the two delete setters and the two gate
-// setters are refused with their messages, their getters too, and nothing enters the summary; on
-// an archive run without replication the gate setters are refused.
+// TestApplicability (spec §7 row 40): on a copy-only run the two delete setters and the gate
+// setters (the two group bounds among them) are refused with their messages, their getters too,
+// and nothing enters the summary; on an archive run without replication the gate setters are
+// refused; on a gate whose servers are all asynchronous the two bounds are, with their own words.
 func TestApplicability(t *testing.T) {
-	const copyOnly, noGate = "a copy-only job deletes nothing", "this run does not use the replication gate"
+	const copyOnly, noGate, noGroup = "a copy-only job deletes nothing", "this run does not use the replication gate", "this run's gate has no server of type group"
 	for _, tc := range []struct {
 		name    string
 		applies tuning.Applicability
@@ -161,6 +164,12 @@ func TestApplicability(t *testing.T) {
 		{"copy-only check_interval", copyOnlyApplies, "check_interval", noGate},
 		{"no gate seconds_behind_source_within", noGateApplies, "seconds_behind_source_within", noGate},
 		{"no gate check_interval", noGateApplies, "check_interval", noGate},
+		{"copy-only group_applier_queue_within", copyOnlyApplies, "group_applier_queue_within", noGate},
+		{"copy-only group_certifier_queue_within", copyOnlyApplies, "group_certifier_queue_within", noGate},
+		{"no gate group_applier_queue_within", noGateApplies, "group_applier_queue_within", noGate},
+		{"no gate group_certifier_queue_within", noGateApplies, "group_certifier_queue_within", noGate},
+		{"asynchronous servers only group_applier_queue_within", archiveApplies, "group_applier_queue_within", noGroup},
+		{"asynchronous servers only group_certifier_queue_within", archiveApplies, "group_certifier_queue_within", noGroup},
 	} {
 		store, _ := newTestStore(t, tc.applies)
 		c := newCmds(store, "")
@@ -203,6 +212,12 @@ func TestReasonWords(t *testing.T) {
 		{"sleep_seconds=9223372037", archiveApplies, "invalid"},
 		{"batch_size=5000", archiveApplies, "ceiling"},
 		{"seconds_behind_source_within=600", archiveApplies, "step"},
+		{"group_applier_queue_within=5000", groupApplies, "step"},
+		{"group_certifier_queue_within=5000", groupApplies, "step"},
+		{"group_applier_queue_within=1.5", groupApplies, "invalid"},
+		{"group_certifier_queue_within=99999999999999999999", groupApplies, "invalid"},
+		{"group_applier_queue_within=1", archiveApplies, "inapplicable"},
+		{"group_certifier_queue_within=1", copyOnlyApplies, "inapplicable"},
 		// Two failures: the earlier word wins.
 		{"frobnicate=-5", archiveApplies, "malformed"},
 		{"frobnicate=1e3", archiveApplies, "malformed"},
@@ -210,6 +225,8 @@ func TestReasonWords(t *testing.T) {
 		{"batch_delete_size=99999999999999999999", copyOnlyApplies, "inapplicable"},
 		{"batch_delete_size=0", copyOnlyApplies, "inapplicable"},
 		{"seconds_behind_source_within=1.5", noGateApplies, "inapplicable"},
+		{"group_applier_queue_within=1.5", archiveApplies, "inapplicable"},
+		{"group_certifier_queue_within=99999999999999999999", noGateApplies, "inapplicable"},
 	} {
 		store, _ := newTestStore(t, tc.applies)
 		r := newCmds(store, "").do(tc.line)
@@ -444,7 +461,7 @@ func TestHelpTableIsTheServers(t *testing.T) {
 		}
 	}
 
-	store, _ := newTestStore(t, archiveApplies)
+	store, _ := newTestStore(t, groupApplies)
 	r := newCmds(store, "").do("help")
 	wantOK(t, r)
 	if got := strings.Join(r.body[1:], "\n"); got != strings.Join(table, "\n") {
@@ -461,6 +478,89 @@ func TestHelpTableIsTheServers(t *testing.T) {
 	for _, l := range r.body[1:] {
 		if !inTable[l] {
 			t.Errorf("a copy-only run's help line %q is not in the table", l)
+		}
+	}
+}
+
+// TestHelpListsTheBoundsAfterCheckInterval (spec §4.3): the two group bounds follow check_interval in help, in the
+// order group_applier_queue_within, group_certifier_queue_within, with the words that say what each is; the six lines
+// that existed keep their places, in a run with a group server and in one without.
+func TestHelpListsTheBoundsAfterCheckInterval(t *testing.T) {
+	order := func(applies tuning.Applicability) []string {
+		store, _ := newTestStore(t, applies)
+		var out []string
+		for _, l := range newCmds(store, "").do("help").body[1:] {
+			if f := strings.Fields(l)[0]; strings.Contains(f, "=<") {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	six := []string{"batch_size=<n>", "batch_delete_size=<n>", "sleep_seconds=<s>", "delete_sleep_seconds=<s>", "seconds_behind_source_within=<n>", "check_interval=<n>"}
+	if got := order(archiveApplies); !slices.Equal(got, six) {
+		t.Errorf("a gate with no group server lists %v, want the six that existed, unchanged", got)
+	}
+	if got, want := order(groupApplies), append(slices.Clone(six), "group_applier_queue_within=<n>", "group_certifier_queue_within=<n>"); !slices.Equal(got, want) {
+		t.Errorf("a gate with a group server lists %v, want %v", got, want)
+	}
+	for _, h := range HelpTable() {
+		if strings.HasPrefix(h.Usage, "group_") && (h.What == "" || !strings.Contains(h.What, "transactions")) {
+			t.Errorf("the help line of %s says %q, want what the setting is, in transactions", h.Usage, h.What)
+		}
+	}
+}
+
+// TestGroupBoundReplies: a setter's body is the one line every setter has, with the gate's effect words; a getter's
+// body is key=<value>; an equal value is unchanged; a raise above the configured value is `step` with the
+// message that names the largest value accepted now.
+func TestGroupBoundReplies(t *testing.T) {
+	store, _ := newTestStore(t, groupApplies)
+	c := newCmds(store, "")
+	for _, tc := range []struct{ line, body string }{
+		{"group_applier_queue_within=400", "group_applier_queue_within: 1000 -> 400, from the next gate decision"},
+		{"group_applier_queue_within=400", "group_applier_queue_within: 400 (unchanged)"},
+		{"group_applier_queue_within=?", "group_applier_queue_within=400"},
+		{"group_certifier_queue_within=0", "group_certifier_queue_within: 300 -> 0, from the next gate decision"},
+		{"group_certifier_queue_within=?", "group_certifier_queue_within=0"},
+		{"group_certifier_queue_within=300", "group_certifier_queue_within: 0 -> 300, from the next gate decision"},
+	} {
+		r := c.do(tc.line)
+		wantOK(t, r)
+		if len(r.body) != 1 || r.body[0] != tc.body {
+			t.Errorf("%q: body %q, want one line %q", tc.line, r.body, tc.body)
+		}
+	}
+
+	store.RoundCompleted(store.Load().GateRevision)
+	r := c.do("group_applier_queue_within=5000")
+	wantErr(t, r, "step")
+	// From 400, below the configuration, the limit is the higher of the configured 1000 and 400 plus one step.
+	if !strings.Contains(r.message, "group_applier_queue_within 5000 is more than one step above the current 400") ||
+		!strings.Contains(r.message, "largest value accepted now is 1400") || !strings.Contains(r.message, "configured 1000 is the step") {
+		t.Errorf("message %q, want the largest value accepted now (1400, from the current 400) and the step", r.message)
+	}
+	if got := store.Load().GroupApplierQueueWithin; got != 400 {
+		t.Errorf("a refused raise left the bound at %d, want 400", got)
+	}
+	wire := string(r.wire())
+	if !strings.HasPrefix(wire, "ERR step ") || strings.Count(wire, "\n") != 1 {
+		t.Errorf("wire = %q, want one ERR step line", wire)
+	}
+}
+
+// TestGroupBoundGetterRoundTrip (spec §7 row 7): the getter's body of each bound is a line the server accepts as a
+// setter and that sets the same value, across the range.
+func TestGroupBoundGetterRoundTrip(t *testing.T) {
+	for _, key := range []tuning.Key{tuning.GroupApplierQueueWithin, tuning.GroupCertifierQueueWithin} {
+		for _, v := range []int{0, 1, 300, 25000, math.MaxInt32, math.MaxInt32 + 1} {
+			start := testStart
+			if key == tuning.GroupApplierQueueWithin {
+				start.GroupApplierQueueWithin = v
+			} else {
+				start.GroupCertifierQueueWithin = v
+			}
+			store, _ := newTestStore(t, groupApplies, func(o *tuning.Options) { o.Start = start })
+			roundTrip(t, newCmds(store, ""), string(key))
 		}
 	}
 }

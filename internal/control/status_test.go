@@ -281,6 +281,7 @@ func TestStatusSettingsFollowApplicability(t *testing.T) {
 		used    bool
 	}{
 		{"all", archiveApplies, 6, true},
+		{"all, with a group server in the gate", groupApplies, 8, true},
 		{"no gate", noGateApplies, 4, false},
 		{"copy-only", copyOnlyApplies, 2, false},
 	} {
@@ -735,7 +736,15 @@ func statusParityNeedles(t *testing.T, f *statusFixture, j map[string]any) map[s
 				}
 				return fmt.Sprint(num(sv[k]))
 			}
-			parts := []string{name, "applier queue " + queue("applier_queue"), "certifier queue " + queue("certifier_queue"), "checked ", str(sv["checked_at"])}
+			// each queue is said with the bound it was judged by, where the verdict names one
+			bound := func(k string) string {
+				if sv[k] == nil {
+					return ""
+				}
+				return fmt.Sprintf(" (bound %d)", num(sv[k]))
+			}
+			parts := []string{name, "applier queue " + queue("applier_queue") + bound("applier_queue_within"),
+				"certifier queue " + queue("certifier_queue") + bound("certifier_queue_within"), "checked ", str(sv["checked_at"])}
 			if cause := str(sv["cause"]); cause != "" {
 				parts = append(parts, " "+cause+" (", str(sv["detail"]))
 			} else {
