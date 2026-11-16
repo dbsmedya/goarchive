@@ -7,7 +7,7 @@
 ---
 
 Every preflight, `validate` and `dry-run` included, starts by reading the Group Replication facts of
-both servers. This section says what is read, in which order, what `validate`, `dry-run` and a run
+both servers. This document says what is read, in which order, what `validate`, `dry-run` and a run
 print from it, which groups are supported, and the one grant it asks for. A pair of servers without Group
 Replication reads the same facts, finds no group and prints nothing.
 
@@ -278,8 +278,9 @@ What the text beside it says:
 
 1. **Router has no lag threshold.** It routes by a member's state, never by its backlog: an `ONLINE` secondary
    receives reads however long its applier queue is.
-2. **The applier bound acts on this job only.** It holds goarchive. It takes no member out of Router's rotation, and
-   it does nothing about other writers.
+2. **So goarchive's applier bound is the only automatic guard** on how far behind a member that serves reads may fall
+   on this job's account. It guards this job only: it holds goarchive, it takes no member out of Router's rotation,
+   and it does nothing about other writers.
 3. **The bound is chosen from the application**: how many transactions behind a read on a secondary may be. The
    upper reference for both bounds is the flow-control bullet under [Choosing each value](#choosing-each-value).
 4. **There is no Router value to follow**, so nothing is retuned when Router's configuration changes.
