@@ -89,7 +89,7 @@ ERR (Error: <reason>: <message> on stderr), 2 usage error, 5 no socket at the
 path or nothing listening on it, 6 the client's own timeout (5 s to connect,
 10 s for the exchange), 7 malformed reply, 8 the client refused the directory
 or the socket, 9 any other failure to connect or to exchange. See
-docs/README_OPERATIONS.md, Runtime control.`)
+docs/README_RUNTIME_CONTROL.md, Runtime control.`)
 	return b.String()
 }
 
