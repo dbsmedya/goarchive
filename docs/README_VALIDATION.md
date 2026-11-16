@@ -149,7 +149,8 @@ itself and delete the only copy. …
 **Fix:** point `destination` at a different server or schema. Schema names that differ only in
 letter case count as one schema on every server. For two servers cloned from one data directory,
 which share `auto.cnf` and so `server_uuid`: on the standalone archive server, stop mysqld, remove
-`auto.cnf` from the data directory, and start it again to get a new `server_uuid`.
+`auto.cnf` from the data directory, and start it again to get a new `server_uuid`. A replicating
+server follows MySQL's guidance for changing `server_uuid`.
 
 ### `AUTO_INCREMENT_ZERO_MODE_CHECK`
 

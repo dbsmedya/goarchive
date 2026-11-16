@@ -5,7 +5,6 @@ What GoArchive cannot do, and what to plan around before pointing it at real dat
 **Related:** [Configuration](README_CONFIGURATION.md) ·
 [Validation & Preflight](README_VALIDATION.md) ·
 [Permissions](README_PERMISSIONS.md) · [Operations](README_OPERATIONS.md) ·
-[Upgrading to 3.0](README_UPGRADING_3_0.md) ·
 [← Back to README](../README.md)
 
 ---
@@ -57,7 +56,7 @@ it. Non-key temporal values are not normalized.
 #### No DDL and no concurrent writes during a run (contract)
 
 GoArchive's correctness rests on these operating contracts. Violations are not detected, except
-where [recovery](README_OPERATIONS.md#crash-recovery) stops:
+where a batch or [recovery](README_OPERATIONS.md#crash-recovery) stops on one:
 
 1. **No DDL on participating tables while a job runs.** An **added** column is not detected and
    not copied. Run migrations between runs.
@@ -76,8 +75,7 @@ schema name.
 - Schema names are compared case-insensitively on every server, so `App` and `app` are one schema
   even where MySQL keeps them apart.
 - Two servers sharing a `server_uuid` (a clone of another's data directory) are one server to
-  GoArchive. A replicating server follows MySQL's guidance for changing `server_uuid`.
-  [Remedy](README_VALIDATION.md#src_dest_identity_check)
+  GoArchive. [Remedy](README_VALIDATION.md#src_dest_identity_check)
 - Each connection must reach one backend for the whole run; a proxy that routes one account's
   statements to different servers is unsupported.
 
