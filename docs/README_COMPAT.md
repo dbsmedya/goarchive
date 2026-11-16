@@ -241,7 +241,7 @@ limit a DBA lowered to 1 MiB, about 131000.
 
 **What GoArchive does.** When the limit of the side was known at the run's start, a 3100 at a commit and a 3231
 at a statement each end the run with an error that names the limit, the setting to lower and what is not lost
-([A transaction over the size limit](README_OPERATIONS.md#a-transaction-over-the-size-limit)). The 3100 message
+([A transaction over the size limit](README_GROUP_REPLICATION.md#a-transaction-over-the-size-limit)). The 3100 message
 says that MySQL's error does not name the cause; the 3231 message states it, as MySQL's error does. GoArchive
 never commits a transaction after one of its statements failed, so a 3100 that would follow a 3231 is not seen.
 
@@ -287,7 +287,7 @@ purge's recovery must not conclude that a root is "already gone" from what it re
 [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check). The refusal is judged on the
 configuration read, which a fence lets through, and not on any statement that it holds. A run that the server
 holds past the session's `wait_timeout` ends with a named stop and exit code 1
-([a failover's backlog](README_OPERATIONS.md#a-failovers-backlog)). GoArchive makes no claim the manual does
+([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). GoArchive makes no claim the manual does
 not make: it does not rely on the window to behave as measured, and a server that behaved as the manual says
 (a writable new primary that serves stale reads) is not covered by the measurement above.
 

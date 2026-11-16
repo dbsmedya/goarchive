@@ -44,7 +44,7 @@ GoArchive takes a declared parent-child relation tree, discovers every dependent
 | MyISAM sources / MySQL 5.x (EOL) | Unsupported; no support planned | ✅ |
 | Batched write mechanisms | Parameterized multi-row INSERT / chunked `DELETE … WHERE (key) IN (...)` | `LOAD DATA LOCAL INFILE` / range DELETE |
 | PXC flow control | ❌ | ✅ |
-| Group Replication monitoring | ✅ the replication gate holds the job while a member in a listed server's view is not `ONLINE` or its applier or certifier queue is over its bound ([Group Replication members](docs/README_OPERATIONS.md#group-replication-members)) | No Group Replication check in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver); `--check-replica-lag` reads an asynchronous replica's lag |
+| Group Replication monitoring | ✅ the replication gate holds the job while a member in a listed server's view is not `ONLINE` or its applier or certifier queue is over its bound ([Group Replication members](docs/README_GROUP_REPLICATION.md#group-replication-members)) | No Group Replication check in reviewed [v3.7.2 source](https://github.com/percona/percona-toolkit/blob/v3.7.2/bin/pt-archiver); `--check-replica-lag` reads an asynchronous replica's lag |
 | Extensibility | ❌ | ✅ 9 plugin hooks |
 
 This comparison covers the reviewed pt-archiver v3.7.2 source linked above. GoArchive's
