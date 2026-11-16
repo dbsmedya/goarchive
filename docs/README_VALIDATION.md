@@ -200,6 +200,41 @@ change. The check proves the session at connect, per physical connection; a mult
 that changes the session between statements is not covered, as with the other session pins.
 Replica connections are pinned but not checked: they read replica status only.
 
+### `GROUP_CONSISTENCY_CHECK`
+
+After a failover the new primary of a Group Replication group is read-only and applies the backlog it held
+when it was elected. A session whose `group_replication_consistency` includes the fence
+(`BEFORE_ON_PRIMARY_FAILOVER`, `BEFORE`, `AFTER` or `BEFORE_AND_AFTER`) is held there until it has, so it never
+reads the old state; an `EVENTUAL` session reads at once, and can read around the backlog
+([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). So every new source and
+destination connection, at startup or opened later by its pool, a replacement in the middle of a run included,
+is made to be fenced before the pool hands it out. It asks the server two things on the connection and keeps
+them apart: whether the Group Replication plugin is `ACTIVE`, which says whether the rule applies, and the
+session's own `group_replication_consistency`, which says whether the session is fenced. The server's global
+value decides nothing.
+
+| The plugin | The session's value | What GoArchive does |
+|---|---|---|
+| Not installed, or any status but `ACTIVE` | Any, or none | Nothing: the rule does not apply, and the session is left as it was found |
+| Its state cannot be read | | Refuses the connection |
+| `ACTIVE`, running in a group or not | `EVENTUAL` | Sets the session to `BEFORE_ON_PRIMARY_FAILOVER`, reads it again, and requires it |
+| `ACTIVE` | `BEFORE_ON_PRIMARY_FAILOVER`, `BEFORE`, `AFTER`, `BEFORE_AND_AFTER` | Nothing: an operator's stronger choice is never weakened |
+| `ACTIVE` | Another value, or none | Refuses the connection |
+| `ACTIVE` | Cannot be read, the `SET` is refused, or it does not read back as set | Refuses the connection |
+
+A server without the plugin is not changed. Each new connection to it costs four small reads of the plugin's state
+and the session's consistency, none of which reads a table of the job (a new connection to a plain server sends nine
+statements in all: the driver's three, the two checks above and these four). A refusal fails the run with the server named, what was found, and the two ways out:
+
+```
+GROUP_CONSISTENCY_CHECK: gr2:3306: cannot set the session's group_replication_consistency to BEFORE_ON_PRIMARY_FAILOVER: Error 1227 (42000): Access denied; you need (at least one of) the SYSTEM_VARIABLES_ADMIN or SESSION_VARIABLES_ADMIN privilege(s) for this operation. GoArchive makes every session on a server whose Group Replication plugin is active wait for a newly elected primary's backlog, and it will not run on one it cannot make so. Either give this account the privilege the server asks for that SET (SESSION_VARIABLES_ADMIN or SYSTEM_VARIABLES_ADMIN, where it asks for one), or make a stronger value this account's or the server's default: group_replication_consistency BEFORE_ON_PRIMARY_FAILOVER, BEFORE, AFTER or BEFORE_AND_AFTER
+```
+
+**Fix:** one of the two ways out. The `SET` needs no grant beyond the documented ones on the servers measured
+([Permissions](README_PERMISSIONS.md#privilege-matrix)). A connection that dies during the check is an ordinary
+connection failure, retried like one; a refusal is a property of the server and the account and is not retried.
+Replica connections are not checked: they read replica status only.
+
 ---
 
 ## Source structure checks
@@ -493,18 +528,31 @@ Under `--skip-dangerously-validate-preflight-allow-experimental` it still runs, 
 
 It applies to any read-only source, a plain replica included. On a Group Replication group a
 secondary is read-only, and so is a newly elected primary until it has applied its backlog
-([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)); the message says that and names no
-cause, since the check cannot tell which of them the source is:
+([a failover's backlog](README_GROUP_REPLICATION.md#a-failovers-backlog)). The refusal is the same either
+way. Its last sentence says why, from the role of the source's own row in its group's view, which is read
+after the configuration and is not held by a failover's fence:
+
+| The source | The message ends with |
+|---|---|
+| A `SECONDARY` | `The source is a SECONDARY of group <name>; the primary is <host:port>.` |
+| The `PRIMARY` of its group, and read-only | `The source is the PRIMARY of group <name> and is read-only: it was newly elected and is still applying its backlog, or an operator made it read-only. Run again when it is writable.` GoArchive cannot tell the two apart, and says both |
+| Not a member of a group, or a member that is not `ONLINE` | The general sentence: `On a Group Replication group a secondary is read-only, and so is a newly elected primary until it has applied its backlog.` A plain read-only server's view is not read |
+| A member whose account cannot read the group's view | The general sentence, and the grant: `GRANT SELECT ON performance_schema.replication_group_members TO <user>`. The refusal is issued either way |
 
 ```
-SOURCE_READ_ONLY_CHECK: the source is read-only (read_only and super_read_only are ON). An archive or a
-purge deletes from the source, and its recovery replays deletes there, so it is refused before anything
-is copied or replayed. On a Group Replication group a secondary is read-only, and so is a newly elected
-primary until it has applied its backlog.
+SOURCE_READ_ONLY_CHECK: the source is read-only (super_read_only is ON). An archive or a purge deletes
+from the source, and its recovery replays deletes there, so it is refused before anything is copied or
+replayed. The source is a SECONDARY of group 8a94f357-aab4-11df-86ab-c80aa9429563; the primary is gr1:3306.
 ```
 
 Point the job at a source that is writable, or wait until the primary is, and run again. The log's
 roots stay as they are and the next run recovers them.
+
+A copy-only run whose source is the `PRIMARY` of its group in its own view and is read-only is not refused: a
+primary an operator made read-only is a legitimate source for a copy. It prints one warning before its first table
+read, under every flag: if the source was newly elected, the server holds the run's reads until it has applied its
+backlog, for at most the session's `wait_timeout`; and how a held run is stopped (two signals, or one after a `stop`
+over the control socket). A secondary, a writable primary and a plain server get no warning.
 
 ### `DEST_READ_ONLY_CHECK`
 

@@ -433,6 +433,18 @@ the next run's [recovery](#crash-recovery) finishes the batch once the setting o
 The two lock sessions, which the run holds throughout, keep the value they started with; a
 delete chunk takes a pool session like any other.
 
+### What a new connection sends
+
+Every new source and destination connection, at startup or opened later by its pool, is proved before the pool hands it
+out: the driver's three statements (`max_allowed_packet`, `SET NAMES` and the one `SET` of the session pins), the
+reads of [`max_error_count`](#max_error_count-during-a-run) and of the session's character set, and the library's reads of
+the Group Replication plugin's state and the session's `group_replication_consistency`
+([`GROUP_CONSISTENCY_CHECK`](README_VALIDATION.md#group_consistency_check)). Measured on MySQL 8.4.13, a new connection
+to a server without the plugin sends **nine** statements, four of them the last reads, which cost a small read each and
+touch no table of the job; to a server whose plugin is `ACTIVE`, eight, and twelve when the session was `EVENTUAL` and is
+set to `BEFORE_ON_PRIMARY_FAILOVER`. Replica connections are pinned and not checked. Pools retire a connection after 10
+minutes, so a long run opens a replacement now and then and each pays the same.
+
 ---
 
 ## Pausing a run: `sentinel_file`

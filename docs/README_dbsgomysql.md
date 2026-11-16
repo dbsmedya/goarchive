@@ -83,6 +83,7 @@ so `validate`, `dry-run` and a run share one read ([what is read, and in which o
 |---|---|
 | `ReplicationConfig` | Each side's `read_only`, `super_read_only` and `server_id`: the first statement sent to that server, judged by [`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check) and [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check) |
 | `GroupReplication` | Each side's plugin state, configured group name, `group_replication_transaction_size_limit` and `group_replication_single_primary_mode` (each with whether the server reported it); the mode is judged by [`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check) |
+| `GroupConsistency` (the driver-connection form) | On every new source and destination connection, read on the driver connection itself, before the pool hands it out: the plugin's state and the session's own `group_replication_consistency`, so that [the fence](README_VALIDATION.md#group_consistency_check) is set where the plugin is `ACTIVE`. It issues three statements (four without the group name's row), none of which a failover's fence holds |
 | `GroupMembers` | A member source's view: each member's state and role, and which row is the source's own. Needs `SELECT` on `performance_schema.replication_group_members`; read only from a plugin that is `ACTIVE` with a group name |
 
 The transaction size limit came with dbsgomysql v1.5.0, whose upgrade notes apply to any code that builds the library's
