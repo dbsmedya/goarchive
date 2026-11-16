@@ -377,41 +377,61 @@ func TestRequireContainersUpChecksTheGroupEstate(t *testing.T) {
 	}
 }
 
-// TestMakeE2ERefusesTheGroupEstate: the E2E configs name the plain estate's ports, so `make e2e` with
-// TOPOLOGY=group would reset the group estate and then run against ports that are not its own. It refuses
-// first, exit 2, before any docker call.
-func TestMakeE2ERefusesTheGroupEstate(t *testing.T) {
+// TestMakeE2ERunsOnTheGroupEstate (GRG-1, GR C10): `make e2e` with TOPOLOGY=group is the same procedure as on the
+// plain estate, in the same order (reset the estate, seed it, require the seed, run the suite), and refuses
+// nothing: the configs take the estate's ports from its environment (TestE2EConfigsTakeTheirPortsFromTheEstate).
+// `make -n` prints the recipe lines, and runs only the nested make's, so no docker call is made.
+func TestMakeE2ERunsOnTheGroupEstate(t *testing.T) {
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
 	make, err := exec.LookPath("make")
 	if err != nil {
-		t.Fatal("make is needed to run the Makefile's e2e target")
+		t.Fatal("make is needed to read the Makefile's e2e target")
 	}
-	bin := t.TempDir()
-	log := filepath.Join(t.TempDir(), "docker.log")
-	// Nothing real can run here, so a Makefile without the refusal cannot reach an estate: docker and
-	// mysqlsh are fakes, and the rest of the PATH is the system's.
-	fake := "#!/usr/bin/env bash\necho \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
-	for _, name := range []string{"docker", "mysqlsh"} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(fake+"exit 99\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cmd := exec.Command(make, "-C", root, "e2e", "TOPOLOGY=group")
-	cmd.Env = []string{"PATH=" + bin + string(os.PathListSeparator) + "/usr/bin:/bin", "HOME=" + t.TempDir(), "FAKE_DOCKER_LOG=" + log}
+	cmd := exec.Command(make, "-n", "-C", root, "e2e", "TOPOLOGY=group")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	err = cmd.Run()
-	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 2 {
-		t.Errorf("make e2e TOPOLOGY=group = %v, want exit 2\n%s", err, out.String())
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("make -n e2e TOPOLOGY=group = %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "group estate has no E2E") {
-		t.Errorf("the refusal does not say why\n%s", out.String())
+	if strings.Contains(out.String(), "has no E2E") {
+		t.Errorf("the e2e target still refuses the group estate\n%s", out.String())
 	}
-	if b, rerr := os.ReadFile(log); rerr == nil {
-		t.Errorf("make e2e TOPOLOGY=group called docker before refusing: %s", b)
+	last := -1
+	for _, step := range []string{"estate.sh reset", "run-tests.sh --setup", "require-e2e-seed.sh", "run-tests.sh --sakila --skip-docker"} {
+		i := strings.Index(out.String(), step)
+		if i < 0 || i < last {
+			t.Errorf("the plan does not run %q after the steps before it\n%s", step, out.String())
+			continue
+		}
+		last = i
+	}
+}
+
+// TestTopologyNamesTheSourceContainer (GR C10, review finding 8): the workflow's two "Server version" steps
+// read the source's version from the container the topology names, and the password from the topology's
+// env file, so no step names db1.
+func TestTopologyNamesTheSourceContainer(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ topology, source, env string }{{"", "db1", ".env"}, {"plain", "db1", ".env"}, {"group", "gr1", ".env.group"}} {
+		cmd := exec.Command("bash", "-c", `. "$ROOT/tests/scripts/topology.sh"; echo "$ESTATE_SOURCE $ESTATE_ENV"`)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "ROOT=" + root}
+		if tc.topology != "" {
+			cmd.Env = append(cmd.Env, "TOPOLOGY="+tc.topology)
+		}
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("TOPOLOGY=%q: %v", tc.topology, err)
+		}
+		if got, want := strings.TrimSpace(string(out)), tc.source+" "+tc.env; got != want {
+			t.Errorf("TOPOLOGY=%q: ESTATE_SOURCE and ESTATE_ENV = %q, want %q", tc.topology, got, want)
+		}
 	}
 }
 
