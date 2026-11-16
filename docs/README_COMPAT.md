@@ -8,7 +8,7 @@ MySQL versions, and change what GoArchive does. For each one, it says:
 - the path GoArchive takes;
 - what is still open.
 
-The supported versions are listed in [Limitations → Environment](README_LIMITATIONS.md#environment);
+The supported versions are listed in [Operations → Supported versions](README_OPERATIONS.md#supported-versions);
 this page does not restate them.
 
 ---

@@ -8,8 +8,8 @@ Detailed specifications for GoArchive. Start at the
 | [Configuration](README_CONFIGURATION.md) | Every config block, option, default, and precedence rule; the `where` rules; identifier rules |
 | [Validation & Preflight](README_VALIDATION.md) | Every preflight and connection-time check, the checks by job type, schema compatibility rules, SHA256 verification |
 | [Permissions](README_PERMISSIONS.md) | Grant recipes, the privilege matrix, the provable-grant rule, troubleshooting |
-| [Limitations](README_LIMITATIONS.md) | Hard constraints and the run contract, model limitations, operational cautions, trust model, supported versions |
-| [Operations](README_OPERATIONS.md) | Commands and flags, operator workflow, tuning and memory, pausing, replication gating, crash recovery and resume, concurrency and locking |
+| [Limitations](README_LIMITATIONS.md) | Hard constraints and the run contract, model limitations, operational cautions, trust model |
+| [Operations](README_OPERATIONS.md) | Supported versions, commands and flags, operator workflow, tuning and memory, pausing, replication gating, crash recovery and resume, concurrency and locking |
 | [Runtime control](README_RUNTIME_CONTROL.md) | The run's control socket: enabling it and its path, the `goarchive control` client, the protocol contract, runtime settings, `status-json`, the tolerance's step rule, security |
 | [Group Replication](README_GROUP_REPLICATION.md) | Running a job on a Group Replication group: what is supported, where to point GoArchive, how to choose each value, what is read and printed, and two worked examples (ProxySQL, MySQL Router) |
 | [Job Tracking Schema](README_JOBS_SCHEMA.md) | DBA guide: the tracking tables, the startup checks, inspection queries, what is safe to delete, failover re-binding |

@@ -209,7 +209,8 @@ There is no implicit "archive everything": an empty `where` fails validation. To
 table, say so: `where: "1=1"`.
 
 `where` is a **raw SQL condition**, trusted operator input
-([Trust model](README_LIMITATIONS.md#trust-model)). Each database call carries one statement, so
+([Trust model](README_LIMITATIONS.md#trust-model)). GoArchive defends against the operator's
+**mistakes**, not against the operator. Each database call carries one statement, so
 text that adds a second fails with a syntax error. The root table is queried without an alias,
 so a subquery refers to the row being tested by the table name (`orders.id`). Every run starts
 at the beginning of the `where` range; the rows it selects must stay unchanged while GoArchive

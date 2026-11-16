@@ -20,8 +20,11 @@ build it.
 ### Required
 
 - **Go** and **MySQL** — supported versions are listed under
-  [Environment](docs/README_LIMITATIONS.md#environment), the single source of truth for both
+  [Supported versions](docs/README_OPERATIONS.md#supported-versions) in the operations reference,
+  the single source of truth for both
 - **Git**: For building from source
+- **Network**: access to the source and destination databases, and to every replica listed in
+  `replication.servers` when the replication gate is enabled
 
 ### Optional
 
@@ -102,6 +105,12 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$(pwd)/archiver.yaml:/work/archiv
 ```
 
 ## Installation from Source
+
+Building from source needs Go 1.26 or later. `go.mod` declares `go 1.26.0` and
+`toolchain go1.26.8`. Releases, the image and `make` use go1.26.8: the Makefile exports the
+toolchain line as `GOTOOLCHAIN` for every recipe, the Dockerfile builds on `golang:1.26.8-alpine`,
+and CI reads the same line. A plain `go build` uses a newer local Go. With `GOTOOLCHAIN=auto`, a
+local Go older than go1.26.8 fetches go1.26.8.
 
 ### 1. Clone the Repository
 

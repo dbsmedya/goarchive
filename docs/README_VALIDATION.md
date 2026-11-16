@@ -37,6 +37,9 @@ or deleting. `archive`, `purge` and `copy-only` run it at startup with their own
 `validate` (every job, or one with `--job`) and `dry-run` run it on demand. A passing `validate`
 is not carried forward to a later run.
 
+Preflight checks the job's structure against MySQL. It cannot judge whether a job's `where`
+selects the rows the operator meant.
+
 The checks that run follow the job's `job_type`, under `validate` and `dry-run` too: a purge
 job is never asked for destination tables. Checks run in a fixed order and **stop at the first
 failure**, so fixing one can reveal the next. `validate` reports each job `PASSED` or `FAILED`
@@ -134,7 +137,7 @@ These run when GoArchive connects, before preflight and before any tracking row 
 
 Source and destination report the same `server_uuid` and the same schema name (compared without
 regard to letter case). An archive into itself would verify the table against itself and then
-delete the only copy.
+delete the only copy. A different schema on the same server is allowed.
 
 ```
 failed to connect to databases: SRC_DEST_IDENTITY_CHECK: source and destination
@@ -143,9 +146,11 @@ schema=app at db1:3306). GoArchive refuses: it would verify the table against
 itself and delete the only copy. …
 ```
 
-**Fix:** point `destination` at a different server or schema. Letter case and servers cloned
-from one data directory:
-[Source and destination must be different databases](README_LIMITATIONS.md#source-and-destination-must-be-different-databases).
+**Fix:** point `destination` at a different server or schema. Schema names that differ only in
+letter case count as one schema on every server. For two servers cloned from one data directory,
+which share `auto.cnf` and so `server_uuid`: on the standalone archive server, stop mysqld, remove
+`auto.cnf` from the data directory, and start it again to get a new `server_uuid`. A replicating
+server follows MySQL's guidance for changing `server_uuid`.
 
 ### `AUTO_INCREMENT_ZERO_MODE_CHECK`
 
@@ -248,7 +253,7 @@ the source schema, MySQL hides it entirely and this check fails rather than
 
 **Fix:** correct the table name, or point `source.database` at the right schema. Archive a
 view's underlying table instead. Under `lower_case_table_names=1`, write table names in lower
-case.
+case: a mixed-case name is not found, and this check refuses it.
 
 ### `STORAGE_ENGINE_CHECK`
 
@@ -306,10 +311,18 @@ A job table has no `PRIMARY KEY`, so its rows cannot be addressed.
 A primary-key column cannot identify rows. Allowed: the integer types, `DECIMAL`, `CHAR`,
 `VARCHAR`, `BINARY`, `VARBINARY`, `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` and `YEAR`, without a
 prefix length. `FLOAT`/`DOUBLE` are approximate, `ENUM`/`SET` sort by their internal index, and
-`BIT` is not supported. Temporal key values must also be valid
-([temporal identities](README_LIMITATIONS.md#temporal-values-and-identities)).
+`BIT` is not supported.
 
 **Fix:** choose another root table, or leave the table out of the job.
+
+**Temporal key values** must also be valid. `DATE` is `YYYY-MM-DD`. `DATETIME` and `TIMESTAMP` add
+` HH:MM:SS` and an optional fraction: a dot and one to six digits. The year is 0001 to 9999, the day
+must exist in its month, and the clock must be valid, so a leap second (`:60`) is refused. A zero
+date, an invalid clock, a timezone suffix or a leap second is refused with
+`TEMPORAL_READ_CONTRACT`. The check runs in GoArchive on the text the server returns, whatever the
+server's SQL modes, and no flag or configuration key skips it. The key text is kept as the server
+wrote it. Recovery reads the keys it logged the same way, so a refused key fails the run before the
+delete of the batch or recovery page that meets it; batches and pages before it are already deleted.
 
 `PRIMARY_KEY_CHECK` and `KEY_TYPE_UNSUPPORTED` run even under
 `--skip-dangerously-validate-preflight-allow-experimental`, because the SQL is built from the keys.
@@ -810,7 +823,7 @@ These run-time failures are not preflight checks either, and stay active under
 
 | Identifier | Meaning | Explained in |
 |---|---|---|
-| `TEMPORAL_READ_CONTRACT` | A temporal value, its metadata, or a key identity could not be established | [Temporal identities](README_LIMITATIONS.md#temporal-values-and-identities) |
+| `TEMPORAL_READ_CONTRACT` | A temporal value, its metadata, or a key identity could not be established | [Temporal key values](#key_type_unsupported) |
 | `INSERT_DIAGNOSTIC_REJECTED` | The INSERT raised a forbidden condition; the message carries its code, level and a bounded preview | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
 | `INSERT_DIAGNOSTICS_UNPROVEN` | The INSERT's diagnostics could not be read completely | [INSERT diagnostics](README_OPERATIONS.md#insert-diagnostics-and-subdivision) |
 
