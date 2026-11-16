@@ -11,6 +11,7 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 
 ## Contents
 
+- [Supported versions](#supported-versions)
 - [Commands](#commands)
 - [Flags](#flags)
   - [Output and exit codes](#output-and-exit-codes)
@@ -24,6 +25,21 @@ Commands, flags, tuning, pausing and crash recovery: running GoArchive day to da
 - [Crash recovery](#crash-recovery)
 - [Resume semantics](#resume-semantics)
 - [Concurrency and locking](#concurrency-and-locking)
+
+---
+
+## Supported versions
+
+This section is the single source of truth for supported versions. README.md, INSTALL.md and the
+other docs link here rather than restating it (README's badges show only the floors).
+
+- **MySQL**: Oracle MySQL or Percona Server **8.0.40+**, with **InnoDB** tables. Each release is
+  gated on Oracle MySQL 8.0.40, 8.4.11 and 9.7.1, and on Percona Server 8.0.46, 8.4.11 and 9.7.1.
+- **Go**: 1.26 or later to build from source
+  ([Installation from Source](../INSTALL.md#installation-from-source)).
+- **dbsgomysql**: the [dbsgomysql](https://github.com/dbsmedya/dbsgomysql) library supplies the
+  schema, privilege and replication facts that preflight judges. GoArchive's own session probes
+  read the rest ([the division of labour](README_dbsgomysql.md#the-division-of-labour)).
 
 ---
 
@@ -328,8 +344,8 @@ connecting.
    settings.
 3. **Preflight** under the job's type ([checks](README_VALIDATION.md#which-checks-run-for-which-command)).
 4. **Startup**: create or check the [tracking schema](README_JOBS_SCHEMA.md), take the locks
-   ([below](#concurrency-and-locking)), check the job's registration and binding, mark it
-   running.
+   ([below](#concurrency-and-locking)), check the job's registration and binding, read every job
+   table's column list once (archive and copy-only; purge reads none), mark it running.
 5. **Recovery** of the roots an interrupted run left in the log ([below](#crash-recovery)).
 6. **Batches** from the start of the `where` range, each continuing after the previous batch's
    last root key: discover every child row parent-first, then per job type:
@@ -340,6 +356,10 @@ connecting.
 
    Each delete chunk is its own source transaction, committed only when it deleted exactly the
    rows asked for.
+
+   The column lists come from startup, so a source column renamed or dropped while the job runs
+   fails the next archive or copy-only batch in its copy read, before that batch's destination
+   transaction commits: nothing of the batch is logged or deleted.
 7. **End** when a batch comes back short, on a graceful stop, or on an error; the job is marked
    idle or failed. With `--progress`, a closing block shows the status, the duration and the
    counts per table ([Output and exit codes](#output-and-exit-codes)); without it, the outcome is
@@ -416,6 +436,12 @@ Every key-addressed statement (copy read, verification, discovery, delete chunk)
 same way for warning 3170, the range optimizer's fall-back to a full scan: it fails the batch,
 and so does a session that kept fewer warnings than the statement raised, since the 3170 could
 be among the rest.
+
+One value larger than the destination's `max_allowed_packet` cannot be sent: its batch fails, and
+nothing of the batch is logged or deleted. The error names the table, the column and the size of
+the value. Raise `max_allowed_packet` on the destination above that size, then rerun. An INSERT
+whose values together exceed the packet can be refused whole even though each value fits; then the
+error asks for a larger `max_allowed_packet` or a lower `batch_size`.
 
 Source and destination SQL modes need not match. To accept legacy temporal values, a DBA can set
 the destination's global `sql_mode` (or an `init_connect` policy) for new sessions, then restart
