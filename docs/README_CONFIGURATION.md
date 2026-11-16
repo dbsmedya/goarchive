@@ -42,7 +42,7 @@ its line; a YAML parse error reports the line where the parser has one:
 
 Only `--log-level`, `--log-format` and `--verification` override the file. Batch sizes, sleeps
 and the sentinel file are file-only at the start of a run, deliberately: one file holds many jobs,
-and one CLI value cannot suit them all. A run that has [runtime control](README_OPERATIONS.md#runtime-control)
+and one CLI value cannot suit them all. A run that has [runtime control](README_RUNTIME_CONTROL.md#runtime-control)
 enabled can change some of them while it works; a runtime change is **run-scoped**: it lasts until the run
 ends, and the next run starts from the file again. `goarchive validate` loads the file and runs preflight for every job, or
 for one with `--job`.
@@ -132,7 +132,7 @@ never gated. Absent, monitoring is off.
 | `enabled` | Turn replication gating on | `false` |
 | `seconds_behind_source_within` | Lag tolerance in seconds for the asynchronous servers; `0` demands exact sync. Not negative | `10` |
 | `group_applier_queue_within` | The transactions any member of a `type: group` server's view may have waiting to be applied; `0` tolerates none. Not negative. **Required, with no default, when a server is `type: group`**, whether or not the block is enabled; without one it may be absent, and a value that is set is still validated | — |
-| `group_certifier_queue_within` | The same for the transactions waiting to be certified. Both bounds are also runtime settings of a run whose gate lists a group server: the file's value is where the run starts and what a raise above it is measured by ([the setters](README_OPERATIONS.md#the-tolerances-step-rule-and-the-warning)) | — |
+| `group_certifier_queue_within` | The same for the transactions waiting to be certified. Both bounds are also runtime settings of a run whose gate lists a group server: the file's value is where the run starts and what a raise above it is measured by ([the setters](README_RUNTIME_CONTROL.md#the-tolerances-step-rule-and-the-warning)) | — |
 | `check_interval` | Seconds between re-checks while holding; positive **when enabled**, and at most `9223372036` (the interval must fit a duration) | `5` |
 | `cache_ttl` | Seconds a **passing** verdict stays fresh; `0` checks every time. Not negative | `15` |
 | `servers` | The servers to monitor, asynchronous replicas and Group Replication members; at least one **when enabled** | — |
@@ -363,8 +363,8 @@ logrotate's `copytruncate`, or between runs.
 | `socket_dir` | The directory of the socket. An absolute path | `<home>/.goarchive/run` |
 
 What the socket is for, its protocol and its security:
-[Runtime control](README_OPERATIONS.md#runtime-control). The command that talks to it is
-[`goarchive control`](README_OPERATIONS.md#the-client-goarchive-control), which finds the run by its socket
+[Runtime control](README_RUNTIME_CONTROL.md#runtime-control). The command that talks to it is
+[`goarchive control`](README_RUNTIME_CONTROL.md#the-client-goarchive-control), which finds the run by its socket
 path and reads no configuration file.
 
 - **Only the file enables it.** There is no flag and no environment variable, and it is off by default.
@@ -394,7 +394,7 @@ AF_UNIX socket (Windows 10 version 1803 and later), `socket_dir` must be an abso
 default directory is `<profile>\.goarchive\run`, where `<profile>` is the profile directory Windows records
 for the account, not `%USERPROFILE%` or `%LOCALAPPDATA%`; an account with no profile directory has no
 default. Not enforced there: the directory's owner and mode, the socket's mode, and the same-user rule
-([Security](README_OPERATIONS.md#security)).
+([Security](README_RUNTIME_CONTROL.md#security)).
 
 On Windows a job with control enabled may not carry a reserved device name. Windows reserves `CON`, `PRN`,
 `AUX`, `NUL`, `COM1` to `COM9` and `LPT1` to `LPT9` in every directory, in any letter case and, by Microsoft's

@@ -79,7 +79,7 @@ deadline: set `docker stop --time` (compose: `stop_grace_period`) above one batc
 during a replication hold ends the hold without waiting for the replicas, though it may wait for one
 replica check in progress
 ([Output and exit codes](docs/README_OPERATIONS.md#output-and-exit-codes)).
-To use [runtime control](docs/README_OPERATIONS.md#runtime-control) in the image, set a socket
+To use [runtime control](docs/README_RUNTIME_CONTROL.md#runtime-control) in the image, set a socket
 directory in the file: the image's user has no home directory, so it has no default one, and a run with
 control enabled and no `socket_dir` is refused, naming it. Use the directory `/work/control`, which the
 run creates private to the user the container runs as, and talk to the run from inside the container:

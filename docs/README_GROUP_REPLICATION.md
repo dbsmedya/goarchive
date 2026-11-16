@@ -191,7 +191,7 @@ Things to know:
   A server that is down when the run starts fails the connection phase, as every monitored server does; one that goes
   down during the run holds the job as `unreachable`.
 - **The two bounds are configuration and runtime settings.** The file's values are where a run starts. Over the
-  [control socket](README_OPERATIONS.md#runtime-control) both can be changed while the run goes, and a change applies
+  [control socket](README_RUNTIME_CONTROL.md#runtime-control) both can be changed while the run goes, and a change applies
   from the next gate decision, to every group server at once: a round judges all of them by one pair of bounds, a pass
   cached or reached under an older pair never stands, and a hold ends its wait and judges again at once. They share the
   tolerance's and the interval's gate round, so a change of any of the four moves it. A verdict names the bounds it was
@@ -213,7 +213,7 @@ under `replication` and `settings`.
 ## Following a proxy's threshold during a run
 
 Where a proxy's threshold changes while a job runs, the bound is changed with it, over the
-[control socket](README_OPERATIONS.md#runtime-control), without stopping the job. `group_applier_queue_within` and
+[control socket](README_RUNTIME_CONTROL.md#runtime-control), without stopping the job. `group_applier_queue_within` and
 `group_certifier_queue_within` are settings of a run that uses the replication gate and lists a `type: group` server;
 anywhere else the request is refused as `inapplicable`, with the reason in its message.
 
@@ -224,7 +224,7 @@ anywhere else the request is refused as `inapplicable`, with the reason in its m
 - **The steps.** A lowering is one command, to any value down to `0`, which tolerates no queue, and so is a raise back
   up to the configured value. Above the configured value a raise goes one step at a time: at most the current value
   plus the bound's own configured value, and only after the gate has completed a probe round under the current
-  settings ([the step rule](README_OPERATIONS.md#the-tolerances-step-rule-and-the-warning)). With a configured bound
+  settings ([the step rule](README_RUNTIME_CONTROL.md#the-tolerances-step-rule-and-the-warning)). With a configured bound
   of 80 and a target of 400, you send `160`, `240`, `320` and `400`, each accepted after the gate's next round, each
   with a `WARNING:` line on stderr and in the log. `ERR step` means "not yet" or "too far", and its message says which;
   `400` sent first is too far:
@@ -485,7 +485,7 @@ rerun's recovery finishes them.
   the destination's limit fails the log write after the deletes of a recovery as well.
 
 **What to do, for both.** Lower the setting the message names, and rerun. A run that has not failed yet can
-have either lowered over the control socket ([Runtime control](README_OPERATIONS.md#runtime-control)); after a failure the rerun
+have either lowered over the control socket ([Runtime control](README_RUNTIME_CONTROL.md#runtime-control)); after a failure the rerun
 starts with the file's values. GoArchive cannot tell you a safe size: what counts is the rows' images (3100) or
 their number and keys (3231).
 

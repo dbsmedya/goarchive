@@ -54,7 +54,7 @@ replication:
 # control enabled listens on a private Unix socket while it works: ask it for its
 # state, pause or stop it, slow it down or bring it back (batch sizes, sleeps and the
 # replication tolerance, never above what is configured here). It can be set per job,
-# and the job's value wins. See docs/README_OPERATIONS.md, "Runtime control".
+# and the job's value wins. See docs/README_RUNTIME_CONTROL.md, "Runtime control".
 #
 # The socket is <socket_dir>/<job>.sock. socket_dir is an absolute path; left out, it is
 # <home>/.goarchive/run, with <home> from the system's user database (never $HOME). A user
