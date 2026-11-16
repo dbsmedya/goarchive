@@ -16,9 +16,9 @@ import (
 type Snapshot struct {
 	Settings
 
-	// Revision rises with every accepted change. GateRevision rises only when one of the two
-	// gate settings changes: a cached verdict is valid only for the gate revision it was judged
-	// under.
+	// Revision rises with every accepted change. GateRevision rises only when one of the gate
+	// settings changes (the tolerance, the interval and the two group bounds share it): a cached
+	// verdict is valid only for the gate revision it was judged under.
 	Revision     uint64
 	GateRevision uint64
 
@@ -114,7 +114,7 @@ func New(o Options) *Store {
 // Constant returns a store that nothing writes: a run without a control socket reads it, and
 // its behaviour is the configuration's.
 func Constant(start Settings) *Store {
-	return New(Options{Start: start, Applies: Applicability{Delete: true, Gate: true}, AuditSlots: 1})
+	return New(Options{Start: start, Applies: Applicability{Delete: true, Gate: true, Group: true}, AuditSlots: 1})
 }
 
 // Ended reports whether the terminal transition has happened: from then on no change is accepted
@@ -281,35 +281,43 @@ func (s *Store) candidate(snap *Snapshot, k Key, text string) (Settings, *Refusa
 	if ceiling := s.start.whole(k); k.size() && v > ceiling {
 		return cur, refuse(ReasonCeiling, fmt.Sprintf("%s %d is above this run's configured %d; the control socket never raises this setting above the run's configuration: change the file and run the job again", k, v, ceiling))
 	}
-	if k == SecondsBehindSourceWithin {
-		if r := s.raise(snap, v); r != nil {
+	if k.stepped() {
+		if r := s.raise(snap, k, v); r != nil {
 			return cur, r
 		}
 	}
 	return cur.withWhole(k, v), nil
 }
 
-// raise judges a new lag tolerance by D15's step rule (spec §4.6). Lowering is always accepted,
-// down to 0, and so is a raise up to the configured value, which restores the configuration. A
-// raise above the configured value needs both: a probe round completed under the current gate
-// revision, so the replicas were judged at the present tolerance before the next step; and one
-// step, at most the current value plus the configured tolerance (1 when that is 0), or, from a
-// value below the configuration, whichever is higher of the configured value and that sum. A
-// value equal to the current one is no raise: the caller answers it as unchanged.
-func (s *Store) raise(snap *Snapshot, v int) *Refusal {
-	cur, configured := snap.SecondsBehindSourceWithin, s.start.SecondsBehindSourceWithin
+// raise judges a new value of the lag tolerance or of a group bound by D15's step rule (spec §4.6
+// and, for the bounds, §4.3, G15). Lowering is always accepted, down to 0, and so is a raise up to the
+// configured value, which restores the configuration. A raise above the configured value needs both:
+// a probe round completed under the current gate revision, so the fleet was judged at the present
+// settings before the next step; and one step, at most the current value plus the setting's own
+// configured value (1 when that is 0), or, from a value below the configuration, whichever is higher
+// of the configured value and that sum. A value equal to the current one is no raise: the caller
+// answers it as unchanged. The tolerance and the two bounds share the gate revision, so a change of
+// any of them uses the round up for all.
+func (s *Store) raise(snap *Snapshot, k Key, v int) *Refusal {
+	cur, configured := snap.whole(k), s.start.whole(k)
 	if v <= cur || v <= configured {
 		return nil
 	}
 	if !s.roundUnder(snap.GateRevision) {
-		return refuse(ReasonStep, fmt.Sprintf("%s %d is above the configured %d; the replicas have not yet been checked under the current tolerance %d, and a raise above the configuration is accepted only after the gate has completed a probe round under it", SecondsBehindSourceWithin, v, configured, cur))
+		if k == SecondsBehindSourceWithin {
+			return refuse(ReasonStep, fmt.Sprintf("%s %d is above the configured %d; the replicas have not yet been checked under the current tolerance %d, and a raise above the configuration is accepted only after the gate has completed a probe round under it", k, v, configured, cur))
+		}
+		return refuse(ReasonStep, fmt.Sprintf("%s %d is above the configured %d; the group has not yet been checked under the current bounds, and a raise above the configuration is accepted only after the gate has completed a probe round under them", k, v, configured))
 	}
 	step, why := configured, fmt.Sprintf("the configured %d is the step", configured)
 	if configured == 0 {
 		step, why = 1, "the configured tolerance is 0, so the step is 1"
+		if k.group() {
+			why = fmt.Sprintf("the configured %s is 0, so the step is 1", k)
+		}
 	}
 	if limit := max(configured, saturatingAdd(cur, step)); v > limit {
-		return refuse(ReasonStep, fmt.Sprintf("%s %d is more than one step above the current %d; the largest value accepted now is %d (%s)", SecondsBehindSourceWithin, v, cur, limit, why))
+		return refuse(ReasonStep, fmt.Sprintf("%s %d is more than one step above the current %d; the largest value accepted now is %d (%s)", k, v, cur, limit, why))
 	}
 	return nil
 }
@@ -399,11 +407,11 @@ type SettingSummary struct {
 	// Changes is how many accepted changes the setting had; a setting changed and then restored
 	// is still listed.
 	Changes int
-	// AboveConfigured marks a lag tolerance that ends above its configured value.
+	// AboveConfigured marks a lag tolerance or a group bound that ends above its configured value.
 	AboveConfigured bool
 }
 
-// Summary is the run's runtime changes, bounded by the six settings however often they were
+// Summary is the run's runtime changes, bounded by the eight settings however often they were
 // changed: each change already has its own audit entry.
 type Summary struct {
 	Settings  []SettingSummary
@@ -432,7 +440,7 @@ func (s *Store) Terminal() Summary {
 			}
 			sum.Settings = append(sum.Settings, SettingSummary{
 				Key: k, Configured: c.configured, Final: c.final, Changes: c.n,
-				AboveConfigured: k == SecondsBehindSourceWithin && cur.SecondsBehindSourceWithin > s.start.SecondsBehindSourceWithin,
+				AboveConfigured: k.stepped() && cur.whole(k) > s.start.whole(k),
 			})
 		}
 		s.frozen = &sum

@@ -241,17 +241,21 @@ func (c *Config) validateGroupBounds() ValidationErrors {
 		hasGroup = hasGroup || server.Type == "group"
 	}
 	for _, b := range []struct {
-		key   string
-		value *int
+		key      string
+		value    *int
+		validate func(int) error
 	}{
-		{"group_applier_queue_within", c.Replication.GroupApplierQueueWithin},
-		{"group_certifier_queue_within", c.Replication.GroupCertifierQueueWithin},
+		{"group_applier_queue_within", c.Replication.GroupApplierQueueWithin, ValidateGroupApplierQueueWithin},
+		{"group_certifier_queue_within", c.Replication.GroupCertifierQueueWithin, ValidateGroupCertifierQueueWithin},
 	} {
 		switch {
 		case b.value == nil && hasGroup:
 			errors = append(errors, ValidationError{Field: "replication." + b.key, Message: b.key + " is required when a server is type group"})
-		case b.value != nil && *b.value < 0:
-			errors = append(errors, ValidationError{Field: "replication." + b.key, Message: b.key + " cannot be negative"})
+		case b.value != nil:
+			// The per-value rule is the one a runtime setter calls (GR C7s); the presence check above is the file's own.
+			if err := b.validate(*b.value); err != nil {
+				errors = append(errors, ValidationError{Field: "replication." + b.key, Message: err.Error()})
+			}
 		}
 	}
 	return errors
@@ -309,6 +313,23 @@ func ValidateBatchDeleteSize(v int) error {
 func ValidateSecondsBehindSourceWithin(v int) error {
 	if v < 0 {
 		return errors.New("seconds_behind_source_within cannot be negative")
+	}
+	return nil
+}
+
+// ValidateGroupApplierQueueWithin judges a group_applier_queue_within value: not negative. 0 is valid, and tolerates
+// no queue. The file calls it for a value that is set; whether the bound is present is the file's own rule.
+func ValidateGroupApplierQueueWithin(v int) error {
+	if v < 0 {
+		return errors.New("group_applier_queue_within cannot be negative")
+	}
+	return nil
+}
+
+// ValidateGroupCertifierQueueWithin judges a group_certifier_queue_within value by the same rule.
+func ValidateGroupCertifierQueueWithin(v int) error {
+	if v < 0 {
+		return errors.New("group_certifier_queue_within cannot be negative")
 	}
 	return nil
 }

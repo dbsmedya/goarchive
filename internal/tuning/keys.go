@@ -16,11 +16,15 @@ const (
 	DeleteSleepSeconds        Key = "delete_sleep_seconds"
 	SecondsBehindSourceWithin Key = "seconds_behind_source_within"
 	CheckInterval             Key = "check_interval"
+	// The two group bounds are settings only where the run's gate has a server of type group (GR C7s, spec §4.3).
+	GroupApplierQueueWithin   Key = "group_applier_queue_within"
+	GroupCertifierQueueWithin Key = "group_certifier_queue_within"
 )
 
-var keys = [...]Key{BatchSize, BatchDeleteSize, SleepSeconds, DeleteSleepSeconds, SecondsBehindSourceWithin, CheckInterval}
+var keys = [...]Key{BatchSize, BatchDeleteSize, SleepSeconds, DeleteSleepSeconds, SecondsBehindSourceWithin, CheckInterval, GroupApplierQueueWithin, GroupCertifierQueueWithin}
 
-// Keys returns the six settings in the order help and status list them.
+// Keys returns the eight settings in the order help and status list them: the two group bounds follow
+// check_interval, so the six that existed keep their places.
 func Keys() []Key { return slices.Clone(keys[:]) }
 
 // ParseKey returns the key a name spells, and false for anything else: cache_ttl, for one, is
@@ -40,14 +44,22 @@ func (k Key) Effect() string {
 		return "from the next DELETE"
 	case SleepSeconds, DeleteSleepSeconds:
 		return "at once"
-	case SecondsBehindSourceWithin, CheckInterval:
+	case SecondsBehindSourceWithin, CheckInterval, GroupApplierQueueWithin, GroupCertifierQueueWithin:
 		return "from the next gate decision"
 	}
 	return ""
 }
 
-// gate reports whether the setting is one of the replication gate's.
-func (k Key) gate() bool { return k == SecondsBehindSourceWithin || k == CheckInterval }
+// gate reports whether the setting is one of the replication gate's: the tolerance, the interval and the two group
+// bounds. They share one gate revision.
+func (k Key) gate() bool { return k == SecondsBehindSourceWithin || k == CheckInterval || k.group() }
+
+// group reports whether the setting is one of the two group bounds.
+func (k Key) group() bool { return k == GroupApplierQueueWithin || k == GroupCertifierQueueWithin }
+
+// stepped reports whether a raise of the setting above its configured value follows D15's step rule (the
+// tolerance and the two group bounds, each with its own configured value as the step).
+func (k Key) stepped() bool { return k == SecondsBehindSourceWithin || k.group() }
 
 // size reports whether the setting is a size with a ceiling (D7).
 func (k Key) size() bool { return k == BatchSize || k == BatchDeleteSize }
@@ -55,7 +67,8 @@ func (k Key) size() bool { return k == BatchSize || k == BatchDeleteSize }
 // whole reports whether the setting takes a whole number (the sleeps take a decimal).
 func (k Key) whole() bool { return k != SleepSeconds && k != DeleteSleepSeconds }
 
-// Settings are the six values.
+// Settings are the eight values. The two group bounds mean something only where the run's gate has a server of type
+// group; elsewhere they are zero and no setting.
 type Settings struct {
 	BatchSize                 int
 	BatchDeleteSize           int
@@ -63,6 +76,8 @@ type Settings struct {
 	DeleteSleepSeconds        float64
 	SecondsBehindSourceWithin int
 	CheckInterval             int
+	GroupApplierQueueWithin   int
+	GroupCertifierQueueWithin int
 }
 
 // Text renders a setting as the getter's body does: a whole number in digits, a sleep as the
@@ -82,6 +97,10 @@ func (s Settings) Text(k Key) string {
 		return strconv.Itoa(s.SecondsBehindSourceWithin)
 	case CheckInterval:
 		return strconv.Itoa(s.CheckInterval)
+	case GroupApplierQueueWithin:
+		return strconv.Itoa(s.GroupApplierQueueWithin)
+	case GroupCertifierQueueWithin:
+		return strconv.Itoa(s.GroupCertifierQueueWithin)
 	}
 	return ""
 }
@@ -97,6 +116,10 @@ func (s Settings) whole(k Key) int {
 		return s.SecondsBehindSourceWithin
 	case CheckInterval:
 		return s.CheckInterval
+	case GroupApplierQueueWithin:
+		return s.GroupApplierQueueWithin
+	case GroupCertifierQueueWithin:
+		return s.GroupCertifierQueueWithin
 	}
 	return 0
 }
@@ -112,6 +135,10 @@ func (s Settings) withWhole(k Key, v int) Settings {
 		s.SecondsBehindSourceWithin = v
 	case CheckInterval:
 		s.CheckInterval = v
+	case GroupApplierQueueWithin:
+		s.GroupApplierQueueWithin = v
+	case GroupCertifierQueueWithin:
+		s.GroupCertifierQueueWithin = v
 	}
 	return s
 }
@@ -128,10 +155,13 @@ func (s Settings) withDecimal(k Key, v float64) Settings {
 
 // Applicability says which settings a run uses, by facts that do not change during it (spec
 // §4.4): batch_size and sleep_seconds always apply; the two delete settings unless the job is
-// copy-only; the two gate settings only when the run uses the replication gate.
+// copy-only; the two gate settings only when the run uses the replication gate; the two group
+// bounds only when that gate has a server of type group (spec §4.3).
 type Applicability struct {
 	Delete bool
 	Gate   bool
+	// Group says that the gate lists at least one server of type group. It means nothing without Gate.
+	Group bool
 }
 
 // applies reports whether the run uses the setting and, when it does not, why.
@@ -141,6 +171,8 @@ func (a Applicability) applies(k Key) (bool, string) {
 		return false, "a copy-only job deletes nothing"
 	case k.gate() && !a.Gate:
 		return false, "this run does not use the replication gate"
+	case k.group() && !a.Group:
+		return false, "this run's gate has no server of type group"
 	}
 	return true, ""
 }
