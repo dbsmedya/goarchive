@@ -73,6 +73,7 @@ type.
 | `SOURCE_READ_ONLY_CHECK` | ✅ | ✅ | ❌ |
 | `DEST_READ_ONLY_CHECK` | ✅ | ✅ | ✅ |
 | `SOURCE_GROUP_VIEW_PERMISSION_CHECK` | ✅ | ✅ | ✅ |
+| `GROUP_MULTI_PRIMARY_CHECK` | ✅ | ✅ | ✅ |
 | `REPLICATION_TYPE_CHECK` | ✅ (replication enabled) | ✅ (replication enabled) | ❌ |
 | `TABLE_EXISTENCE_CHECK` | ✅ | ✅ | ✅ |
 | `PRIMARY_KEY_CHECK` | ✅ | ✅ | ✅ |
@@ -110,6 +111,9 @@ type.
   source that is a Group Replication member whose account cannot read the group's view; a source
   without the plugin is never asked, and nothing is refused. A source that is read-only, an archive's
   or a purge's, is refused for that first, even when its account also lacks the view's grant.
+- **`GROUP_MULTI_PRIMARY_CHECK`** judges the mode of each server whose plugin is `ACTIVE` with a group name,
+  right after those facts, for every job type. No flag but its own, `--allow-multi-primary`, skips it:
+  `--skip-dangerously-validate-preflight-allow-experimental` does not.
 - **Purge** copies nothing, but its tracking tables live in the destination's `job_schema`, so
   it still connects to the destination and runs `JOB_SCHEMA_PERMISSION_CHECK`.
 - **Copy-only** deletes nothing, so no cascade can fire: it skips the foreign-key visibility
@@ -540,6 +544,55 @@ GoArchive reads the view to tell whether the source is a running member of the g
 directly to the account (GRANT SELECT ON performance_schema.replication_group_members TO <user>)
 ```
 
+### `GROUP_MULTI_PRIMARY_CHECK`
+
+GoArchive serializes runs with advisory locks, and an advisory lock is local to one server. In a Group Replication
+group in multi-primary mode two runs connected to different members are not serialized, which is the mistake
+the locks exist to catch, so a multi-primary group is refused. 3.1 supports single-primary groups.
+
+The check reads one fact of each server whose plugin is `ACTIVE` with a group name, the source and then the
+destination: `group_replication_single_primary_mode`, as the server spells it. It judges that value and no member's
+role: a group in multi-primary mode with one member `ONLINE` and a peer recovering shows one primary, and the
+peer becomes a second writer when it returns. It needs no privilege beyond connecting, so a destination that is a
+member needs no new grant. It runs for every job type, after the group facts and before any table is read.
+
+| The server's value | Outcome |
+|---|---|
+| `ON` | passes: single-primary |
+| `OFF` | refused: multi-primary |
+| no value returned although the plugin is active | refused, as "the group's mode could not be read" |
+| any other text | refused the same way, naming the text as the server spelled it |
+
+The value is the one the server is configured with. On a source that is a running member (its own row in the
+group's view is `ONLINE`) that is the group's mode in force, and the refusal says the group is in multi-primary
+mode. On a source that is not a running member, and on every destination (whose view is not read), it is the
+server's own setting, which can differ from its group's when the server was down during a switch, and the
+refusal says that the server is configured for multi-primary mode, and no more. A server that is not running
+and is configured single-primary passes, whatever its group has become since.
+
+```
+GROUP_MULTI_PRIMARY_CHECK: the source is a member of Group Replication group 8a94f357-…, and the group is in
+multi-primary mode (group_replication_single_primary_mode is OFF). GoArchive serializes runs with advisory
+locks, and an advisory lock is local to one member, so in multi-primary mode two runs connected to different
+members are not serialized. GoArchive 3.1 supports single-primary groups. Run the job against a single-primary
+group, or accept this with --allow-multi-primary (command line only).
+```
+
+`--allow-multi-primary` is the one bypass: a command-line flag of `archive`, `purge`, `copy-only`, `validate`
+and `dry-run`, with no configuration key. It accepts every refusal above, the "could not be read" cases
+included, and prints one banner for each side it accepted, naming the case:
+
+```
+WARNING: --allow-multi-primary: the source is a member of Group Replication group 8a94f357-…, and the group is
+in multi-primary mode (group_replication_single_primary_mode is OFF). Advisory locks are local to one member,
+so two runs connected to different members are not serialized; GoArchive 3.1 supports single-primary groups.
+```
+
+It says nothing when nothing was refused. The bypass does not make the job safe: multi-primary mode has
+restrictions of its own (cascading foreign keys among them) that GoArchive does not test, and the second run, on
+another member, is not stopped by the first run's locks. The mode is judged once, at the start: a mode switched
+during a run is not detected.
+
 ### `REPLICATION_TYPE_CHECK`
 
 A server listed in `replication.servers` with `type: group` must be configured for Group Replication: its
@@ -824,7 +877,8 @@ Still enforced on a run: the [connection checks](#connection-checks), the
 `SOURCE_GROUP_VIEW_PERMISSION_CHECK` (the identity and the report depend on them, so no flag skips
 their reads), [`SOURCE_READ_ONLY_CHECK`](#source_read_only_check) and
 [`DEST_READ_ONLY_CHECK`](#dest_read_only_check) (judged on the configurations those reads
-return, and no flag skips them either), `PRIMARY_KEY_CHECK`,
+return, and no flag skips them either), [`GROUP_MULTI_PRIMARY_CHECK`](#group_multi_primary_check) (judged on the
+mode those reads return; `--allow-multi-primary` is its only bypass), `PRIMARY_KEY_CHECK`,
 `KEY_TYPE_UNSUPPORTED`, `COLUMN_CHARSET_CHECK`, the statement caps (computed from the source keys
 and, for archive and copy-only, the destination keys, which must be readable), the job's
 [startup checks](README_JOBS_SCHEMA.md#startup-checks), and the run-time guards above. The JSON

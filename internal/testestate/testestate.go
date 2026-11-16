@@ -273,12 +273,12 @@ func estateConsistency(version string) string {
 type memberFacts struct {
 	name        string
 	limit       dbsrepl.GroupReplication
-	consistency string
+	consistency dbsrepl.GroupConsistency
 }
 
 // groupProblems names every way the group differs from its base state: the three members all ONLINE in
-// the view of the first, which is the PRIMARY, and on each member the size limit and the consistency at the
-// estate's values.
+// the view of the first, which is the PRIMARY, and on each member the mode single-primary, the size limit
+// and the consistency at the estate's values.
 func groupProblems(view []dbsrepl.GroupMember, members []memberFacts, wantLimit uint64, wantConsistency string) []string {
 	var problems []string
 	first := "the source"
@@ -307,8 +307,17 @@ func groupProblems(view []dbsrepl.GroupMember, members []memberFacts, wantLimit 
 		case m.limit.TransactionSizeLimit != wantLimit:
 			problems = append(problems, fmt.Sprintf("%s: group_replication_transaction_size_limit is %d, want %d", m.name, m.limit.TransactionSizeLimit, wantLimit))
 		}
-		if m.consistency != wantConsistency {
-			problems = append(problems, fmt.Sprintf("%s: group_replication_consistency is %s, want %s", m.name, m.consistency, wantConsistency))
+		switch {
+		case !m.limit.SinglePrimaryModeKnown:
+			problems = append(problems, m.name+": group_replication_single_primary_mode is not reported")
+		case m.limit.SinglePrimaryMode != "ON":
+			problems = append(problems, fmt.Sprintf("%s: group_replication_single_primary_mode is %s, want ON", m.name, m.limit.SinglePrimaryMode))
+		}
+		switch {
+		case !m.consistency.GlobalConsistencyKnown:
+			problems = append(problems, m.name+": group_replication_consistency is not reported")
+		case m.consistency.GlobalConsistency != wantConsistency:
+			problems = append(problems, fmt.Sprintf("%s: group_replication_consistency is %s, want %s", m.name, m.consistency.GlobalConsistency, wantConsistency))
 		}
 	}
 	return problems
@@ -320,8 +329,8 @@ var groupMembers = []struct{ name, prefix string }{
 }
 
 // RequireGroupBase fails t, naming what differs, unless the group estate is in its base state: gr1 the
-// PRIMARY and all three members ONLINE, group_replication_transaction_size_limit at 150000000 and
-// group_replication_consistency at the series' own value on every member. A test that took the group
+// PRIMARY and all three members ONLINE, single-primary, group_replication_transaction_size_limit at 150000000
+// and group_replication_consistency at the series' own value on every member. A test that took the group
 // already changed would build on state it did not make, so it does not go on. A member whose
 // connection the environment does not name is not read, and the view still counts three.
 //
@@ -346,7 +355,8 @@ func RequireGroupBase(t testing.TB) {
 		}
 	}
 	t.Fatalf("the group estate is not in its base state: %s. A test that changed it did not restore it: a killed test process "+
-		"skips its cleanups. Restore it by hand (SELECT group_replication_set_as_primary('<gr1's server_uuid>'); "+
+		"skips its cleanups. Restore it by hand (SELECT group_replication_switch_to_single_primary_mode('<gr1's server_uuid>') "+
+		"if the group is multi-primary; SELECT group_replication_set_as_primary('<gr1's server_uuid>'); "+
 		"SET GLOBAL group_replication_transaction_size_limit = %d; SET GLOBAL group_replication_consistency = '<the series' value>' on each member)",
 		strings.Join(problems, "; "), estateSizeLimit)
 }
@@ -374,7 +384,7 @@ func readGroup(ctx context.Context) ([]string, error) {
 		facts := memberFacts{name: m.name}
 		facts.limit, err = insp.GroupReplication(ctx)
 		if err == nil {
-			err = db.QueryRowContext(ctx, "SELECT @@GLOBAL.group_replication_consistency").Scan(&facts.consistency)
+			facts.consistency, err = insp.GroupConsistency(ctx)
 		}
 		if err == nil && i == 0 {
 			var version string

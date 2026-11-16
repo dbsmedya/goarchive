@@ -35,7 +35,7 @@ func enabledStages(cfg Config) []string {
 // TestStagesByJobType pins each job type's checks and their order (spec §8.1). A purge job
 // has no destination-table checks but keeps the job schema permission check (R5).
 func TestStagesByJobType(t *testing.T) {
-	structure := []string{"ReadOnly", "GroupFacts", "TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
+	structure := []string{"ReadOnly", "GroupFacts", "MultiPrimary", "TablesExist", "Keys", "PrimaryKeyColumns", "StorageEngine", "RelationKeys", "ForeignKeyIndexes", "JobSchemaPermissions"}
 	destination := []string{"DestinationTablesExist", "DestinationStorageEngine", "ColumnCharsets", "JSONVerification", "DestinationKeys", "DestinationSchemaCompatibility",
 		"DestinationWritePermissions", "DestinationInsertTriggerVisibility", "DestinationInsertTriggers"}
 	join := func(parts ...[]string) []string { return slices.Concat(parts...) }
@@ -53,10 +53,11 @@ func TestStagesByJobType(t *testing.T) {
 			"SourceSelectPermissions", "StatementCaps", "MaxAllowedPacket"})},
 		// Under --skip-dangerously-validate-preflight-allow-experimental the keys are still read, the destination's too:
 		// the destination statement caps are computed from them (spec §8.3). The group facts are read
-		// too: the identity and the report depend on them (GR C2).
-		{jobspec.Archive, true, []string{"ReadOnly", "GroupFacts", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.CopyOnly, true, []string{"ReadOnly", "GroupFacts", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
-		{jobspec.Purge, true, []string{"ReadOnly", "GroupFacts", "Keys", "ColumnCharsets", "StatementCaps"}},
+		// too: the identity and the report depend on them (GR C2). The multi-primary check is judged too: the
+		// bypass is its own flag (GR C7).
+		{jobspec.Archive, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.CopyOnly, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "JSONVerification", "DestinationKeyRead", "StatementCaps"}},
+		{jobspec.Purge, true, []string{"ReadOnly", "GroupFacts", "MultiPrimary", "Keys", "ColumnCharsets", "StatementCaps"}},
 	} {
 		got := enabledStages(Config{Spec: &jobspec.Spec{Type: tc.typ}, SkipPolicy: tc.skip})
 		if !slices.Equal(got, tc.want) {

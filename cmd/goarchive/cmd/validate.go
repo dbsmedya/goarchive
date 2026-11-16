@@ -14,6 +14,7 @@ import (
 var validateOpts struct {
 	job, verification string
 	forceTriggers     bool
+	allowMultiPrimary bool
 }
 
 var validateCmd = &cobra.Command{
@@ -41,6 +42,7 @@ func init() {
 	validateCmd.Flags().StringVarP(&validateOpts.job, "job", "j", "", "Validate only this job (default: validate all jobs)")
 	registerVerificationFlag(validateCmd, &validateOpts.verification)
 	registerForceTriggersFlag(validateCmd, &validateOpts.forceTriggers)
+	registerAllowMultiPrimaryFlag(validateCmd, &validateOpts.allowMultiPrimary)
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -98,7 +100,7 @@ func runValidate(c *cobra.Command, _ []string) error {
 			Source: mgr.Source, SourceDatabase: src.Schema, SourceServerUUID: src.ServerUUID,
 			Destination: mgr.Destination, DestinationDatabase: dst.Schema,
 			JobSchema: doc.Shared.Destination.EffectiveJobSchema(),
-			Spec:      spec, Verification: verification, ForceTriggers: o.forceTriggers, Logger: log,
+			Spec:      spec, Verification: verification, ForceTriggers: o.forceTriggers, AllowMultiPrimary: o.allowMultiPrimary, Logger: log,
 			Processing:  spec.EffectiveProcessing(doc.Shared.Processing),
 			Replication: doc.Shared.Replication, ReplicaPools: mgr.Replicas,
 			Banner: func(b string) { emitBanners(log, c.ErrOrStderr(), []string{b}) },

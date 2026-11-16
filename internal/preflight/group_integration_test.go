@@ -157,12 +157,32 @@ func orderPair(t *testing.T, name string, typ jobspec.Type) (src, dst *sql.DB, s
 	return src, dst, job(t, typ, orderJob)
 }
 
+// firstTableRead is the index of the first statement that reads the catalog (information_schema, apart
+// from the plugin's own state, which the library reads as one of the group facts) or names one of the job's
+// own tables, or -1. A purge's destination is asked for privileges only, so any catalog read counts. The
+// group facts of a side are all read before it.
+func firstTableRead(stmts []string) int {
+	return slices.IndexFunc(stmts, func(q string) bool {
+		if strings.Contains(q, "information_schema") && !strings.Contains(q, "information_schema.PLUGINS") {
+			return true
+		}
+		return strings.Contains(q, "`orders`") || strings.Contains(q, "`order_lines`")
+	})
+}
+
 // TestMySQLTheFirstStatementIsTheConfigurationRead is spec §8's *first read of each side*, for every
-// job type, on any pair: the first statement preflight sends to the source is the library's
-// ReplicationConfig read, then the plugin's state, then (a member only) the view, and no catalog or
-// table statement comes before them; the first statement it sends to the destination is its
-// ReplicationConfig read (GR C4), then the plugin's state. The command validate runs the same Run.
+// job type, on any pair: the first statement preflight sends to a side is the library's ReplicationConfig
+// read, its group facts (the group name, the limit and, from v1.6.0, the mode) come after it and before
+// any catalog or table statement, and the source's view of the group (a member only) comes after the
+// facts. The command validate runs the same Run.
+//
+// The test names the library's statements only as far as that rule needs: how many there are and in
+// which order among themselves, apart from the view coming after them, is the library's (v1.6.0 reads the
+// plugin's state last and only without the group name's row, v1.5.0 first), and the mode read is named
+// because the multi-primary check (G10) judges it.
 func TestMySQLTheFirstStatementIsTheConfigurationRead(t *testing.T) {
+	const configRead, nameRead, limitRead, modeRead = "@@GLOBAL.read_only, @@GLOBAL.super_read_only",
+		"group_replication_group_name", "group_replication_transaction_size_limit", "group_replication_single_primary_mode"
 	for _, typ := range []jobspec.Type{jobspec.Archive, jobspec.Purge, jobspec.CopyOnly} {
 		t.Run(string(typ), func(t *testing.T) {
 			s, d, spec := orderPair(t, "first"+string(typ), typ)
@@ -174,32 +194,33 @@ func TestMySQLTheFirstStatementIsTheConfigurationRead(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Run() = %v, want success", err)
 			}
-			got := srcLog.all()
-			at := func(sub string) int {
-				return slices.IndexFunc(got, func(q string) bool { return strings.Contains(q, sub) })
-			}
-			if len(got) < 4 || !strings.Contains(got[0], "@@GLOBAL.read_only, @@GLOBAL.super_read_only") {
-				t.Fatalf("the source's first statements were %q, want the configuration read first", got[:min(len(got), 4)])
-			}
-			if !strings.Contains(got[1], "information_schema.PLUGINS") ||
-				!strings.Contains(got[2], "group_replication_group_name") || !strings.Contains(got[3], "group_replication_transaction_size_limit") {
-				t.Errorf("the statements after the configuration read were %q, want the plugin's state, the group name and the limit", got[1:4])
-			}
-			if view := at("replication_group_members"); view >= 0 && view != 4 {
-				t.Errorf("the view was read at statement %d, want it right after the plugin's own reads (4)", view)
-			}
-			for _, tableRead := range []string{"TABLES", "COLUMNS", "STATISTICS", "`orders`", "`order_lines`"} {
-				if i := at(tableRead); i >= 0 && i < 4 {
-					t.Errorf("a statement naming %s was sent at %d, before the group facts: %q", tableRead, i, got[i])
+			for side, got := range map[string][]string{"source": srcLog.all(), "destination": dstLog.all()} {
+				at := func(sub string) int {
+					return slices.IndexFunc(got, func(q string) bool { return strings.Contains(q, sub) })
+				}
+				if len(got) == 0 || !strings.Contains(got[0], configRead) {
+					t.Fatalf("the %s's first statements were %q, want the configuration read first", side, got[:min(len(got), 3)])
+				}
+				tables := firstTableRead(got)
+				if tables < 0 {
+					t.Fatalf("the %s was sent no table statement: %q", side, got)
+				}
+				for _, fact := range []string{nameRead, limitRead, modeRead} {
+					if i := at(fact); i < 1 || i >= tables {
+						t.Errorf("the %s's read naming %s is at statement %d, want it after the configuration read and before the first table statement (%d): %q", side, fact, i, tables, got[:min(len(got), tables+1)])
+					}
 				}
 			}
-			gotD := dstLog.all()
-			if len(gotD) < 2 || !strings.Contains(gotD[0], "@@GLOBAL.read_only, @@GLOBAL.super_read_only") || !strings.Contains(gotD[1], "information_schema.PLUGINS") {
-				t.Fatalf("the destination's first statements were %q, want the configuration read first, then the plugin's state", gotD[:min(len(gotD), 2)])
-			}
-			for _, tableRead := range []string{"TABLES", "COLUMNS", "STATISTICS", "`orders`", "`order_lines`"} {
-				if i := slices.IndexFunc(gotD, func(q string) bool { return strings.Contains(q, tableRead) }); i >= 0 && i < 2 {
-					t.Errorf("a destination statement naming %s was sent at %d, before the group facts: %q", tableRead, i, gotD[i])
+			got := srcLog.all()
+			// a member source's view comes after the facts and before any table
+			if view := slices.IndexFunc(got, func(q string) bool { return strings.Contains(q, "replication_group_members") }); view >= 0 {
+				for _, fact := range []string{nameRead, limitRead, modeRead} {
+					if i := slices.IndexFunc(got, func(q string) bool { return strings.Contains(q, fact) }); i > view {
+						t.Errorf("the view was read at statement %d, before the read naming %s (%d)", view, fact, i)
+					}
+				}
+				if tables := firstTableRead(got); view > tables {
+					t.Errorf("the view was read at statement %d, after the first table statement (%d)", view, tables)
 				}
 			}
 		})

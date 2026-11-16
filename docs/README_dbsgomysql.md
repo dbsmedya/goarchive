@@ -82,7 +82,7 @@ so `validate`, `dry-run` and a run share one read ([what is read, and in which o
 | Fact | Used for |
 |---|---|
 | `ReplicationConfig` | Each side's `read_only`, `super_read_only` and `server_id`: the first statement sent to that server, judged by [`SOURCE_READ_ONLY_CHECK`](README_VALIDATION.md#source_read_only_check) and [`DEST_READ_ONLY_CHECK`](README_VALIDATION.md#dest_read_only_check) |
-| `GroupReplication` | Each side's plugin state, configured group name and `group_replication_transaction_size_limit` (with whether the server reported it) |
+| `GroupReplication` | Each side's plugin state, configured group name, `group_replication_transaction_size_limit` and `group_replication_single_primary_mode` (each with whether the server reported it); the mode is judged by [`GROUP_MULTI_PRIMARY_CHECK`](README_VALIDATION.md#group_multi_primary_check) |
 | `GroupMembers` | A member source's view: each member's state and role, and which row is the source's own. Needs `SELECT` on `performance_schema.replication_group_members`; read only from a plugin that is `ACTIVE` with a group name |
 
 The transaction size limit came with dbsgomysql v1.5.0, whose upgrade notes apply to any code that builds the library's
@@ -90,6 +90,16 @@ The transaction size limit came with dbsgomysql v1.5.0, whose upgrade notes appl
 with one that sets only the status and the name is false wherever the plugin is `ACTIVE` (compare the
 fields you mean), and the fact issues a third statement. GoArchive's own literals are keyed and it
 compares fields.
+
+The mode came with v1.6.0 (`SinglePrimaryMode` and `SinglePrimaryModeKnown`), which also moved the fact's
+statements: the group name, the limit and the mode are read first, and `information_schema.PLUGINS` last and only
+when the group name's row is absent. The fact's fields are the same, so the bump needed no change in preflight; its
+upgrade notes (a comparison of the whole value with one that leaves the mode empty is false wherever the plugin is
+`ACTIVE`, and the mode read joins an allow-list of the library's statements) changed one test, the one that pins each
+side's first statements, which now keeps the rule (the configuration read first, the group facts before any table)
+and not the library's order. GoArchive's copy of the library's Group Replication test helpers
+(`internal/testestate`, for the multi-primary and failover tests) and of its estate files
+(`tests/envmatrix/group/`) are from v1.6.0.
 
 ## Versioning
 

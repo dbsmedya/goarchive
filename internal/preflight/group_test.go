@@ -28,7 +28,7 @@ const (
 func (w *world) asMember(state, role string) {
 	w.cfg.SourceServerUUID = sourceUUID
 	w.src.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName,
-		TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true}
+		TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true, SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}
 	w.src.members = []dbsrepl.GroupMember{
 		{ChannelName: "group_replication_applier", MemberID: sourceUUID, Host: "gr1", State: state, Role: role, Self: true},
 		{ChannelName: "group_replication_applier", MemberID: otherUUID, Host: "gr2", State: "ONLINE", Role: "SECONDARY"},
@@ -116,7 +116,7 @@ func TestTheViewIsReadOnlyForAnActiveNamedPlugin(t *testing.T) {
 		{"disabled", dbsrepl.GroupReplication{PluginStatus: "DISABLED"}, false},
 		{"inactive with a name", dbsrepl.GroupReplication{PluginStatus: "INACTIVE", GroupName: groupName}, false},
 		{"active with no name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE"}, false},
-		{"active with a name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName}, true},
+		{"active with a name", dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := healthy(t, jobspec.Archive)
@@ -265,7 +265,8 @@ func TestTheResultCarriesTheGroupFacts(t *testing.T) {
 		w.asMember("ONLINE", "PRIMARY")
 		w.src.config = dbsrepl.Config{ReadOnly: false, SuperReadOnly: false, ServerID: 1}
 		w.dst.config = dbsrepl.Config{ReadOnly: false, SuperReadOnly: false, ServerID: 4}
-		w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true}
+		w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true,
+			SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}
 		res := w.mustPass()
 		g := res.Group
 		if g.DestinationConfig != w.dst.config {
@@ -295,7 +296,7 @@ func TestTheResultCarriesTheGroupFacts(t *testing.T) {
 	})
 }
 
-// TestTheGroupReport is spec §4.7's block, without the mode word: one block when the source or
+// TestTheGroupReport is spec §4.7's block, with the mode word (rev 5.3): one block when the source or
 // the destination is configured for a group, and nothing for a plain pair.
 func TestTheGroupReport(t *testing.T) {
 	sizes := "  sizes:       batch_size 1000, batch_delete_size 500 (each transaction must fit the limit of its side)"
@@ -308,22 +309,22 @@ func TestTheGroupReport(t *testing.T) {
 		{"a plain pair", func(*world) {}, ""},
 		{"an ONLINE primary, a plain destination", member, strings.Join([]string{
 			"Group Replication:",
-			"  source:      member of group " + groupName + ", ONLINE, PRIMARY; transaction size limit 150000000 bytes",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode single-primary; transaction size limit 150000000 bytes",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"an ONLINE secondary", func(w *world) { w.asMember("ONLINE", "SECONDARY") }, strings.Join([]string{
 			"Group Replication:",
-			"  source:      member of group " + groupName + ", ONLINE, SECONDARY; transaction size limit 150000000 bytes",
+			"  source:      member of group " + groupName + ", ONLINE, SECONDARY, mode single-primary; transaction size limit 150000000 bytes",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"configured and not a running member", func(w *world) { w.asMember("OFFLINE", "") }, strings.Join([]string{
 			"Group Replication:",
-			"  source:      configured for group " + groupName + ", not a running member (state OFFLINE); transaction size limit 150000000 bytes",
+			"  source:      configured for group " + groupName + ", not a running member (state OFFLINE), configured single-primary; transaction size limit 150000000 bytes",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"configured with no row of its own", func(w *world) { member(w); w.src.members = w.src.members[1:] }, strings.Join([]string{
 			"Group Replication:",
-			"  source:      configured for group " + groupName + ", not a running member (no row of its own in its view); transaction size limit 150000000 bytes",
+			"  source:      configured for group " + groupName + ", not a running member (no row of its own in its view), configured single-primary; transaction size limit 150000000 bytes",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"a limit that is not known", func(w *world) {
@@ -331,22 +332,70 @@ func TestTheGroupReport(t *testing.T) {
 			w.src.group.TransactionSizeLimitKnown, w.src.group.TransactionSizeLimit = false, 0
 		}, strings.Join([]string{
 			"Group Replication:",
-			"  source:      member of group " + groupName + ", ONLINE, PRIMARY; transaction size limit unknown",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode single-primary; transaction size limit unknown",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"a known limit of 0", func(w *world) { member(w); w.src.group.TransactionSizeLimit = 0 }, strings.Join([]string{
 			"Group Replication:",
-			"  source:      member of group " + groupName + ", ONLINE, PRIMARY; transaction size limit 0 (the server's own \"no limit\")",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode single-primary; transaction size limit 0 (the server's own \"no limit\")",
 			"  destination: Group Replication plugin not active",
 			sizes}, "\n")},
 		{"a plain source and a member destination", func(w *world) {
+			w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true,
+				SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}
+		}, strings.Join([]string{
+			"Group Replication:",
+			"  source:      Group Replication plugin not active",
+			"  destination: configured for group " + groupName + ", configured single-primary; transaction size limit 64000000 bytes",
+			sizes}, "\n")},
+		{"a plugin that is active with no name", func(w *world) { w.src.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE"} }, ""},
+		// The mode word is the library's fact: a running member says "mode", a server whose view is not
+		// read, or that is not running, says "configured"; a fact that is not known or is another text says
+		// "mode unknown" on either (a refusal of the run names the text; the report does not).
+		{"an ONLINE member of a multi-primary group", func(w *world) { member(w); w.src.group.SinglePrimaryMode = "OFF"; w.cfg.AllowMultiPrimary = true }, strings.Join([]string{
+			"Group Replication:",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode multi-primary; transaction size limit 150000000 bytes",
+			"  destination: Group Replication plugin not active",
+			sizes}, "\n")},
+		{"a member whose mode is not known", func(w *world) {
+			member(w)
+			w.cfg.AllowMultiPrimary = true
+			w.src.group.SinglePrimaryMode, w.src.group.SinglePrimaryModeKnown = "", false
+		}, strings.Join([]string{
+			"Group Replication:",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode unknown; transaction size limit 150000000 bytes",
+			"  destination: Group Replication plugin not active",
+			sizes}, "\n")},
+		{"a member whose mode is another text", func(w *world) { member(w); w.src.group.SinglePrimaryMode = "1"; w.cfg.AllowMultiPrimary = true }, strings.Join([]string{
+			"Group Replication:",
+			"  source:      member of group " + groupName + ", ONLINE, PRIMARY, mode unknown; transaction size limit 150000000 bytes",
+			"  destination: Group Replication plugin not active",
+			sizes}, "\n")},
+		{"configured multi-primary and not running", func(w *world) {
+			w.asMember("OFFLINE", "")
+			w.src.group.SinglePrimaryMode, w.cfg.AllowMultiPrimary = "OFF", true
+		}, strings.Join([]string{
+			"Group Replication:",
+			"  source:      configured for group " + groupName + ", not a running member (state OFFLINE), configured multi-primary; transaction size limit 150000000 bytes",
+			"  destination: Group Replication plugin not active",
+			sizes}, "\n")},
+		{"a destination configured multi-primary", func(w *world) {
+			w.cfg.AllowMultiPrimary = true
+			w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true,
+				SinglePrimaryMode: "OFF", SinglePrimaryModeKnown: true}
+		}, strings.Join([]string{
+			"Group Replication:",
+			"  source:      Group Replication plugin not active",
+			"  destination: configured for group " + groupName + ", configured multi-primary; transaction size limit 64000000 bytes",
+			sizes}, "\n")},
+		{"a destination whose mode is not known", func(w *world) {
+			w.cfg.AllowMultiPrimary = true
 			w.dst.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: groupName, TransactionSizeLimit: 64000000, TransactionSizeLimitKnown: true}
 		}, strings.Join([]string{
 			"Group Replication:",
 			"  source:      Group Replication plugin not active",
-			"  destination: configured for group " + groupName + "; transaction size limit 64000000 bytes",
+			"  destination: configured for group " + groupName + ", mode unknown; transaction size limit 64000000 bytes",
 			sizes}, "\n")},
-		{"a plugin that is active with no name", func(w *world) { w.src.group = dbsrepl.GroupReplication{PluginStatus: "ACTIVE"} }, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := healthy(t, jobspec.Archive)
