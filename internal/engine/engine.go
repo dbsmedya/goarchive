@@ -275,10 +275,32 @@ func Run(ctx context.Context, cfg Config) (rep *Report, err error) {
 		cfg.TellSource(res.Group.SourceMemberID())
 	}
 	cfg.began = began
-	return start(ctx, cfg, tracking.Binding{
-		SourceServerUUID: src.ServerUUID, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
-		Fingerprint: tracking.FingerprintOf(cfg.Spec),
-	}, res)
+	binding, err := bindingOf(cfg.Spec, src, dst, res)
+	if err != nil {
+		return nil, err
+	}
+	return start(ctx, cfg, binding, whoOf(src, res), res)
+}
+
+// bindingOf is the job binding of a run (spec §4.2, GR C9). Its source value is the source's data identity as preflight
+// decided it: the Group Replication group's name when the source is an ONLINE member, the server's uuid otherwise. It is
+// never the pool's server_uuid as read, which on a member would bind the job to a server the group may replace, and it is
+// never empty: a job cannot be bound to nothing.
+func bindingOf(spec *jobspec.Spec, src, dst database.ServerIdentity, res *preflight.Result) (tracking.Binding, error) {
+	if res.Group.Identity == "" {
+		return tracking.Binding{}, errors.New("engine: preflight returned no data identity for the source (neither a Group Replication " +
+			"group's name nor a server_uuid), so the job cannot be bound to it. This run did nothing")
+	}
+	return tracking.Binding{
+		SourceServerUUID: res.Group.Identity, SourceDatabase: src.Schema, DestinationDatabase: dst.Schema,
+		Fingerprint: tracking.FingerprintOf(spec),
+	}, nil
+}
+
+// whoOf is the source as the unfinished-work guard sees it: preflight's identity, the pool's server_uuid and the group name
+// configured on the server, in any member state.
+func whoOf(src database.ServerIdentity, res *preflight.Result) sourceWho {
+	return sourceWho{identity: res.Group.Identity, serverUUID: src.ServerUUID, groupName: res.Group.Source.GroupName}
 }
 
 // prepare runs the startup checks that come before any lock, for Run and Explain: each
@@ -344,7 +366,7 @@ func assertUTC(ctx context.Context, db *sql.DB) error {
 
 // start runs everything after preflight: the tracking schema, the locks, the registry
 // checks, recovery and the loop.
-func start(ctx context.Context, cfg Config, binding tracking.Binding, res *preflight.Result) (*Report, error) {
+func start(ctx context.Context, cfg Config, binding tracking.Binding, who sourceWho, res *preflight.Result) (*Report, error) {
 	log := cfg.Logger
 	root, ok := res.Keys[cfg.Spec.RootTable]
 	if !ok {
@@ -361,7 +383,7 @@ func start(ctx context.Context, cfg Config, binding tracking.Binding, res *prefl
 	// from the moment the first lock is held (spec §4 step 3).
 	runCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	held, err := lockJob(runCtx, cancel, cfg, store, binding)
+	held, err := lockJob(runCtx, cancel, cfg, store, binding, who)
 	if err != nil {
 		return nil, withCause(runCtx, err)
 	}

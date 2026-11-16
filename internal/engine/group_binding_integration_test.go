@@ -89,14 +89,14 @@ func withWork(t *testing.T, name string, typ jobspec.Type, pending bool) settled
 		e, cfg, _ := pendingWork(t, name, typ)
 		return settled{e, cfg, true}
 	case pending:
-		e := newEnv(t, name+"co")
+		e := newEnv(t, name+"copyonly")
 		e.both(t, numsDDL)
 		seedNums(t, e.src, 20)
 		cfg := e.config(t, job(t, typ, numsJob))
 		e.mustRun(t, cfg)
 		return settled{e, cfg, true}
 	}
-	e := newEnv(t, name+string(typ)+"clean")
+	e := newEnv(t, name+strings.ReplaceAll(string(typ), "-", "")+"clean")
 	if typ == jobspec.Purge {
 		execAll(t, e.src, numsDDL)
 	} else {
@@ -263,9 +263,17 @@ func TestMySQLTheGuardOnAStoppedMember(t *testing.T) {
 
 	second := e.config(t, job(t, jobspec.CopyOnly, numsJob))
 	second.Name, second.Source = "second", openServer(t, "TEST_GROUP_MEMBER3", e.srcSchema, nil)
+	// recorded on the group's name (rule 1: the group configured on the stopped member): the first job is named
 	_, err := e.run(t, second)
 	oe := wantErr[*OverlapError](t, err)
-	if !strings.Contains(oe.Error(), "\n  j: ") || !strings.Contains(oe.Error(), "configured for Group Replication group") {
+	if !strings.Contains(oe.Error(), "\n  j: ") {
+		t.Errorf("the refusal does not name the first job:\n%s", oe)
+	}
+	// recorded on another member's uuid, which no gtid_executed of this member need hold (rule 2, whatever the state)
+	setRegistered(t, e, serverUUID(t, "TEST_GROUP_MEMBER2"))
+	_, err = e.run(t, second)
+	oe = wantErr[*OverlapError](t, err)
+	if !strings.Contains(oe.Error(), "\n  j: ") || !strings.Contains(oe.Error(), "configured for Group Replication group "+groupName(t)) {
 		t.Errorf("the refusal does not name the first job and the configured group:\n%s", oe)
 	}
 }
