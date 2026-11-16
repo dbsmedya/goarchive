@@ -132,10 +132,11 @@ func readMaxErrorCount(ctx context.Context, c driver.QueryerContext) (uint64, er
 	return 0, fmt.Errorf("%w: %s returned %v (%T), want an unsigned integer", errProbeShape, maxErrorCountProbe, dest[0], dest[0])
 }
 
-// warningsConnector runs ensureMaxErrorCount, then ensureSessionCharset (CHS-1), on every
-// physical connection its pool opens, startup and replacements alike: the pools retire each
-// connection within defaultConnMaxLife, and a replacement takes the globals as they are then.
-// A connection that fails either check is closed and never reaches the pool.
+// warningsConnector runs ensureMaxErrorCount, then ensureSessionCharset (CHS-1), then
+// ensureGroupConsistency (G12), on every physical connection its pool opens, startup and
+// replacements alike: the pools retire each connection within defaultConnMaxLife, and a
+// replacement takes the globals as they are then. A connection that fails a check is closed
+// and never reaches the pool.
 type warningsConnector struct {
 	driver.Connector
 	addr string
@@ -151,6 +152,12 @@ func (c warningsConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		return nil, err
 	}
 	if err := ensureSessionCharset(ctx, conn, c.addr); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	// The failover fence last (G12): the pins and the two checks above are not statements a fence holds, and the
+	// library's reads run on a session they have settled.
+	if err := ensureGroupConsistency(ctx, conn, c.addr); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
