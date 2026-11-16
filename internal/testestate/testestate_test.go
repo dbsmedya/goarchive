@@ -81,7 +81,8 @@ func globally(v string) dbsrepl.GroupConsistency {
 }
 
 func baseMembers() []memberFacts {
-	gr := dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: "g", TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true}
+	gr := dbsrepl.GroupReplication{PluginStatus: "ACTIVE", GroupName: "g", TransactionSizeLimit: 150000000, TransactionSizeLimitKnown: true,
+		SinglePrimaryMode: "ON", SinglePrimaryModeKnown: true}
 	return []memberFacts{{"gr1", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}, {"gr2", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}, {"gr3", gr, globally("BEFORE_ON_PRIMARY_FAILOVER")}}
 }
 
@@ -105,6 +106,10 @@ func TestGroupProblemsNameEachChangedState(t *testing.T) {
 	raised[1].consistency = globally("EVENTUAL")
 	unreported := baseMembers()
 	unreported[2].consistency = dbsrepl.GroupConsistency{PluginStatus: "ACTIVE"}
+	multi := baseMembers()
+	multi[1].limit.SinglePrimaryMode = "OFF"
+	modeUnknown := baseMembers()
+	modeUnknown[2].limit.SinglePrimaryMode, modeUnknown[2].limit.SinglePrimaryModeKnown = "", false
 
 	for _, tc := range []struct {
 		name    string
@@ -119,6 +124,8 @@ func TestGroupProblemsNameEachChangedState(t *testing.T) {
 		{"an unknown limit", onlineView("gr1"), unknown, "gr3: group_replication_transaction_size_limit is not reported"},
 		{"another consistency", onlineView("gr1"), raised, "gr2: group_replication_consistency is EVENTUAL, want BEFORE_ON_PRIMARY_FAILOVER"},
 		{"an unreported consistency", onlineView("gr1"), unreported, "gr3: group_replication_consistency is not reported"},
+		{"a member in multi-primary mode", onlineView("gr1"), multi, "gr2: group_replication_single_primary_mode is OFF, want ON"},
+		{"an unreported mode", onlineView("gr1"), modeUnknown, "gr3: group_replication_single_primary_mode is not reported"},
 	} {
 		got := groupProblems(tc.view, tc.members, limit, consistency)
 		if len(got) != 1 || got[0] != tc.want {
