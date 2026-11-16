@@ -47,11 +47,11 @@ func modeWord(g dbsrepl.GroupReplication, running bool) string {
 	return "mode unknown"
 }
 
-// modeRefusal is what is wrong with a side's mode, in words that stand alone, and the way out; ok is false when
+// modeRefusal is what is wrong with a side's mode, in words that stand alone, and the way out; refused is false when
 // nothing is: the mode is known and ON. The words follow the fact (spec §4.6, rev 5.3): the value is the server's
 // own setting, which is the group's mode in force only for a member that is running in a group, so a source that
 // is not running and a destination are said to be configured for it, and no more.
-func modeRefusal(side string, g dbsrepl.GroupReplication, running bool) (what, remedy string, ok bool) {
+func modeRefusal(side string, g dbsrepl.GroupReplication, running bool) (what, remedy string, refused bool) {
 	switch {
 	case !g.SinglePrimaryModeKnown:
 		return fmt.Sprintf("the %s's group mode could not be read: the server returned no value for %s", side, modeVariable), multiPrimaryRetry, true
