@@ -209,7 +209,7 @@ func TestGateVerifyKeepsTheEstateContainersOnFailure(t *testing.T) {
 			t.Errorf("%s has no \"Estate containers\" step", name)
 			continue
 		}
-		if !(gate < capture && capture < upload) {
+		if gate >= capture || capture >= upload {
 			t.Errorf("%s: the step order is gate %d, capture %d, upload %d: the capture goes between them", name, gate, capture, upload)
 		}
 		s := j.Steps[capture]
