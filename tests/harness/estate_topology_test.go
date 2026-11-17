@@ -449,3 +449,48 @@ func TestEstateScriptIsExecutable(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupMembersAreSizedForTheirMemory (Gate verify run 43987105610; GR C10 fix): a member's memory limit holds its
+// buffer pool, Group Replication's message cache and the rest of mysqld with room to spare. The cache's own ceiling
+// is 1 GiB unless set, so the estate sets it, and the limit must exceed pool plus cache by 1 GiB, which is more than
+// the measured footprint of mysqld apart from the pool (about 470 MiB of anonymous memory on 8.4.11, with a
+// 512M pool). gr2 and gr3 once had a 1 GiB limit with 4 percent headroom; an OOM kill of gr3 at START
+// GROUP_REPLICATION ended a gate's integration stage (a kill leaves nothing in the server's log).
+func TestGroupMembersAreSizedForTheirMemory(t *testing.T) {
+	cnf, err := os.ReadFile("../docker_files/my.cnf.d/gr-member.cnf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := func(text string, name string) int { // MiB of a setting such as 512M or 2g
+		m := regexp.MustCompile(`(?m)^\s*(?:loose-)?` + name + `\s*=\s*(\d+)([MmGg])\s*$`).FindStringSubmatch(text)
+		if m == nil {
+			return -1
+		}
+		n, _ := strconv.Atoi(m[1])
+		if strings.EqualFold(m[2], "g") {
+			n *= 1024
+		}
+		return n
+	}
+	pool, cache := size(string(cnf), "innodb_buffer_pool_size"), size(string(cnf), "group_replication_message_cache_size")
+	if pool <= 0 {
+		t.Fatal("gr-member.cnf sets no innodb_buffer_pool_size")
+	}
+	if cache < 128 || cache > 512 {
+		t.Fatalf("gr-member.cnf's group_replication_message_cache_size is %d MiB (-1: not set), want it set, between the 128M minimum and 512M: left at the default it may grow to 1 GiB", cache)
+	}
+	compose := groupComposeFile(t)
+	for _, member := range []string{"gr1", "gr2", "gr3"} {
+		m := regexp.MustCompile(`(?s)\n  ` + member + `:\n.*?mem_limit:\s*(\d+)([mg])`).FindStringSubmatch(compose)
+		if m == nil {
+			t.Fatalf("compose.group.yml has no mem_limit for %s", member)
+		}
+		limit, _ := strconv.Atoi(m[1])
+		if m[2] == "g" {
+			limit *= 1024
+		}
+		if want := pool + cache + 1024; limit < want {
+			t.Errorf("%s's mem_limit is %d MiB, want at least %d (pool %d + message cache %d + 1024)", member, limit, want, pool, cache)
+		}
+	}
+}

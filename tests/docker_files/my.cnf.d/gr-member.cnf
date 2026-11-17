@@ -7,7 +7,9 @@ local_infile                 = ON
 binlog-row-image             = FULL
 
 # Memory sizing, as in db1.cnf: innodb_dedicated_server stays OFF so an unbounded container does not size
-# itself for the whole Docker VM. 512M pool inside the largest member's 2g limit (gr2 and gr3 have 1g).
+# itself for the whole Docker VM. 512M pool and Group Replication's message cache (below), inside each member's
+# 2g limit. At 1g, gr2 and gr3 ran with about 4 percent headroom (anonymous memory 985 MiB of 1024 on 8.4.11 after
+# the integration stage), and a member was killed at START GROUP_REPLICATION on a Gate verify runner.
 innodb_dedicated_server      = OFF
 innodb_buffer_pool_size      = 512M
 innodb_buffer_pool_instances = 2
@@ -20,3 +22,8 @@ loose-innodb_numa_interleave = OFF
 # source against the default limit of 151 (see db1.cnf). The same ceiling as the plain estate, so it is not
 # the thing under test.
 max_connections              = 500
+
+# Group Replication's message cache may grow to 1 GiB (the default), more than a member's share of its limit.
+# loose-: the plugin is installed by the AdminAPI after the server starts, so the option is not known to the first
+# start; a restart with the plugin loaded applies it. 256M is above the 128M minimum.
+loose-group_replication_message_cache_size = 256M

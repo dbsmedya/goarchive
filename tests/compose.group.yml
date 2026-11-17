@@ -86,7 +86,7 @@ services:
       - gr2_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/gr-member.cnf:/etc/my.cnf.d/docker.cnf
       - ./docker_files/my.cnf.d/gr-member.cnf:/etc/mysql/conf.d/docker.cnf
-    mem_limit: 1g
+    mem_limit: 2g
 
   gr3:
     <<: *member
@@ -101,7 +101,7 @@ services:
       - gr3_data:/var/lib/mysql
       - ./docker_files/my.cnf.d/gr-member.cnf:/etc/my.cnf.d/docker.cnf
       - ./docker_files/my.cnf.d/gr-member.cnf:/etc/mysql/conf.d/docker.cnf
-    mem_limit: 1g
+    mem_limit: 2g
 
   # The destination: db2's settings (+03:00 and the rest), server id 4.
   gr-dest:

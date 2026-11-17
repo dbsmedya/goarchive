@@ -32,6 +32,8 @@ type gateJob struct {
 
 type gateStep struct {
 	Name string            `yaml:"name"`
+	If   string            `yaml:"if"`
+	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
 	Env  map[string]string `yaml:"env"`
 	With map[string]any    `yaml:"with"`
@@ -180,5 +182,52 @@ func TestTheGroupMatrixRowStays(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "group_replication_source\tgroup\t") {
 		t.Error("tests/envmatrix/rows.tsv has no group_replication_source row of kind group")
+	}
+}
+
+// TestGateVerifyKeepsTheEstateContainersOnFailure (Gate verify run 43987105610: a group member's mysqld died and the
+// run's artifacts held nothing to say why, since an OOM kill leaves no line in the server's log, only the container's
+// state): in each of the four gate jobs a step after the gate and before the artifact upload, run on failure, writes
+// every estate container's `docker logs` and its `.State` into the uploaded directory. It names the containers from the
+// topology and takes only the state: a bare `docker inspect` prints the container's environment, passwords included.
+func TestGateVerifyKeepsTheEstateContainersOnFailure(t *testing.T) {
+	w := loadGateVerify(t)
+	for _, name := range []string{"integration", "e2e", "integration-group", "e2e-group"} {
+		j := w.Jobs[name]
+		gate, capture, upload := -1, -1, -1
+		for i, s := range j.Steps {
+			switch {
+			case strings.HasPrefix(s.Name, "Gate, part"):
+				gate = i
+			case strings.HasPrefix(s.Name, "Estate containers"):
+				capture = i
+			case strings.HasPrefix(s.Uses, "actions/upload-artifact"):
+				upload = i
+			}
+		}
+		if capture < 0 {
+			t.Errorf("%s has no \"Estate containers\" step", name)
+			continue
+		}
+		if gate >= capture || capture >= upload {
+			t.Errorf("%s: the step order is gate %d, capture %d, upload %d: the capture goes between them", name, gate, capture, upload)
+		}
+		s := j.Steps[capture]
+		if !strings.Contains(s.If, "failure()") {
+			t.Errorf("%s: the capture runs on %q, want failure()", name, s.If)
+		}
+		for _, want := range []string{". tests/scripts/topology.sh", "$ESTATE_CONTAINERS", "docker logs", "docker inspect", "--format '{{json .State}}'", "tests/results/gate/containers"} {
+			if !strings.Contains(s.Run, want) {
+				t.Errorf("%s: the capture lacks %q:\n%s", name, want, s.Run)
+			}
+		}
+		for _, line := range strings.Split(s.Run, "\n") {
+			if strings.Contains(line, "docker inspect") && !strings.Contains(line, "--format") {
+				t.Errorf("%s: %q would print the container's environment", name, strings.TrimSpace(line))
+			}
+		}
+		if strings.Contains(s.Run, "printenv") || strings.Contains(s.Run, ".Config") {
+			t.Errorf("%s: the capture reads the environment:\n%s", name, s.Run)
+		}
 	}
 }

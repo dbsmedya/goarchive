@@ -104,6 +104,18 @@ jobs:
         run: |
           . tests/scripts/topology.sh
           docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      # A run that fails keeps what the estate's containers say: an OOM kill of a server leaves nothing in its log,
+      # only in the container's state. Logs and state only: `docker inspect` of the whole container prints its
+      # environment, which holds the estate's password.
+      - name: Estate containers
+        if: failure()
+        run: |
+          . tests/scripts/topology.sh
+          mkdir -p tests/results/gate/containers
+          for c in $ESTATE_CONTAINERS; do
+            docker logs "$c" > "tests/results/gate/containers/$c.log" 2>&1 || true
+            docker inspect --format '{{json .State}}' "$c" > "tests/results/gate/containers/$c.state.json" 2>&1 || true
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -158,6 +170,18 @@ jobs:
         run: |
           . tests/scripts/topology.sh
           docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      # A run that fails keeps what the estate's containers say: an OOM kill of a server leaves nothing in its log,
+      # only in the container's state. Logs and state only: `docker inspect` of the whole container prints its
+      # environment, which holds the estate's password.
+      - name: Estate containers
+        if: failure()
+        run: |
+          . tests/scripts/topology.sh
+          mkdir -p tests/results/gate/containers
+          for c in $ESTATE_CONTAINERS; do
+            docker logs "$c" > "tests/results/gate/containers/$c.log" 2>&1 || true
+            docker inspect --format '{{json .State}}' "$c" > "tests/results/gate/containers/$c.state.json" 2>&1 || true
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -207,6 +231,18 @@ jobs:
         run: |
           . tests/scripts/topology.sh
           docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      # A run that fails keeps what the estate's containers say: an OOM kill of a server leaves nothing in its log,
+      # only in the container's state. Logs and state only: `docker inspect` of the whole container prints its
+      # environment, which holds the estate's password.
+      - name: Estate containers
+        if: failure()
+        run: |
+          . tests/scripts/topology.sh
+          mkdir -p tests/results/gate/containers
+          for c in $ESTATE_CONTAINERS; do
+            docker logs "$c" > "tests/results/gate/containers/$c.log" 2>&1 || true
+            docker inspect --format '{{json .State}}' "$c" > "tests/results/gate/containers/$c.state.json" 2>&1 || true
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -260,6 +296,18 @@ jobs:
         run: |
           . tests/scripts/topology.sh
           docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      # A run that fails keeps what the estate's containers say: an OOM kill of a server leaves nothing in its log,
+      # only in the container's state. Logs and state only: `docker inspect` of the whole container prints its
+      # environment, which holds the estate's password.
+      - name: Estate containers
+        if: failure()
+        run: |
+          . tests/scripts/topology.sh
+          mkdir -p tests/results/gate/containers
+          for c in $ESTATE_CONTAINERS; do
+            docker logs "$c" > "tests/results/gate/containers/$c.log" 2>&1 || true
+            docker inspect --format '{{json .State}}' "$c" > "tests/results/gate/containers/$c.state.json" 2>&1 || true
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
