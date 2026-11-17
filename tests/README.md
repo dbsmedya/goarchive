@@ -523,7 +523,7 @@ go test -p 1 -tags=integration ./internal/... ./cmd/... -count=1       # the int
 - **A group refuses what it cannot certify.** A table without a primary key can be created but not written
   to (`ERROR 3098`), and a table of another engine than InnoDB is refused the same way. The suites write
   such tables only on a plain destination.
-- **The members' memory limits (1 GB for gr2 and gr3) suit the suites, not a transaction of 100 MB**: a
+- **The members' memory limits (2 GB each, with Group Replication's message cache capped at 256M) suit the suites, not a transaction of 100 MB**: a
   member was killed by the kernel's OOM handling under one. A measurement that needs a very large
   transaction raises the limits first.
 - **The E2E suite runs here too** (`make e2e TOPOLOGY=group`, or `run-gate.sh --part e2e` with

@@ -7,6 +7,20 @@ source_gtid_set() {
         awk 'NR == 2 { print; seen=1 } END { if (!seen || NR != 2) exit 1 }'
 }
 
+# valid_gtid_set <value> succeeds when the value is a GTID set and nothing else, as the manual writes the grammar
+# (https://dev.mysql.com/doc/refman/9.7/en/replication-gtids-concepts.html, "GTID Set Grammar"):
+#   uuid_set: uuid:[tag:]interval[:[tag:]interval]...    gtid_set: uuid_set[,uuid_set]...
+# a tag is [a-zA-Z_][a-zA-Z0-9_]{0,31} and an interval is m or m-n. The value goes into a statement, so nothing else
+# passes: no whitespace, quote, semicolon or backslash. A group bootstrapped by MySQL Shell 9.7.1 holds tagged GTIDs
+# (`uuid:mysqlsh:1-82`), which the hex-digits-only check this replaces refused.
+valid_gtid_set() {
+    local uuid='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    local tag='[a-zA-Z_][a-zA-Z0-9_]{0,31}'
+    local interval='[0-9]+(-[0-9]+)?'
+    local set="${uuid}(:(${tag}:)?${interval})+"
+    [[ $1 =~ ^${set}(,${set})*$ ]]
+}
+
 # Test13's and Test17's live replication witness. The subshell scopes traps and private
 # helpers so an interrupted test cannot poison the next engine invocation.
 # No operator data is used: this runs only on the seeded E2E payment fixture.
@@ -49,8 +63,8 @@ run_replication_hold_job() (
             return 1
         fi
         gtid=$(source_gtid_set) || return 1
-        # A GTID set contains only UUIDs, transaction ranges and separators.
-        if [[ -z "$gtid" || "$gtid" == *[!a-fA-F0-9:,-]* ]]; then
+        # A GTID set is UUIDs, optional tags, transaction ranges and separators (valid_gtid_set).
+        if ! valid_gtid_set "$gtid"; then
             log_error "PURGE_REPLICA_NOT_READY: missing or invalid source GTID set"
             return 1
         fi
