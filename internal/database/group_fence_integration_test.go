@@ -24,7 +24,18 @@ var changesByItself = map[string]bool{"statement_id": true, "timestamp": true}
 
 // sessionSnapshot is one thread's session variables, read from the observer's session.
 func sessionSnapshot(ctx context.Context, observer *sql.DB, connID int64) (map[string]string, error) {
-	rows, err := observer.QueryContext(ctx, "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE FROM performance_schema.variables_by_thread v "+
+	// The observer is a raw pool, the driver's bare sessions: a server whose global sql_select_limit is low (the matrix row
+	// sql_select_limit_20) would show it a few rows of a session's several hundred variables. goarchive's own pools pin the
+	// limit; this read lifts it for its own connection.
+	conn, err := observer.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "SET SESSION sql_select_limit = 18446744073709551615"); err != nil {
+		return nil, err
+	}
+	rows, err := conn.QueryContext(ctx, "SELECT v.VARIABLE_NAME, v.VARIABLE_VALUE FROM performance_schema.variables_by_thread v "+
 		"JOIN performance_schema.threads th ON th.THREAD_ID = v.THREAD_ID WHERE th.PROCESSLIST_ID = ?", connID)
 	if err != nil {
 		return nil, err
@@ -174,4 +185,30 @@ func TestMySQLTheFenceLeavesTheSessionAsFound(t *testing.T) {
 			t.Errorf("the comparison reports %v after a SET of sort_buffer_size, want exactly that variable", d)
 		}
 	})
+}
+
+// TestMySQLTheSessionSnapshotReadsEveryVariable (Matrix verify run 44005058337, row sql_select_limit_20): the observer is a
+// raw pool, the driver's bare sessions, so on a server whose global sql_select_limit is 20 its read of
+// performance_schema.variables_by_thread saw 20 of a session's several hundred variables, and a SET of sort_buffer_size was
+// not among them. goarchive's own pools pin sql_select_limit (BuildDSN); this observer's read lifts it itself. The observer
+// here starts with a session limit of 20, as that row's server gives it.
+func TestMySQLTheSessionSnapshotReadsEveryVariable(t *testing.T) {
+	ctx := context.Background()
+	conn, err := rawPool(t, estateDatabaseConfig(t, "TEST_DEST"), nil).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	id, err := connectionID(ctx, conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer := rawPool(t, estateDatabaseConfig(t, "TEST_DEST"), map[string]string{"sql_select_limit": "20"})
+	snapshot, err := sessionSnapshot(ctx, observer, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot) <= 20 {
+		t.Errorf("the snapshot holds %d variables, want a session's whole set (hundreds): the observer's sql_select_limit cut the read", len(snapshot))
+	}
 }

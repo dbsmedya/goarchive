@@ -3,3 +3,22 @@
 # local matrix and in every gate job (the estate on six images). One test name per line, then its
 # reason. Reviewed with the PR that adds the line; no automatic retries anywhere.
 TestManagerConnect_ReplicaFleetPartialFailure_Integration   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308); a matrix job runs only its source/destination pair
+TestMySQLReplicaLockIsExclusive   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLReplicaLockIsHeldOncePerTopLevelTest   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLReplicaStateNamesWhatDiffers   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlDeleteSizeDuringHold   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlDeleteSizeRecovery   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlToleranceLowered   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlToleranceDuringSleep   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlToleranceDuringSleepRecovery   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlToleranceRaised   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLDeleteSleepStop   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLAReadOnlySourceIsRefusedBeforeRecovery   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLADestinationThatIsReadOnlyRefusesEveryJobType   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLAReadOnlyReplicaAsSourceRefusesAnArchiveAndAPurge   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlStatus   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlAnAsynchronousGateHasNoGroupBounds   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlStopDuringHold   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlRecoveringStatus   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLControlToleranceRaisedSocket   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
+TestMySQLAPlainSourceWithReplicationGetsNoBanner   # needs the estate's replica db3 (TEST_REPLICA_PORT 3308): it takes the replica lock, which opens a session there; a matrix job runs only its source/destination pair
