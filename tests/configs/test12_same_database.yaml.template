@@ -1,6 +1,6 @@
 # Test 12: source and destination are the SAME database (validation demo — EXPECTED TO FAIL)
 #
-# Both connection blocks point at 127.0.0.1:3305/sakila. Every command that opens
+# Both connection blocks point at the source (127.0.0.1:3305 on the plain estate)/sakila. Every command that opens
 # both connections — archive, purge, copy-only, dry-run, validate — refuses this at
 # connection time with SRC_DEST_IDENTITY_CHECK, before preflight and before any
 # tracking row is written. An archive into itself would verify the table against
@@ -17,14 +17,14 @@
 
 source:
   host: 127.0.0.1
-  port: 3305
+  port: ${TEST_SOURCE_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila
 
 destination:
   host: 127.0.0.1
-  port: 3305
+  port: ${TEST_SOURCE_PORT}
   user: root
   password: ${MYSQL_ROOT_PASSWORD}
   database: sakila

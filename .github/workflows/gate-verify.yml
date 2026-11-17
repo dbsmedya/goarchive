@@ -8,6 +8,10 @@
 # Since beta.3 (RVG-3, spec .ayder/superpowers_20261017/specs/2026-10-17-beta3-gate-verify-split-design.md)
 # each image runs as two jobs that start together, the gate's integration part and its e2e part
 # (run-gate.sh --part), and the summary wants both parts of every image certified.
+# Since GRG-1 (spec .ayder/superpowers_20261115/specs/2026-11-15-group-replication-support-design.md §9)
+# the gate also runs on the group estate (TOPOLOGY=group: tests/README.md → The group estate), one
+# image per series, as the same two parts: the integration-group and e2e-group jobs, and the summary
+# wants their three images' two parts too.
 name: Gate verify
 
 on:
@@ -97,7 +101,9 @@ jobs:
           bash tests/scripts/run-gate.sh --part integration
       - name: Server version
         if: always()
-        run: docker exec db1 mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= tests/.env | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+        run: |
+          . tests/scripts/topology.sh
+          docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -149,7 +155,9 @@ jobs:
           bash tests/scripts/run-gate.sh --part e2e
       - name: Server version
         if: always()
-        run: docker exec db1 mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= tests/.env | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+        run: |
+          . tests/scripts/topology.sh
+          docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -157,9 +165,111 @@ jobs:
           path: tests/results/gate/
           if-no-files-found: warn
 
+  integration-group:
+    name: Integration on the group estate, ${{ matrix.image }}
+    needs: target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TOPOLOGY: group
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        # One image per series, the plain jobs' own pinned releases (GRG-1): the group estate's five
+        # servers per image, with the library's evidence covering both vendors for the facts.
+        image:
+          - mysql:8.0.40
+          - mysql:8.4.11
+          - mysql:9.7.1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install MySQL Shell
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
+      - name: Gate, part integration
+        env:
+          GA_ESTATE_IMAGE: ${{ matrix.image }}
+        run: |
+          cp tests/dot.env.group tests/.env.group
+          set -a; . tests/.env.group; set +a
+          make e2e-setup
+          bash tests/scripts/run-gate.sh --part integration
+      - name: Server version
+        if: always()
+        run: |
+          . tests/scripts/topology.sh
+          docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-group-integration-${{ strategy.job-index }}
+          path: tests/results/gate/
+          if-no-files-found: warn
+
+  e2e-group:
+    name: E2E on the group estate, ${{ matrix.image }}
+    needs: target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      TOPOLOGY: group
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        # One image per series, the plain jobs' own pinned releases (GRG-1): the group estate's five
+        # servers per image, with the library's evidence covering both vendors for the facts.
+        image:
+          - mysql:8.0.40
+          - mysql:8.4.11
+          - mysql:9.7.1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.target.outputs.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Install MySQL Shell
+        run: |
+          curl -fsSLo "/tmp/$MYSQLSH_DEB" "https://dev.mysql.com/get/Downloads/MySQL-Shell/$MYSQLSH_DEB"
+          sudo apt-get install -y "/tmp/$MYSQLSH_DEB"
+          mysqlsh --version
+      # E2E 20 sends the control socket's documented lines with nc -U and socat, as a script without
+      # the binary would, and fails (not skips) when a tool is missing.
+      - name: Install the control socket test tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq netcat-openbsd socat
+      - name: Gate, part e2e
+        env:
+          GA_ESTATE_IMAGE: ${{ matrix.image }}
+        run: |
+          cp tests/dot.env.group tests/.env.group
+          set -a; . tests/.env.group; set +a
+          make e2e-setup
+          bash tests/scripts/run-gate.sh --part e2e
+      - name: Server version
+        if: always()
+        run: |
+          . tests/scripts/topology.sh
+          docker exec "$ESTATE_SOURCE" mysql -uroot -p"$(grep ^MYSQL_ROOT_PASSWORD= "tests/$ESTATE_ENV" | cut -d= -f2)" -N -e 'SELECT @@version' > tests/results/gate/server-version.txt 2>/dev/null || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-group-e2e-${{ strategy.job-index }}
+          path: tests/results/gate/
+          if-no-files-found: warn
+
   summary:
     name: Summary
-    needs: [target, integration, e2e]
+    needs: [target, integration, e2e, integration-group, e2e-group]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -172,16 +282,19 @@ jobs:
       - name: Summarize
         # Artifacts alone cannot show that a job finished: each dependency's result goes to the
         # summary too, and anything but success fails the run. The run wants six gates (each
-        # image's two parts) and no row.
+        # image's two parts), three group gates (the group estate's, one image per series) and no row.
         env:
           TARGET_SHA: ${{ needs.target.outputs.sha }}
           TARGET_RESULT: ${{ needs.target.result }}
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           E2E_RESULT: ${{ needs.e2e.result }}
+          INTEGRATION_GROUP_RESULT: ${{ needs.integration-group.result }}
+          E2E_GROUP_RESULT: ${{ needs.e2e-group.result }}
         run: |
           set -o pipefail
-          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" 0 6 \
-            "target=$TARGET_RESULT" "integration=$INTEGRATION_RESULT" "e2e=$E2E_RESULT" | tee gate-verify.md >> "$GITHUB_STEP_SUMMARY"
+          bash tests/envmatrix/gh-summary.sh evidence "$TARGET_SHA" 0 6 3 \
+            "target=$TARGET_RESULT" "integration=$INTEGRATION_RESULT" "e2e=$E2E_RESULT" \
+            "integration-group=$INTEGRATION_GROUP_RESULT" "e2e-group=$E2E_GROUP_RESULT" | tee gate-verify.md >> "$GITHUB_STEP_SUMMARY"
       - if: always()
         uses: actions/upload-artifact@v4
         with:

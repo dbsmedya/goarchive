@@ -49,7 +49,9 @@ nonzero process exit report the failure; no successful record is promised.
 Read the current run's summary and completion record together with its process
 exit. A console line or an older stage log alone does not certify the checkout.
 
-`make gate` runs every stage. *Gate verify* runs each image's gate as two parts on two runners,
+`make gate` runs every stage, on the estate `TOPOLOGY` names (the plain one by default; `TOPOLOGY=group` with
+`tests/.env.group` loaded for [the group estate](#the-group-estate), whose estate stage checks its five members'
+ports and whose integration stage runs one package at a time). *Gate verify* runs each image's gate as two parts on two runners,
 `bash tests/scripts/run-gate.sh --part integration` (estate, static checks, unit, integration)
 and `--part e2e` (estate, `e2e`, `e2e-examples`). A part's other stages are `NOT RUN`, its
 `run.tsv` and `complete` name the part, and `complete` reads `GATE PART COMPLETE - every stage
@@ -524,8 +526,13 @@ go test -p 1 -tags=integration ./internal/... ./cmd/... -count=1       # the int
 - **The members' memory limits (1 GB for gr2 and gr3) suit the suites, not a transaction of 100 MB**: a
   member was killed by the kernel's OOM handling under one. A measurement that needs a very large
   transaction raises the limits first.
-- **No E2E yet.** The E2E configs name the plain estate's ports, so `make e2e` refuses `TOPOLOGY=group`.
-  No suite is copied for the group.
+- **The E2E suite runs here too** (`make e2e TOPOLOGY=group`, or `run-gate.sh --part e2e` with
+  `tests/.env.group` loaded). The config templates in `tests/configs/` name their servers' ports by
+  `${TEST_SOURCE_PORT}`, `${TEST_DEST_PORT}` and `${TEST_REPLICA_PORT}`, which the harness fills from the estate's env
+  file, with the plain estate's ports (3305, 3307, 3308) when a variable is unset, so the plain estate renders
+  what it always did. The validation demos that run as a limited source account (18 and 19) also grant it `SELECT`
+  on the group's view, which a member source's recipe needs ([Permissions](../docs/README_PERMISSIONS.md)); on the
+  plain estate they grant nothing more. No suite is copied for the group.
 
 ### 2. Build the binary
 
@@ -774,7 +781,7 @@ row. The judge (`envmatrix/judge`) decides each row from `go test -json`.
 | `dynamic` | Takes a snapshot of the globals on a long-lived source/destination pair of `MX_IMAGE`, applies the row's `SET GLOBAL` to both servers (to the destination only when the setup starts with `dst:`), runs the suites, then restores the snapshot and compares it |
 | `init` | Starts a fresh pair with an extra `my.cnf` (for example `lower_case_table_names = 1`) |
 | `version` | Starts a fresh, unchanged pair of another image (Percona and Oracle, 8.0.40 to 9.7) |
-| `group` | Starts dbsgomysql's three-member Group Replication cluster (`envmatrix/group/`, copied unchanged from the pinned library) as the source, with a fresh destination, and runs only the unfinished-work guard tests: Group Replication refuses tables without a primary key, which other suites create on purpose |
+| `group` | Starts dbsgomysql's three-member Group Replication cluster (`envmatrix/group/`, copied unchanged from the pinned library) as the source, with a fresh destination, and runs only the unfinished-work guard tests. That is the row's own scope and not a limit of the group: no suite needs a table without a primary key on a group source (a group refuses to write one, and the suites write such tables only on a destination, a plain server here), and the whole inventory runs on a group in the group estate ([The group estate](#the-group-estate)) and in *Gate verify*'s group jobs |
 
 ```bash
 make env-matrix                                   # every row
@@ -818,14 +825,17 @@ git push origin --delete verify-gate/<sha7>
   estate built from each of `mysql` 8.0.40, 8.4.11 and 9.7.1 and `percona/percona-server`
   8.0.46-37, 8.4.11-11 and 9.7.1-1, pinned so MySQL Shell supports each (`GA_ESTATE_IMAGE` in
   `compose.yml`), as two jobs per image that start together, its integration part and its e2e
-  part (`run-gate.sh --part`, above), and a target and a summary job: 14 jobs.
+  part (`run-gate.sh --part`, above), and a target and a summary job: 14 jobs. It also runs the gate on the
+  group estate (`TOPOLOGY=group`, GRG-1): the same two parts on `mysql` 8.0.40, 8.4.11 and 9.7.1, one image per
+  series, six more jobs (20 in all). The matrix's `group_replication_source` row stays.
 - **Results:** each run page's summary is one table of every verdict (`envmatrix/gh-summary.sh`),
   headed *Matrix verify* or *Gate verify* and the SHA. It is red when any job did not succeed,
   when any row is not OK or is missing, when any gate is missing or lacks the evidence `make gate`
   records for its SHA (above: `complete`, a clean tree, both exits 0), and when a run holds the
   other workflow's jobs. A Gate verify image counts as a gate only when both its parts carry that
-  evidence, each naming its own part; an image with one part fails the run. Every job's evidence
-  directory is an artifact.
+  evidence, each naming its own part; an image with one part fails the run. The three group images are counted
+  apart (`gate-group-<part>-<n>`), on the same evidence, and the run is red when one lacks a part. Every job's
+  evidence directory is an artifact.
   A gate's integration count is three passes short of a local one on a machine that has `socat`, with
   three more skips: `TestSetupGracefulShutdown_TwoPhase` and `TestStopPhases` skip themselves where
   `CI=true`, which GitHub sets, and the `socat` subtest of `TestShellClientsReturnWhenTheServerCloses`
@@ -1071,7 +1081,7 @@ setting on a throwaway pair).
 | `TestMySQLArchiveValueLargerThanThePacket` | the estate's two servers have the same `max_allowed_packet`, so no value exceeds the destination's and fits the source's | row `max_allowed_packet_dst_4m`, where a skip is a failure |
 
 The tests below need a Group Replication member as `TEST_SOURCE`. On this estate (db1 is a plain
-server), on every GitHub row and on every *Gate verify* image they skip, one line per test; they run on
+server), on every GitHub row and on every plain *Gate verify* image they skip, one line per test; they run on
 the group estate (`make test-up TOPOLOGY=group`, [The group estate](#the-group-estate)). The first
 column is each package's helper, which every group-only test of that package calls.
 
@@ -1082,6 +1092,24 @@ column is each package's helper, which every group-only test of that package cal
 | `requireGroupMemberSource` (`cmd/goarchive/cmd`) | the same | the group estate |
 | `requireGroupEstate` (`internal/testestate`) | the same: the three self-tests of the mode helper and the fence harness | the group estate |
 | `TestMySQLTheFenceLeavesTheSessionAsFound` (`internal/database`) | the same, for its subtest on a member (the subtest on a server without the plugin runs on both estates) | the group estate |
+
+### Integration on the group estate
+
+The same stage with `TOPOLOGY=group` (`tests/scripts/run-tests.sh --integration-only`, one package at a time),
+against gr1 as the source, gr-dest as the destination and gr-replica as the replica
+([The group estate](#the-group-estate)); *Gate verify*'s `integration-group` job runs it on one image per
+series. **None of the group-only tests above skips here**: every one of them runs. What prints is the plain
+estate's SKIP lines less those group-only tests: the four of *make check on a Mac* and the six rows below, ten in all
+(measured at the C10 tip on 8.4.13: `PASS=2685 FAIL=0 SKIP=10`; the first pass of M11 printed the same ten on 8.0.46, 8.4.13 and
+9.7.4). Each of the six needs a server setting no estate has, and runs on its row of the environment matrix.
+
+| Test | Why it skips | Where it runs |
+|---|---|---|
+| `TestMySQLMaxErrorCount` | `@@GLOBAL.max_error_count` is not 0 | row `max_error_count_0` |
+| `TestMySQLSQLNotesPin` | `@@GLOBAL.sql_notes` is not 0 | row `sql_notes_0` |
+| `TestMySQLWaitTimeout` (its side A subtest) | `@@GLOBAL.wait_timeout` is not below the 30 s keep-alive | row `wait_timeout_10` |
+| `TestMySQLInitConnectCharset/text`, `TestMySQLInitConnectCharset/key` | the account's session is already `utf8mb4`; the pair needs a narrowed one | row `init_connect_set_names` |
+| `TestMySQLArchiveValueLargerThanThePacket` | the estate's two servers have the same `max_allowed_packet`, so no value exceeds the destination's and fits the source's | row `max_allowed_packet_dst_4m`, where a skip is a failure |
 
 ### The L1 to L5 containers
 
@@ -1125,6 +1153,9 @@ installs it. Read from the workflows as written:
   *Integration on the local estate* lists, with the `socat` subtest and the two rows below. The
   **e2e** job runs the shell E2E tests and the validation demos, no Go test, so it prints none of
   these lines; it installs `nc` and `socat` for E2E test 20, which fails, not skips, without them.
+  The group jobs (`integration-group`, `e2e-group`) are the same two parts on the group estate: the integration
+  job skips what *Integration on the group estate* lists, with the `socat` subtest and the two rows below, and
+  none of the group-only tests; the e2e job prints no SKIP lines.
 
 | Test | Why it skips | Where it runs |
 |---|---|---|

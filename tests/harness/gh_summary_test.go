@@ -17,8 +17,14 @@ const summarySHA = "0123456789abcdef0123456789abcdef01234567"
 // version beside it.
 func summaryPart(t *testing.T, dir string, n int, part string) string {
 	t.Helper()
+	return summaryPartNamed(t, dir, fmt.Sprintf("gate-%s-%d", part, n), n, part)
+}
+
+// summaryPartNamed is summaryPart for the artifact called name: a group gate's parts are gate-group-<part>-<n>.
+func summaryPartNamed(t *testing.T, dir, name string, n int, part string) string {
+	t.Helper()
 	runID := fmt.Sprintf("20261014T16590%dZ-%d%d", n, len(part), n)
-	art := filepath.Join(dir, fmt.Sprintf("gate-%s-%d", part, n))
+	art := filepath.Join(dir, name)
 	run := filepath.Join(art, runID)
 	writeFixture(t, filepath.Join(run, "run.tsv"),
 		"run_id\tsource_sha\tdirty\tstarted_utc\tended_utc\toutcome\tcommand_exit\trecording_exit\tpart\n"+
@@ -215,6 +221,110 @@ func TestGHSummaryFailsClosed(t *testing.T) {
 			}
 			cmd := exec.Command("bash", append(append([]string{script, dir, summarySHA}, args...), tc.needs...)...)
 			out, err := cmd.CombinedOutput()
+			code := 0
+			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
+				code = ee.ExitCode()
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if code != tc.want {
+				t.Errorf("exit %d, want %d; output:\n%s", code, tc.want, out)
+			}
+			for _, s := range tc.says {
+				if !strings.Contains(string(out), s) {
+					t.Errorf("output does not name %q:\n%s", s, out)
+				}
+			}
+		})
+	}
+}
+
+// summaryGroupGate writes both parts of group image n (artifacts gate-group-integration-<n> and
+// gate-group-e2e-<n>) and returns the integration part's run directory.
+func summaryGroupGate(t *testing.T, dir string, n int) string {
+	t.Helper()
+	summaryPartNamed(t, dir, fmt.Sprintf("gate-group-e2e-%d", n), n, "e2e")
+	return summaryPartNamed(t, dir, fmt.Sprintf("gate-group-integration-%d", n), n, "integration")
+}
+
+// TestGHSummaryGroupGates (GRG-1, GR C10): Gate verify also runs the gate on the group estate, one
+// image per series, as two parts each, and the summary wants those gates besides the six plain ones. They
+// are told apart by their artifacts' names (gate-group-<part>-<n>), counted apart (the fifth argument), and
+// certified on the same evidence as any gate; a missing or uncertified part of one, a group gate in a run
+// that wants none, and a group job that did not succeed each fail the run.
+func TestGHSummaryGroupGates(t *testing.T) {
+	script, err := filepath.Abs(filepath.Join("..", "envmatrix", "gh-summary.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	needs := []string{"target=success", "integration=success", "e2e=success", "integration-group=success", "e2e-group=success"}
+	for _, tc := range []struct {
+		name  string
+		mut   func(t *testing.T, dir string)
+		args  []string // rows, gates, group gates; nil means 0 6 3
+		needs []string
+		want  int
+		says  []string
+	}{
+		{name: "every plain and group gate certified", needs: needs,
+			says: []string{"Gates: 6 (want 6).", "Group gates: 3 (want 3).", "Matrix rows: 0 (want 0).",
+				"| gate-group-0 integration | PASS | PASS=1239 FAIL=0 SKIP=5 | 8.4.11 |", "| gate-group-2 e2e | PASS | E2E 13/0, examples 6/0 | 8.4.11 |"}},
+		{name: "a group image without its e2e part", needs: needs, want: 1,
+			mut:  func(t *testing.T, dir string) { _ = os.RemoveAll(filepath.Join(dir, "gate-group-e2e-1")) },
+			says: []string{"| gate-group-1 e2e | MISSING |", "Group gates: 2 (want 3).", "Gates: 6 (want 6)."}},
+		{name: "a group image without its integration part", needs: needs, want: 1,
+			mut:  func(t *testing.T, dir string) { _ = os.RemoveAll(filepath.Join(dir, "gate-group-integration-2")) },
+			says: []string{"| gate-group-2 integration | MISSING |", "Group gates: 2 (want 3)."}},
+		{name: "no group gates in a run that wants three", needs: needs, want: 1,
+			mut: func(t *testing.T, dir string) {
+				for n := 0; n < 3; n++ {
+					_ = os.RemoveAll(filepath.Join(dir, fmt.Sprintf("gate-group-integration-%d", n)))
+					_ = os.RemoveAll(filepath.Join(dir, fmt.Sprintf("gate-group-e2e-%d", n)))
+				}
+			}, says: []string{"Group gates: 0 (want 3)."}},
+		{name: "a fourth group image", needs: needs, want: 1,
+			mut:  func(t *testing.T, dir string) { summaryGroupGate(t, dir, 3) },
+			says: []string{"| gate-group-3 integration | NOT CERTIFIED: unexpected image |"}},
+		{name: "a group part whose run.tsv names the other part", needs: needs, want: 1,
+			mut: func(t *testing.T, dir string) {
+				replaceIn(t, filepath.Join(dir, "gate-group-integration-0", "20261014T165900Z-110", "run.tsv"), "\tintegration\n", "\te2e\n")
+			},
+			says: []string{"| gate-group-0 integration | NOT CERTIFIED: run of part e2e"}},
+		{name: "a group part of another SHA", needs: needs, want: 1,
+			mut: func(t *testing.T, dir string) {
+				replaceIn(t, filepath.Join(dir, "gate-group-e2e-1", "20261014T165901Z-31", "run.tsv"), "\t"+summarySHA+"\t", "\tfedcba9876543210fedcba9876543210fedcba98\t")
+			},
+			says: []string{"| gate-group-1 e2e | NOT CERTIFIED: run of another SHA"}},
+		{name: "a group part named with a leading zero", needs: needs, want: 1,
+			mut: func(t *testing.T, dir string) {
+				if err := os.Rename(filepath.Join(dir, "gate-group-e2e-0"), filepath.Join(dir, "gate-group-e2e-00")); err != nil {
+					t.Fatal(err)
+				}
+			}, says: []string{"| gate-group-e2e-00 | NOT CERTIFIED: not a part artifact |"}},
+		{name: "a failed group job", want: 1,
+			needs: []string{"target=success", "integration=success", "e2e=success", "integration-group=failure", "e2e-group=success"},
+			says:  []string{"| job integration-group | failure |"}},
+		{name: "a group gate in a run that wants none", args: []string{"0", "6"}, needs: needs[:3], want: 1,
+			says: []string{"| gate-group-0 integration | NOT CERTIFIED: unexpected image |", "Gates: 6 (want 6)."}},
+		{name: "a group count that is not a number", args: []string{"0", "6", "three"}, needs: needs, want: 1,
+			says: []string{"| job three | three |"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for n := 0; n < 6; n++ {
+				summaryGate(t, dir, n)
+			}
+			for n := 0; n < 3; n++ {
+				summaryGroupGate(t, dir, n)
+			}
+			if tc.mut != nil {
+				tc.mut(t, dir)
+			}
+			args := tc.args
+			if args == nil {
+				args = []string{"0", "6", "3"}
+			}
+			out, err := exec.Command("bash", append(append([]string{script, dir, summarySHA}, args...), tc.needs...)...).CombinedOutput()
 			code := 0
 			if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 				code = ee.ExitCode()

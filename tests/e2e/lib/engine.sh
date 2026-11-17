@@ -97,7 +97,16 @@ create_source_account() {
     "$SCRIPT_DIR/mysql-query.sh" "$SOURCE_PORT" "DROP USER IF EXISTS '$DEMO_ACCOUNT'@'%'; \
 CREATE USER '$DEMO_ACCOUNT'@'%' IDENTIFIED BY '$MYSQL_ROOT_PASSWORD'; \
 GRANT $schema_privs ON \`$SOURCE_DB\`.* TO '$DEMO_ACCOUNT'@'%'; \
-GRANT PROCESS ON *.* TO '$DEMO_ACCOUNT'@'%';"
+GRANT PROCESS ON *.* TO '$DEMO_ACCOUNT'@'%';$(group_view_grant)"
+}
+
+# group_view_grant: on the group estate the source is a member, and the source recipe adds SELECT on
+# the view of the group (README_PERMISSIONS.md -> Source, on a Group Replication member). Without it
+# preflight refuses the account for the view (SOURCE_GROUP_VIEW_PERMISSION_CHECK) before the check
+# the demo is about. Empty on the plain estate, whose source is no member.
+group_view_grant() {
+    [[ "${TOPOLOGY:-plain}" == group ]] || return 0
+    printf " GRANT SELECT ON performance_schema.replication_group_members TO '%s'@'%%';" "$DEMO_ACCOUNT"
 }
 
 # drop_source_account: remove the demo account; a failure fails the demo.
