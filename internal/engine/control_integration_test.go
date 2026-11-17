@@ -116,16 +116,9 @@ func maxOf(ns []int) (m int) {
 // cannot be given).
 func leaveLogged(t *testing.T, e env, cfg Config, roots int) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cfg.at = func(p point) {
-		if p == atCommitted {
-			cancel()
-		}
-	}
-	if _, err := e.runContext(t, ctx, cfg); err == nil {
-		t.Fatal("the run that was to be cancelled after its copy finished without an error")
-	}
+	// Only the cancellation at atCommitted counts: a run that is refused or fails before it (a preflight refusal under the
+	// environment matrix's partial_revokes_on row) is reported as itself, and nothing is read from a log it never wrote.
+	e.interrupted(t, cfg, atCommitted)
 	if got := fmt.Sprint(statuses(t, e.dst, e.dstSchema)); got != fmt.Sprintf("map[1:%d]", roots) {
 		t.Fatalf("log after the cancelled run = %s, want %d roots copied and not deleted", got, roots)
 	}
