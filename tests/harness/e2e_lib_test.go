@@ -406,3 +406,66 @@ fi
 		})
 	}
 }
+
+// TestE2EValidGTIDSet (GR C10 fix, Gate verify run 43987105610): the replication witness (tests 13 and 17) puts the
+// source's gtid_executed into a statement, so it first checks that the value is a GTID set and nothing else. The
+// grammar is the manual's (https://dev.mysql.com/doc/refman/9.7/en/replication-gtids-concepts.html, "GTID Set
+// Grammar"): uuid_set is uuid:[tag:]interval[:[tag:]interval]..., a tag [a-zA-Z_][a-zA-Z0-9_]{0,31}, an interval m[-n],
+// the sets separated by commas. A group bootstrapped by MySQL Shell 9.7.1 holds tagged GTIDs (`...:mysqlsh:1-82`),
+// which the first version of the check, hex digits and separators only, rejected. Whatever is not a set (an error
+// message, a quote, a semicolon, whitespace, a backslash) is still refused: the value is interpolated into SQL.
+func TestE2EValidGTIDSet(t *testing.T) {
+	const u1, u2 = "7fcbfd08-c636-11f1-9db5-5ee215af872f", "F11ED000-57A1-4C0D-9E5E-000000000001"
+	tag32 := "a" + strings.Repeat("b", 31)
+	for _, tc := range []struct {
+		name, set string
+		ok        bool
+	}{
+		{"one uuid, an interval", u1 + ":1-1657", true},
+		{"one uuid, one transaction", u1 + ":5", true},
+		{"two uuids", u1 + ":1-1657," + u2 + ":1", true},
+		{"several intervals", u1 + ":1-3:11:47-49", true},
+		{"the 9.7.1 group's set (a tag between intervals)", "bbb9756e-e21f-11f1-b5fd-2e81d5258868:mysqlsh:1-4,c235468c-e21f-11f1-96ed-2e81d5258868:1-208:mysqlsh:1-82", true},
+		{"the manual's tagged example", "3E11FA47-71CA-11E1-9E33-C80AA9429562:Domain_1:1-3:11:47-49", true},
+		{"two tags for one uuid", "3E11FA47-71CA-11E1-9E33-C80AA9429562:Domain_1:1-3:15-21:Domain_2:8-52", true},
+		{"a tag of 32 characters", u1 + ":" + tag32 + ":1-4", true},
+		{"a tag that starts with an underscore", u1 + ":_t1:1-4", true},
+
+		{"empty", "", false},
+		{"an error message", "ERROR 2003 (HY000): Can't connect to MySQL server", false},
+		{"a trailing space", u1 + ":1-5 ", false},
+		{"a leading space", " " + u1 + ":1-5", false},
+		{"a space inside", u1 + ": 1-5", false},
+		{"a newline inside (the server's separator, not removed)", u1 + ":1-4,\n" + u2 + ":1", false},
+		{"a single quote", u1 + ":1-5'", false},
+		{"a quote that would close the literal", u1 + ":1-5', 30); DROP DATABASE x; --", false},
+		{"a semicolon", u1 + ":1-5;", false},
+		{"a backslash", u1 + ":1-5\\", false},
+		{"a trailing comma", u1 + ":1-5,", false},
+		{"a leading comma", "," + u1 + ":1-5", false},
+		{"a tag of 33 characters", u1 + ":" + tag32 + "b:1-4", false},
+		{"a tag that starts with a digit", u1 + ":1abc:1-4", false},
+		{"a tag with a hyphen", u1 + ":my-tag:1-4", false},
+		{"a tag with no interval after it", u1 + ":mysqlsh", false},
+		{"a uuid with no interval", u1, false},
+		{"a uuid and a colon", u1 + ":", false},
+		{"two colons", u1 + "::1-5", false},
+		{"a letter in an interval", u1 + ":1-x", false},
+		{"a uuid one character short", u1[:35] + ":1-5", false},
+		{"a non-hex uuid", "g" + u1[1:] + ":1-5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "value"), []byte(tc.set), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := runLib(t, dir, `IFS= read -r -d '' v < "$E2E_DIR/value"; valid_gtid_set "$v"`)
+			if r.rc == 127 {
+				t.Fatalf("valid_gtid_set is not defined: %s", r.stderr)
+			}
+			if got := r.rc == 0; got != tc.ok {
+				t.Errorf("valid_gtid_set(%q) = %v (rc %d, stderr %q), want %v", tc.set, got, r.rc, r.stderr, tc.ok)
+			}
+		})
+	}
+}
