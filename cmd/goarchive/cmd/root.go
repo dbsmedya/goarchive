@@ -12,7 +12,7 @@ import (
 
 // Version information (set via ldflags at build time)
 var (
-	Version = "3.0.0"
+	Version = "3.1.0-alpha.0"
 	Commit  = "unknown"
 )
 
